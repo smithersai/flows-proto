@@ -17,7 +17,7 @@ import {
 } from "@smthrs/ui";
 import type { ApprovalState } from "@smthrs/ui";
 import { MarkdownEditor } from "@smthrs/ui/adapters/markdown-editor";
-import { Check, ExternalLink, GitPullRequest, HardDrive, Maximize2, Minimize2 } from "lucide-react";
+import { Check, ExternalLink, GitPullRequest, HardDrive, Maximize2, Minimize2, Server } from "lucide-react";
 import { useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { Card, WorldDocument } from "./state/AppState";
@@ -31,13 +31,7 @@ import { LandingCardBody, LandingListCardBody } from "./cards/LandingCards";
 import { NotificationsCardBody } from "./cards/NotificationsCard";
 import { RepoImportCardBody } from "./cards/RepoImportCard";
 import { ThemePickerCardBody } from "./cards/ThemePickerCard";
-import { freshnessLabel, RepositoryList } from "./RepositoryList";
-import type { RepoRow } from "./RepositoryList";
-
-export { freshnessLabel } from "./RepositoryList";
-
-const clockLabel = (timestamp: number): string =>
-	new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+import { timeLabel as clockLabel } from "./Timestamps";
 
 const pillStatus = (card: Card): string => {
 	if (card.status === "error") return "failed";
@@ -57,17 +51,26 @@ const pillStatus = (card: Card): string => {
 		if (card.payload.state === "low") return "pending";
 		return "done";
 	}
-	if (card.kind === "reco") {
-		// A digest without a recommendation is information, not a pending act.
-		return card.status === "acted" ? "done" : card.payload.recommendation === null ? "done" : "waiting-approval";
-	}
+	if (card.kind === "reco") return card.status === "acted" ? "done" : "waiting-approval";
 	if (card.kind === "grant-confirm") {
 		if (card.payload.phase === "granted") return "done";
 		if (card.payload.phase === "sending") return "running";
 		return "waiting-approval";
 	}
-	if (card.kind === "request-queue" || card.kind === "reco-log" || card.kind === "admin-health") {
-		return card.status === "acted" ? "done" : "pending";
+	/*
+	 * These cards only exist once their read has settled — the seam upserts
+	 * them after the answer arrives. Badging them PENDING made "still loading"
+	 * and "finished, nothing more coming" the same badge, so a read that
+	 * genuinely hung looked exactly like one that had rendered everything
+	 * (§28.3).
+	 */
+	if (
+		card.kind === "request-queue" ||
+		card.kind === "reco-log" ||
+		card.kind === "admin-health" ||
+		card.kind === "theme-picker"
+	) {
+		return "done";
 	}
 	if (card.kind === "repo-chooser") {
 		if (card.payload.phase === "saving") return "running";
@@ -233,15 +236,10 @@ export type RecoAction = "accept" | "edit" | "dismiss";
  */
 const RecoCardBody = ({
 	card,
-	repositories,
 	onRecoAction,
-	onRunCommand,
 }: {
 	readonly card: Extract<Card, { kind: "reco" }>;
-	/* The account's repositories: what a digest with nothing to recommend shows. */
-	readonly repositories: ReadonlyArray<RepoRow>;
 	readonly onRecoAction: (id: string, action: RecoAction) => void;
-	readonly onRunCommand: (name: string, args?: string) => void;
 }) => {
 	const { digest, recommendation } = card.payload;
 	const actionable = card.status !== "acted" && recommendation !== null;
@@ -321,19 +319,7 @@ const RecoCardBody = ({
 					)}
 				</div>
 			) : (
-				/*
-				 * A digest with nothing to recommend is the landing (will,
-				 * 2026-08-19): "what we should be showing here is a bit of a
-				 * github pane so we should see a list of repos available and if
-				 * we click on it we see the repo view". The list IS the landing —
-				 * no button in between — and a row opens that repository.
-				 */
-				<RepositoryList
-					rows={repositories}
-					flow="repo.open"
-					label="Your repositories"
-					onOpen={(fullName) => onRunCommand("repo.open", fullName)}
-				/>
+				<p className="smithers-card-note">Nothing needs you right now.</p>
 			)}
 			{card.status === "error" && card.payload.error !== undefined ? (
 				<p className="sui-approval-error" role="alert">
@@ -494,22 +480,11 @@ export interface CardViewProps {
 	readonly onMinimize: () => void;
 	readonly onConnectGitHub: () => void;
 	readonly onConnectLocal: () => void;
-	/*
-	 * The repository is a REQUIRED argument, not a convenience: `flow.run`
-	 * resolves a missing target to the first watched repository, so a Run
-	 * button that passed only the workflow name launched outbound work on
-	 * whichever repo happened to sort first — never the one on screen.
-	 */
-	readonly onRunWorkflow: (name: string, repo: string) => void;
+	readonly onRunWorkflow: (name: string) => void;
 	/* Wave 12 — the run card's quiet-state acts and the which-repo answer. */
 	readonly onStopRun: (cardId: string) => void;
 	readonly onRetryRun: (cardId: string) => void;
 	readonly onChooseWorkflowRepo: (fullName: string) => void;
-	/*
-	 * The account's repositories, live from the catalog: the digest card with no
-	 * recommendation lands on the repository list rather than a dead end.
-	 */
-	readonly repositories: ReadonlyArray<RepoRow>;
 	/* The world card reads live documents so its editor never shows stale bodies. */
 	readonly worldDocuments: ReadonlyArray<WorldDocument>;
 	readonly onChangeWorldDocument: (id: string, body: string) => void;
@@ -527,7 +502,16 @@ export interface CardViewProps {
  * empty), typing filters, Enter confirms. Select-all/none plus the one
  * confirm action; every act is a command binding.
  */
-
+export const freshnessLabel = (pushedAt: string | null, now: number = Date.now()): string => {
+	if (pushedAt === null) return "never pushed";
+	const days = Math.max(0, Math.floor((now - Date.parse(pushedAt)) / 86_400_000));
+	if (Number.isNaN(days)) return "";
+	if (days === 0) return "today";
+	if (days === 1) return "yesterday";
+	if (days < 30) return `${days}d ago`;
+	const months = Math.floor(days / 30);
+	return months < 12 ? `${months}mo ago` : `${Math.floor(months / 12)}y ago`;
+};
 
 /*
  * The chooser's keyboard map, pure so the completeness contract is testable
@@ -548,9 +532,6 @@ export const chooserKeyAction = (key: string, filter: string): ChooserKeyAction 
 	return { kind: "none" };
 };
 
-/** How many rows one chooser page shows before scrolling reveals the next. */
-const CHOOSER_PAGE = 50;
-
 /** The chooser's filter, pure: case-insensitive substring on the full name. */
 export const chooserFilter = <C extends { fullName: string }>(
 	candidates: ReadonlyArray<C>,
@@ -560,6 +541,44 @@ export const chooserFilter = <C extends { fullName: string }>(
 	return needle === ""
 		? [...candidates]
 		: candidates.filter((candidate) => candidate.fullName.toLowerCase().includes(needle));
+};
+
+/** Keep a 200+ repository account responsive while preserving local search over the whole inventory. */
+export const REPO_CHOOSER_PAGE_SIZE = 50;
+
+/**
+ * The chooser's arrow-key windowing, pure so it is testable without a DOM.
+ * Moving down past the rendered window grows the window by a page instead of
+ * wrapping, so a keyboard-only user can reach repositories past the first
+ * page (previously the highlight wrapped at row 50 and the only way further
+ * was the scroll handler). At the true end the highlight wraps to the top.
+ */
+export const chooserMove = (args: {
+	readonly delta: 1 | -1;
+	readonly highlightedIndex: number;
+	readonly visibleCount: number;
+	readonly visibleLimit: number;
+	readonly totalCount: number;
+	readonly pageSize?: number;
+}): { readonly highlighted: number; readonly visibleLimit: number } => {
+	const pageSize = args.pageSize ?? REPO_CHOOSER_PAGE_SIZE;
+	if (args.visibleCount === 0) return { highlighted: 0, visibleLimit: args.visibleLimit };
+	if (args.delta === 1) {
+		if (args.highlightedIndex + 1 < args.visibleCount) {
+			return { highlighted: args.highlightedIndex + 1, visibleLimit: args.visibleLimit };
+		}
+		if (args.visibleLimit < args.totalCount) {
+			return {
+				highlighted: args.highlightedIndex + 1,
+				visibleLimit: Math.min(args.visibleLimit + pageSize, args.totalCount),
+			};
+		}
+		return { highlighted: 0, visibleLimit: args.visibleLimit };
+	}
+	return {
+		highlighted: (args.highlightedIndex + args.visibleCount - 1) % args.visibleCount,
+		visibleLimit: args.visibleLimit,
+	};
 };
 
 const RepoChooserCardBody = ({
@@ -578,15 +597,10 @@ const RepoChooserCardBody = ({
 	const { candidates, selected, phase, error } = card.payload;
 	const [filter, setFilter] = useState("");
 	const [highlighted, setHighlighted] = useState(0);
-	/*
-	 * Manual-review 3.10: an account with 200+ repositories must not lock the
-	 * frame. The list renders a PAGE at a time and reveals the next page when
-	 * the reader scrolls to the bottom — an event, never an effect.
-	 */
-	const [revealed, setRevealed] = useState(CHOOSER_PAGE);
+	const [visibleLimit, setVisibleLimit] = useState(REPO_CHOOSER_PAGE_SIZE);
 	const saving = phase === "saving";
-	const matchingRows = chooserFilter(candidates, filter);
-	const visibleRows = matchingRows.slice(0, revealed);
+	const filteredRows = chooserFilter(candidates, filter);
+	const visibleRows = filteredRows.slice(0, visibleLimit);
 	const highlightedIndex = Math.min(highlighted, Math.max(visibleRows.length - 1, 0));
 
 	const onFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
@@ -594,12 +608,15 @@ const RepoChooserCardBody = ({
 		if (action.kind === "none") return;
 		event.preventDefault();
 		if (action.kind === "move") {
-			if (visibleRows.length === 0) return;
-			setHighlighted(
-				action.delta === 1
-					? (highlightedIndex + 1) % visibleRows.length
-					: (highlightedIndex + visibleRows.length - 1) % visibleRows.length,
-			);
+			const next = chooserMove({
+				delta: action.delta,
+				highlightedIndex,
+				visibleCount: visibleRows.length,
+				visibleLimit,
+				totalCount: filteredRows.length,
+			});
+			if (next.visibleLimit !== visibleLimit) setVisibleLimit(next.visibleLimit);
+			setHighlighted(next.highlighted);
 			return;
 		}
 		if (saving) return;
@@ -611,6 +628,9 @@ const RepoChooserCardBody = ({
 		onReposConfirm();
 	};
 
+	const activeDescendant =
+		visibleRows.length === 0 ? undefined : `repo-chooser-option-${highlightedIndex}`;
+
 	return (
 		<div className="repo-chooser">
 			<input
@@ -619,24 +639,28 @@ const RepoChooserCardBody = ({
 				value={filter}
 				placeholder="Type to filter repositories…"
 				aria-label="Filter repositories"
+				role="combobox"
+				aria-expanded={true}
+				aria-controls="repo-chooser-list"
+				aria-activedescendant={activeDescendant}
 				disabled={saving}
 				onChange={(event) => {
 					setFilter(event.target.value);
 					setHighlighted(0);
-					setRevealed(CHOOSER_PAGE);
+					setVisibleLimit(REPO_CHOOSER_PAGE_SIZE);
 				}}
 				onKeyDown={onFilterKeyDown}
 			/>
 			<ul
 				className="repo-chooser-list"
+				id="repo-chooser-list"
 				role="listbox"
 				aria-multiselectable
 				aria-label="Your repositories"
 				onScroll={(event) => {
 					const list = event.currentTarget;
-					if (list.scrollTop + list.clientHeight < list.scrollHeight - 48) return;
-					if (revealed >= matchingRows.length) return;
-					setRevealed(revealed + CHOOSER_PAGE);
+					if (list.scrollTop + list.clientHeight < list.scrollHeight - 8) return;
+					setVisibleLimit((current) => Math.min(current + REPO_CHOOSER_PAGE_SIZE, filteredRows.length));
 				}}
 			>
 				{visibleRows.map((candidate, index) => {
@@ -646,6 +670,7 @@ const RepoChooserCardBody = ({
 							<button
 								type="button"
 								role="option"
+								id={`repo-chooser-option-${index}`}
 								aria-selected={checked}
 								data-highlighted={index === highlightedIndex}
 								className="repo-chooser-row"
@@ -704,10 +729,12 @@ const ConnectCardBody = ({
 	card,
 	onConnectGitHub,
 	onConnectLocal,
+	onRunCommand,
 }: {
 	readonly card: Extract<Card, { kind: "connect" }>;
 	readonly onConnectGitHub: () => void;
 	readonly onConnectLocal: () => void;
+	readonly onRunCommand: (name: string, args?: string) => void;
 }) => (
 	<ul className="connect-store-list">
 		<li className="connect-store-row">
@@ -740,6 +767,18 @@ const ConnectCardBody = ({
 				</Button>
 			</li>
 		) : null}
+		<li className="connect-store-row">
+			<span className="connect-store-icon">
+				<Server size={16} aria-hidden="true" />
+			</span>
+			<span className="connect-store-text">
+				<strong>Smithers Cloud repository</strong>
+				<span>Import a GitHub repository into hosted workspace storage.</span>
+			</span>
+			<Button size="sm" variant="outline" data-flow="repos.import" onClick={() => onRunCommand("repos.import")}>
+				Import
+			</Button>
+		</li>
 	</ul>
 );
 
@@ -835,10 +874,23 @@ const BrowserCardBody = ({ card }: { readonly card: Extract<Card, { kind: "brows
 				<ExternalLink size={12} aria-hidden="true" /> {shownUrl}
 			</p>
 			{frameable ? (
+				/*
+				 * §8.13: the app document is cross-origin isolated (COEP
+				 * require-corp) because OPFS needs it, and under that policy Chrome
+				 * blocks every cross-origin frame whose response carries no CORP
+				 * header — which is practically every site on the public web. The
+				 * frame went to chrome-error:// and the card rendered an empty white
+				 * box while its pill still read DONE. A credentialless frame is the
+				 * escape hatch the policy ships with: it loads third-party documents
+				 * without credentials and without demanding CORP of them, and the
+				 * document stays isolated.
+				 */
 				<iframe
 					className="browser-card-frame"
 					src={shownUrl}
 					title={shownUrl}
+					// @ts-expect-error React has no typing for the credentialless attribute yet.
+					credentialless=""
 					sandbox="allow-scripts allow-same-origin"
 				/>
 			) : (
@@ -982,55 +1034,36 @@ const WorkflowRepoCardBody = ({
 	);
 };
 
-/*
- * The workspace's flows (flow.list), in the repository tabs' shared list
- * treatment — the same `world-card-list` rows the Issues and Pull Requests
- * tabs render (will, 2026-08-19: "Everything is pretty close to a github
- * clone"). One component, both mounts: the standalone transcript card and the
- * repo view's Flows tab.
- *
- * A flow has a key and sometimes a description. It has no number, no
- * open/closed state, no author and no comment count, and NO INVENTION forbids
- * dressing it in columns it does not have — so a row states the two facts the
- * source answers with, and the one act it offers. Each row's Run is a command
- * binding like every other row act.
- */
-export const WorkflowListCardBody = ({
+/* The workspace's workflows (flow.list) — each row's Run is a command binding. */
+const WorkflowListCardBody = ({
 	card,
 	onRunWorkflow,
 }: {
 	readonly card: Extract<Card, { kind: "workflow-list" }>;
-	readonly onRunWorkflow: (name: string, repo: string) => void;
+	readonly onRunWorkflow: (name: string) => void;
 }) => {
-	/*
-	 * The card states which repository it read, so the Run button names it.
-	 * Taking it from the card rather than from the caller is what makes the
-	 * two mounts of this list — the transcript card and the GitHub pane's
-	 * Flows tab — incapable of disagreeing about the target.
-	 */
-	const { repo, workflows } = card.payload;
+	const { workflows } = card.payload;
+	if (workflows.length === 0) {
+		return <p className="smithers-card-note">No workflows on this workspace yet — ask for one and I'll create it.</p>;
+	}
 	return (
-		<ul className="workflow-list world-card-list">
-			{workflows.length === 0 ? (
-				<li className="world-card-empty">No workflows on this workspace yet — ask for one and I'll create it.</li>
-			) : (
-				workflows.map((workflow) => (
-					<li key={workflow.key} className="workflow-list-row world-card-row">
-						<span className="world-card-title">{workflow.key}</span>
-						{workflow.description !== null ? (
-							<span className="world-card-path">{workflow.description}</span>
-						) : null}
-						<Button
-							size="sm"
-							variant="outline"
-							data-flow="flow.run"
-							onClick={() => onRunWorkflow(workflow.key, repo)}
-						>
-							Run
-						</Button>
-					</li>
-				))
-			)}
+		<ul className="workflow-list">
+			{workflows.map((workflow) => (
+				<li key={workflow.key} className="workflow-list-row">
+					<span className="workflow-list-text">
+						<strong>{workflow.key}</strong>
+						{workflow.description !== null ? <span>{workflow.description}</span> : null}
+					</span>
+					<Button
+						size="sm"
+						variant="outline"
+						data-flow="flow.run"
+						onClick={() => onRunWorkflow(workflow.key)}
+					>
+						Run
+					</Button>
+				</li>
+			))}
 		</ul>
 	);
 };
@@ -1055,7 +1088,6 @@ export function CardView({
 	onStopRun,
 	onRetryRun,
 	onChooseWorkflowRepo,
-	repositories,
 	worldDocuments,
 	onChangeWorldDocument,
 	onRunCommand,
@@ -1116,14 +1148,7 @@ export function CardView({
 					) : null}
 					{card.kind === "status" ? <StatusCardBody card={card} /> : null}
 					{card.kind === "balance" ? <BalanceCardBody card={card} /> : null}
-					{card.kind === "reco" ? (
-						<RecoCardBody
-							card={card}
-							repositories={repositories}
-							onRecoAction={onRecoAction}
-							onRunCommand={onRunCommand}
-						/>
-					) : null}
+					{card.kind === "reco" ? <RecoCardBody card={card} onRecoAction={onRecoAction} /> : null}
 					{card.kind === "grant-confirm" ? (
 						<GrantConfirmCardBody card={card} onGrantConfirm={onGrantConfirm} onGrantCancel={onGrantCancel} />
 					) : null}
@@ -1146,6 +1171,7 @@ export function CardView({
 							card={card}
 							onConnectGitHub={onConnectGitHub}
 							onConnectLocal={onConnectLocal}
+							onRunCommand={onRunCommand}
 						/>
 					) : null}
 					{card.kind === "world" ? (
@@ -1171,9 +1197,9 @@ export function CardView({
 					{card.kind === "notifications" ? (
 						<NotificationsCardBody card={card} onRunCommand={onRunCommand} />
 					) : null}
-					{card.kind === "env" ? <EnvCardBody card={card} onRunCommand={onRunCommand} /> : null}
-					{card.kind === "repo-import" ? <RepoImportCardBody card={card} /> : null}
-					{card.kind === "branches" ? <BranchesCardBody card={card} onRunCommand={onRunCommand} /> : null}
+					{card.kind === "env" ? <EnvCardBody card={card} /> : null}
+					{card.kind === "repo-import" ? <RepoImportCardBody card={card} onRunCommand={onRunCommand} /> : null}
+					{card.kind === "branches" ? <BranchesCardBody card={card} /> : null}
 					{card.kind === "file-list" ? <FileListCardBody card={card} onRunCommand={onRunCommand} /> : null}
 					{card.kind === "file" ? <FileCardBody card={card} onRunCommand={onRunCommand} /> : null}
 					{card.kind === "theme-picker" ? <ThemePickerCardBody card={card} onRunCommand={onRunCommand} /> : null}
