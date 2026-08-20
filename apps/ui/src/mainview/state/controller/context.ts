@@ -1,6 +1,5 @@
 import { Effect } from "effect";
 import type { AgentChatMessage, FetchLike } from "smithers-shared/NativeAgent";
-import { globalTransport } from "../seams/Transport";
 import type { NativeAgent, NativeRepositories } from "../../native/NativeBridge";
 import type { CommandRegistry } from "../../flows/Commands";
 import type { ImpossibleAskClass } from "../Instructions";
@@ -119,7 +118,7 @@ export const createControllerContext = (
 		netRing.push(entry);
 		if (netRing.length > 100) netRing.shift();
 	};
-	const rawHttp: FetchLike = services.fetchImpl ?? globalTransport();
+	const rawHttp: FetchLike = services.fetchImpl ?? fetch.bind(globalThis);
 	const unref = (timer: ReturnType<typeof setTimeout>): void => {
 		// Bun/Node timers hold the process open (e2e scripts); browser timers don't.
 		(timer as { unref?: () => void }).unref?.();
@@ -234,9 +233,7 @@ export const createControllerContext = (
 	 * fetch's signal — cancellation is interruption, not a manual
 	 * AbortController, and a settled request clears its own clock, so nothing
 	 * dangles per request. The public shape is unchanged: a promise of the
-	 * response, rejecting with plain Errors, and the deadline still rejects
-	 * with `seam timeout`. `Effect.timeout` alone would reject with a
-	 * `TimeoutError` whose `message` is undefined, so the fallback is explicit.
+	 * response, rejecting with plain Errors.
 	 */
 	ctx.boundedFetch = (url: string, init?: RequestInit): Promise<Response> =>
 		Effect.runPromise(
@@ -244,10 +241,8 @@ export const createControllerContext = (
 				try: (signal) => ctx.http(url, { ...init, signal }),
 				catch: (error) => (error instanceof Error ? error : new Error(String(error))),
 			}).pipe(
-				Effect.timeoutOrElse({
-					duration: seamTimeoutMs,
-					orElse: () => Effect.fail(new Error("seam timeout")),
-				}),
+				Effect.timeout(seamTimeoutMs),
+				Effect.mapError((error) => (error instanceof Error ? error : new Error("seam timeout"))),
 			),
 		);
 	ctx.errorMessageOf = async (response: Response, fallback: string): Promise<string> => {
