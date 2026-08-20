@@ -56,6 +56,7 @@ const makeJournal = (events: Array<string>) =>
       })
     return Journal.makeNoop({
       emitDurable: (input) => record(input, "emit"),
+      emitDurableUnfenced: (input) => record(input, "emit"),
       flush: Effect.sync(() => {
         events.push("flush")
       })
@@ -234,25 +235,21 @@ describe("DeferredPersistence", () => {
           const state = DurableEngineState.makeMemory()
           const events: Array<string> = []
           const resumes: Array<string> = []
-          // The first two fire transactions die as a unit (e.g. SQLITE_BUSY
-          // surfaced through the orDie journal path); the third succeeds. The
-          // fire is one write transaction now, so the injection point is the
-          // transaction itself — a partial failure inside it cannot be
-          // modeled by this non-transactional stub, and is pinned against
-          // real storage in `WalAtomicity.test.ts` instead.
+          // The first two durable emits at fire time die (e.g. SQLITE_BUSY
+          // surfaced through the orDie journal path); the third succeeds.
           let failuresRemaining = 0
           let fireFailures = 0
           const base = makeJournal(events)
           const journal = {
             ...base,
-            transact: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            emitDurableUnfenced: (input: JournalEvent.Input) =>
               Effect.suspend(() => {
-                if (failuresRemaining > 0) {
+                if (failuresRemaining > 0 && input.eventType === "flows.engine.deferred-completed") {
                   failuresRemaining--
                   fireFailures++
                   return Effect.die(new Error("transient journal failure"))
                 }
-                return base.transact(effect)
+                return base.emitDurableUnfenced(input)
               })
           }
           const clock = DurableClock.make({ name: "retry", duration: "10 seconds" })
@@ -301,13 +298,13 @@ describe("DeferredPersistence", () => {
           const base = makeJournal(events)
           const journal = {
             ...base,
-            transact: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            emitDurableUnfenced: (input: JournalEvent.Input) =>
               Effect.suspend(() => {
-                if (failuresRemaining > 0) {
+                if (failuresRemaining > 0 && input.eventType === "flows.engine.deferred-completed") {
                   failuresRemaining--
                   return Effect.die(new Error("transient journal failure"))
                 }
-                return base.transact(effect)
+                return base.emitDurableUnfenced(input)
               })
           }
           const clock = DurableClock.make({ name: "slow-retry", duration: "10 seconds" })
@@ -433,7 +430,8 @@ describe("DeferredPersistence", () => {
         const service = yield* DeferredPersistence.make({
           owner,
           journalSource: "deferred-test",
-          scheduleResume: (_flowName, _executionId, _reason, sourceId) => Effect.sync(() => sourceIds.push(sourceId!))
+          scheduleResume: (_flowName, _executionId, _reason, sourceId) =>
+            Effect.sync(() => sourceIds.push(sourceId!))
         }).pipe(
           Effect.provideService(DurableEngineState.DurableEngineState, state),
           Effect.provideService(Journal.Journal, makeJournal([]))
@@ -443,8 +441,8 @@ describe("DeferredPersistence", () => {
       })))
 
       expect(sourceIds).toEqual([
-        "deferred-test:wake:[\"DeferredPersistence/Test\",\"historical-completion\",\"answer\"]",
-        "deferred-test:wake:[\"DeferredPersistence/Test\",\"historical-completion\",\"answer\"]"
+        'deferred-test:wake:["DeferredPersistence/Test","historical-completion","answer"]',
+        'deferred-test:wake:["DeferredPersistence/Test","historical-completion","answer"]'
       ])
     }))
 })

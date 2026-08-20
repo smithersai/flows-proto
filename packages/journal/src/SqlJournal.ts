@@ -34,12 +34,12 @@ import * as Semaphore from "effect/Semaphore"
 import * as Stream from "effect/Stream"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import type * as SqlError from "effect/unstable/sql/SqlError"
-import { Consensus, type ConsensusError } from "./Consensus.ts"
 import {
   Checkpoint,
   type CheckpointOptions,
   type Compacted,
   type CompactOptions,
+  type DurableReceipt,
   type EmitReceipt,
   type EntriesPage,
   Journal,
@@ -54,7 +54,6 @@ import * as JournalMetrics from "./JournalMetrics.ts"
 import type { OwnerId } from "./OwnerId.ts"
 import type { Projection } from "./Projection.ts"
 import * as Redaction from "./Redaction.ts"
-import * as SqlConsensus from "./SqlConsensus.ts"
 
 /** JSON text carrying an arbitrary decoded value. */
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown)
@@ -69,26 +68,13 @@ const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown)
  *
  * The attempt runs post-commit in the fiber that crossed the threshold, so
  * keep `capture` to storage reads. It must not emit through this journal:
- * doing so would let automatic compaction recursively trigger more durable
- * journal work from the settlement path.
- *
- * `snapshot` is the run/attempt fold's barrier hook
- * (`docs/specs/Concepts/Run State Fold.md`): `compact` refuses wholesale
- * when a run has `flows.run.*`/`flows.attempt.*` entries below the floor
- * and no `flows.run.snapshot` at or after it, so a composition whose
- * journal carries fold history wires this hook to `@smthrs/run-store`'s
- * `Fold.snapshot`. The policy runs it after writing the checkpoint and
- * before compacting, so the snapshot set sequences after the floor and the
- * compact succeeds. The hook receives this journal in context; unlike
- * `capture`, its appends are sanctioned durable entries — they count toward
- * the next threshold, and the per-run in-flight guard plus the damping
- * counter bound re-entry. Without the hook the barrier simply refuses and
- * nothing is lost.
+ * the triggering durable emit still holds the allocation permit, and a
+ * nested emit would deadlock on it.
  *
  * A failed or refused attempt — a live stream behind the boundary, a
- * capture or snapshot failure — is logged at warning, damped for
- * `entryThreshold` further committed entries, and never surfaced to the
- * emit that triggered it.
+ * capture failure — is logged at warning, damped for `entryThreshold`
+ * further committed entries, and never surfaced to the emit that triggered
+ * it.
  *
  * @category models
  * @since 0.1.0
@@ -97,7 +83,6 @@ const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown)
 export interface CompactionPolicy {
   readonly entryThreshold: number
   readonly capture: (runId: RunId, upTo: Seq) => Effect.Effect<unknown, unknown>
-  readonly snapshot?: ((runId: RunId) => Effect.Effect<void, unknown, Journal>) | undefined
 }
 
 /**
@@ -331,27 +316,24 @@ const validateOptions = (options: SqlJournalOptions): Effect.Effect<ValidatedOpt
 const isJournalError = Schema.is(JournalError)
 
 /**
- * Provides the SQLite-backed journal over an explicitly injected consensus
- * strategy.
+ * Provides the SQLite-backed journal.
  *
- * Fenced admission — `emitDurable` with an owner, `checkpoint`, `compact` —
- * goes through the injected `Consensus` service instead of a hard-wired join
- * on a table another package owns.
+ * `emitLossy` validates and admits telemetry to the non-blocking queue;
+ * `emitDurable` allocates and commits inside the database transaction.
  *
  * @category layers
  * @since 0.1.0
  * @slop
  */
-export const layerWith = (
+export const layer = (
   options: SqlJournalOptions
-): Layer.Layer<Journal, JournalError, Consensus | DurableWriter | SqlClient.SqlClient> =>
+): Layer.Layer<Journal, JournalError, DurableWriter | SqlClient.SqlClient> =>
   Layer.effect(
     Journal,
     Effect.gen(function*() {
       const { batchSize, redact, sourceEventCache } = yield* validateOptions(options)
       const sql = yield* Effect.service(SqlClient.SqlClient)
       const writer = yield* DurableWriter
-      const consensus = yield* Consensus
 
       const queue = yield* Queue.dropping<QueuedEntry>(options.capacity)
       const changes = yield* PubSub.sliding<Entry>(options.capacity)
@@ -539,17 +521,11 @@ export const layerWith = (
             )
           }
           // Redaction happens here, at the single point every channel funnels
-          // through, so no write path can bypass it (issue #46) — except the
-          // fold namespaces whose payloads are executable state rebuilt into
-          // rows and served back verbatim, where a placeholder corrupts the
-          // rebuilt state (issue #72, `Redaction.verbatimNamespaces`).
-          const scrub = Redaction.isVerbatimEventType(validated.eventType)
-            ? (value: unknown) => value
-            : redact
+          // through, so no write path can bypass it (issue #46).
           return {
             validated,
-            payloadJson: yield* encodeJson(scrub(validated.payload), "payload"),
-            metaJson: yield* encodeJson(scrub(validated.meta ?? null), "meta")
+            payloadJson: yield* encodeJson(redact(validated.payload), "payload"),
+            metaJson: yield* encodeJson(redact(validated.meta ?? null), "meta")
           }
         })
 
@@ -759,15 +735,6 @@ export const layerWith = (
         })
       )
 
-      const runs: Service["runs"] = Effect.fn("Journal.runs")(() =>
-        sql<{ readonly run_id: string }>`
-          SELECT DISTINCT run_id FROM flows_journal_events ORDER BY run_id ASC
-        `.pipe(
-          Effect.map((rows) => rows.map((row) => row.run_id as RunId)),
-          Effect.mapError((cause) => error("unknown", "durable journal read failed", cause))
-        )
-      )()
-
       const subscribeRun = (runId: RunId) =>
         Effect.gen(function*() {
           const wake = yield* PubSub.sliding<void>(1)
@@ -859,27 +826,32 @@ export const layerWith = (
         )
 
       /**
-       * Owner fence for fenced appends, checkpoints, and compaction,
-       * arbitrated by the injected consensus strategy and evaluated inside
-       * the caller's write transaction (R3 — commit-time admission). For the
-       * default `SqlConsensus`, the guard read joins this transaction and is
-       * equivalent to a predicate on the statements beside it because
-       * `DurableWriter` serializes write transactions: no reclaim can commit
-       * between the guard and the commit. A strategy failure that is not a
-       * lost fence propagates for the caller to wrap as `sink_failed`, with
-       * its cause intact for the writer's retry classification.
+       * Owner fence for the fenced append's conflict classification, for
+       * checkpoint, and for compaction, evaluated inside the caller's write
+       * transaction. A guard SELECT is equivalent to the `WHERE EXISTS`
+       * predicate `insertOne` uses because `DurableWriter` serializes write
+       * transactions: no reclaim can commit between this read and the
+       * statements that run beside it in the same transaction.
        */
       const fenceGuard = (
         runId: RunId,
         owner: OwnerId
-      ): Effect.Effect<void, JournalError | ConsensusError> =>
-        consensus.guard(runId, owner).pipe(
-          Effect.mapError((cause) =>
-            cause.code === "fence_lost"
-              ? error("fence_lost", cause.message)
-              : cause
-          )
-        )
+      ): Effect.Effect<void, JournalError | SqlError.SqlError> =>
+        Effect.gen(function*() {
+          const held = yield* sql<{ readonly ok: number }>`
+            SELECT 1 AS ok FROM flows_runs
+            WHERE run_id = ${runId}
+              AND status = 'running'
+              AND owner_host_id = ${owner.hostId}
+              AND owner_pid = ${owner.pid}
+              AND owner_nonce = ${owner.nonce}
+          `
+          if (held.length === 0) {
+            return yield* Effect.fail(
+              error("fence_lost", `run ${runId} is no longer owned by ${owner.hostId}:${owner.pid}:${owner.nonce}`)
+            )
+          }
+        })
 
       /**
        * Reads the row a duplicate emit collides with.
@@ -935,62 +907,97 @@ export const layerWith = (
         })
 
       /**
-       * When `owner` is present the append is fenced through the injected
-       * consensus strategy before anything else, following Temporal's rule of
-       * conditioning every request on the shard `rangeID`
-       * (`service/history/shard/context_impl.go`, `renewRangeLocked`): a
-       * zombie owner whose run was reclaimed cannot append, and fails with
-       * `fence_lost`. The guard runs inside the same serialized write
-       * transaction as the INSERT, so no reclaim can commit between them.
+       * When `owner` is present the insert is fenced on the run's persisted
+       * ownership with the same `WHERE EXISTS` predicate
+       * `DurableEngineState.scheduleClock` uses, following Temporal's shard
+       * `rangeID` check (`service/history/shard/context_impl.go`,
+       * `renewRangeLocked`) reduced to one SQL predicate: a zombie owner whose
+       * run was reclaimed cannot append, and fails with `fence_lost`.
        *
-       * The fence outranks dedup. The duplicate lookup runs only after the
-       * guard has confirmed the owner, so a zombie's resubmission is never
-       * answered from the dedup index — that would launder its lost fence
-       * into a `Duplicate` receipt for work the live owner committed. A
-       * confirmed owner's conflict, by contrast, is a genuine duplicate (its
-       * own earlier commit, or a forked run's copied row).
+       * The fence outranks dedup. The duplicate lookup answers an ownerless
+       * insert up front, but a fenced insert consults it only after the
+       * INSERT produced no row AND `fenceGuard` has confirmed the owner in
+       * the same serialized transaction — Temporal conditions every request
+       * on the `rangeID` before anything else. Answering a zombie's
+       * resubmission from the dedup index would launder its lost fence into
+       * a `Duplicate` receipt for work the live owner committed; a confirmed
+       * owner's conflict, by contrast, is a genuine duplicate (its own
+       * earlier commit, or a forked run's copied row).
        */
       const insertOne = (
         queued: QueuedEntry,
         owner?: OwnerId
-      ): Effect.Effect<Commit, JournalError | ConsensusError | SqlError.SqlError> =>
+      ): Effect.Effect<Commit, JournalError | SqlError.SqlError> =>
         Effect.gen(function*() {
-          if (owner !== undefined) {
-            yield* fenceGuard(queued.runId, owner)
+          if (owner === undefined) {
+            const duplicate = yield* selectExisting(queued)
+            if (duplicate !== undefined) {
+              return duplicate
+            }
           }
-          const duplicate = yield* selectExisting(queued)
-          if (duplicate !== undefined) {
-            return duplicate
-          }
-          const inserted = yield* sql<JournalRow>`
-            INSERT INTO flows_journal_events (
-              run_id, seq, event_id, source_id, source_seq, emitted_at_ms,
-              event_type, payload_json, meta_json
-            ) VALUES (
-              ${queued.runId},
-              ${queued.seq},
-              ${queued.eventId},
-              ${queued.sourceId},
-              ${queued.sourceSeq},
-              ${queued.emittedAtMs},
-              ${queued.eventType},
-              ${queued.payloadJson},
-              ${queued.metaJson}
-            )
-            ON CONFLICT DO NOTHING
-            RETURNING run_id, seq, event_id, source_id, source_seq, emitted_at_ms,
-              event_type, payload_json, meta_json
-          `
+          const insert = owner === undefined
+            ? sql<JournalRow>`
+              INSERT INTO flows_journal_events (
+                run_id, seq, event_id, source_id, source_seq, emitted_at_ms,
+                event_type, payload_json, meta_json
+              ) VALUES (
+                ${queued.runId},
+                ${queued.seq},
+                ${queued.eventId},
+                ${queued.sourceId},
+                ${queued.sourceSeq},
+                ${queued.emittedAtMs},
+                ${queued.eventType},
+                ${queued.payloadJson},
+                ${queued.metaJson}
+              )
+              ON CONFLICT DO NOTHING
+              RETURNING run_id, seq, event_id, source_id, source_seq, emitted_at_ms,
+                event_type, payload_json, meta_json
+            `
+            : sql<JournalRow>`
+              INSERT INTO flows_journal_events (
+                run_id, seq, event_id, source_id, source_seq, emitted_at_ms,
+                event_type, payload_json, meta_json
+              )
+              SELECT
+                ${queued.runId},
+                ${queued.seq},
+                ${queued.eventId},
+                ${queued.sourceId},
+                ${queued.sourceSeq},
+                ${queued.emittedAtMs},
+                ${queued.eventType},
+                ${queued.payloadJson},
+                ${queued.metaJson}
+              WHERE EXISTS (
+                SELECT 1
+                FROM flows_runs
+                WHERE run_id = ${queued.runId}
+                  AND status = 'running'
+                  AND owner_host_id = ${owner.hostId}
+                  AND owner_pid = ${owner.pid}
+                  AND owner_nonce = ${owner.nonce}
+              )
+              ON CONFLICT DO NOTHING
+              RETURNING run_id, seq, event_id, source_id, source_seq, emitted_at_ms,
+                event_type, payload_json, meta_json
+            `
+          const inserted = yield* insert
           if (inserted.length > 0) {
             return {
               entry: yield* decodeRow(inserted[0]!),
               inserted: true
             }
           }
-          // The insert produced no row: either this identity was committed
-          // between the preflight read and the INSERT — a raced duplicate —
-          // or `PRIMARY KEY (run_id, seq)` fired because another writer
-          // committed this sequence under a different identity.
+          if (owner !== undefined) {
+            // The fenced INSERT produced no row either because the fence
+            // predicate failed or because a unique constraint fired. The
+            // fence is checked first, so a lost fence is reported as
+            // `fence_lost` even when the resubmitted identity already names
+            // a committed entry.
+            yield* fenceGuard(queued.runId, owner)
+          }
           const racedDuplicate = yield* selectExisting(queued)
           if (racedDuplicate !== undefined) {
             return racedDuplicate
@@ -1195,77 +1202,69 @@ export const layerWith = (
           )
         })
 
-      const emitDurable: Service["emitDurable"] = Effect.fn("Journal.emitDurable")((
+      const writeDurable = (
         input: Input,
-        owner?: OwnerId
-      ) =>
+        owner: OwnerId | undefined
+      ): Effect.Effect<DurableReceipt, JournalError> =>
         Effect.annotateCurrentSpan({
           runId: input.runId,
           sourceId: input.sourceId,
           eventType: input.eventType
-        }).pipe(Effect.andThen(Effect.flatMap(Clock.currentTimeMillis, (emittedAtMs) =>
+        }).pipe(Effect.andThen(allocation.withPermit(Effect.flatMap(Clock.currentTimeMillis, (emittedAtMs) =>
           Effect.flatMap(Effect.fromResult(prepare(input, emittedAtMs)), ({ metaJson, payloadJson, validated }) =>
-            Effect.flatMap(
-              Effect.serviceOption(Settlements),
-              (enclosing) => {
-                const allocateEntry = Effect.gen(function*() {
-                  const key = sourceKey(validated.runId, validated.sourceId)
-                  const sourceSeq: SourceSeq = validated.sourceSeq ??
-                    (Math.max(
-                      yield* nextDurable("source_seq", validated.runId, validated.sourceId),
-                      state.sourceSequences.get(key) ?? 0
-                    ) as SourceSeq)
-                  if (
-                    !Number.isSafeInteger(sourceSeq) ||
-                    sourceSeq < 0 ||
-                    sourceSeq === Number.MAX_SAFE_INTEGER
-                  ) {
-                    return yield* Effect.fail(
-                      error("invalid_event", "journal sequence is outside the allocatable safe integer range")
-                    )
-                  }
-                  const seq = Math.max(
-                    yield* nextDurable("seq", validated.runId, undefined),
-                    state.sequences.get(validated.runId) ?? 0
-                  ) as Seq
-                  if (!Number.isSafeInteger(seq) || seq === Number.MAX_SAFE_INTEGER) {
-                    return yield* Effect.fail(
-                      error("invalid_event", "journal sequence is outside the allocatable safe integer range")
-                    )
-                  }
-                  // Claim the seq NOW, not at commit: a concurrent `emitLossy`
-                  // allocates from this floor alone, and `settleCommit` parks
-                  // the commit-time raise until the outermost COMMIT.
-                  // Re-entering the transaction body is idempotent because the
-                  // floor only rises. An abandoned attempt leaves the number
-                  // unused, which is a gap: allocation is `MAX(seq) + 1` and
-                  // replay is `ORDER BY seq`, so neither reads a gap as anything.
-                  raiseSequenceFloor(validated.runId, seq)
-                  // Claim the producer sequence at the same allocation seam.
-                  // Without this, a lossy emit from the same producer can read
-                  // the pre-transaction source floor and reuse this identity
-                  // while an enclosing `transact` is still open.
-                  raiseSourceSequenceFloor(validated.runId, validated.sourceId, sourceSeq)
-                  return {
-                    queued: {
-                      runId: validated.runId,
-                      seq,
-                      eventId: makeEventId(validated.runId, validated.sourceId, sourceSeq),
-                      sourceId: validated.sourceId,
-                      sourceSeq,
-                      emittedAtMs,
-                      eventType: validated.eventType,
-                      payloadJson,
-                      metaJson
-                    },
-                    sourceSeq
-                  }
-                })
-                const writeEntry = Effect.gen(function*() {
-                  const { queued, sourceSeq } = yield* allocation.withPermit(allocateEntry)
-                  const commit = yield* insertOne(queued, owner)
-                  return { commit, queued, sourceSeq }
-                })
+            Effect.uninterruptibleMask((restore) =>
+              restore(writer.write(Effect.gen(function*() {
+                const key = sourceKey(validated.runId, validated.sourceId)
+                const sourceSeq: SourceSeq = validated.sourceSeq ??
+                  (Math.max(
+                    yield* nextDurable("source_seq", validated.runId, validated.sourceId),
+                    state.sourceSequences.get(key) ?? 0
+                  ) as SourceSeq)
+                if (
+                  !Number.isSafeInteger(sourceSeq) ||
+                  sourceSeq < 0 ||
+                  sourceSeq === Number.MAX_SAFE_INTEGER
+                ) {
+                  return yield* Effect.fail(
+                    error("invalid_event", "journal sequence is outside the allocatable safe integer range")
+                  )
+                }
+                const seq = Math.max(
+                  yield* nextDurable("seq", validated.runId, undefined),
+                  state.sequences.get(validated.runId) ?? 0
+                ) as Seq
+                if (!Number.isSafeInteger(seq) || seq === Number.MAX_SAFE_INTEGER) {
+                  return yield* Effect.fail(
+                    error("invalid_event", "journal sequence is outside the allocatable safe integer range")
+                  )
+                }
+                // Claim the seq NOW, not at commit: a concurrent `emitLossy`
+                // allocates from this floor alone, and `settleCommit` parks
+                // the commit-time raise until the outermost COMMIT.
+                // Re-entering the transaction body is idempotent because the
+                // floor only rises. An abandoned attempt leaves the number
+                // unused, which is a gap: allocation is `MAX(seq) + 1` and
+                // replay is `ORDER BY seq`, so neither reads a gap as anything.
+                raiseSequenceFloor(validated.runId, seq)
+                // Claim the producer sequence at the same allocation seam.
+                // Without this, a lossy emit from the same producer can read
+                // the pre-transaction source floor and reuse this identity
+                // while an enclosing `transact` is still open.
+                raiseSourceSequenceFloor(validated.runId, validated.sourceId, sourceSeq)
+                const queued: QueuedEntry = {
+                  runId: validated.runId,
+                  seq,
+                  eventId: makeEventId(validated.runId, validated.sourceId, sourceSeq),
+                  sourceId: validated.sourceId,
+                  sourceSeq,
+                  emittedAtMs,
+                  eventType: validated.eventType,
+                  payloadJson,
+                  metaJson
+                }
+                const commit = yield* insertOne(queued, owner)
+                return { commit, queued, sourceSeq }
+              }))).pipe(
                 /**
                  * `writer.write` is a retrying transaction: its body replays on
                  * `SQLITE_BUSY(_SNAPSHOT)` and can still abort at COMMIT after the
@@ -1280,10 +1279,9 @@ export const layerWith = (
                  * transaction — so `settle` parks both effects until the
                  * outermost transaction commits.
                  */
-                return Option.isSome(enclosing) ? writeEntry : writer.write(writeEntry)
-              }
+                Effect.tap(({ commit, queued }) => settleCommit(queued, commit))
+              )
             ).pipe(
-              Effect.tap(({ commit, queued }) => settleCommit(queued, commit)),
               Effect.map(({ commit, sourceSeq }) =>
                 commit.inserted
                   ? { _tag: "Accepted", seq: commit.entry.seq, sourceSeq } as const
@@ -1295,15 +1293,25 @@ export const layerWith = (
               Effect.mapError((cause) =>
                 isJournalError(cause) ? cause : error("sink_failed", "durable journal write failed", cause)
               )
-            )))))
+            ))))))
+
+      const emitDurable: Service["emitDurable"] = Effect.fn("Journal.emitDurable")((
+        input: Input,
+        owner: OwnerId
+      ) =>
+        writeDurable(input, owner)
       )
+
+      const emitDurableUnfenced: Service["emitDurableUnfenced"] = Effect.fn("Journal.emitDurableUnfenced")((
+        input: Input
+      ) => writeDurable(input, undefined))
 
       const emitLossy: Service["emitLossy"] = queuedEmit
 
-      const checkpoint: Service["checkpoint"] = Effect.fn("Journal.checkpoint")((
+      const checkpointInternal = (
         checkpointOptions: CheckpointOptions,
-        owner?: OwnerId
-      ) =>
+        owner: OwnerId | undefined
+      ): Effect.Effect<Checkpoint, JournalError> =>
         Effect.gen(function*() {
           yield* Effect.annotateCurrentSpan({
             runId: checkpointOptions.runId,
@@ -1369,7 +1377,11 @@ export const layerWith = (
             )
           )
         })
-      )
+
+      const checkpoint: Service["checkpoint"] = Effect.fn("Journal.checkpoint")((
+        checkpointOptions: CheckpointOptions,
+        owner: OwnerId
+      ) => checkpointInternal(checkpointOptions, owner))
 
       const latestCheckpoint: Service["latestCheckpoint"] = Effect.fn("Journal.latestCheckpoint")((runId: RunId) =>
         Effect.gen(function*() {
@@ -1383,18 +1395,16 @@ export const layerWith = (
             WHERE run_id = ${runId}
             ORDER BY seq DESC
             LIMIT 1
-          `.pipe(Effect.mapError((cause) =>
-            error("unknown", "durable checkpoint read failed", cause)
-          ))
+          `.pipe(Effect.mapError((cause) => error("unknown", "durable checkpoint read failed", cause)))
           const row = rows[0]
           return row === undefined ? Option.none() : Option.some(yield* decodeCheckpointRow(row))
         })
       )
 
-      const compact: Service["compact"] = Effect.fn("Journal.compact")((
+      const compactInternal = (
         compactOptions: CompactOptions,
-        owner?: OwnerId
-      ) =>
+        owner: OwnerId | undefined
+      ): Effect.Effect<Compacted, JournalError> =>
         Effect.gen(function*() {
           yield* Effect.annotateCurrentSpan({
             runId: compactOptions.runId,
@@ -1449,40 +1459,6 @@ export const layerWith = (
                 )
               }
             }
-            // The run/attempt fold's snapshot barrier
-            // (`docs/specs/Concepts/Run State Fold.md`): fold-namespace
-            // history below the checkpoint may only be dropped once a
-            // `flows.run.snapshot` at or after it captures the folded state.
-            // Truncation is refused wholesale rather than skipping the fold
-            // rows, because a partially truncated run would advance the
-            // floor and hide the retained rows behind the read-side
-            // `compacted` guard — exactly the silently shortened history
-            // that guard exists to prevent. The fold is a reader of this
-            // run, so the refusal reuses `reader_behind`.
-            const foldBelow = yield* sql<{ readonly total: number }>`
-              SELECT COUNT(*) AS total FROM flows_journal_events
-              WHERE run_id = ${compactOptions.runId}
-                AND seq < ${checkpointSeq}
-                AND (event_type LIKE 'flows.run.%' OR event_type LIKE 'flows.attempt.%')
-            `
-            if (Number(foldBelow[0]!.total) > 0) {
-              const barrier = yield* sql<{ readonly total: number }>`
-                SELECT COUNT(*) AS total FROM flows_journal_events
-                WHERE run_id = ${compactOptions.runId}
-                  AND seq >= ${checkpointSeq}
-                  AND event_type = 'flows.run.snapshot'
-              `
-              if (Number(barrier[0]!.total) === 0) {
-                return yield* Effect.fail(
-                  new JournalError({
-                    code: "reader_behind",
-                    message:
-                      `the run/attempt fold of run ${compactOptions.runId} still needs sequences below checkpoint ${checkpointSeq}; append a flows.run.snapshot at or after it before compacting`,
-                    checkpointSeq
-                  })
-                )
-              }
-            }
             const doomed = yield* sql<{ readonly total: number }>`
               SELECT COUNT(*) AS total FROM flows_journal_events
               WHERE run_id = ${compactOptions.runId} AND seq < ${checkpointSeq}
@@ -1508,7 +1484,7 @@ export const layerWith = (
             return {
               runId: compactOptions.runId,
               checkpointSeq,
-              deleted: Number(doomed[0]!.total)
+              deleted: Number(doomed[0]?.total ?? 0)
             } satisfies Compacted
           })).pipe(
             Effect.mapError((cause) =>
@@ -1516,7 +1492,11 @@ export const layerWith = (
             )
           )
         })
-      )
+
+      const compact: Service["compact"] = Effect.fn("Journal.compact")((
+        compactOptions: CompactOptions,
+        owner: OwnerId
+      ) => compactInternal(compactOptions, owner))
 
       const compactionPolicy = options.compaction
       const compactionCounts = new Map<RunId, number>()
@@ -1548,19 +1528,16 @@ export const layerWith = (
           }
           const upTo = Number(last) as Seq
           const captured = yield* policy.capture(runId, upTo)
-          yield* checkpoint({ runId, seq: upTo, state: captured })
-          // The fold's snapshot barrier hook runs between the checkpoint
-          // write and the compact, so the snapshot set sequences after the
-          // floor and satisfies `compact`'s `flows.run.snapshot` barrier
-          // (`docs/specs/Concepts/Run State Fold.md`). It appends through
-          // this journal on purpose; `compactingRuns` keeps those
-          // settlements from re-triggering compaction while this attempt is
-          // in flight, and the tail count below absorbs them into the next
-          // threshold window.
-          if (policy.snapshot !== undefined) {
-            yield* Effect.provideService(policy.snapshot(runId), Journal, service)
-          }
-          yield* compact({ runId, upTo })
+          // The policy is the journal's OWN post-commit maintenance, not a
+          // caller's mutating entrypoint: it owns no run and holds no fence,
+          // so it drives the internal channel. The attempt only ever
+          // truncates below a tail the run's own commits produced, a retry is
+          // idempotent (a re-attempt after a reclaim compacts the same
+          // committed prefix the live owner also sees), and every failure is
+          // damped below — never surfaced to the emit that crossed the
+          // threshold.
+          yield* checkpointInternal({ runId, seq: upTo, state: captured }, undefined)
+          yield* compactInternal({ runId, upTo }, undefined)
           compactionCounts.set(runId, yield* countEntries(runId))
         }).pipe(
           Effect.catchCause((cause) =>
@@ -1767,16 +1744,13 @@ export const layerWith = (
           )(projection, streamOptions)
         )
 
-      // Bound before `policyCompact` ever runs: the snapshot hook receives
-      // this very journal in context, so its snapshot set lands in the same
-      // event stream the compact call is about to truncate.
-      const service = makeJournal({
+      return makeJournal({
         emitLossy,
         emitDurable,
+        emitDurableUnfenced,
         transact,
         stream,
         entries: readPage,
-        runs,
         changes: PubSub.subscribe(changes),
         project,
         flush: Effect.fn("Journal.flush")(() =>
@@ -1788,42 +1762,5 @@ export const layerWith = (
         latestCheckpoint,
         compact
       })
-      return service
     })
-  )
-
-/**
- * Provides the SQLite-backed journal over the `Consensus` strategy in
- * context, defaulting to `SqlConsensus` over the same database when none is
- * provided.
- *
- * `emitLossy` validates and admits telemetry to the non-blocking queue;
- * `emitDurable` allocates and commits inside the database transaction.
- *
- * The fallback mirrors `RunStore.layer`'s: the journal's fenced admission
- * and the store driving the run must consult the SAME strategy, or a grant
- * the store just recorded is invisible to the append's `guard` and a
- * healthy activation fails itself with `fence_lost`
- * (`docs/specs/Concepts/Run State Fold.md`). Use {@link layerWith} to make
- * the strategy an explicit, type-checked requirement.
- *
- * @category layers
- * @since 0.1.0
- */
-export const layer = (
-  options: SqlJournalOptions
-): Layer.Layer<Journal, JournalError, DurableWriter | SqlClient.SqlClient> =>
-  layerWith(options).pipe(
-    Layer.provide(
-      Layer.effect(
-        Consensus,
-        Effect.gen(function*() {
-          const injected = yield* Effect.serviceOption(Consensus)
-          if (Option.isSome(injected)) {
-            return injected.value
-          }
-          return yield* SqlConsensus.make
-        })
-      )
-    )
   )
