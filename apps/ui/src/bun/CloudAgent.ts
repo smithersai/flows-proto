@@ -180,25 +180,12 @@ export const createCloudAgent = (
 	 */
 	const scope = Effect.runSync(Scope.make());
 	const turns = Effect.runSync(FiberSet.make<void, unknown>().pipe(Effect.provideService(Scope.Scope, scope)));
-	/*
-	 * Registered by identity, not by run id alone: a turn's teardown runs after
-	 * `cancel` already dropped it, and by then the same run id may hold the
-	 * turn that replaced it. Deleting by run id evicted that live turn, leaving
-	 * it uncancellable (`not-found`) and a second `start` for it permitted.
-	 */
-	interface TurnEntry {
-		fiber?: Fiber.Fiber<void, unknown>;
-	}
-	const activeTurns = new Map<string, TurnEntry>();
+	const activeTurns = new Map<string, Fiber.Fiber<void, unknown>>();
 	return {
 		start: (request) => {
 			if (activeTurns.has(request.runId)) {
 				return { status: "error", message: "That Smithers turn is already running." };
 			}
-			// Registered before the fork so a turn that settles without ever
-			// suspending deregisters itself instead of leaving a stale entry.
-			const entry: TurnEntry = {};
-			activeTurns.set(request.runId, entry);
 			const turn = Effect.scoped(streamTurn(request, publish, config)).pipe(
 				Effect.catchCause((cause) =>
 					Cause.hasInterruptsOnly(cause)
@@ -212,20 +199,17 @@ export const createCloudAgent = (
 								});
 							}),
 				),
-				Effect.ensuring(
-					Effect.sync(() => {
-						if (activeTurns.get(request.runId) === entry) activeTurns.delete(request.runId);
-					}),
-				),
+				Effect.ensuring(Effect.sync(() => activeTurns.delete(request.runId))),
 			);
-			entry.fiber = Effect.runSync(FiberSet.run(turns, turn));
+			const fiber = Effect.runSync(FiberSet.run(turns, turn));
+			activeTurns.set(request.runId, fiber);
 			return { status: "started" };
 		},
 		cancel: (runId) => {
 			const active = activeTurns.get(runId);
 			if (active === undefined) return { status: "not-found" };
+			Effect.runFork(Fiber.interrupt(active));
 			activeTurns.delete(runId);
-			if (active.fiber !== undefined) Effect.runFork(Fiber.interrupt(active.fiber));
 			return { status: "cancelled" };
 		},
 	};
