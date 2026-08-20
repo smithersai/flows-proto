@@ -47,15 +47,6 @@ export interface TransactionalStorage {
 	/** The StorageApi the persisted collections read and write. */
 	readonly storage: StorageApi;
 	/**
-	 * Open a batch: writes accumulate into a pending delta. Batches nest;
-	 * only the outermost commit writes the envelope.
-	 */
-	readonly beginBatch: () => void;
-	/** Close a batch, committing every write it buffered as ONE envelope write. */
-	readonly commitBatch: () => void;
-	/** Abandon a batch: nothing it buffered reaches the host. */
-	readonly abortBatch: () => void;
-	/**
 	 * Run `work` against a pending delta and commit every write it made as ONE
 	 * envelope write. A throw (or rejection) aborts the batch: no projection of
 	 * it reaches the host.
@@ -227,44 +218,32 @@ export const openTransactionalStorage = async (
 		}
 	}
 
-	let base = new Map<string, string>(Object.entries(entries));
+	const base = new Map<string, string>(Object.entries(entries));
 	let pending: Map<string, string | null> | undefined;
-	let batchDepth = 0;
 
-	const serialize = (next: ReadonlyMap<string, string>): string =>
-		JSON.stringify({ version: ENVELOPE_VERSION, entries: Object.fromEntries(next) });
+	const serialize = (): string =>
+		JSON.stringify({ version: ENVELOPE_VERSION, entries: Object.fromEntries(base) });
 
 	/*
 	 * The one commit point. Stage the next envelope, commit it with a single
 	 * atomic write, then clear the stage. A crash before the middle write
 	 * leaves the old envelope authoritative; a crash after it leaves the new
 	 * one; the boot's recovery finishes either direction.
-	 *
-	 * The in-memory mirror adopts `next` only after the host write returns.
-	 * A commit that throws (a quota rejection, a revoked host) must leave the
-	 * mirror on the last committed envelope: otherwise the live session would
-	 * read a projection the host never took, and the NEXT successful commit
-	 * would persist it — the half-applied transition this facade exists to
-	 * prevent.
 	 */
-	const commit = (next: Map<string, string>): void => {
-		const serialized = serialize(next);
+	const commit = (): void => {
+		const serialized = serialize();
 		host.setItem(STAGED_ENVELOPE_STORAGE_KEY, serialized);
 		host.setItem(ENVELOPE_STORAGE_KEY, serialized);
 		host.removeItem(STAGED_ENVELOPE_STORAGE_KEY);
-		base = next;
 	};
 
-	/** The mirror the pending delta would produce, without touching `base`. */
-	const withPending = (): Map<string, string> => {
-		const next = new Map(base);
-		if (pending !== undefined) {
-			for (const [key, value] of pending) {
-				if (value === null) next.delete(key);
-				else next.set(key, value);
-			}
+	const flushPending = (): void => {
+		if (pending === undefined) return;
+		for (const [key, value] of pending) {
+			if (value === null) base.delete(key);
+			else base.set(key, value);
 		}
-		return next;
+		pending = undefined;
 	};
 
 	const storage: StorageApi = {
@@ -277,62 +256,47 @@ export const openTransactionalStorage = async (
 				pending.set(key, value);
 				return;
 			}
-			const next = new Map(base);
-			next.set(key, value);
-			commit(next);
+			base.set(key, value);
+			commit();
 		},
 		removeItem: (key) => {
 			if (pending !== undefined) {
 				pending.set(key, null);
 				return;
 			}
-			const next = new Map(base);
-			next.delete(key);
-			commit(next);
+			base.delete(key);
+			commit();
 		},
 	};
 
-	const beginBatch = (): void => {
-		if (batchDepth === 0) pending = new Map();
-		batchDepth += 1;
-	};
-
-	const commitBatch = (): void => {
-		if (batchDepth === 0) return;
-		batchDepth -= 1;
-		if (batchDepth > 0) return;
-		const next = withPending();
-		// `pending` is cleared before the write so a throwing commit leaves the
-		// facade out of the batch entirely, on the last committed mirror.
-		pending = undefined;
-		commit(next);
-	};
-
-	const abortBatch = (): void => {
-		batchDepth = 0;
-		pending = undefined;
-	};
-
 	const batch = <T>(work: () => T): T => {
-		beginBatch();
+		if (pending !== undefined) return work(); // Nested batches join the outer one.
+		pending = new Map();
+		const settle = (): void => {
+			flushPending();
+			commit();
+		};
+		const abort = (): void => {
+			pending = undefined;
+		};
 		try {
 			const out = work();
 			if (out instanceof Promise) {
 				return out.then(
 					(value) => {
-						commitBatch();
+						settle();
 						return value;
 					},
 					(error: unknown) => {
-						abortBatch();
+						abort();
 						throw error;
 					},
 				) as T;
 			}
-			commitBatch();
+			settle();
 			return out;
 		} catch (error) {
-			abortBatch();
+			abort();
 			throw error;
 		}
 	};
@@ -340,7 +304,7 @@ export const openTransactionalStorage = async (
 	// Persist the freshly recovered/migrated/adopted state as one committed
 	// write. Rewriting identical bytes in the common case costs one write per
 	// boot and keeps every open's end state committed by construction.
-	commit(base);
+	commit();
 
-	return { storage, beginBatch, commitBatch, abortBatch, batch, recovery, quarantinedKeys };
+	return { storage, batch, recovery, quarantinedKeys };
 };

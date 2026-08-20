@@ -1,22 +1,25 @@
-import { openBrowserWASQLiteOPFSDatabase } from "@tanstack/browser-db-sqlite-persistence";
+import {
+	createBrowserWASQLitePersistence,
+	openBrowserWASQLiteOPFSDatabase,
+	persistedCollectionOptions,
+} from "@tanstack/browser-db-sqlite-persistence";
 import { localStorageCollectionOptions } from "@tanstack/db";
-import type { InferSchemaOutput, StorageApi, StorageEventApi } from "@tanstack/db";
+import type { InferSchemaOutput, StorageApi } from "@tanstack/db";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { createCollection, createTransaction } from "@tanstack/react-db";
 import type { Transaction } from "@tanstack/react-db";
 import {
+	APP_SCHEMA_VERSION,
 	enforceSchemaVersion,
 	readRecordedBackend,
 	recordBackend,
 } from "../chain/SchemaVersion";
-import { openSqliteKeyValueStorage } from "../chain/SqliteKeyValueStorage";
 import { openTransactionalStorage } from "../chain/TransactionalStorage";
 import type { TransactionalStorage } from "../chain/TransactionalStorage";
 import { PALETTE_MIRROR_KEY, rememberAppearance, THEME_MIRROR_KEY } from "./Appearance";
 import {
 	BillingAccountSchema,
 	CardSchema,
-	MAX_AGENT_SUGGESTIONS,
 	ChainEventRecordSchema,
 	ConnectorOperationSchema,
 	DEFAULT_PALETTE,
@@ -28,7 +31,6 @@ import {
 	initialWorldDocuments,
 	LocalRepositoryConnectorSchema,
 	MessageSchema,
-	RepoImportStateSchema,
 	SessionSchema,
 	ToastSchema,
 	ToolCallRecordSchema,
@@ -47,7 +49,6 @@ import type {
 	LocalRepositoryConnector,
 	Message,
 	Palette,
-	RepoImportState,
 	RepositoryCapabilityPattern,
 	Session,
 	Toast,
@@ -101,8 +102,7 @@ const preferredTheme = (): Session["theme"] =>
 
 const applyTheme = (theme: Session["theme"]): void => {
 	if (typeof document !== "undefined") document.documentElement.dataset.theme = theme;
-	// Mirrored for the boot script's first paint (§20.4) — what is applied is,
-	// by construction, what the next boot reads.
+	// §20.4: the next boot paints this before the store is even open.
 	rememberAppearance(THEME_MIRROR_KEY, theme);
 };
 
@@ -164,10 +164,7 @@ export type PersistenceMode = "opfs" | "localStorage" | "memory";
 export type PersistenceBackend =
 	| {
 			readonly kind: "opfs";
-			readonly storage: StorageApi;
-			readonly storageEventApi: StorageEventApi;
-			readonly flush: () => Promise<void>;
-			readonly close: () => Promise<void>;
+			readonly persistence: ReturnType<typeof createBrowserWASQLitePersistence>;
 	  }
 	| {
 			readonly kind: "localStorage";
@@ -197,12 +194,6 @@ const memoryStorage = (): StorageApi => {
 		setItem: (key, value) => void data.set(key, value),
 		removeItem: (key) => void data.delete(key),
 	};
-};
-
-/* OPFS has no window `storage` events; localStorage events name another host. */
-const inertStorageEvents: StorageEventApi = {
-	addEventListener: () => {},
-	removeEventListener: () => {},
 };
 
 /*
@@ -311,18 +302,14 @@ const resolvePersistence = async (): Promise<ResolvedPersistence> => {
 	}
 	try {
 		const database = await openOpfsDatabaseWithinBudget(recorded === "opfs" ? OPFS_OPEN_ATTEMPTS : 1);
-		const sqlite = await openSqliteKeyValueStorage(database).catch(async (error) => {
-			await database.close?.();
-			throw error;
-		});
 		if (record !== undefined) stampBackend(record, "opfs");
 		return {
 			backend: {
 				kind: "opfs",
-				storage: sqlite.storage,
-				storageEventApi: inertStorageEvents,
-				flush: sqlite.flush,
-				close: sqlite.close,
+				persistence: createBrowserWASQLitePersistence({
+					database,
+					schemaMismatchPolicy: "reset",
+				}),
 			},
 			mode: "opfs",
 			degraded: false,
@@ -357,8 +344,8 @@ const resolvePersistence = async (): Promise<ResolvedPersistence> => {
  * omitted `storage` to window.localStorage, then to its own in-memory store;
  * the last case has nothing persisted to gate.
  */
-const storageOf = (backend: PersistenceBackend): StorageApi | undefined =>
-	backend.kind === "opfs" ? backend.storage : (backend.storage ?? bootRecordStorage());
+const localStorageOf = (backend: PersistenceBackend): StorageApi | undefined =>
+	backend.kind !== "localStorage" ? undefined : (backend.storage ?? bootRecordStorage());
 
 interface CollectionSpec<TSchema extends StandardSchemaV1> {
 	readonly id: string;
@@ -370,13 +357,22 @@ const createPersistedCollection = <TSchema extends StandardSchemaV1>(
 	backend: PersistenceBackend,
 	spec: CollectionSpec<TSchema>,
 ) => {
+	if (backend.kind === "opfs") {
+		const options = persistedCollectionOptions({
+			id: spec.id,
+			getKey: spec.getKey,
+			persistence: backend.persistence,
+			schema: spec.schema,
+			schemaVersion: APP_SCHEMA_VERSION,
+		});
+		return createCollection({ ...options, schema: spec.schema });
+	}
 	const options = localStorageCollectionOptions({
 		id: spec.id,
 		storageKey: `smithers-mvp.${spec.id}`,
 		getKey: spec.getKey,
 		schema: spec.schema,
 		...(backend.storage === undefined ? {} : { storage: backend.storage }),
-		...(backend.kind === "opfs" ? { storageEventApi: backend.storageEventApi } : {}),
 	});
 	return createCollection({ ...options, schema: spec.schema });
 };
@@ -393,7 +389,6 @@ export interface AppCollections {
 	readonly billingAccounts: ReturnType<typeof createBillingAccountCollection>;
 	readonly toasts: ReturnType<typeof createToastCollection>;
 	readonly watchedRepos: ReturnType<typeof createWatchedReposCollection>;
-	readonly repoImports: ReturnType<typeof createRepoImportCollection>;
 	readonly toolCalls: ReturnType<typeof createToolCallCollection>;
 	readonly chainEvents: ReturnType<typeof createChainEventCollection>;
 }
@@ -426,8 +421,6 @@ export interface AppStore {
 	readonly session: () => Session;
 	readonly worldStateSnapshot: () => WorldStateSnapshot;
 	readonly agentContextSnapshot: () => AgentContextSnapshot;
-	/** Release persistence resources acquired for this store. */
-	readonly dispose?: () => void;
 }
 
 const createSessionCollection = (backend: PersistenceBackend) =>
@@ -507,19 +500,6 @@ const createWatchedReposCollection = (backend: PersistenceBackend) =>
 		schema: WatchedReposSchema,
 	});
 
-/*
- * Directive 5's background import readiness. It is a collection and not a card
- * on purpose: the state is real and belongs in the store, but NOTHING projects
- * it, because the user is meant to feel they are on GitHub rather than watching
- * a mirror job they never asked for.
- */
-const createRepoImportCollection = (backend: PersistenceBackend) =>
-	createPersistedCollection(backend, {
-		id: "app-repo-imports",
-		getKey: (state: RepoImportState) => state.id,
-		schema: RepoImportStateSchema,
-	});
-
 const createToolCallCollection = (backend: PersistenceBackend) =>
 	createPersistedCollection(backend, {
 		id: "app-tool-calls",
@@ -547,7 +527,6 @@ const seed = async (collections: AppCollections): Promise<void> => {
 		collections.billingAccounts.preload(),
 		collections.toasts.preload(),
 		collections.watchedRepos.preload(),
-		collections.repoImports.preload(),
 		collections.toolCalls.preload(),
 		collections.chainEvents.preload(),
 	]);
@@ -628,23 +607,25 @@ const forgetAccountState = (collections: AppCollections): void => {
 		collections.cards,
 		collections.toasts,
 		collections.watchedRepos,
-		collections.repoImports,
 		collections.toolCalls,
-		// The chain journal and the transition journal quote the account's
-		// turns verbatim (§2.4): a tool result or a submitted message naming a
-		// private repository outlives the session otherwise.
 		collections.chainEvents,
 		collections.transitions,
 	]) {
 		const keys = [...(collection as { keys: () => Iterable<string> }).keys()];
 		if (keys.length > 0) (collection as { delete: (keys: string[]) => void }).delete(keys);
 	}
-	// The chip reads this row, so it is RESET rather than deleted: state
-	// "unknown" renders nothing, where a missing row would render a stale shape.
-	if (collections.billingAccounts.get("billing") !== undefined) {
-		const fresh = initialBillingAccount();
+	const reset = initialBillingAccount();
+	if (collections.billingAccounts.get("billing") === undefined) {
+		collections.billingAccounts.insert(reset);
+	} else {
 		collections.billingAccounts.update("billing", (draft) => {
-			Object.assign(draft, fresh);
+			draft.state = reset.state;
+			draft.totalUsd = reset.totalUsd;
+			draft.allowedToStartWork = reset.allowedToStartWork;
+			draft.lifetimeChargedUsd = reset.lifetimeChargedUsd;
+			draft.chargeCount = reset.chargeCount;
+			draft.refreshedAt = reset.refreshedAt;
+			draft.revision = reset.revision;
 		});
 	}
 };
@@ -670,12 +651,13 @@ export const createAppStore = async (
 	 * collection exists, because a collection reads its rows out of storage as
 	 * soon as it is preloaded and TanStack never validates them.
 	 */
-	const persistedLocally = storageOf(resolvedBackend);
+	const persistedLocally = localStorageOf(resolvedBackend);
 	let transactional: TransactionalStorage | undefined;
 	if (persistedLocally !== undefined) {
 		enforceSchemaVersion(persistedLocally);
 		/*
-		 * Ruling A: every backend writes through the same single-blob facade
+		 * Ruling A: the localStorage host has no transaction primitive, so the
+		 * collections write through a single-blob write-ahead facade
 		 * (docs/persistence.md). Open recovers any interrupted commit and
 		 * migrates/quarantines the envelope BEFORE the first collection reads.
 		 */
@@ -696,7 +678,7 @@ export const createAppStore = async (
 				{ id: "app-chain-events", schema: ChainEventRecordSchema },
 			],
 		});
-		resolvedBackend = { ...resolvedBackend, storage: transactional.storage };
+		resolvedBackend = { kind: "localStorage", storage: transactional.storage };
 	}
 	const collections: AppCollections = {
 		sessions: createSessionCollection(resolvedBackend),
@@ -710,13 +692,11 @@ export const createAppStore = async (
 		billingAccounts: createBillingAccountCollection(resolvedBackend),
 		toasts: createToastCollection(resolvedBackend),
 		watchedRepos: createWatchedReposCollection(resolvedBackend),
-		repoImports: createRepoImportCollection(resolvedBackend),
 		toolCalls: createToolCallCollection(resolvedBackend),
 		chainEvents: createChainEventCollection(resolvedBackend),
 	};
 
 	await seed(collections);
-	if (resolvedBackend.kind === "opfs") await resolvedBackend.flush();
 	applyTheme(collections.sessions.get(SESSION_ID)?.theme ?? "light");
 	applyPalette(collections.sessions.get(SESSION_ID)?.palette ?? DEFAULT_PALETTE);
 
@@ -770,7 +750,6 @@ export const createAppStore = async (
 				collections.billingAccounts.utils.acceptMutations(transaction),
 				collections.toasts.utils.acceptMutations(transaction),
 				collections.watchedRepos.utils.acceptMutations(transaction),
-				collections.repoImports.utils.acceptMutations(transaction),
 				collections.toolCalls.utils.acceptMutations(transaction),
 				collections.chainEvents.utils.acceptMutations(transaction),
 			]);
@@ -780,28 +759,8 @@ export const createAppStore = async (
 		 * so every projection of the transition changes or none does
 		 * (docs/persistence.md). The OPFS backend keeps SQLite's own WAL.
 		 */
-		if (transactional === undefined) {
-			await fanOut();
-			return;
-		}
-		/*
-		 * The one atomic commit point per logical transition: between begin and
-		 * commit every collection's write accumulates into a single envelope
-		 * commit, so every projection of the transition changes or none does
-		 * (docs/persistence.md). The commit runs synchronously as the fan-out
-		 * settles — deferring it even a microtask would leave the transaction
-		 * uncommitted when the next dispatch mutates, which TanStack answers
-		 * with an optimistic rollback/replay that revisits a revision.
-		 */
-		transactional.beginBatch();
-		try {
-			await fanOut();
-			transactional.commitBatch();
-			if (resolvedBackend.kind === "opfs") await resolvedBackend.flush();
-		} catch (error) {
-			transactional.abortBatch();
-			throw error;
-		}
+		if (transactional !== undefined) await transactional.batch(fanOut);
+		else await fanOut();
 	};
 
 	const dispatch = (transition: AppTransition): Transaction => {
@@ -837,9 +796,6 @@ export const createAppStore = async (
 					collections.sessions.update(SESSION_ID, (draft) => {
 						draft.draft = "";
 						draft.phase = "responding";
-						// The agent's follow-ups belonged to the answer above; the
-						// conversation has moved past it, so they go with it.
-						draft.agentSuggestions = [];
 						draft.revision = revision;
 					});
 					break;
@@ -919,8 +875,6 @@ export const createAppStore = async (
 					}
 					collections.sessions.update(SESSION_ID, (draft) => {
 						draft.phase = "responding";
-						// The answer that carried them is being re-run.
-						draft.agentSuggestions = [];
 						draft.revision = revision;
 					});
 					break;
@@ -1014,7 +968,6 @@ export const createAppStore = async (
 						draft.phase = "idle";
 						draft.composerOwner = "user";
 						draft.maximizedCardId = null;
-						draft.agentSuggestions = [];
 						draft.revision = revision;
 					});
 					break;
@@ -1043,7 +996,6 @@ export const createAppStore = async (
 						draft.phase = "idle";
 						draft.composerOwner = "user";
 						draft.maximizedCardId = null;
-						draft.agentSuggestions = [];
 						draft.revision = revision;
 					});
 					break;
@@ -1205,38 +1157,6 @@ export const createAppStore = async (
 					break;
 				}
 
-				case "repos.catalog.loaded": {
-					/*
-					 * The catalog rides on the watched row because it answers the
-					 * same question from the other side: these are the repositories
-					 * the account HAS, those are the ones it watches. A row that
-					 * does not exist yet is created empty-selection — reading the
-					 * catalog is not choosing anything.
-					 */
-					const available = transition.available.map((entry) => ({ ...entry }));
-					if (collections.watchedRepos.get("watched") === undefined) {
-						collections.watchedRepos.insert({
-							id: "watched",
-							available,
-							selected: null,
-							selectedAt: null,
-							via: null,
-							updatedAt: createdAt,
-							revision,
-						});
-					} else {
-						collections.watchedRepos.update("watched", (draft) => {
-							draft.available = available;
-							draft.updatedAt = createdAt;
-							draft.revision = revision;
-						});
-					}
-					collections.sessions.update(SESSION_ID, (draft) => {
-						draft.revision = revision;
-					});
-					break;
-				}
-
 				case "watched.replaced": {
 					const watched: WatchedRepos = {
 						id: "watched",
@@ -1286,19 +1206,6 @@ export const createAppStore = async (
 				case "surface.changed":
 					collections.sessions.update(SESSION_ID, (draft) => {
 						draft.surface = transition.surface;
-						draft.revision = revision;
-					});
-					break;
-
-				case "repository.selected":
-					collections.sessions.update(SESSION_ID, (draft) => {
-						draft.selectedRepository = transition.repo;
-						draft.revision = revision;
-					});
-					break;
-				case "repository.tab.changed":
-					collections.sessions.update(SESSION_ID, (draft) => {
-						draft.repositoryTab = transition.tab;
 						draft.revision = revision;
 					});
 					break;
@@ -1452,22 +1359,6 @@ export const createAppStore = async (
 					});
 					break;
 
-				case "repo.import.progress":
-					// Readiness, not a card: directive 5 makes the import an
-					// implementation detail, so this row exists to be READ (by the
-					// seams' honest degradation) and never to be rendered.
-					if (collections.repoImports.get(transition.state.id) === undefined) {
-						collections.repoImports.insert(transition.state);
-					} else {
-						collections.repoImports.update(transition.state.id, (draft) => {
-							Object.assign(draft, transition.state);
-						});
-					}
-					collections.sessions.update(SESSION_ID, (draft) => {
-						draft.revision = revision;
-					});
-					break;
-
 				case "card.upsert": {
 					const existing = collections.cards.get(transition.card.id);
 					/*
@@ -1575,12 +1466,13 @@ export const createAppStore = async (
 					 * "unavailable" is not that: it means the seam could not answer,
 					 * and the last known state stays honest-but-stale.
 					 */
-					if (
+					const accountChanged =
+						transition.state === "signed-in" &&
 						existing.state === "signed-in" &&
-						(transition.state === "signed-out" ||
-							// A direct account replacement (Alice's cookie swapped for
-							// Bob's between loads) scrubs Alice before Bob publishes.
-							(transition.state === "signed-in" && transition.login !== existing.login))
+						existing.login !== transition.login;
+					if (
+						(existing.state === "signed-in" && transition.state === "signed-out") ||
+						accountChanged
 					) {
 						forgetAccountState(collections);
 					}
@@ -1767,25 +1659,11 @@ export const createAppStore = async (
 					const existingCard = collections.cards.get(RECO_CARD_ID);
 					let highest = digestOrdinal;
 					for (const card of collections.cards.values()) highest = Math.max(highest, card.ordinal);
-					/*
-					 * An ANSWERED recommendation stays answered when the same one
-					 * comes back. The digest re-reads on every foreground (the
-					 * cross-tab identity re-read calls loadFirstRunReco), and this
-					 * assignment used to reset the card to "active" — so leaving the
-					 * window and returning made an accepted recommendation
-					 * answerable again, with its accept/edit/dismiss controls back.
-					 * A DIFFERENT recommendation is a new question and is active.
-					 */
-					const sameRecommendation =
-						existingCard?.kind === "reco" &&
-						existingCard.payload.recommendation !== null &&
-						transition.recommendation !== null &&
-						existingCard.payload.recommendation.id === transition.recommendation.id;
 					const card: Card = {
 						id: RECO_CARD_ID,
 						kind: "reco",
 						title: "What I found",
-						status: existingCard?.status === "acted" && sameRecommendation ? "acted" : "active",
+						status: "active",
 						createdAt: existingCard?.createdAt ?? createdAt,
 						ordinal:
 							existingCard !== undefined && !transition.bump
@@ -1887,31 +1765,6 @@ export const createAppStore = async (
 					}
 					collections.sessions.update(SESSION_ID, (draft) => {
 						draft.draft = "";
-						draft.agentSuggestions = [];
-						draft.revision = revision;
-					});
-					break;
-				}
-
-				case "agent.backend.changed":
-					collections.sessions.update(SESSION_ID, (draft) => {
-						draft.agentBackend = transition.backend;
-						draft.revision = revision;
-					});
-					break;
-
-				case "agent.suggestions.proposed": {
-					collections.sessions.update(SESSION_ID, (draft) => {
-						draft.agentSuggestions = transition.suggestions.slice(0, MAX_AGENT_SUGGESTIONS).map((suggestion) =>
-							suggestion.kind === "question"
-								? { kind: "question", label: suggestion.label }
-								: {
-										kind: "flow",
-										label: suggestion.label,
-										flow: suggestion.flow,
-										...(suggestion.args === undefined ? {} : { args: suggestion.args }),
-									},
-						);
 						draft.revision = revision;
 					});
 					break;
@@ -1923,27 +1776,9 @@ export const createAppStore = async (
 						role: "smithers",
 						text: transition.text,
 						act: transition.text,
-						// An act with nothing to add carries no detail, and a row
-						// with no detail has nothing to open: an honest empty state.
-						...(transition.detail === undefined || transition.detail === ""
-							? {}
-							: { actDetail: transition.detail, actExpanded: false }),
 						status: "complete",
 						createdAt,
 						ordinal: nextOrdinal(collections),
-					});
-					collections.sessions.update(SESSION_ID, (draft) => {
-						draft.revision = revision;
-					});
-					break;
-				}
-
-				case "message.act.toggled": {
-					const row = collections.messages.get(transition.id);
-					// Only a row that HAS a detail has something to open.
-					if (row === undefined || row.actDetail === undefined) return;
-					collections.messages.update(transition.id, (draft) => {
-						draft.actExpanded = draft.actExpanded !== true;
 					});
 					collections.sessions.update(SESSION_ID, (draft) => {
 						draft.revision = revision;
@@ -1992,37 +1827,37 @@ export const createAppStore = async (
 				}
 			}
 
-			collections.transitions.insert({
-				id: `transition-${revision}`,
-				revision,
-				actor: transition.actor,
-				type: transition.type,
-				payload: transitionPayload(transition),
-				createdAt,
-			});
-			/*
-			 * Retention (docs/persistence.md): the log collections compact inside
-			 * the appending transaction, so the bound is part of the atomic commit
-			 * and a crash can never leave a half-swept log.
-			 */
-			const staleTransitions = staleLogKeys(
-				[...collections.transitions.values()],
-				MAX_TRANSITION_RECORDS,
-				(record) => record.revision,
-			);
-			if (staleTransitions.length > 0) collections.transitions.delete(staleTransitions);
-			const staleToolCalls = staleLogKeys(
-				[...collections.toolCalls.values()],
-				MAX_TOOL_CALL_RECORDS,
-				(record) => record.createdAt,
-			);
-			if (staleToolCalls.length > 0) collections.toolCalls.delete(staleToolCalls);
-			const staleChainEvents = staleLogKeys(
-				[...collections.chainEvents.values()],
-				MAX_CHAIN_EVENT_RECORDS,
-				(record) => record.createdAt,
-			);
-			if (staleChainEvents.length > 0) collections.chainEvents.delete(staleChainEvents);
+		collections.transitions.insert({
+			id: `transition-${revision}`,
+			revision,
+			actor: transition.actor,
+			type: transition.type,
+			payload: transitionPayload(transition),
+			createdAt,
+		});
+		/*
+		 * Retention (docs/persistence.md): the log collections compact inside
+		 * the appending transaction, so the bound is part of the atomic commit
+		 * and a crash can never leave a half-swept log.
+		 */
+		const staleTransitions = staleLogKeys(
+			[...collections.transitions.values()],
+			MAX_TRANSITION_RECORDS,
+			(record) => record.revision,
+		);
+		if (staleTransitions.length > 0) collections.transitions.delete(staleTransitions);
+		const staleToolCalls = staleLogKeys(
+			[...collections.toolCalls.values()],
+			MAX_TOOL_CALL_RECORDS,
+			(record) => record.createdAt,
+		);
+		if (staleToolCalls.length > 0) collections.toolCalls.delete(staleToolCalls);
+		const staleChainEvents = staleLogKeys(
+			[...collections.chainEvents.values()],
+			MAX_CHAIN_EVENT_RECORDS,
+			(record) => record.createdAt,
+		);
+		if (staleChainEvents.length > 0) collections.chainEvents.delete(staleChainEvents);
 		});
 
 		return transaction;
@@ -2094,6 +1929,5 @@ export const createAppStore = async (
 		session,
 		worldStateSnapshot,
 		agentContextSnapshot,
-		dispose: resolvedBackend.kind === "opfs" ? () => void resolvedBackend.close() : undefined,
 	};
 };
