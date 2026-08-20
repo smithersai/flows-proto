@@ -476,6 +476,9 @@ describe("vitest coverage isolation conformance", () => {
     // directives that the earlier literal-`v8 ignore` grep never saw.
     const directive = /(?:istanbul|[cv]8|node:coverage)\s+ignore\s+(if|else|next|file|start|stop)(?=\W|$)/g
     const allowlist: Record<string, number> = {
+      // The agent package's former hints (FlowEngineLike's canonicalization
+      // mappers and AgentSession's process-loss fallbacks) were removed with
+      // the code that needed them in 81b218ce7; the entries leave with them.
       // Canonical capture rejects accessor properties before recursively
       // freezing the captured object graph, so the descriptor walk only sees
       // data properties in both identity implementations.
@@ -492,10 +495,6 @@ describe("vitest coverage isolation conformance", () => {
       // `observeReads` already failed the run for the same glob when no
       // FileSystem was composed.
       "engine-store/src/PlanScheduler.ts": 9,
-      // Fold rows are decoded from committed `payload_json`, so a value that
-      // fails to re-encode as JSON is unreachable; the mapper keeps the
-      // defect legible for a corrupted journal.
-      "engine-store/src/Fold.ts": 1,
       // One `else` arm in recursive enumeration: special entries (symlinks,
       // sockets) are neither materializable leaves nor prunable scaffolding
       // and are intentionally discarded.
@@ -504,17 +503,34 @@ describe("vitest coverage isolation conformance", () => {
       // they reach the sandbox.
       "engine-store/src/WorkspaceSandbox.ts": 1,
       "engine-store/src/internal/RunCoordinator.ts": 1,
-      // The successful release transition falls through with no further work;
-      // only the refused-transition arm has cleanup behavior to exercise.
+      // `releaseOwned`'s successful arm is the generator's terminal
+      // fallthrough; V8 emits no executable location for that synthetic
+      // branch, so the `else` on the owned transition can never be covered.
       "engine-store/src/internal/RunDriver.ts": 1,
       "engine/src/FlowEngine/make.ts": 1,
-      // Harness fallbacks translate impossible states at already-validated
-      // schema, sandbox, transcript, and structured-output boundaries. Each
-      // directive is scoped to the single defensive arm it documents.
+      // `fenced`'s `info` and `body` groups are mandatory (outside any
+      // alternation or quantifier), so they participate in every match; the
+      // fallbacks only discharge the optional type on
+      // `RegExpMatchArray.groups`.
       "harness/src/Cell.ts": 2,
+      // `withDefaults` fills each declared limit from `defaultLimits`, so the
+      // optional chains and coalesces never take their fallbacks; they only
+      // discharge the optional types on `Sandbox.Limits`.
       "harness/src/QuickJSSandbox.ts": 3,
+      // The `Function` constructor rejects unparseable source with a
+      // `SyntaxError` and raises nothing else, so `cause` is always an
+      // `Error`; the `String` arm only discharges the `unknown` a `catch`
+      // binding is typed as.
       "harness/src/Sandbox.ts": 1,
+      // Both callers pass an `Error` (`JSON.parse` throws `SyntaxError`;
+      // `Schema.decodeUnknownEffect` fails with `SchemaError`, which extends
+      // `Error`), so the `String` arm only discharges the `unknown` a `catch`
+      // binding and a schema failure channel are typed as.
       "harness/src/StructuredOutput.ts": 1,
+      // The first pass already ran the decoders over every entry of the same
+      // `events` array and returned on failure, and `decode` is pure, so
+      // re-decoding a surviving entry cannot fail; the branches exist
+      // because `Result` has no way to carry that proof.
       "harness/src/Transcript.ts": 2,
       "journal/src/SqlJournal.ts": 1,
       // `FileSet.Entry` is a closed two-member union, so the final
@@ -535,14 +551,8 @@ describe("vitest coverage isolation conformance", () => {
       // `apply` trap fires; the target body itself is unreachable by
       // construction because every application enters the trap.
       "plan/src/Planned.ts": 1,
-      "run-store/src/AttemptStore.ts": 3,
-      // The malformed-history battery covers the fold's defensive arms
-      // directly; the remaining directives name structurally unreachable
-      // read-path fallbacks (pagination beyond the 256-entry page, the
-      // compacted disambiguation, the empty page, and `Journal.project`'s
-      // seeded initial state).
-      "run-store/src/Fold.ts": 5,
-      "run-store/src/migrations/0003_fold_snapshots.ts": 2,
+      "run-store/src/AttemptStore.ts": 1,
+      "run-store/src/RunStore.ts": 1,
       "step-cache/src/CacheStore.ts": 1
     }
     const sourceFiles = (directory: string): Array<string> => {
