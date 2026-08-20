@@ -433,7 +433,7 @@ return { intent: "complete", output: kept.key }`
     const outcome = await drive(
       Effect.gen(function*() {
         const services = yield* Effect.context<
-          FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
+          Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
         >()
         return yield* collect({
           flows: [StandardFlows.clock(services)],
@@ -462,7 +462,7 @@ return { intent: "complete", output: String(waited.waitedSeconds) }`
       Effect.gen(function*() {
         const engine = yield* FlowRuntime.FlowRuntime
         const services = yield* Effect.context<
-          FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
+          Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
         >()
         const immediateClock = FlowRuntime.FlowRuntime.of({
           ...engine,

@@ -752,8 +752,12 @@ export const make = (
         }
         const seat = yield* seats.resolve(seatId)
         const steering = yield* Notifications.make({ runId: payload.runId, lineageId: payload.runId })
+        // The three services a durable flow body already holds, captured
+        // together: `StandardFlows.clock` hands them back to a `DurableClock`
+        // sleep, whose deferred key is hashed, so `Crypto` travels with the
+        // runtime rather than being substituted at the binding.
         const engineServices = yield* Effect.context<
-          FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
+          Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
         >()
         const tags: Array<string> = []
         // The trail is buffered in memory and written by a fiber of its own,
