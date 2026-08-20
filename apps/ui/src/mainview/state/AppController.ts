@@ -317,6 +317,13 @@ export interface AppController {
 	readonly adminQueueApprove: (login: string) => Promise<string | void>;
 	readonly adminFeedback: () => Promise<string | void>;
 	readonly adminHealth: () => Promise<string | void>;
+	/**
+	 * Close the controller's scope: stop the workflow pumps and release
+	 * everything the controllers opened (the agent subscription, the
+	 * cross-tab identity listeners, the identity BroadcastChannel). Nothing a
+	 * controller opened outlives it.
+	 */
+	readonly dispose: () => void;
 }
 
 /**
@@ -996,8 +1003,13 @@ export const createAppController = (
 	 * platform proxy, constructed on the shared seam context (the tapped
 	 * fetch, the store, the transcript-ordinal door).
 	 */
+	/*
+	 * The domain seams ride boundedFetch (Ruling B): every request/response
+	 * seam call carries the seam deadline, and the tap plus 401 recovery still
+	 * apply because boundedFetch wraps the tapped http.
+	 */
 	const seamCtx: SeamContext = {
-		http,
+		http: (input, init) => ctx.boundedFetch(input, init),
 		baseUrl,
 		store,
 		dispatch: store.dispatch,
@@ -4997,6 +5009,14 @@ export const createAppController = (
 
 	watchIdentityAcrossTabs();
 
+	const dispose = (): void => {
+		// The pumps first (they hold EventSources and timers), then the
+		// registered finalizers (the agent subscription, identity listeners,
+		// the BroadcastChannel). Both halves are idempotent.
+		ctx.stopWorkflowPumps();
+		ctx.dispose();
+	};
+
 	const runCommand = (name: string): boolean => {
 		if (commands.find(name) === undefined) return false;
 		void commands.run(name).then((outcome) => surfaceCommandFailure(name, outcome));
@@ -5124,5 +5144,6 @@ export const createAppController = (
 		adminQueueApprove,
 		adminFeedback,
 		adminHealth,
+		dispose,
 	};
 };
