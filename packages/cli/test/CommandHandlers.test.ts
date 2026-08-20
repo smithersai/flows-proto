@@ -42,9 +42,9 @@ const json = Effect.fnUntraced(function*(args: ReadonlyArray<string>) {
 const testControl = TestControl.layer({ now: () => 0 })
 const services = Layer.merge(TestConsole.layer, Output.layer)
 
-const run = <A, E, R, ControlError>(
+const run = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
-  control: Layer.Layer<ControlService.Control, ControlError>
+  control: Layer.Layer<ControlService.Control, unknown, unknown>
 ) =>
   Effect.runPromise(
     effect.pipe(
