@@ -10,8 +10,9 @@
  * - **the resume boundary** — `graded` and `cleaned` are skipped, everything
  *   else re-runs, and the order is the seeded draw rather than the dataset's;
  * - **the report** — the scoreboard, the Wilson interval, the per-repo
- *   breakdown, the extrapolation, the pinned-five comparison and the
- *   append-only checkpoint log.
+ *   breakdown, the extrapolation, the pinned-five comparison, the exclusions
+ *   `lib/excluded.mjs` names and the two denominators that travel with them,
+ *   and the append-only checkpoint log.
  *
  * `fullbench-dryrun.sh` proves the other half — real pull, real extract, real
  * delete, real kill — for one 4 MB image. This file spends nothing, needs no
@@ -140,6 +141,57 @@ try {
     billCents.stdout.trim(),
     "350",
     "the gate the driver reads before every launch sees both attempts"
+  )
+
+  // -----------------------------------------------------------------------
+  // The scoreboard obeys `lib/excluded.mjs`, and prints both denominators
+  // -----------------------------------------------------------------------
+  // This report reads the same ledgers `compare-runs.mjs` does, so an instance
+  // whose verdict is a statement about the grading environment has to be
+  // outside its rate too — and the raw count has to be printed beside the
+  // scored one, or a reader has no way to tell which number they were handed.
+  const scopedPath = join(temporary, "scoped.jsonl")
+  writeFileSync(
+    scopedPath,
+    `${
+      [
+        JSON.stringify({ kind: "header", at: NOW, subject: "s1", jobs: 2 }),
+        JSON.stringify({ kind: "instance", id: "a__1", state: "graded", at: NOW + 1, verdict: "resolved" }),
+        JSON.stringify({ kind: "instance", id: "a__2", state: "graded", at: NOW + 2, verdict: "unresolved" }),
+        // The pair the r92 report rules out by name: graded, and graded on the
+        // environment rather than on a harness.
+        JSON.stringify({ kind: "instance", id: "psf__requests-1766", state: "graded", at: NOW + 3, verdict: "unresolved" }),
+        JSON.stringify({ kind: "instance", id: "psf__requests-2317", state: "graded", at: NOW + 4, verdict: "unresolved" })
+      ].join("\n")
+    }\n`
+  )
+  const scoped = summarise({ manifest: scopedPath, now: NOW + HOUR, total: 4 })
+  assert.equal(scoped.graded, 4, "every row was graded")
+  assert.equal(scoped.scoredGraded, 2, "the two named rows are outside the scored denominator")
+  assert.equal(scoped.resolved, 1)
+  assert.equal(scoped.scoredResolved, 1, "neither excluded row resolved, so the numerator is unchanged")
+  assert.equal(scoped.excluded.length, 2)
+  assert.ok(Math.abs(scoped.rate.point - 0.25) < 1e-12, `raw rate was ${scoped.rate.point}`)
+  assert.ok(Math.abs(scoped.scoredRate.point - 0.5) < 1e-12, `scored rate was ${scoped.scoredRate.point}`)
+  const scopedReport = renderReport(scoped)
+  assert.match(scopedReport, /\*\*Resolve rate 50\.0%\*\* over 2 scored of 4 run/, "both denominators, one sentence")
+  assert.match(scopedReport, /over all 4 graded, excluded rows included, it is 25\.0%/)
+  assert.match(scopedReport, /\| \*\*scored\*\* \| \*\*2\*\* \| of 4 graded \|/)
+  assert.match(scopedReport, /## Excluded from the scoreboard, by name/)
+  assert.match(scopedReport, /psf__requests-1766/)
+  for (const row of scoped.excluded) {
+    assert.ok(row.cause.length > 0, `${row.id} carries no cause`)
+  }
+
+  // A population that excludes nothing reads exactly as it did before: same
+  // sentence, one denominator, no section.
+  const plain = summarise({ manifest: billPath, now: NOW + HOUR, total: 1 })
+  assert.equal(plain.excluded.length, 0)
+  assert.equal(plain.scoredGraded, plain.graded)
+  assert.match(renderReport(plain), /\*\*Resolve rate 100\.0%\*\* \(95% Wilson/)
+  assert.ok(
+    !renderReport(plain).includes("Excluded from the scoreboard"),
+    "nothing excluded means no section"
   )
 
   // -----------------------------------------------------------------------

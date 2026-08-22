@@ -12,7 +12,7 @@
  * same bytes, which is what makes `fixtures/check-fullbench-report.mjs` able to
  * pin it.
  *
- * Three things it computes that are worth stating outright:
+ * Four things it computes that are worth stating outright:
  *
  * - **The resolve rate carries a 95% Wilson interval.** At 25 of 500 graded, 8
  *   resolved is a rate somewhere between 17% and 52%, and a checkpoint that
@@ -26,6 +26,13 @@
  *   disk. "Modelled" is the mean instance wall divided by the concurrency,
  *   which is what the run would do if nothing ever stopped it. The truth is
  *   between them and the report does not pretend to pick.
+ * - **Both denominators travel together.** `lib/excluded.mjs` names the
+ *   instances whose verdicts are statements about the grading environment
+ *   rather than about a harness. This is a scoreboard over the same ledgers
+ *   `compare-runs.mjs` reads, so it obeys the same rule they do: the rate is
+ *   over the scored population and every sentence carrying it also carries the
+ *   raw count. When a population excludes nothing the numbers are identical and
+ *   the report reads exactly as it did before.
  * - **The prefix is a random sample.** Instances run in the seeded draw order,
  *   so the first *k* graded are a uniform draw from the 500 and extrapolating
  *   from them is sound. In dataset order it would not be — the first 231 rows
@@ -39,6 +46,7 @@
 import { execFileSync } from "node:child_process"
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { denominatorLabel, denominators, renderExclusions } from "./lib/excluded.mjs"
 import { read, readRows } from "./lib/fullbench-manifest.mjs"
 
 const rigRoot = import.meta.dirname
@@ -157,6 +165,16 @@ export const summarise = (options) => {
   const meanWall = walls.length === 0 ? undefined : wallTotal / walls.length
 
   const rate = wilson(resolved.length, graded.length)
+  // The scored population, which is the graded one minus whatever
+  // `lib/excluded.mjs` names. This report is a scoreboard over the same ledgers
+  // `compare-runs.mjs` and `compare-arms.mjs` read, so it obeys the same rule
+  // they do: an instance whose verdict is a statement about the grading
+  // environment is outside every rate, and both denominators are printed.
+  // Nothing already here is re-derived — every existing number is the raw one
+  // and now says so — because the raw count is half of what has to be printed.
+  const scoring = denominators(graded.map((state) => state.id))
+  const scoredResolved = resolved.filter((state) => !scoring.excluded.some((row) => row.id === state.id))
+  const scoredRate = wilson(scoredResolved.length, scoring.scored)
   const remaining = total - graded.length
   const jobs = header.jobs ?? 2
 
@@ -207,6 +225,10 @@ export const summarise = (options) => {
     inFlight: inFlight.length,
     remaining,
     rate,
+    scoredGraded: scoring.scored,
+    scoredResolved: scoredResolved.length,
+    scoredRate,
+    excluded: scoring.excluded,
     rateExcludingRigFaults: evalErrors.length === 0
       ? undefined
       : wilson(resolved.length, graded.length - evalErrors.length),
@@ -289,6 +311,9 @@ export const renderReport = (summary) => {
   lines.push(`| empty patch | ${summary.emptyPatch} | ${share(summary.emptyPatch)} |`)
   lines.push(`| eval error | ${summary.evalErrors} | ${share(summary.evalErrors)} |`)
   lines.push(`| **graded** | **${summary.graded}** | of ${summary.total} |`)
+  if (summary.excluded.length > 0) {
+    lines.push(`| **scored** | **${summary.scoredGraded}** | of ${summary.graded} graded |`)
+  }
   lines.push(`| failed before a verdict | ${summary.failed} | |`)
   lines.push(`| in flight | ${summary.inFlight} | |`)
   lines.push(`| not started | ${summary.remaining - summary.inFlight - summary.failed} | |`)
@@ -298,8 +323,18 @@ export const renderReport = (summary) => {
       // A rate over nothing is not 0%, and printing it as one is how a report
       // that has graded nothing gets quoted as having graded a failure.
       ? "**No instance has been graded yet**, so there is no rate to report."
-      : `**Resolve rate ${percent(summary.rate.point)}** `
+      : summary.excluded.length === 0
+      ? `**Resolve rate ${percent(summary.rate.point)}** `
         + `(95% Wilson ${percent(summary.rate.low)}–${percent(summary.rate.high)}, n=${summary.graded}).`
+      // Both denominators, in the same sentence, which is the only way this rig
+      // states a rate over a population something was excluded from. See
+      // `lib/excluded.mjs`.
+      : `**Resolve rate ${percent(summary.scoredRate.point)}** over `
+        + `${denominatorLabel({ scored: summary.scoredGraded, raw: summary.graded })} `
+        + `(95% Wilson ${percent(summary.scoredRate.low)}–${percent(summary.scoredRate.high)}, `
+        + `n=${summary.scoredGraded}); over all ${summary.graded} graded, excluded rows included, it is `
+        + `${percent(summary.rate.point)} `
+        + `(${percent(summary.rate.low)}–${percent(summary.rate.high)}).`
   )
   if (summary.rateExcludingRigFaults !== undefined) {
     lines.push(
@@ -309,6 +344,7 @@ export const renderReport = (summary) => {
         + `(${percent(summary.rateExcludingRigFaults.low)}–${percent(summary.rateExcludingRigFaults.high)}).`
     )
   }
+  lines.push(...renderExclusions(summary.excluded))
   lines.push("")
 
   lines.push("## Cost and wall clock", "")
@@ -364,6 +400,12 @@ export const renderReport = (summary) => {
       `| --- | ---: | ---: | ---: |`,
       `| pinned five, one attempt | ${summary.pinnedGraded} | ${summary.pinnedResolved} | ${percent(pinnedRate.point)} |`,
       `| all graded, one attempt | ${summary.graded} | ${summary.resolved} | ${percent(summary.rate.point)} |`,
+      ...(summary.excluded.length === 0
+        ? []
+        : [
+          `| all scored, one attempt | ${summary.scoredGraded} | ${summary.scoredResolved} `
+          + `| ${percent(summary.scoredRate.point)} |`
+        ]),
       ""
     )
     lines.push(
@@ -490,7 +532,8 @@ const main = () => {
     }
   }
   process.stdout.write(
-    `fullbench-report.mjs: ${summary.graded}/${summary.total} graded, ${summary.resolved} resolved, `
+    `fullbench-report.mjs: ${summary.graded}/${summary.total} graded, `
+      + `${summary.scoredResolved} resolved of ${denominatorLabel({ scored: summary.scoredGraded, raw: summary.graded })}, `
       + `${money(summary.spentUsd)} spent\n`
   )
 }
