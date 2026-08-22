@@ -3,10 +3,10 @@
  *
  *   node lib/strip-modes.mjs <patch>
  *
- * Extracting the image's /testbed to the host loses the executable bit, and the
- * colocated jj snapshot records the changed modes into git's index, so a diff
- * against the base commit is otherwise 1600 mode-only sections around a handful
- * of real edits. A SWE-bench patch is content; mode is noise.
+ * Extracting the image's /testbed to the host loses the executable bit, and any
+ * command that stages the tree records the changed modes into git's index, so a
+ * diff against the base commit is otherwise 1600 mode-only sections around a
+ * handful of real edits. A SWE-bench patch is content; mode is noise.
  *
  * `capture-patch.sh` restores the index to the capture base before diffing, so
  * both sides of the diff already carry the image's own modes and this should

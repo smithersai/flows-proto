@@ -104,8 +104,9 @@ try {
   // -------------------------------------------------------------------------
   //
   // Every line the flows prompt has and the codex prompt does not. Each is
-  // either the flows frontmatter, a flows tool, or the Jujutsu colocation the
-  // flows CLI creates in its own workspace and the codex workspace never has.
+  // either the flows frontmatter, a flows tool, or the note that the harness
+  // snapshots the working copy somewhere the codex workspace has no equivalent
+  // of — and that this checkout's git is therefore ordinary.
   const flowsOnly = [
     "---",
     "description: Resolve a reported issue in this repository.",
@@ -115,10 +116,10 @@ try {
     // names the `bash` flow where the codex side says "shell".
     "Your `bash` flow runs on a macOS host with BSD userland. The repository's own",
     "Linux environment and Python interpreter are in a container that has this exact",
-    "- This checkout is colocated with Jujutsu, which snapshots the working copy, so",
-    "  a plain `git diff` prints nothing even when your edits are on disk. To see",
-    "  your own changes, diff against the base commit:",
-    `      git diff ${instance.base_commit}`,
+    "- Git in this checkout behaves normally: `git status` and `git diff` show your",
+    "  own uncommitted edits and nothing else. This harness snapshots the working",
+    "  copy around every action, but it does so in a repository of its own, so",
+    "  nothing it writes ever appears in this checkout's history, index, or refs.",
     "- To change a file, prefer the `write` flow: read the file, and write back the",
     "  complete new contents. That is the most reliable edit available to you.",
     "- `read` and `write` act on this directory directly and need no container.",

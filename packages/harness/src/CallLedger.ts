@@ -25,6 +25,7 @@
  */
 import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import { Effect, Schema } from "effect"
+import * as elide from "./internal/elide.ts"
 import * as NarrowedCheck from "./NarrowedCheck.ts"
 
 const NonNegativeSafeInt = Schema.Int.check(
@@ -65,7 +66,48 @@ export const width = 120
  */
 export const members = 6
 
-const clip = (text: string, limit: number): string => text.length > limit ? `${text.slice(0, limit - 1)}…` : text
+/**
+ * The largest single result, in bytes of canonical JSON, kept for recall.
+ *
+ * A result over this is named by size and never stored: the point of recall is
+ * to stop a run re-buying a region it already has, and a value this large is a
+ * value a cell should have narrowed at the call.
+ *
+ * @category constants
+ * @since 0.1.0
+ * @slop
+ */
+export const recallEntryBytes = 16 * 1024
+
+/**
+ * The total bytes of settled results one run carries for recall.
+ *
+ * This is durable controller state, rewritten every frame, so it is bounded by
+ * total size rather than by count: the newest results are kept while the sum
+ * stays under the bound and everything older keeps its line without its bytes.
+ * Thirty-two kilobytes is four of the largest single results allowed above, and
+ * two of the five golfed instances of the r90 wave would have needed one.
+ *
+ * @category constants
+ * @since 0.1.0
+ * @slop
+ */
+export const recallBytes = 32 * 1024
+
+/**
+ * The largest one recalled result may occupy in a frame's prompt.
+ *
+ * A retained result over this is rendered from both ends with the elision
+ * stated between them, which is the same bound and the same honesty the state
+ * projection uses.
+ *
+ * @category constants
+ * @since 0.1.0
+ * @slop
+ */
+export const recallProjection = 4096
+
+const clip = (text: string, limit: number): string => elide.head(text, limit, "clipped")
 
 /**
  * One settled call, as one line of the run's history.
@@ -84,7 +126,27 @@ export class Entry extends Schema.Class<Entry>("flows/harness/CallLedger/Entry")
   /** Whether the call settled successfully. This is not the exit status. */
   ok: Schema.Boolean,
   /** The structural digest of what came back; see {@link digest}. */
-  digest: Schema.String
+  digest: Schema.String,
+  /**
+   * The whole of what came back, in bytes of canonical JSON.
+   *
+   * Stated on every line, retained or not, because it is what makes the ledger
+   * honest about its own bounds: a line that cannot be recalled says how big
+   * the thing it is not showing was.
+   */
+  bytes: NonNegativeSafeInt.pipe(
+    Schema.withConstructorDefault(Effect.succeed(0)),
+    Schema.withDecodingDefaultKey(Effect.succeed(0))
+  ),
+  /**
+   * What came back, verbatim, while the run can still afford to carry it.
+   *
+   * Absent means the bytes are gone from controller state — the result was over
+   * {@link recallEntryBytes} when it settled, or newer results have pushed it
+   * past {@link recallBytes}. The line survives either way, and a recall of an
+   * absent result is answered by name rather than by silence.
+   */
+  retained: Schema.optional(Schema.String)
 }) {}
 
 /**
@@ -193,14 +255,26 @@ export interface Settlement {
  * @since 0.1.0
  * @slop
  */
-export const entry = (ordinal: number, call: Settlement): Entry =>
-  new Entry({
+export const entry = (ordinal: number, call: Settlement): Entry => {
+  // A failure's whole content is its message, so that is what recall stores for
+  // it: an anchor near-miss reads identically whether the flow returned it as a
+  // value or as prose, and a cell that wants the exact text of one should not
+  // have to have caught it at the time.
+  // `?? null` because a host can settle a call with no value at all: the
+  // contract says `Json`, an implementation that returns nothing says
+  // `undefined`, and canonical JSON refuses it. The ledger reports what the
+  // cell saw, which for such a call is `null`.
+  const whole = CanonicalJson.stringify(call.ok ? call.value ?? null : { failed: call.message ?? "failed" })
+  return new Entry({
     ordinal,
     flow: clip(call.flow, width),
     subject: subject(call.input),
     ok: call.ok,
-    digest: call.ok ? digest(call.value) : clip(call.message ?? "failed", width)
+    digest: call.ok ? digest(call.value) : clip(call.message ?? "failed", width),
+    bytes: whole.length,
+    retained: whole.length <= recallEntryBytes ? whole : undefined
   })
+}
 
 /**
  * How many calls this run has settled, given a ledger some of whose lines have
@@ -231,7 +305,39 @@ export const settled = (ledger: Ledger): number => ledger.length === 0 ? 0 : led
 export const remember = (known: Ledger, made: ReadonlyArray<Settlement>): Ledger => {
   const before = settled(known)
   const all = [...known, ...made.map((call, index) => entry(before + index + 1, call))]
-  return all.length <= bound ? all : all.slice(all.length - bound)
+  return retain(all.length <= bound ? all : all.slice(all.length - bound))
+}
+
+/**
+ * Drops the retained bytes of every result past the run's recall budget.
+ *
+ * Newest first, because the results a run wants back are the ones it has just
+ * bought. A dropped payload leaves its line — ordinal, subject, structural
+ * digest and size — so the ledger never stops being able to say what the run
+ * asked; it only stops being able to say it again in full.
+ *
+ * @category combinators
+ * @since 0.1.0
+ * @slop
+ */
+export const retain = (ledger: Ledger): Ledger => {
+  let spent = 0
+  const kept: Array<Entry> = []
+  for (let index = ledger.length - 1; index >= 0; index--) {
+    const line = ledger[index]!
+    if (line.retained === undefined) {
+      kept.push(line)
+      continue
+    }
+    const next = spent + line.retained.length
+    if (next > recallBytes) {
+      kept.push(new Entry({ ...line, retained: undefined }))
+      continue
+    }
+    spent = next
+    kept.push(line)
+  }
+  return kept.reverse()
 }
 
 /**
@@ -250,7 +356,51 @@ export const render = (ledger: Ledger): string | undefined => {
     ? `Calls this run has settled (${total}), oldest first. You have already asked these — read them here instead of asking again:`
     : `Calls this run has settled (${total}), oldest first; the ${elided} oldest are not listed. You have already asked these — read them here instead of asking again:`
   const lines = ledger.map((line) =>
-    `${line.ordinal}. ${line.flow} ${line.subject} — ${line.ok ? "ok" : "FAILED"}: ${line.digest}`
+    `${line.ordinal}. ${line.flow} ${line.subject} — ${line.ok ? "ok" : "FAILED"}: ${line.digest} (${line.bytes}b${
+      line.retained === undefined ? "" : `, recall ${line.ordinal}`
+    })`
   )
-  return `${heading}\n${lines.join("\n")}`
+  return `${heading}\n${
+    lines.join("\n")
+  }\nA line marked \`recall N\` still holds its whole result: put N in the \`recall\` array of your next transition and the harness prints it in the next prompt. That is free; issuing the call again is not.`
+}
+
+/**
+ * Renders the results a transition asked to see again.
+ *
+ * The mechanic is exactly the one `render` uses for state keys: the harness
+ * satisfies the request while it assembles the next frame's prompt, so a run
+ * that needs a result back pays for the bytes and nothing else. Every way the
+ * request can miss is answered in the same block — an ordinal nobody settled, a
+ * result whose bytes are past the recall budget, a value too long to print
+ * whole — because a request that is silently dropped is the defect this exists
+ * to close.
+ *
+ * @category conversions
+ * @since 0.1.0
+ * @slop
+ */
+export const recall = (ledger: Ledger, ordinals: ReadonlyArray<number>): string | undefined => {
+  const asked = [...new Set(ordinals)]
+  if (asked.length === 0) return undefined
+  const total = settled(ledger)
+  const sections = asked.map((ordinal) => {
+    const line = ledger.find((candidate) => candidate.ordinal === ordinal)
+    if (line === undefined) {
+      return `## recall ${ordinal}\nNo settled call has ordinal ${ordinal}. This run has settled ${total} call${
+        total === 1 ? "" : "s"
+      }, and only the lines listed above are still held.`
+    }
+    if (line.retained === undefined) {
+      return `## recall ${ordinal} — ${line.flow} ${line.subject}\nIts ${line.bytes} bytes are no longer held: a result over ${recallEntryBytes} bytes is never retained, and older results are dropped once the run's ${recallBytes}-byte recall budget is spent. Issue the call again, narrowed, if you still need it.`
+    }
+    return `## recall ${ordinal} — ${line.flow} ${line.subject} (${line.ok ? "ok" : "FAILED"}, ${line.bytes}b)\n${
+      elide.middle(
+        line.retained,
+        recallProjection,
+        `recall ${ordinal} cannot print more than ${recallProjection} bytes`
+      )
+    }`
+  })
+  return `Results you asked to see again:\n${sections.join("\n")}`
 }

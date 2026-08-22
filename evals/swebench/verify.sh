@@ -93,6 +93,9 @@ node "$S/fixtures/check-prompts.mjs"
 echo "== per-run artifact names"
 node "$S/fixtures/check-run-paths.mjs"
 
+echo "== the harness's own snapshots stay out of the task repository"
+"$S/fixtures/check-hidden-vcs.sh"
+
 echo "== the matrix scheduler"
 node "$S/fixtures/check-matrix.mjs"
 

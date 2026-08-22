@@ -97,6 +97,14 @@ const state = (
     readonly modelCallMs?: number
     /** The durable state the run opens holding. */
     readonly agentState?: Schema.Json
+    /**
+     * How many times a frame may answer its own unparseable cell.
+     *
+     * Zero in the cases that exercise the exit a dead cell takes, so the reply
+     * under test is the reply the frame settles on rather than the one before
+     * an in-frame re-ask.
+     */
+    readonly revalidations?: number
   } = {}
 ) =>
   CellTurn.make({
@@ -117,7 +125,8 @@ const state = (
     readOnlyCap: overrides.readOnlyCap ?? 0,
     approvalChannel: overrides.approvalChannel ?? false,
     ...(overrides.modelCallMs === undefined ? {} : { modelCallMs: overrides.modelCallMs }),
-    ...(overrides.agentState === undefined ? {} : { agentState: overrides.agentState })
+    ...(overrides.agentState === undefined ? {} : { agentState: overrides.agentState }),
+    ...(overrides.revalidations === undefined ? {} : { revalidations: overrides.revalidations })
   })
 
 /**
@@ -378,7 +387,11 @@ describe("CellTurn", () => {
       ModelRequest.Message.assistant("I chose to keep only this.", { stopReason: "stop" })
     ])
     expect(stateSection(second)).toBe(
-      "Agent-owned durable state for this frame (JSON), also available in the cell as ctx.state:\n{\"plan\":[\"one\",\"two\"]}"
+      [
+        "Durable state for this frame (ctx.state) is 22 bytes across 1 key:",
+        "- plan (array, 13b) — written at frame 0, 1 frame ago",
+        "The whole of it, as JSON:\n{\"plan\":[\"one\",\"two\"]}"
+      ].join("\n")
     )
     // The transition is on the record, so a replayed run rebuilds the same
     // state and the same context.
@@ -409,11 +422,15 @@ describe("CellTurn", () => {
       ]
     })
 
+    // The reply with no cell at all never ran, so it is answered inside its
+    // own frame rather than costing one; the reply after it is what that frame
+    // settles on.
+    const inFrame = of(events, "cell-rejected-in-frame")
+    expect(inFrame.map((event) => [event.attempt, event.code])).toEqual([[1, "no_cell"]])
     const settled = of(events, "cell-settled")
-    expect(settled.map((event) => event.outcome._tag)).toEqual(["rejected", "rejected", "raised", "settled"])
-    expect((settled[0]?.outcome as Cell.Rejected).code).toBe("no_cell")
-    expect((settled[1]?.outcome as Cell.Rejected).code).toBe("invalid_transition")
-    expect((settled[2]?.outcome as Cell.Raised).name).toBe("RangeError")
+    expect(settled.map((event) => event.outcome._tag)).toEqual(["rejected", "raised", "settled"])
+    expect((settled[0]?.outcome as Cell.Rejected).code).toBe("invalid_transition")
+    expect((settled[1]?.outcome as Cell.Raised).name).toBe("RangeError")
     expect(of(events, "resolved")[0]?.message.content).toEqual([
       ModelRequest.TextPart.make({ text: "recovered" })
     ])
@@ -429,10 +446,9 @@ describe("CellTurn", () => {
     const { engine, events } = await run({
       script: [
         emits(
-          `const notes = []
-           try { await ctx.call("net/fetch", {}) } catch (error) { notes.push(error.message) }
-           try { await ctx.call("shell/run", {}) } catch (error) { notes.push(error.message) }
-           return { intent: "complete", output: notes.join(" | ") }`
+          `const first = await ctx.call("net/fetch", {})
+           const second = await ctx.call("shell/run", {})
+           return { intent: "complete", output: [first, second].map((r) => r.error.message).join(" | ") }`
         )
       ],
       flows: [
@@ -454,9 +470,8 @@ describe("CellTurn", () => {
     const { engine, events } = await run({
       script: [
         emits(
-          `try { await ctx.call("broken", {}) } catch (error) {
-             return { intent: "complete", output: error.message }
-           }`
+          `const refusal = await ctx.call("broken", {})
+           return { intent: "complete", output: refusal.error.message }`
         )
       ],
       flows: [descriptor("broken", { capabilities: ["not-a-capability"] })]
@@ -698,7 +713,7 @@ describe("CellTurn", () => {
   it("stops at the budget even when the last frame produced no usable cell", async () => {
     const { events } = await run({
       script: [prose("no cell here either")],
-      state: state({ maxFrames: 1 })
+      state: state({ maxFrames: 1, revalidations: 0 })
     })
 
     expect(of(events, "cell-settled")[0]?.outcome._tag).toBe("rejected")
@@ -761,8 +776,13 @@ const check = descriptor("bash", { capabilities: ["proc:spawn:*"], tier: "irreve
 /** A flow whose declared write set is what makes it count as a mutation. */
 const editor = descriptor("edit", { capabilities: ["fs:write:**"], tier: "compensable", writes: ["/**"] })
 
-const capped = (cap: number, maxFrames: number) =>
-  state({ readOnlyCap: cap, maxFrames, envelope: ["fs:read:**", "fs:write:**", "proc:spawn:*"] })
+const capped = (cap: number, maxFrames: number, revalidations?: number) =>
+  state({
+    readOnlyCap: cap,
+    maxFrames,
+    envelope: ["fs:read:**", "fs:write:**", "proc:spawn:*"],
+    ...(revalidations === undefined ? {} : { revalidations })
+  })
 
 const readCells = (count: number): ReadonlyArray<ScriptedModel.Step> =>
   Array.from(
@@ -1053,7 +1073,7 @@ describe("CellTurn read-only cap", () => {
 
   it("counts a frame that answered with no cell at all toward the streak", async () => {
     const { events, model } = await run({
-      state: capped(3, 4),
+      state: capped(3, 4, 0),
       flows: [descriptor("fs/list", { capabilities: ["fs:read:**"] }), editor],
       script: [
         ...readCells(1),
@@ -1077,7 +1097,7 @@ describe("CellTurn read-only cap", () => {
 
   it("stops a run that never emits a cell at twice the cap", async () => {
     const { failure, model } = await run({
-      state: capped(1, 6),
+      state: capped(1, 6, 0),
       flows: [descriptor("fs/list", { capabilities: ["fs:read:**"] }), editor],
       script: [
         prose("first, some reasoning"),
@@ -2546,12 +2566,10 @@ describe("CellTurn truncated output", () => {
   ]
   const restoring = (target: string) =>
     `const out = await ctx.call("bash", { mode: "unhermetic", command: "git show HEAD:src/module.py" })
-     try {
-       await ctx.call(${JSON.stringify(target)}, { path: "src/module.py", content: out.stdout })
-       return { intent: "complete", output: "wrote the file" }
-     } catch (error) {
-       return { intent: "complete", output: "refused: " + error.message }
-     }`
+     const wrote = await ctx.call(${JSON.stringify(target)}, { path: "src/module.py", content: out.stdout })
+     return wrote.ok === false
+       ? { intent: "complete", output: "refused: " + wrote.error.message }
+       : { intent: "complete", output: "wrote the file" }`
 
   it("refuses a write of bytes a call already returned truncated", async () => {
     const { engine, events } = await run({
@@ -2595,12 +2613,10 @@ describe("CellTurn truncated output", () => {
            }`
         ),
         emits(
-          `try {
-             await ctx.call("write", { path: "src/module.py", content: ctx.state.captured })
-             return { intent: "complete", output: "wrote the file" }
-           } catch (error) {
-             return { intent: "complete", output: "refused: " + error.message }
-           }`
+          `const wrote = await ctx.call("write", { path: "src/module.py", content: ctx.state.captured })
+           return wrote.ok === false
+             ? { intent: "complete", output: "refused: " + wrote.error.message }
+             : { intent: "complete", output: "wrote the file" }`
         )
       ],
       flows: restoreFlows,
@@ -3268,7 +3284,7 @@ return { intent: "complete", state: s, output: "echoed " + s.plan }`
       _tag: "raised",
       message: "boom in block two"
     })
-    expect(observationsOf(model, 1)).toContain("- fs/list -> ok: {\"n\":1}")
+    expect(observationsOf(model, 1)).toContain("- 1. fs/list -> ok: {\"n\":1}")
     expect(stateSection(model.recorder.requests[1])).toContain("1. fs/list {\"path\":\"one\"} — ok: n=1")
   })
 
@@ -3371,7 +3387,7 @@ describe("CellTurn call ledger", () => {
 
     const section = stateSection(model.recorder.requests[1])
     expect(section).toContain("Calls this run has settled (1), oldest first")
-    expect(section).toContain(`1. ${"Z".repeat(119)}…`)
+    expect(section).toContain(`1. ${"Z".repeat(120)}…`)
     expect(section.length).toBeLessThan(1_000)
   })
 
@@ -3384,7 +3400,7 @@ describe("CellTurn call ledger", () => {
     })
 
     const observed = observationsOf(model, 1)
-    expect(observed).toContain(`- ${"Z".repeat(119)}… -> FAILED:`)
+    expect(observed).toContain(`- 1. ${"Z".repeat(120)}…`)
     expect(observed.length).toBeLessThan(2_000)
   })
 })

@@ -480,7 +480,7 @@ const pinned = new Map<string, Pick<ParityRow, "flowsEquivalent" | "status" | "r
       flowsEquivalent: "agent/packages/harness/test/Sandbox.test.ts",
       status: "partial",
       reason:
-        "A refused flow call settles as a catchable FlowCallError the cell recovers from, so a failed call never fails the run; the journaled failure settlement is pinned in agent/packages/agent/test/AgentTrace.test.ts and durable storage remains engine-owned."
+        "A refused flow call resolves with the { ok: false, error } envelope the cell branches on, so a failed call never fails the run and never discards the calls beside it; the journaled failure settlement is pinned in agent/packages/agent/test/AgentTrace.test.ts and durable storage remains engine-owned."
     }
   ],
   [

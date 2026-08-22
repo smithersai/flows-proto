@@ -70,13 +70,11 @@ const prelude = (catalog: string, state: string): string =>
     call: function (flow, input) {
       if (typeof flow !== "string") return Promise.reject(new TypeError("ctx.call expects a flow name as its first argument"))
       return bridge(flow, encodeInput(input === undefined ? null : input)).then(function (settled) {
+        // A failed call RESOLVES with the failure envelope; only teardown
+        // throws. See Cell.callFailure for why.
         if (settled.ok) return settled.value
-        var error = new Error(settled.message)
-        error.name = settled.value && settled.value._tag === ${JSON.stringify(Sandbox.callTimeoutTag)}
-          ? ${JSON.stringify(Sandbox.callTimeoutErrorName)}
-          : "FlowCallError"
-        error.value = settled.value
-        throw error
+        if (settled.aborted) throw new Error(settled.failure.error.message)
+        return settled.failure
       })
     },
     flows: freeze(${catalog}),
@@ -111,7 +109,9 @@ const raisedFrom = (dumped: unknown): Cell.Raised => {
     const record = dumped as { readonly name?: unknown; readonly message?: unknown }
     return new Cell.Raised({
       name: typeof record.name === "string" ? record.name : "Error",
-      message: typeof record.message === "string" ? record.message : String(dumped)
+      // Never `String(object)`: a cell that threw a structured value is told
+      // what it threw. See `Sandbox` `describe`.
+      message: typeof record.message === "string" ? record.message : Sandbox.raisedOutcome(dumped).message
     })
   }
   return new Cell.Raised({ name: "Error", message: String(dumped) })
@@ -341,13 +341,14 @@ const evaluate = (
           reply(
             result.outcome === "success"
               ? { ok: true, value: result.value ?? null }
-              : {
-                ok: false,
-                message: result.message ?? "The flow call failed",
-                value: result.value
-              }
+              : { ok: false, aborted: false, failure: Cell.callFailure(result) }
           ),
-        abort: (message) => reply({ ok: false, message, value: null })
+        abort: (message) =>
+          reply({
+            ok: false,
+            aborted: true,
+            failure: Cell.callFailure(new Cell.CallResult({ outcome: "failure", value: null, message }))
+          })
       })
       return deferred.handle
     })
@@ -375,9 +376,11 @@ const evaluate = (
     if (started.error !== undefined) {
       const failure = context.dump(started.error)
       started.error.dispose()
+      /* v8 ignore next -- the boundary parse refuses every program TypeScript cannot parse, so reaching a realm compile failure at all needs the two parsers to disagree, and reaching one while the interrupt budget is also spent needs that disagreement to be reported by a handler that never ran: nothing evaluates before this point */
       if (exhausted !== undefined) return exhausted
       return new Cell.Rejected({
         code: "compile_failed",
+        /* v8 ignore next -- QuickJS reports a compile failure as an Error object, so the `message` arm is what a parser disagreement takes; `String(failure)` only discharges the `unknown` `context.dump` is typed as */
         message: `The cell did not compile: ${
           typeof failure === "object" && failure !== null && "message" in failure
             ? String((failure as { readonly message: unknown }).message)

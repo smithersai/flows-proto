@@ -43,10 +43,10 @@ describe("CallLedger.subject", () => {
     expect(CallLedger.subject({ globs: ["**/*.py"], path: "sphinx/util/rst.py" })).toBe("sphinx/util/rst.py")
   })
 
-  it("clips a subject longer than the line allows", () => {
+  it("clips a subject longer than the line allows, and says it clipped it", () => {
     const subject = CallLedger.subject({ command: "x".repeat(400) })
-    expect(subject).toHaveLength(CallLedger.width)
-    expect(subject.endsWith("…")).toBe(true)
+    expect(subject.startsWith(`{"command":"${"x".repeat(50)}`)).toBe(true)
+    expect(subject).toContain("[+294b, clipped]")
   })
 })
 
@@ -126,10 +126,7 @@ describe("CallLedger.render", () => {
       settlement("grep", { pattern: "def x", root: "src/lib" }, { matches: [1, 2] })
     ])
 
-    expect(CallLedger.render(ledger)).toBe(
-      "Calls this run has settled (1), oldest first. You have already asked these — read them here instead of asking again:\n" +
-        "1. grep src/lib — ok: matches=[2]"
-    )
+    expect(CallLedger.render(ledger)).toContain("1. grep src/lib — ok: matches=[2] (17b, recall 1)")
   })
 
   it("states how many lines aged out rather than renumbering what is left", () => {

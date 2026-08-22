@@ -189,21 +189,41 @@ for (const [name, binding] of bindings) {
       expect(one).toStrictEqual(two)
     })
 
-    it("makes a failed flow call a catchable exception, not a harness failure", async () => {
+    it("resolves a failed flow call with the failure envelope instead of throwing", async () => {
       const outcome = await evaluate(
         binding,
-        `try {
-           await ctx.call("fs/list", {})
-           return { intent: "complete", output: "unreachable" }
-         } catch (error) {
-           return { intent: "complete", output: error.name + ": " + error.message }
-         }`,
+        `const result = await ctx.call("fs/list", {})
+         return { intent: "complete", output: JSON.stringify(result) }`,
         { call: handler({}, [], new Set(["fs/list"])) }
       )
 
       expect((outcome as Cell.Settled).transition).toMatchObject({
         _tag: "complete",
-        output: "FlowCallError: fs/list refused"
+        output: JSON.stringify({
+          ok: false,
+          error: {
+            code: "flow_failed",
+            message: "fs/list refused",
+            hint: Cell.callFailureHint.flow_failed
+          }
+        })
+      })
+    })
+
+    it("runs the calls a cell makes after one that failed, in the same frame", async () => {
+      const observed: Array<Sandbox.Invocation> = []
+      const outcome = await evaluate(
+        binding,
+        `const first = await ctx.call("fs/list", { path: "missing" })
+         const second = await ctx.call("fs/read", { path: "ok" })
+         return { intent: "complete", output: JSON.stringify([first.ok, second]) }`,
+        { call: handler({ "fs/read": "kept" }, observed, new Set(["fs/list"])) }
+      )
+
+      expect(observed.map((call) => call.flow)).toEqual(["fs/list", "fs/read"])
+      expect((outcome as Cell.Settled).transition).toMatchObject({
+        _tag: "complete",
+        output: JSON.stringify([false, "kept"])
       })
     })
 
@@ -320,15 +340,8 @@ for (const [name, binding] of bindings) {
       let entered = false
       const outcome = await evaluate(
         binding,
-        `try {
-           await ctx.call("fs/list", {})
-           return { intent: "complete", output: "unreachable" }
-         } catch (error) {
-           return {
-             intent: "complete",
-             output: JSON.stringify({ name: error.name, message: error.message, value: error.value })
-           }
-         }`,
+        `const result = await ctx.call("fs/list", {})
+         return { intent: "complete", output: JSON.stringify(result) }`,
         {
           call: () =>
             Effect.sync(() => {
@@ -342,10 +355,12 @@ for (const [name, binding] of bindings) {
       expect((outcome as Cell.Settled).transition).toMatchObject({
         _tag: "complete",
         output: JSON.stringify({
-          name: Sandbox.callTimeoutErrorName,
-          message:
-            "Flow fs/list timed out after 0.05 seconds. Narrow the call — a smaller root, a tighter pattern, a shorter command — and issue it again.",
-          value: { _tag: Sandbox.callTimeoutTag, flow: "fs/list", budgetMs: 50 }
+          ok: false,
+          error: {
+            code: "timeout",
+            message: "Flow fs/list timed out after 0.05 seconds.",
+            hint: Cell.callFailureHint.timeout
+          }
         })
       })
     })
@@ -354,13 +369,12 @@ for (const [name, binding] of bindings) {
       const observed: Array<Sandbox.Invocation> = []
       const outcome = await evaluate(
         binding,
-        `try {
-           await ctx.call("fs/list", { path: "." })
-         } catch {
-           const narrowed = await ctx.call("fs/list", { path: "django" })
-           return { intent: "complete", output: narrowed.entries.join(",") }
+        `const broad = await ctx.call("fs/list", { path: "." })
+         if (broad.ok !== false || broad.error.code !== "timeout") {
+           return { intent: "complete", output: "unreachable" }
          }
-         return { intent: "complete", output: "unreachable" }`,
+         const narrowed = await ctx.call("fs/list", { path: "django" })
+         return { intent: "complete", output: narrowed.entries.join(",") }`,
         {
           call: (invocation) => {
             observed.push(invocation)
@@ -485,19 +499,14 @@ for (const [name, binding] of bindings) {
       // whole number of seconds must not read as "0.000".
       const outcome = await evaluate(
         binding,
-        `try {
-           await ctx.call("fs/list", {})
-         } catch (error) {
-           return { intent: "complete", output: error.name + ": " + error.message }
-         }
-         return { intent: "complete", output: "unreachable" }`,
+        `const result = await ctx.call("fs/list", {})
+         return { intent: "complete", output: result.error.code + ": " + result.error.message }`,
         { call: () => Effect.never, limits: { callMs: 0 } }
       )
 
       expect((outcome as Cell.Settled).transition).toMatchObject({
         _tag: "complete",
-        output: `${Sandbox.callTimeoutErrorName}: Flow fs/list timed out after 0 seconds. `
-          + "Narrow the call — a smaller root, a tighter pattern, a shorter command — and issue it again."
+        output: "timeout: Flow fs/list timed out after 0 seconds."
       })
     })
 
@@ -705,23 +714,16 @@ describe("Sandbox projections", () => {
     )
   })
 
-  it("names the exception a cell sees for a failed call", () => {
-    const withMessage = Sandbox.failureError(
-      new Cell.CallResult({ outcome: "failure", value: null, message: "denied" })
+  it("renders a thrown structure as the value it is, never as [object Object]", () => {
+    expect(Sandbox.raisedOutcome({ code: 7, why: "denied" })).toStrictEqual(
+      new Cell.Raised({ name: "Error", message: `{"code":7,"why":"denied"}` })
     )
-    expect([withMessage.name, withMessage.message]).toEqual(["FlowCallError", "denied"])
-    const withoutMessage = Sandbox.failureError(new Cell.CallResult({ outcome: "failure", value: null }))
-    expect(withoutMessage.message).toBe("The flow call failed")
-    const timedOut = Sandbox.failureError(
-      new Cell.CallResult({
-        outcome: "failure",
-        value: { _tag: Sandbox.callTimeoutTag, flow: "grep", budgetMs: 120_000 }
-      })
-    ) as Error & { readonly value: unknown }
-    expect([timedOut.name, timedOut.value]).toEqual([
-      Sandbox.callTimeoutErrorName,
-      { _tag: Sandbox.callTimeoutTag, flow: "grep", budgetMs: 120_000 }
-    ])
+    expect(Sandbox.raisedOutcome({ code: 7 }).message).not.toContain("[object Object]")
+    // A symbol is outside JSON entirely, and `String` is then the only
+    // faithful rendering left.
+    expect(Sandbox.raisedOutcome(Symbol("nope"))).toStrictEqual(
+      new Cell.Raised({ name: "Error", message: "Symbol(nope)" })
+    )
   })
 
   it("defaults every supported safety ceiling and preserves explicit raises", async () => {
@@ -899,13 +901,13 @@ describe("Sandbox.layerRestricted", () => {
     )
   })
 
-  it("keeps a cell that escapes its function wrapper inside the outcome contract", async () => {
+  it("refuses a cell that would escape its function wrapper", async () => {
     // This binding is explicitly not an isolation boundary: the cell text is
-    // interpolated into a wrapper built with `new Function`, so a cell can
-    // close the wrapper and run in the host realm. What it must not do is take
-    // the harness down with it. The escape below reads a symbol-keyed property
-    // off the scope object — which answers `undefined` rather than a host
-    // binding — and then throws where no promise exists to catch it.
+    // interpolated into a wrapper built with `new Function`, so a cell that
+    // closed the wrapper would run in the host realm. Escaping needs unbalanced
+    // braces, and unbalanced braces are a syntax error in the cell read on its
+    // own — which is what the boundary parse now reads it as, before any of it
+    // reaches a realm.
     const outcome = await evaluate(
       Sandbox.layerRestricted,
       `} }).call(__this) + (function () {
@@ -914,7 +916,8 @@ describe("Sandbox.layerRestricted", () => {
        (async function () { with (__scope) {`
     )
 
-    expect(outcome).toStrictEqual(new Cell.Raised({ name: "Error", message: "escaped:undefined" }))
+    expect(outcome).toMatchObject({ _tag: "rejected", code: "compile_failed" })
+    expect((outcome as Cell.Rejected).message).toContain("line 1")
   })
 })
 
@@ -971,7 +974,18 @@ describe("Sandbox.compile", () => {
     expect(Sandbox.compile(Cell.source("return {", "typescript"))).toStrictEqual(
       new Cell.Rejected({
         code: "compile_failed",
-        message: "The TypeScript cell did not compile: '}' expected."
+        message: "The cell did not compile — line 1, column 9: '}' expected.\n  return {"
+      })
+    )
+  })
+
+  it("reports a JavaScript cell that does not parse, with the line it is on", () => {
+    // The realm used to be the first party to notice, which cost the whole
+    // frame. Compiling here is what lets `CellTurn` answer inside it.
+    expect(Sandbox.compile(Cell.source("const a = 1\nif (a) {\n  return null\n", "javascript"))).toStrictEqual(
+      new Cell.Rejected({
+        code: "compile_failed",
+        message: "The cell did not compile — line 4, column 1: '}' expected."
       })
     )
   })

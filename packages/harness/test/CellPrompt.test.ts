@@ -170,13 +170,36 @@ describe("cellPrompt", () => {
     expect(contract).toContain("the first `return` ends the frame")
   })
 
-  it("teaches the state projection and the automatic call ledger", () => {
-    // Both close the same leak: a model that cannot see what it already knows
-    // spends a whole frame moving bytes it already owns.
+  it("teaches the state projection, the call ledger, and recall by ordinal", () => {
+    // All three close the same leak: a model that cannot see what it already
+    // knows spends a whole frame moving bytes it already owns.
     const contract = contractText()
-    expect(contract).toContain("name the keys your next frame must SEE")
-    expect(contract).toContain("never spend a frame echoing state into `context`")
+    expect(contract).toContain("`render` names `state` keys and `recall` names settled-call ordinals")
+    expect(contract).toContain("never spend a frame echoing state into `context` or re-issuing a call")
     expect(contract).toContain("Every call this run has settled is listed for you")
+    expect(contract).toContain("`recall N` marker")
+  })
+
+  it("teaches the state manifest and that nothing in a frame is cut silently", () => {
+    const contract = contractText()
+    expect(contract).toContain("each key's type, size and the frame that wrote it")
+    expect(contract).toContain("Nothing is ever cut silently")
+  })
+
+  it("teaches that a failed call resolves rather than throwing", () => {
+    // The fail-stop tax: one call against a path that did not exist destroyed
+    // two settled greps and a probe on `psf__requests-2317`, because the
+    // recovery the model had already written sat behind the throw.
+    const contract = contractText()
+    expect(contract).toContain("A failed call does not throw")
+    expect(contract).toContain("{ ok: false, error: { code, message, hint } }")
+    expect(contract).toContain("test `.ok === false` where you are unsure")
+  })
+
+  it("teaches that a cell that does not parse is answered inside its own frame", () => {
+    const contract = contractText()
+    expect(contract).toContain("If a cell does not PARSE nothing ran at all")
+    expect(contract).toContain("asked again inside the SAME frame")
   })
 
   it("teaches canonical regression evidence and language-aware post-edit diagnostics", () => {
@@ -337,7 +360,10 @@ describe("cellPrompt", () => {
     expect(environment).toContain("the checkout ends at the commit you were given")
     expect(environment).toContain("no branch, tag, stash or reflog here holds a later fix")
     expect(environment).toContain("costs a frame and returns nothing")
-    expect(environment).toContain("they are your own snapshots, never upstream evidence")
+    // The harness's attempt and durability snapshots live in a repository of
+    // their own, so a history search cannot surface them at all — which is what
+    // makes "returns nothing" literally true rather than nearly true.
+    expect(environment).toContain("keeps its own attempt and durability snapshots in a repository of its own")
   })
 
   it("teaches the archaeology that does pay, reading history backwards", () => {
@@ -392,7 +418,12 @@ describe("cellPrompt", () => {
     // uncached first frame and the cached rest are both counted — bought
     // against a measured $32.4 waste gap. These are the ceilings that make the
     // next such addition deliberate.
-    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2700)
+    // Change 1 (addressable context) and change 8 (fail-soft calls) then added
+    // ~140 more: the recall directive, the state manifest, the never-silently-
+    // clipped rule, the failure envelope, and the in-frame re-ask. Every one of
+    // them replaces a frame the r90 wave actually spent, so the ceiling moved
+    // to 2,850 rather than the teaching being trimmed to fit.
+    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2850)
     expect(Tokens.estimate(sectionOf("cell-environment", {}, { locale: "C.UTF-8", absentTools: ["rg", "ruff"] })))
       .toBeLessThanOrEqual(300)
   })
