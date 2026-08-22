@@ -107,22 +107,80 @@ INTERPRETER="$("$S/lib/interpreter.sh" "$CONTAINER" 2>/dev/null)" || INTERPRETER
 node "$S/lib/write-prompt-codex.mjs" "$DATASET" "$INSTANCE" "$CONTAINER" "$TEST_CMD" "$INTERPRETER" \
   > "$LOG_PREFIX.prompt.md"
 
-# Network access is a benchmark condition, not a detail. SWB_CODEX_NETWORK=off
-# runs codex under its workspace-write sandbox, which denies network egress;
-# anything else keeps the bypass that grants it.
+# Network access is a benchmark condition, not a detail. `SWB_CODEX_NETWORK`
+# names the condition and it is recorded in the run's timings.
 #
 # It matters because on 2026-08-19 the pytest-dev__pytest-6197 trace showed
 # codex resolving that instance by fetching the upstream fix and the upstream
 # testing/test_collection.py at tag 5.2.4 from GitHub — the release that fixed
-# the bug, and the file holding the graded tests. Our harness made no network
-# call on the same instance. A comparison where one side may read the answer
-# and the other does not is not measuring the same thing, so the condition is
-# now explicit and recorded in the run's timings.
-if [ "${SWB_CODEX_NETWORK:-on}" = "off" ]; then
-  CODEX_SANDBOX_ARGS="--sandbox workspace-write"
-else
-  CODEX_SANDBOX_ARGS="--dangerously-bypass-approvals-and-sandbox"
-fi
+# the bug, and the file holding the graded tests. The r90c backfill did the same
+# on matplotlib__matplotlib-24970, with four `curl https://api.github.com/...`
+# calls that read the merged pull request. Our harness made no network call on
+# either instance. A comparison where one side may read the answer and the other
+# does not is not measuring the same thing.
+#
+# | value | what codex gets |
+# | --- | --- |
+# | `on` (default) | the approval/sandbox bypass: host shell, docker, network |
+# | `sealed` | the same bypass, with every child command's HTTP proxy pointed at a dead port and the web-search tool off |
+# | `off` | codex's own `workspace-write` sandbox, which denies all egress |
+#
+# **`off` denies more than the network, and that is why `sealed` exists.**
+# Measured on codex-cli 0.149.0, 2026-08-22, under `--sandbox workspace-write`:
+# a child command cannot reach the docker daemon over its unix socket
+# (`permission denied ... unix:///…/docker.sock`), cannot reach a localhost TCP
+# relay to it, cannot resolve a name, and cannot open a remote IP. The seatbelt
+# policy denies AF_UNIX egress along with everything else, and neither
+# `network.allow_unix_sockets` nor the experimental `network_proxy` feature
+# changes it from `codex exec`, which has no `--permission-profile` flag. Since
+# both arms are told to run the project's tests with
+# `docker exec <container> …`, an `off` run cannot run a single test — so an
+# `off` arm measures a harness with no web *and* no way to check its work, which
+# is two variables at once and not the one this lane is about.
+#
+# `sealed` removes exactly the web. `shell_environment_policy.set` applies to the
+# commands codex spawns and not to codex's own API calls, so the model still
+# reaches the API while `curl`, `git`, `pip` and anything that honours the proxy
+# environment reach a closed port. Measured the same day, same build:
+# `docker exec` exit 0, `curl https://example.com` exit 7,
+# `git ls-remote https://github.com/…` exit 128, `urllib.request.urlopen` raises.
+# It is a seal on the tools an agent actually reaches for, not a kernel-level
+# one: a raw socket, an explicit `--noproxy`, or a `curl` run *inside* the
+# testbed container would still get out, and the container keeps the network the
+# `on` arm gave it so that test behaviour does not change with the condition. A
+# lane that claims a seal therefore has to read its own traces back and say what
+# it found; `codex-backfill.sh --lane sealed` records the condition per run.
+NETWORK="${SWB_CODEX_NETWORK:-on}"
+SEALED_PROXY="${SWB_CODEX_SEALED_PROXY:-http://127.0.0.1:1}"
+case "$NETWORK" in
+  on)
+    CODEX_ARGS=( --dangerously-bypass-approvals-and-sandbox ) ;;
+  sealed)
+    CODEX_ARGS=( --dangerously-bypass-approvals-and-sandbox )
+    for PROXY_VAR in HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY \
+      http_proxy https_proxy all_proxy ftp_proxy; do
+      CODEX_ARGS+=( -c "shell_environment_policy.set.${PROXY_VAR}=${SEALED_PROXY}" )
+    done
+    # An inherited NO_PROXY would carve a hole in the seal, so it is emptied
+    # rather than left to whatever the host's profile happens to say.
+    CODEX_ARGS+=( -c "shell_environment_policy.set.NO_PROXY=" )
+    CODEX_ARGS+=( -c "shell_environment_policy.set.no_proxy=" )
+    # The web-search tool is codex's own network rather than a child command's,
+    # so no amount of child-process proxying reaches it. It is **on** by default
+    # in `codex exec` on codex-cli 0.149.0 and the model uses it: the first r90s
+    # attempt, which set `tools.web_search=false` — a key this build ignores —
+    # logged 126 `web search:` lines across 15 of its 45 runs, several of them
+    # opening the instance's own upstream issue. `web_search=disabled` is the key
+    # that works. Measured 2026-08-22 on one prompt asking the model to look up a
+    # page: with the key, `NO_TOOL` and no search lines; without it, two search
+    # lines and the right answer.
+    CODEX_ARGS+=( -c "web_search=disabled" ) ;;
+  off)
+    CODEX_ARGS=( --sandbox workspace-write )
+    echo "[$RUN_ID] NOTE: network=off also denies the docker socket, so this run cannot run the project's tests" ;;
+  *)
+    echo "[$RUN_ID] SWB_CODEX_NETWORK must be on, sealed or off, got '$NETWORK'"; exit 2 ;;
+esac
 
 echo "[$RUN_ID] codex start ($MODEL, ${BUDGET}s)"
 START=$(date +%s)
@@ -134,7 +192,7 @@ timeout "$BUDGET" codex exec \
   -C "$WORK" \
   -m "$MODEL" \
   -c model_reasoning_effort="medium" \
-  ${CODEX_SANDBOX_ARGS} \
+  "${CODEX_ARGS[@]}" \
   --skip-git-repo-check \
   --ephemeral \
   --color never \
@@ -146,7 +204,7 @@ END=$(date +%s)
 echo "[$RUN_ID] codex done in $((END-START))s (exit $CODE)"
 
 printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "model": "%s",\n  "budgetSeconds": %s,\n  "network": "%s",\n  "exitCode": %s,\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s\n}\n' \
-  "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$MODEL" "$BUDGET" "${SWB_CODEX_NETWORK:-on}" "$CODE" "$((START*1000))" "$((END*1000))" "$((END-START))" \
+  "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$MODEL" "$BUDGET" "$NETWORK" "$CODE" "$((START*1000))" "$((END*1000))" "$((END-START))" \
   > "$TIMINGS"
 
 "$S/lib/capture-patch.sh" "$WORK" "$PATCH" \

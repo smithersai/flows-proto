@@ -40,6 +40,7 @@ CLI wrapper, and the evaluator environment with it.
 | `fullbench-dryrun.sh`      | Proves that driver against real docker, with no model spend          |
 | `codex-backfill.sh`        | One codex attempt on every instance the full benchmark graded        |
 | `codex-backfill-dryrun.sh` | Proves the backfill against real docker, with no model spend         |
+| `compare-codex-lanes.mjs`  | The codex arm with the network against the same arm sealed           |
 | `regrade.sh`               | Re-grades a collected patch when the rig, not the patch, was at fault |
 | `lib/httpbin.sh`           | Decides and proves the httpbin the psf/requests family is graded against |
 | `run-45.sh`                | The re-run: the baseline's 45 instances again, on today's harness    |
@@ -1319,7 +1320,7 @@ extraction on each one first.
 | `fullbench/codex/logs/<id>.*` | the transcript, last message, prompt, pull and grade logs |
 | `fullbench/codex/timings/<id>.json` | the agent's own wall clock |
 | `fullbench/codex/reports/<id>.json` | the official evaluator's report for that instance |
-| `fullbench/.codex-slots/` | the two-slot semaphore |
+| `fullbench/.codex-slots/` | the two-slot semaphore, shared by every lane |
 
 `tokens` is the CLI's own footer total. It is **one number with no input/output
 split**, so nothing prices it: a USD figure for codex would be inventing that
@@ -1328,12 +1329,172 @@ split, and the bundle says so instead of printing one.
 | variable | default | what it changes |
 | --- | --- | --- |
 | `SWB_CODEX_BACKFILL_SLOTS` | 2 | instances doing docker work at once |
+| `SWB_CODEX_BACKFILL_JOBS` | 1 | instances a bare run works on at once (`--jobs`) |
 | `SWB_CODEX_BACKFILL_BUDGET` | 1200 | the per-instance timeout, matching what the flows side got |
-| `SWB_CODEX_BACKFILL_RUN_ID` | `fullbench-codex` | the evaluator run id every instance accumulates into |
-| `SWB_CODEX_BACKFILL_INDEX` | `r90c` | the run index every artifact carries |
+| `SWB_CODEX_BACKFILL_RUN_ID` | the lane's | the evaluator run id every instance accumulates into |
+| `SWB_CODEX_BACKFILL_INDEX` | the lane's | the run index every artifact carries |
 | `SWB_CODEX_BACKFILL_MIN_FREE_MIB` | 8192 | the disk gate |
 | `SWB_CODEX_BACKFILL_SLOT_TIMEOUT` | 21600 | how long an invocation waits for a slot |
+| `SWB_CODEX_LANE` | `net` | the lane, and with it the four rows below it |
+| `SWB_CODEX_NETWORK` | the lane's | `on`, `sealed` or `off`; see the sealed lane |
 | `SWB_CODEX_MODEL` | `gpt-5.6-sol` | the model, which must be the one the flows side ran |
+
+### Lanes, and the sealed one
+
+A lane is one measurement of the population under one condition, and it moves
+four things at once — the archive, the ledger, the run index and the evaluator
+run id — plus the network condition its runs are given. Moving only some of them
+would grade one condition's patches into another condition's run id with nothing
+on disk saying so.
+
+| lane | archive | ledger | index | evaluator run id | network |
+| --- | --- | --- | --- | --- | --- |
+| `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` |
+| `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` |
+
+```sh
+./codex-backfill.sh --lane sealed --status        # counts, spends nothing
+./codex-backfill.sh --lane sealed --jobs 2        # the whole lane, two at a time
+```
+
+Every mode takes `--lane`, and it has to: `--status` on the wrong lane reads the
+wrong ledger. The lanes are a table in the script rather than a name template,
+because each one is a claim about how a number may be quoted. `--jobs` runs that
+many instances at once by spawning `--one` **processes**: a background subshell
+would share the driver's pid, and `lib/lock.sh` records the owner's pid, so two
+subshells would look to each other like one live owner and either could release
+the other's claim.
+
+The sealed lane exists because the `net` lane's codex column carries a caveat
+that no amount of arithmetic removes: it ran with network egress and used it.
+`matplotlib__matplotlib-24970` is the recorded case — four
+`curl https://api.github.com/repos/matplotlib/matplotlib/…` calls that read the
+merged pull request — and `pytest-dev__pytest-6197` was the same shape on
+2026-08-19. Our harness made no network call on either.
+
+**What "sealed" denies, and what it does not.** `SWB_CODEX_NETWORK=sealed` keeps
+codex's approval/sandbox bypass, so the run is the `net` lane's run in every
+respect except two, which are the two ways out of the machine:
+
+- **the child commands' network**: every command codex spawns gets `HTTP_PROXY`,
+  `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY` and their lowercase spellings pointed
+  at `http://127.0.0.1:1`, with `NO_PROXY` emptied.
+  `shell_environment_policy.set` applies to child commands and not to codex's own
+  API calls, which is what lets the model keep talking to the API while its tools
+  cannot leave the machine. Measured on codex-cli 0.149.0, 2026-08-22:
+  `docker exec` exit 0, `curl https://example.com` exit 7,
+  `git ls-remote https://github.com/…` exit 128, `urllib.request.urlopen` raises.
+- **codex's own web-search tool**, with `-c web_search=disabled`. That tool is
+  the model's, not a child command's, so no amount of proxying reaches it, and
+  it is **on by default** in `codex exec` on this build. Measured the same day on
+  one prompt asking the model to look a page up: with the key, `NO_TOOL` and no
+  search lines; without it, two search lines and the right answer.
+
+> **Disclosure — the first r90s attempt was sealed on one surface only.** It set
+> `tools.web_search=false`, a key this build ignores, and 15 of its 45 runs
+> logged 126 `web search:` lines between them — several opening the instance's
+> own upstream issue, which is the hindsight the lane exists to remove. Its
+> shell seal held (the `curl` and `git ls-remote` attempts in those transcripts
+> are refused by the dead proxy), so it measures *codex with a sealed shell and a
+> live search tool* and nothing else. It is kept, whole, as
+> `fullbench/codex-sealed-websearch/` with
+> `fullbench/codex-sealed-websearch-manifest.jsonl`, and its evaluator reports as
+> `logs/run_evaluation/fullbench-codex-sealed.superseded-<epoch>/`. No number
+> from it may be quoted as a sealed number.
+
+It is a seal on the tools an agent reaches for, not a kernel-level one. A raw
+socket, an explicit `curl --noproxy '*'`, or a `curl` run *inside* the testbed
+container would still get out — the container keeps the network the `net` lane
+gave it, so test behaviour does not change with the condition. **A lane that
+claims a seal therefore has to read its own traces back**, and a sealed report
+owes the count: how many of its runs attempted egress, and whether any succeeded.
+
+**Why not codex's own sandbox.** `SWB_CODEX_NETWORK=off` runs
+`codex exec --sandbox workspace-write`, whose seatbelt policy denies egress
+completely — and denies it to the docker daemon's unix socket along with
+everything else. Measured the same day and build: a child command cannot reach
+`unix:///…/docker.sock`, cannot reach a localhost TCP relay to it, cannot resolve
+a name and cannot open a remote IP; neither `network.allow_unix_sockets` nor the
+experimental `network_proxy` feature changes it, and `codex exec` has no
+`--permission-profile` flag to reach the newer permissions system with. Both arms
+are told to run the project's tests with `docker exec <container> …`, so an `off`
+run cannot run a single test: the 2026-08-19 `pytest-dev__pytest-6197` probe
+recorded "Tests could not run because Docker socket access was denied." An `off`
+lane therefore measures a harness with no web **and** no way to check its work,
+which is two variables where the comparison needs one. `off` is kept, and says
+so in its own log line, because "codex with nothing at all" is a question someone
+may want answered; it is not the sealed lane.
+
+### Reading the two codex lanes
+
+```sh
+node compare-codex-lanes.mjs        # writes fullbench/codex-sealed/lanes.{md,json}
+```
+
+One row per instance — the flows verdict, the codex verdict with the network and
+the codex verdict sealed — plus the three movement sets between the two codex
+lanes, both denominators around every rate, and the rows one lane never graded
+listed by name instead of counted as a loss. It also reads the sealed lane's own
+transcripts back and prints, per instance, how many egress commands the run
+issued and how many proxy refusals they produced: an environment seal is a claim
+its traces have to support, and a run that never reached for the network and one
+that reached and was refused are different findings a reader is entitled to tell
+apart.
+
+**The sealed lane finished on 2026-08-22: all 45 instances carry a real
+grading.** Scored over the 43 the exclusions leave, flows `r90` resolves 33,
+codex `r90c` (network) 38, and codex `r90s` (sealed) 36; raw over 45 that is
+35, 40 and 38. The seal moved three instances out of codex's column
+(`pydata__xarray-7229`, `django__django-12273`, `django__django-15732`) and one
+into it (`django__django-14351`), so **taking the network away costs codex two
+net resolves** — a smaller effect than the two recorded egress cases suggested.
+Against the sealed column the four-cell table is both 32, flows-only 1
+(`django__django-15732`), codex-only 4 (`pydata__xarray-7233`,
+`sphinx-doc__sphinx-7590`, `sympy__sympy-19495`, `django__django-13821`),
+neither 6. The standing superset goal still fails, by four instead of six.
+
+**What the traces say about the seal, in both directions.** The web-search tool
+is off for the whole lane: **zero `web search:` lines across all 45
+transcripts**, against 126 in the superseded `codex-sealed-websearch` lane. The
+shell seal held wherever it applied: 21 runs issued an egress command from the
+host and every one of them failed, with 13 carrying the dead proxy's own
+diagnostic (`curl: (7) Failed to connect to 127.0.0.1 port 1`, `fatal: unable to
+access 'https://github.com/…'`) and the rest failing silently under
+`curl --silent` inside a pipeline whose last stage still exited 0.
+
+**Two runs got out through the hole this section already names.** The proxy is
+set through `shell_environment_policy.set`, which reaches the commands codex
+spawns; a `docker exec <container> curl …` starts its process as the docker
+daemon's child, in a container that keeps its network on purpose so that test
+behaviour does not change with the condition. Two of the 45 used it, and both
+fetched the merged upstream fix:
+
+| instance | what it fetched | sealed verdict |
+| --- | --- | --- |
+| `sphinx-doc__sphinx-8721` | `github.com/sphinx-doc/sphinx/pull/8721.patch` — the upstream fix and its graded tests | resolved |
+| `sympy__sympy-19495` | `github.com/sympy/sympy/pull/19495.diff` — the upstream fix | resolved |
+
+**Neither verdict is a sealed verdict.** `sympy__sympy-19495` is one of the four
+instances the sealed codex column wins and flows loses, so with it set aside the
+codex-only set is three, not four; `sphinx-doc__sphinx-8721` resolves on both
+arms and moves no cell. Read strictly, the sealed lane resolves **36 of 45 raw**
+with two verdicts void, and the superset goal fails by three instances rather
+than four. `compare-codex-lanes.mjs` now counts in-container fetches as a
+`breaches` column and prints the offenders under "Where the seal did not hold",
+so a later lane cannot report this number without reporting the hole with it.
+
+Closing the hole means running the tests somewhere the container cannot reach
+the network — a `--network none` testbed, or a proxy inside the container as
+well — and both change what the *other* arm was measured under, so neither is a
+change to make silently between two lanes of one comparison.
+
+`django__django-13212` graded `eval error` on its first pass: the official
+evaluator's `make_test_spec` fetches `tests/requirements/py3.txt` from
+`raw.githubusercontent.com` and the host's DNS failed. The codex run itself
+exited 0 with a 7212-byte patch, so `HARNESS=codex SWB_CODEX_LANE=sealed
+./regrade.sh` re-graded that patch rather than paying for a second attempt; it
+resolves to `unresolved`, and the ledger carries both the reason and the verdict
+it supersedes.
 
 ### The analysis bundle
 

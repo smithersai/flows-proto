@@ -63,11 +63,21 @@ case "$HARNESS" in
     MODEL_NAME="${SWB_MODEL_NAME:-flows-cell-harness}"
     ;;
   codex)
-    MANIFEST="$FB/codex-manifest.jsonl"
-    PATCH_ROOT="$FB/codex/patches"
-    REPORT_ROOT="$FB/codex/reports"
-    CLAIM_ROOT="$FB/codex/claims"
-    EVAL_RUN_ID="${SWB_CODEX_BACKFILL_RUN_ID:-fullbench-codex}"
+    # The codex arm has lanes — one measurement of the population per condition —
+    # and every one of them owns a ledger, an archive and an evaluator run id
+    # together. `codex-backfill.sh` holds the table; this reads the same one, so
+    # a re-grade cannot append a sealed verdict to the network lane's ledger or
+    # grade a sealed patch under the network lane's run id.
+    case "${SWB_CODEX_LANE:-net}" in
+      net) LANE_DIRECTORY="codex"; LANE_LEDGER="codex-manifest.jsonl"; LANE_RUN_ID="fullbench-codex" ;;
+      sealed) LANE_DIRECTORY="codex-sealed"; LANE_LEDGER="codex-sealed-manifest.jsonl"; LANE_RUN_ID="fullbench-codex-sealed" ;;
+      *) echo "regrade.sh: unknown lane '${SWB_CODEX_LANE:-net}' — the lanes are net and sealed" >&2; exit 2 ;;
+    esac
+    MANIFEST="$FB/$LANE_LEDGER"
+    PATCH_ROOT="$FB/$LANE_DIRECTORY/patches"
+    REPORT_ROOT="$FB/$LANE_DIRECTORY/reports"
+    CLAIM_ROOT="$FB/$LANE_DIRECTORY/claims"
+    EVAL_RUN_ID="${SWB_CODEX_BACKFILL_RUN_ID:-$LANE_RUN_ID}"
     MODEL_NAME="${SWB_MODEL_NAME:-codex-cli}"
     ;;
   *) echo "regrade.sh: HARNESS must be flows or codex, got '$HARNESS'" >&2; exit 2 ;;
@@ -154,11 +164,19 @@ for ID in $IDS; do
   # image the other was about to grade against — two `eval error` verdicts, no
   # patch at fault. So an instance a live worker in the other arm is holding is
   # refused rather than raced.
-  OTHER_CLAIM="$FB/codex/claims/$ID"
-  if [ "$HARNESS" = "codex" ]; then OTHER_CLAIM="$FB/claims/$ID"; fi
-  OTHER_OWNER="$("$S/lib/lock.sh" owner "$OTHER_CLAIM" 2>/dev/null || printf '')"
-  if [ -n "$OTHER_OWNER" ] && kill -0 "$OTHER_OWNER" 2>/dev/null; then
-    log "$ID" "the other arm is running it right now (pid $OTHER_OWNER) and shares its image — refusing"
+  # Every claim root but this one, because the codex arm has more than one lane
+  # now and a sealed lane holds the same image a network lane or a flows worker
+  # does.
+  BUSY=""
+  for OTHER_CLAIM in "$FB/claims/$ID" "$FB/codex/claims/$ID" "$FB/codex-sealed/claims/$ID"; do
+    if [ "$OTHER_CLAIM" = "$CLAIM_ROOT/$ID" ]; then continue; fi
+    OTHER_OWNER="$("$S/lib/lock.sh" owner "$OTHER_CLAIM" 2>/dev/null || printf '')"
+    if [ -n "$OTHER_OWNER" ] && kill -0 "$OTHER_OWNER" 2>/dev/null; then
+      BUSY="$OTHER_OWNER"
+    fi
+  done
+  if [ -n "$BUSY" ]; then
+    log "$ID" "another lane is running it right now (pid $BUSY) and shares its image — refusing"
     "$S/lib/lock.sh" release "$CLAIM" --owner $$ --quiet || true
     FAILURES=$((FAILURES + 1))
     continue
