@@ -531,8 +531,39 @@ export const defaultModelRetryFactor = 2
 export const defaultModelRetryTimes = 5
 
 /**
+ * The wall clock the production transport ladder may span, in milliseconds.
+ *
+ * The count alone is not a bound. Five rungs of jittered doubling from one
+ * second sum to at most 37.2 s of *sleeping*, but a ladder also spends whatever
+ * each failing attempt spends, and a dying HTTP/2 session does not fail
+ * quickly: r92 of the SWE-bench full benchmark burned ten `transport` retries
+ * and $0.85 across two instances against a socket that stayed dead for about
+ * half a minute, and each of those attempts re-sent a whole prompt and streamed
+ * a partial body before dying. A ladder whose only bound is a count charges for
+ * that as many times as the count allows.
+ *
+ * 45,000 ms is the declared ladder's own jittered ceiling plus one rung's worth
+ * of headroom for the attempts between the sleeps, so a ladder that fails as
+ * fast as this policy assumes still runs all five rungs and nothing here
+ * changes for it. What changes is the ladder whose attempts are slow: it stops
+ * when the wall clock says the incident has outlasted the window this policy
+ * was written to cover, rather than when the fifth rung happens to arrive. Past
+ * that point waiting is not what is wrong, which is exactly what
+ * {@link RequestExecutor.layerRebuilding} is for.
+ *
+ * The elapsed time is the schedule's own, taken on the injected clock, so a
+ * test that supplies one sees the window it declared and never a wall-clock
+ * wait.
+ *
+ * @category policies
+ * @since 0.1.0
+ */
+export const defaultModelRetryWindowMillis = 45_000
+
+/**
  * The production transport retry budget: five retries over a jittered
- * exponential backoff spanning roughly thirty seconds.
+ * exponential backoff spanning roughly thirty seconds, inside a 45-second
+ * wall-clock window.
  *
  * The shape is load-bearing, not decorative. A transport-class failure is
  * almost never local: a destroyed HTTP/2 session, a 5xx, an overloaded
@@ -552,12 +583,19 @@ export const defaultModelRetryTimes = 5
  * the injected clock, so a test that supplies both sees the schedule it
  * declared and never a wall-clock wait.
  *
+ * {@link defaultModelRetryWindowMillis} bounds the same ladder by elapsed time,
+ * because five rungs is a bound on how many attempts are made and not on what
+ * they cost. Whichever limit arrives first ends the ladder.
+ *
  * @category policies
  * @since 0.1.0
  */
 export const defaultModelRetryPolicy: Schedule.Schedule<unknown, Model.ModelFailure> = Schedule
   .exponential(defaultModelRetryBaseMillis, defaultModelRetryFactor)
-  .pipe(Schedule.jittered, Schedule.upTo({ times: defaultModelRetryTimes }))
+  .pipe(
+    Schedule.jittered,
+    Schedule.upTo({ times: defaultModelRetryTimes, duration: Duration.millis(defaultModelRetryWindowMillis) })
+  )
 
 const seconds = (millis: number): number => Math.round(millis / 1000)
 

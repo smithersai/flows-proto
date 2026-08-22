@@ -1290,6 +1290,68 @@ describe("FlowEngineLike.defaultModelRetryPolicy", () => {
     })
   })
 
+  it("stops the ladder when the wall clock, rather than the count, runs out", async () => {
+    // The count bounds attempts; it does not bound what they cost. r92 burned
+    // ten `transport` retries against a socket that stayed dead for half a
+    // minute, and each of those attempts re-sent a whole prompt and streamed a
+    // partial body before dying. Here every attempt spends ten seconds of the
+    // injected clock before failing, so the declared window closes before the
+    // fifth rung arrives and the ladder stops early instead of charging for
+    // rungs the policy never budgeted the time for.
+    const observed: Observed = { attempts: 0, gaps: [] }
+    let previous: number | undefined
+    const slow = Model.make({
+      stream: () =>
+        Stream.fromEffect(
+          Effect.gen(function*() {
+            const now = yield* Clock.currentTimeMillis
+            observed.attempts++
+            if (previous !== undefined) observed.gaps.push(now - previous)
+            previous = now
+            yield* Effect.sleep("10 seconds")
+            return yield* Effect.fail(new ModelError({ code: "transport", message: "slow dead socket" }))
+          })
+        )
+    })
+    const recorded = await exhaust(slow)
+
+    const retries = retriesOf(recorded)
+    // Four rungs, not five, and it is not luck: the fourth is granted at
+    // 40 s of attempts plus 7 s of jittered sleeping, which is past the window
+    // however the jitter falls, and `Schedule.upTo` reads elapsed time at the
+    // following step — so the window is detected there and the fifth is never
+    // granted. Under jitter alone the third rung is granted at 33 s and the
+    // fourth at 47 s, so neither side of this is close.
+    expect(retries).toHaveLength(4)
+    expect(retries.length).toBeLessThan(FlowEngineLike.defaultModelRetryTimes)
+    expect(observed.attempts).toBe(retries.length + 1)
+    // Every rung it did run is still the declared, jittered one — the window
+    // ends the ladder, it does not reshape it.
+    retries.map((retry) => retry.delayMillis).forEach((delay, index) => {
+      expect(delay).toBeGreaterThanOrEqual(nominalMillis(index) * 0.8)
+      expect(delay).toBeLessThanOrEqual(nominalMillis(index) * 1.2)
+    })
+    // What the bound is worth, in the currency the r92 report priced it in: one
+    // whole attempt — one prompt re-sent, one partial body streamed, one more
+    // charge — that the count alone would have allowed.
+    const unbounded = (FlowEngineLike.defaultModelRetryTimes + 1) * 10_000
+    expect(observed.attempts * 10_000).toBeLessThan(unbounded)
+    expect(FlowEngineLike.normalizeRecordedModelStep(recorded).error).toMatchObject({ code: "transport" })
+  })
+
+  it("runs every declared rung when the attempts themselves are cheap", async () => {
+    // The window is headroom over the ladder's own jittered ceiling, not a
+    // second, tighter budget: a transport that fails fast still gets all five
+    // rungs and the roughly thirty seconds of cover they were chosen for.
+    const observed: Observed = { attempts: 0, gaps: [] }
+    const { model } = alwaysFailing("transport", observed)
+    const recorded = await exhaust(model)
+
+    expect(retriesOf(recorded)).toHaveLength(FlowEngineLike.defaultModelRetryTimes)
+    expect(observed.gaps.reduce((total, gap) => total + gap, 0))
+      .toBeLessThan(FlowEngineLike.defaultModelRetryWindowMillis)
+  })
+
   it("spends no delay and no attempt on a terminal failure", async () => {
     const observed: Observed = { attempts: 0, gaps: [] }
     const { error, model } = alwaysFailing("quota_exceeded", observed)

@@ -620,6 +620,74 @@ export type RequestError =
   | Permission.GrantStoreError
 
 /**
+ * How many consecutive transport failures replace the client.
+ *
+ * A retry ladder assumes waiting repairs the failure, and for a rate limit or a
+ * 5xx it does. For a *transport* failure it sometimes does not: an HTTP/2
+ * session the peer has destroyed stays destroyed, and every attempt that reuses
+ * the connection pool holding it fails the same way however long the ladder
+ * waits between them. r92 of the SWE-bench full benchmark is the measurement —
+ * ten `transport` retries across two instances, roughly half a minute of
+ * jittered backoff each, and both runs died anyway against a socket that never
+ * came back.
+ *
+ * Three is where waiting has stopped being the explanation. It is one more than
+ * this executor's own ladder ({@link MAX_RETRIES}), so a request that exhausts
+ * its retries and fails is not enough on its own: the caller has to come back
+ * and fail again on the transport before the client is replaced. That keeps a
+ * single unlucky request from discarding a healthy connection pool, and it puts
+ * the replacement on the first rung of the *outer* ladder — the sealed model
+ * step's — which is where a socket that is genuinely dead first shows itself.
+ *
+ * The counter is about the transport, which every request in the process
+ * shares, so it is shared too. Any success resets it: a client that answers is
+ * a client that works.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const rebuildAfter = 3
+
+/**
+ * The client an executor runs on, and the host's way of replacing it.
+ *
+ * Two fields rather than a factory called twice, because the first client is
+ * usually a resource somebody else already built — the layer's own — and only
+ * the replacement has to be made on demand. A host with nothing to rebuild says
+ * so with {@link fixed}, and its executor behaves exactly as it did before this
+ * existed.
+ *
+ * What a rebuild *means* is the host's business and deliberately not this
+ * module's: on Node it is a fresh Undici `Agent`, which is a fresh connection
+ * pool; in a browser there is no pool to replace and `fixed` is the honest
+ * answer.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface Transport {
+  /** The client every request goes through until a rebuild replaces it. */
+  readonly client: KernelHttpClient.HttpClient
+  /**
+   * Builds a replacement, called after {@link rebuildAfter} consecutive
+   * transport failures and before the attempt that follows them.
+   */
+  readonly rebuild: Effect.Effect<KernelHttpClient.HttpClient>
+}
+
+/**
+ * A transport with nothing behind it to replace: every rebuild answers the same
+ * client.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const fixed = (client: KernelHttpClient.HttpClient): Transport => ({
+  client,
+  rebuild: Effect.succeed(client)
+})
+
+/**
  * Scoped provider request executor.
  *
  * The caller's scope owns the successful response body and aborts its transport
@@ -649,7 +717,73 @@ export const RequestExecutor: Context.Service<RequestExecutor, RequestExecutor> 
 >("/model/RequestExecutor")
 
 /**
+ * Builds a request executor over a transport it may replace.
+ *
+ * The replacement is the rung the retry ladder did not have. Everything above
+ * it — this module's own bounded retry, and the sealed model step's jittered
+ * ladder in `@smthrs/agent` — repairs a failure by waiting, and a destroyed
+ * session is the failure waiting does not repair. After
+ * {@link rebuildAfter} consecutive transport failures the next attempt is made
+ * on a client the host built fresh, and the counter starts again.
+ *
+ * The counter lives in this closure rather than in a request, because what it
+ * counts is a property of the client and not of any one call: the run that
+ * motivated it made ten attempts across two ladders and one dead socket.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const makeWith = (transport: Transport): Effect.Effect<RequestExecutor> =>
+  Effect.sync(() => {
+    let http = transport.client
+    /** Transport failures since the last response of any kind. */
+    let failures = 0
+
+    const executeOnce = (
+      request: HttpClientRequest.HttpClientRequest,
+      options: ExecuteOptions
+    ): Effect.Effect<HttpClientResponse.HttpClientResponse, RequestError, Scope.Scope> =>
+      Effect.gen(function*() {
+        if (failures >= rebuildAfter) {
+          http = yield* transport.rebuild
+          failures = 0
+        }
+        const redactedNames = yield* Headers.CurrentRedactedNames
+        const response = yield* http.execute(request).pipe(
+          // `model:call` on this model, not a plain `net:*` effect: the same host
+          // answers many models and a grant for one is not a grant for the rest.
+          KernelHttpClient.withModelCall(options.modelId),
+          Effect.mapError((error) => mapHttpError(error, redactedNames))
+        )
+        return yield* statusError(request, redactedNames, options.classifyError)(response)
+      }).pipe(
+        // A response of any kind clears the count. Only the transport failing
+        // says the client itself may be the problem; a 429 or a 500 arrived
+        // over a connection that worked.
+        Effect.tap(() =>
+          Effect.sync(() => {
+            failures = 0
+          })
+        ),
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            failures = error instanceof ModelError && error.code === "transport" ? failures + 1 : 0
+          })
+        )
+      )
+
+    return RequestExecutor.of({
+      execute: Effect.fn("RequestExecutor.execute")((request, options) => retryFailures(executeOnce(request, options)))
+    })
+  })
+
+/**
  * Builds a request executor around the permission-aware kernel HTTP client.
+ *
+ * The client in context is the only one there is, so a rebuild answers with it
+ * unchanged. A host that can build a second one — a Node process, whose
+ * connection pool is a value it owns — passes {@link makeWith} a transport that
+ * says so.
  *
  * @category constructors
  * @since 0.1.0
@@ -657,25 +791,7 @@ export const RequestExecutor: Context.Service<RequestExecutor, RequestExecutor> 
  */
 export const make: Effect.Effect<RequestExecutor, never, KernelHttpClient.HttpClient> = Effect.gen(function*() {
   const http = yield* KernelHttpClient.HttpClient
-
-  const executeOnce = (
-    request: HttpClientRequest.HttpClientRequest,
-    options: ExecuteOptions
-  ): Effect.Effect<HttpClientResponse.HttpClientResponse, RequestError, Scope.Scope> =>
-    Effect.gen(function*() {
-      const redactedNames = yield* Headers.CurrentRedactedNames
-      const response = yield* http.execute(request).pipe(
-        // `model:call` on this model, not a plain `net:*` effect: the same host
-        // answers many models and a grant for one is not a grant for the rest.
-        KernelHttpClient.withModelCall(options.modelId),
-        Effect.mapError((error) => mapHttpError(error, redactedNames))
-      )
-      return yield* statusError(request, redactedNames, options.classifyError)(response)
-    })
-
-  return RequestExecutor.of({
-    execute: Effect.fn("RequestExecutor.execute")((request, options) => retryFailures(executeOnce(request, options)))
-  })
+  return yield* makeWith(fixed(http))
 })
 
 /**

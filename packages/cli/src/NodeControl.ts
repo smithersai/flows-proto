@@ -4,6 +4,7 @@
  * @since 0.1.0
  */
 import { NodeCrypto, NodeHttpClient, NodeHttpServer, NodeServices, NodeSocket } from "@effect/platform-node"
+import type * as Undici from "@effect/platform-node/Undici"
 import * as Agent from "@smthrs/agent/Agent"
 import * as AgentSession from "@smthrs/agent/AgentSession"
 import * as FlowEngineLike from "@smthrs/agent/FlowEngineLike"
@@ -49,7 +50,7 @@ import * as Container from "@smthrs/std/Container"
 import * as NativeSearch from "@smthrs/std/NativeSearch"
 import * as TestRunner from "@smthrs/std/TestRunner"
 import type { FileSystem, Path, Result } from "effect"
-import { Context, Effect, Layer, Redacted } from "effect"
+import { Context, Effect, Exit, Layer, Redacted, Scope } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { RpcSerialization } from "effect/unstable/rpc"
 import { Socket } from "effect/unstable/socket"
@@ -566,6 +567,55 @@ export const testFlows = (
   ]
 
 /**
+ * A replaceable HTTP transport over Undici, given a way to acquire a dispatcher.
+ *
+ * `RequestExecutor` asks a host for two things — the client to use now, and an
+ * effect that builds another — because a retry ladder repairs a failure by
+ * waiting and a destroyed HTTP/2 session is the failure waiting does not
+ * repair. Undici's dispatcher *is* the connection pool, so on Node the
+ * replacement is a new one.
+ *
+ * Each dispatcher is acquired in a scope forked off the caller's, and the
+ * previous scope is closed the moment the next dispatcher is in hand, so a run
+ * that rebuilds many times still holds exactly one pool and the caller's own
+ * teardown closes the last of them. The *first* client is built by this same
+ * code rather than taken from `NodeHttpClient.layerUndici`, so the client the
+ * executor starts on and the client a rebuild produces are made the same way
+ * and owned the same way.
+ *
+ * `acquire` is a parameter so a test can hand it a scripted dispatcher; the
+ * production caller passes `NodeHttpClient.makeDispatcher`.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const rebuildableTransport = (
+  acquire: Effect.Effect<Undici.Dispatcher, never, Scope.Scope>
+): Effect.Effect<RequestExecutor.Transport, never, Scope.Scope> =>
+  Effect.gen(function*() {
+    const scope = yield* Scope.Scope
+    let held: Scope.Closeable | undefined = undefined
+    const rebuild = Effect.gen(function*() {
+      const owned = yield* Scope.fork(scope)
+      const client = yield* NodeHttpClient.makeUndici.pipe(
+        Effect.provideServiceEffect(NodeHttpClient.Dispatcher, acquire),
+        Effect.provideService(Scope.Scope, owned)
+      )
+      const previous = held
+      held = owned
+      if (previous !== undefined) yield* Scope.close(previous, Exit.void)
+      return client
+    })
+    return { client: yield* rebuild, rebuild }
+  })
+
+/** The production executor: an Undici agent the run may replace. */
+const rebuildableUndici: Effect.Effect<RequestExecutor.RequestExecutor, never, Scope.Scope> = Effect.flatMap(
+  rebuildableTransport(NodeHttpClient.makeDispatcher),
+  RequestExecutor.makeWith
+)
+
+/**
  * Provides the production run executor: the `@smthrs/agent` composition root
  * over the durable control stores, the local flow registry, and the standard
  * host capabilities — filesystem and shell through the kernel's guarded
@@ -607,7 +657,16 @@ export const layerExecutor = (
   const memory = MemoryStore.layer.pipe(Layer.provide(engine.stores), Layer.orDie)
   // The dispatcher must live as long as the executor. A model captures this
   // service and uses it after seat resolution has returned.
-  const dispatcher = RequestExecutor.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
+  //
+  // It also has to be replaceable. A retry ladder repairs a failure by waiting,
+  // and an HTTP/2 session the peer has destroyed is the failure waiting does not
+  // repair: every attempt that reuses the pool holding it fails identically, and
+  // r92 of the SWE-bench full benchmark spent ten `transport` retries and $0.85
+  // proving it on two instances. Undici's `Agent` *is* the pool, and
+  // `makeDispatcher` acquires a fresh one, so the honest rebuild here is a new
+  // agent in a scope of its own — the previous one is closed as soon as the new
+  // one is in hand, so a run that rebuilds many times still holds one pool.
+  const dispatcher = Layer.effect(RequestExecutor.RequestExecutor)(rebuildableUndici)
   const registration = Layer.effect(ControlExecutor.ControlExecutor)(
     Effect.gen(function*() {
       const filesystemServices = yield* Effect.context<FileSystem.FileSystem | Path.Path>()
