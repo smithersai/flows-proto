@@ -3,12 +3,14 @@
  * with keys read from an environment record and never hardcoded.
  */
 import { NodeHttpClient } from "@effect/platform-node"
+import type * as Undici from "@effect/platform-node/Undici"
 import { MockAgent } from "@effect/platform-node/Undici"
 import { Seat } from "@smthrs/agent"
 import { Control } from "@smthrs/control"
 import * as RequestExecutor from "@smthrs/model/RequestExecutor"
 import { Effect, Layer, Stream } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -160,5 +162,102 @@ describe("NodeControl.seatResolver", () => {
     } finally {
       await agent.close()
     }
+  })
+})
+
+describe("NodeControl.rebuildableTransport", () => {
+  const request = () =>
+    HttpClientRequest.post("https://api.openai.com/v1/responses").pipe(
+      HttpClientRequest.bodyUint8Array(new TextEncoder().encode("{}"), "application/json")
+    )
+
+  it("replaces the connection pool once waiting has stopped explaining the failure", async () => {
+    // The scripted poisoned session: an agent that refuses to connect at all,
+    // which is what a destroyed HTTP/2 session looks like from above — it fails
+    // identically however long the ladder waits between attempts.
+    const acquired: Array<MockAgent> = []
+    const closed: Array<MockAgent> = []
+    const acquire = Effect.gen(function*() {
+      const agent = new MockAgent()
+      agent.disableNetConnect()
+      acquired.push(agent)
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          closed.push(agent)
+          await agent.close()
+        })
+      )
+      return agent as unknown as Undici.Dispatcher
+    })
+
+    const outcome = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const executor = yield* Effect.flatMap(
+            NodeControl.rebuildableTransport(acquire),
+            RequestExecutor.makeWith
+          )
+          const run = () => Effect.scoped(executor.execute(request(), { modelId: "gpt-4o-mini" })).pipe(Effect.flip)
+          // One execute spends this executor's own ladder — an attempt plus its
+          // bounded retries — which is what reaches `rebuildAfter`.
+          const first = yield* run()
+          expect(acquired).toHaveLength(1)
+          const second = yield* run()
+          // Read inside the scope: the enclosing teardown closes the surviving
+          // pool too, so only here can the test tell the two apart.
+          return { first, second, closedDuringRun: [...closed] }
+        })
+      )
+    )
+
+    expect(outcome.first).toMatchObject({ code: "transport" })
+    expect(outcome.second).toMatchObject({ code: "transport" })
+    // A second pool was built, and the first was destroyed as soon as it was:
+    // a run that keeps meeting dead sockets holds one agent, not a queue of
+    // them, and the enclosing scope closes the last.
+    expect(acquired).toHaveLength(2)
+    expect(outcome.closedDuringRun).toHaveLength(1)
+    expect(outcome.closedDuringRun[0]).toBe(acquired[0])
+    // And the scope that owned the run closed the one it was still holding.
+    expect(closed).toHaveLength(2)
+  }, 30_000)
+
+  it("builds one pool and keeps it while the transport answers", async () => {
+    const sse = [
+      "event: response.output_text.delta",
+      "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"ok\"}",
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}",
+      "",
+      ""
+    ].join("\n")
+    const agents: Array<MockAgent> = []
+    const acquire = Effect.gen(function*() {
+      const agent = new MockAgent()
+      agent.disableNetConnect()
+      agent.get("https://api.openai.com").intercept({ method: "POST", path: "/v1/responses" }).reply(200, sse, {
+        headers: { "content-type": "text/event-stream" }
+      })
+      agents.push(agent)
+      yield* Effect.addFinalizer(() => Effect.promise(() => agent.close()))
+      return agent as unknown as Undici.Dispatcher
+    })
+
+    const status = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const executor = yield* Effect.flatMap(
+            NodeControl.rebuildableTransport(acquire),
+            RequestExecutor.makeWith
+          )
+          const response = yield* executor.execute(request(), { modelId: "gpt-4o-mini" })
+          return response.status
+        })
+      )
+    )
+
+    expect(status).toBe(200)
+    expect(agents).toHaveLength(1)
   })
 })

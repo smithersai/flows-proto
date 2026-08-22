@@ -8,8 +8,8 @@ import * as Layer from "effect/Layer"
 import * as Random from "effect/Random"
 import type * as Scope from "effect/Scope"
 import * as TestClock from "effect/testing/TestClock"
-import * as HttpBody from "effect/unstable/http/HttpBody"
 import * as Headers from "effect/unstable/http/Headers"
+import * as HttpBody from "effect/unstable/http/HttpBody"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -879,7 +879,9 @@ describe("RequestExecutor", () => {
       resetSource: "body.rate_limit.reset"
     })
     // A resource with headroom left is not the window this request waits on.
-    expect((await errorFor({ status: 400, body: "{\"rate_limit\":{\"remaining\":5,\"reset\":30}}" })).resetAtEpochMillis)
+    expect(
+      (await errorFor({ status: 400, body: "{\"rate_limit\":{\"remaining\":5,\"reset\":30}}" })).resetAtEpochMillis
+    )
       .toBeUndefined()
 
     expect(await errorFor({ status: 400, body: "{\"limits\":[{\"retry_after_ms\":1500}]}" })).toMatchObject({
@@ -1051,6 +1053,199 @@ describe("RequestExecutor", () => {
     )
 
     expect(relative.message).toBe("HTTP transport failed: InvalidUrlError (POST <redacted>)")
+  })
+
+  it("replaces a poisoned transport once waiting has stopped being the explanation", async () => {
+    // The r92 shape, scripted: a client whose session the peer destroyed, which
+    // fails identically however long the ladder waits. Rebuilding is the rung
+    // the ladder did not have — a fresh connection pool is the only thing that
+    // answers — and the double proves the executor reaches for it rather than
+    // spending the whole budget on a socket that is not coming back.
+    const attempts: Array<string> = []
+    let rebuilds = 0
+    const poisoned = HttpClient.make((attempted) => {
+      attempts.push("poisoned")
+      return Effect.fail(
+        new HttpClientError.HttpClientError({
+          reason: new HttpClientError.TransportError({
+            request: attempted,
+            description: "The session has been destroyed",
+            cause: Object.assign(new Error("ERR_HTTP2_INVALID_SESSION"), { name: "SessionError" })
+          })
+        })
+      )
+    })
+    const healthy = HttpClient.make((attempted) =>
+      Effect.sync(() => {
+        attempts.push("healthy")
+        return response(attempted, { status: 200, body: "{}" })
+      })
+    )
+    const transport: RequestExecutor.Transport = {
+      client: poisoned,
+      rebuild: Effect.sync(() => {
+        rebuilds += 1
+        return healthy
+      })
+    }
+
+    const settled = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const executor = yield* RequestExecutor.makeWith(transport)
+          // The executor's own ladder: one attempt plus two retries, all on the
+          // poisoned client, and no rebuild while the count is under the bound.
+          const fiber = yield* execute(executor, request()).pipe(Effect.flip, Effect.forkChild)
+          yield* Effect.yieldNow
+          yield* TestClock.adjust(120_000)
+          const failed = yield* Fiber.join(fiber)
+          expect(expectModelError(failed).code).toBe("transport")
+          expect(attempts).toEqual(["poisoned", "poisoned", "poisoned"])
+          expect(rebuilds).toBe(0)
+
+          // The outer ladder comes back. The count has reached the bound, so
+          // the next attempt is made on a client the host built fresh, and it
+          // answers.
+          const again = yield* execute(executor, request()).pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          yield* TestClock.adjust(120_000)
+          return yield* Fiber.join(again)
+        }).pipe(
+          Effect.provide(TestClock.layer()),
+          Effect.provideService(HttpClient.TracerDisabledWhen, () => true)
+        )
+      )
+    )
+
+    expect(settled.status).toBe(200)
+    expect(rebuilds).toBe(1)
+    expect(attempts).toEqual(["poisoned", "poisoned", "poisoned", "healthy"])
+  })
+
+  it("hands the rebuilt transport the identical request the dead one failed on", async () => {
+    // What "resumes across the rebuild" means at this seam: the work the caller
+    // was doing is not re-derived and not lost. The request that failed on the
+    // poisoned client is the request the rebuilt one receives — same method,
+    // same URL, same bytes — so a frame that has already settled calls keeps
+    // them and the run carries on rather than ending on a dead socket.
+    const seen: Array<{ readonly method: string; readonly url: string; readonly body: string }> = []
+    let rebuilt = false
+    const client = HttpClient.make((attempted) => {
+      seen.push({
+        method: attempted.method,
+        url: attempted.url,
+        body: attempted.body._tag === "Uint8Array" ? new TextDecoder().decode(attempted.body.body) : ""
+      })
+      return rebuilt
+        ? Effect.succeed(response(attempted, { status: 200, body: "{}" }))
+        : Effect.fail(
+          new HttpClientError.HttpClientError({
+            reason: new HttpClientError.TransportError({
+              request: attempted,
+              description: "The session has been destroyed"
+            })
+          })
+        )
+    })
+
+    const status = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const executor = yield* RequestExecutor.makeWith({
+            client,
+            rebuild: Effect.sync(() => {
+              rebuilt = true
+              return client
+            })
+          })
+          // One execute spends the executor's own ladder — an attempt plus
+          // `MAX_RETRIES` — which is what reaches `rebuildAfter`.
+          const dead = yield* execute(executor, request("https://provider.test/v1/chat", "{\"n\":1}")).pipe(
+            Effect.flip,
+            Effect.forkChild
+          )
+          yield* Effect.yieldNow
+          yield* TestClock.adjust(120_000)
+          yield* Fiber.join(dead)
+
+          const fiber = yield* execute(executor, request("https://provider.test/v1/chat", "{\"n\":1}")).pipe(
+            Effect.forkChild
+          )
+          yield* Effect.yieldNow
+          yield* TestClock.adjust(120_000)
+          const settled = yield* Fiber.join(fiber)
+          return settled.status
+        }).pipe(
+          Effect.provide(TestClock.layer()),
+          Effect.provideService(HttpClient.TracerDisabledWhen, () => true)
+        )
+      )
+    )
+
+    expect(status).toBe(200)
+    expect(seen).toHaveLength(RequestExecutor.rebuildAfter + 1)
+    expect(new Set(seen.map((sent) => `${sent.method} ${sent.url} ${sent.body}`)))
+      .toEqual(new Set(["POST https://provider.test/v1/chat {\"n\":1}"]))
+  })
+
+  it("counts only the transport, and forgets it the moment anything answers", async () => {
+    // A 500 arrived over a connection that worked, so it says nothing about the
+    // client. Without this a provider having a bad afternoon would throw away a
+    // healthy connection pool every third request.
+    let rebuilds = 0
+    let statuses: Array<number> = [500, 500, 500, 500]
+    let cursor = 0
+    const client = HttpClient.make((attempted) =>
+      Effect.sync(() => response(attempted, { status: statuses[Math.min(cursor++, statuses.length - 1)]!, body: "{}" }))
+    )
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const executor = yield* RequestExecutor.makeWith({
+            client,
+            rebuild: Effect.sync(() => {
+              rebuilds += 1
+              return client
+            })
+          })
+          for (let spent = 0; spent < RequestExecutor.rebuildAfter + 1; spent += 1) {
+            const fiber = yield* execute(executor, request()).pipe(Effect.flip, Effect.forkChild)
+            yield* Effect.yieldNow
+            yield* TestClock.adjust(120_000)
+            yield* Fiber.join(fiber)
+          }
+          return undefined
+        }).pipe(
+          Effect.provide(TestClock.layer()),
+          Effect.provideService(HttpClient.TracerDisabledWhen, () => true)
+        )
+      )
+    )
+
+    expect(rebuilds).toBe(0)
+    statuses = []
+    cursor = 0
+  })
+
+  it("answers every rebuild with the same client when the host has nothing to replace", async () => {
+    // The browser's answer, and the default one: `fixed` is what a host with no
+    // connection pool of its own says, and its executor behaves exactly as it
+    // did before the seam existed.
+    const attempts: Array<string> = []
+    const client = HttpClient.make((attempted) => {
+      attempts.push(attempted.url)
+      return Effect.fail(
+        new HttpClientError.HttpClientError({
+          reason: new HttpClientError.TransportError({ request: attempted, description: "dead" })
+        })
+      )
+    })
+    const transport = RequestExecutor.fixed(client)
+
+    expect(await Effect.runPromise(transport.rebuild)).toBe(client)
+    expect(transport.client).toBe(client)
+    expect(attempts).toEqual([])
   })
 
   it("propagates interruption of an in-flight execute", async () => {
