@@ -16,7 +16,6 @@
  *
  * @since 0.1.0
  */
-import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import { Context, Effect, Exit, Layer, Schema } from "effect"
 import * as Cell from "./Cell.ts"
 import * as CellValidation from "./CellValidation.ts"

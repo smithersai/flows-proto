@@ -8,9 +8,12 @@ import { NodeServices } from "@effect/platform-node"
 import * as WorkspaceObservation from "@smthrs/agent/WorkspaceObservation"
 import { Control as ControlService } from "@smthrs/control"
 import * as TestControl from "@smthrs/control/test/TestControl"
+import * as KernelChildProcessSpawner from "@smthrs/kernel/ChildProcessSpawner"
 import * as GrantStore from "@smthrs/kernel/GrantStore"
+import * as Path from "@smthrs/kernel/Path"
 import * as Workspace from "@smthrs/kernel/Workspace"
 import { Registry } from "@smthrs/registry"
+import * as Container from "@smthrs/std/Container"
 import { Cause, Effect, Exit, FileSystem, Layer } from "effect"
 import { HttpServer } from "effect/unstable/http"
 import { existsSync } from "node:fs"
@@ -163,6 +166,34 @@ describe("NodeControl.testRunner", () => {
         NodeControl.testRunner({ FLOWS_TEST_COMMAND: "pytest -q", FLOWS_TEST_TIMEOUT_MS: timeout }, "/work/repo")
       ).not.toHaveProperty("timeoutMs")
     }
+  })
+
+  it("offers the `test` flow to a run exactly when a runner was declared", async () => {
+    // The r91 finding about this flow is not that it was wrong, it is that no
+    // composition offered it: 45 graded runs, zero `test` calls, while the cell
+    // contract's doctrine assumed the call existed. Everything else about the
+    // flow was already covered, so this is the assertion that was missing —
+    // the declaration decides, and what it decides is what `ctx.flows` lists.
+    const names = await Effect.runPromise(
+      Effect.gen(function*() {
+        const services = yield* Effect.context<
+          KernelChildProcessSpawner.ChildProcessSpawner | Path.Path
+        >()
+        const container = Container.makeCommand()
+        expect(NodeControl.testFlows(services, container, undefined)).toEqual([])
+        const offered = NodeControl.testFlows(
+          services,
+          container,
+          NodeControl.testRunner({ FLOWS_TEST_COMMAND: "pytest -q", FLOWS_TEST_CONTAINER: "swebench-1" }, "/work/repo")
+        )
+        const bound = yield* Effect.forEach(offered, (source) => source.bindings())
+        return bound.flat().map((binding) => binding.descriptor.name)
+      }).pipe(
+        Effect.provide(NodeServices.layer),
+        Effect.orDie
+      ) as Effect.Effect<ReadonlyArray<string>>
+    )
+    expect(names).toEqual(["test"])
   })
 })
 
@@ -447,11 +478,14 @@ describe("NodeControl server binds", () => {
   )("refuses an authenticated non-loopback bind with %s", (_label, listen) => {
     const auth = { token: "alpha-secret", principal: { id: "alpha", kind: "bearer" as const } }
     expect(() =>
-      NodeControl.layerServerBearerAuth(auth, listen === undefined ? { host: "10.0.0.1", port: 0 } : {
-        host: "10.0.0.1",
-        port: 0,
-        listen
-      })
+      NodeControl.layerServerBearerAuth(
+        auth,
+        listen === undefined ? { host: "10.0.0.1", port: 0 } : {
+          host: "10.0.0.1",
+          port: 0,
+          listen
+        }
+      )
     ).toThrow(/--listen/)
   })
 
