@@ -16,9 +16,10 @@
  *
  * @since 0.1.0
  */
+import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import { Context, Effect, Exit, Layer, Schema } from "effect"
-import ts from "typescript"
 import * as Cell from "./Cell.ts"
+import * as CellValidation from "./CellValidation.ts"
 import type { HarnessError } from "./HarnessError.ts"
 
 /**
@@ -393,27 +394,6 @@ interface Pending {
   readonly abort: (message: string) => void
 }
 
-/**
- * The tag a timed-out call carries in its {@link Cell.CallResult} value.
- *
- * A cell that catches the failure can branch on the tag rather than on the
- * prose, and a grader reading the journal can count timeouts without matching
- * a message.
- *
- * @category constants
- * @since 0.1.0
- * @slop
- */
-export const callTimeoutTag = "flows/harness/Sandbox/CallTimedOut"
-
-/**
- * The stable exception name a cell sees for an over-budget flow call.
- *
- * @category constants
- * @since 0.1.0
- */
-export const callTimeoutErrorName = "FlowCallTimeoutError"
-
 const seconds = (milliseconds: number): string => {
   const value = milliseconds / 1_000
   return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, "")
@@ -432,10 +412,9 @@ const seconds = (milliseconds: number): string => {
 const callTimedOut = (flow: string, callMs: number): Cell.CallResult =>
   new Cell.CallResult({
     outcome: "failure",
-    value: { _tag: callTimeoutTag, flow, budgetMs: callMs },
-    message: `Flow ${flow} timed out after ${
-      seconds(callMs)
-    } seconds. Narrow the call — a smaller root, a tighter pattern, a shorter command — and issue it again.`
+    value: null,
+    code: "timeout",
+    message: `Flow ${flow} timed out after ${seconds(callMs)} seconds.`
   })
 
 /**
@@ -605,131 +584,24 @@ const denied = (name: string): never => {
 }
 
 /**
- * The module syntax a cell used, named as the model would say it.
- *
- * @private
- */
-type ModuleSyntax = "import" | "export" | "require"
-
-/**
- * Finds module syntax a cell wrote, by parsing rather than by matching text.
- *
- * A cell has no module loader to reach, so this is a real violation. Its
- * strings are another matter: cells routinely pass a `bash` command whose
- * Python heredoc reads `from pathlib import Path`, or a `grep` pattern naming
- * `from _pytest import`. That text is data. A regexp over the source cannot
- * tell the two apart, and reading the source as text rejected five otherwise
- * correct SWE-bench frames in one wave, one of them an instance's opening
- * frame, each costing a whole turn to a rule the cell had not broken.
- *
- * A namespace body is not descended into. `export` inside one is not ESM, and
- * the namespace itself is refused by {@link nonErasableSyntax}.
- *
- * @private
- */
-const moduleSyntax = (source: ts.SourceFile): ModuleSyntax | undefined => {
-  let found: ModuleSyntax | undefined
-  const visit = (node: ts.Node): void => {
-    if (found !== undefined) return
-    if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node)) found = "import"
-    else if (ts.isExportDeclaration(node) || ts.isExportAssignment(node)) found = "export"
-    else if (
-      ts.canHaveModifiers(node) &&
-      ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true
-    ) found = "export"
-    else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) found = "import"
-    else if (ts.isMetaProperty(node) && node.keywordToken === ts.SyntaxKind.ImportKeyword) found = "import"
-    else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "require") {
-      found = "require"
-    } else if (!ts.isModuleDeclaration(node)) ts.forEachChild(node, visit)
-  }
-  visit(source)
-  return found
-}
-
-const nonErasableSyntax = (source: ts.SourceFile): string | undefined => {
-  let found: string | undefined
-  const visit = (node: ts.Node): void => {
-    if (found !== undefined) return
-    if (ts.isEnumDeclaration(node)) found = "enum declarations"
-    else if (ts.isModuleDeclaration(node)) found = "namespace/module declarations"
-    else if (
-      ts.isParameter(node) &&
-      node.modifiers?.some((modifier) =>
-          modifier.kind === ts.SyntaxKind.PublicKeyword ||
-          modifier.kind === ts.SyntaxKind.PrivateKeyword ||
-          modifier.kind === ts.SyntaxKind.ProtectedKeyword ||
-          modifier.kind === ts.SyntaxKind.ReadonlyKeyword ||
-          modifier.kind === ts.SyntaxKind.OverrideKeyword
-        ) === true
-    ) found = "parameter properties"
-    else ts.forEachChild(node, visit)
-  }
-  visit(source)
-  return found
-}
-
-/**
  * Erases type-only syntax from a cell without evaluating or resolving modules.
  *
  * Only Node's strip-safe TypeScript subset is accepted. Constructs that need
  * JavaScript emit are refused instead of being silently transformed into new
  * runtime behaviour.
  *
- * Every cell is parsed, JavaScript included, because a cell that writes module
- * syntax is refused here rather than at the realm. The realm does refuse it:
- * `import` inside the async wrapper is a syntax error and `require` is an
- * undefined identifier. Neither says what to do instead, and the model reads
- * the rejection text as its next instruction, so this rejection carries the
- * lesson while the realm's own message would only carry the symptom.
+ * The parse itself belongs to `CellValidation`, which the controller already
+ * runs at the boundary before it commits a frame; this is the same answer, for
+ * a binding that only needs the program or the reason there is none.
  *
  * @category conversions
  * @since 0.1.0
  * @slop
  */
 export const compile = (cell: Cell.Source): string | Cell.Rejected => {
-  const isTypeScript = cell.language === "typescript"
-  const parsed = ts.createSourceFile(
-    isTypeScript ? "cell.ts" : "cell.js",
-    cell.text,
-    ts.ScriptTarget.ES2022,
-    true,
-    isTypeScript ? ts.ScriptKind.TS : ts.ScriptKind.JS
-  )
-  const moduleUse = moduleSyntax(parsed)
-  if (moduleUse !== undefined) {
-    return new Cell.Rejected({
-      code: "imports_forbidden",
-      message: `A cell may not ${moduleUse} anything: it runs in a realm with no module loader. ` +
-        "Use ctx.call for every effect and ctx.flows for the catalog it may call; they are the only bindings a cell has."
-    })
-  }
-  if (!isTypeScript) return cell.text
-  const forbidden = nonErasableSyntax(parsed)
-  if (forbidden !== undefined) {
-    return new Cell.Rejected({
-      code: "compile_failed",
-      message: `The TypeScript cell uses ${forbidden}, which are not erasable syntax.`
-    })
-  }
-  const transpiled = ts.transpileModule(cell.text, {
-    compilerOptions: {
-      erasableSyntaxOnly: true,
-      module: ts.ModuleKind.ESNext,
-      target: ts.ScriptTarget.ES2022,
-      verbatimModuleSyntax: true
-    },
-    fileName: "cell.ts",
-    reportDiagnostics: true
-  })
-  const diagnostic = transpiled.diagnostics?.find((item) => item.category === ts.DiagnosticCategory.Error)
-  if (diagnostic !== undefined) {
-    return new Cell.Rejected({
-      code: "compile_failed",
-      message: `The TypeScript cell did not compile: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`
-    })
-  }
-  return transpiled.outputText
+  const validation = CellValidation.validate(cell)
+  /* v8 ignore next -- `validate` returns exactly one of the two, so the coalesce never reaches its fallback; it only discharges the optional types the interface declares */
+  return validation.rejected ?? validation.compiled ?? cell.text
 }
 
 /**
@@ -787,22 +659,23 @@ const raised = (error: unknown): Cell.Raised => {
   if (error instanceof Error) {
     return new Cell.Raised({ name: error.name, message: error.message })
   }
-  return new Cell.Raised({ name: "Error", message: String(error) })
+  return new Cell.Raised({ name: "Error", message: describe(error) })
 }
 
 /**
- * A flow failure, as the exception the cell observes.
+ * Renders a thrown non-`Error` as the value it is.
+ *
+ * `String(value)` on an object is `[object Object]`, which is the single
+ * defect PROGRAM change 1 names verbatim: a run that threw a structured value
+ * was told nothing about it and spent a frame going back for the same value.
+ * Anything JSON can hold is rendered as JSON; anything it cannot — a symbol, a
+ * function — keeps `String`, which is the only faithful thing left.
  *
  * @private
  */
-const callFailure = (result: Cell.CallResult): Error => {
-  const error = new Error(result.message ?? "The flow call failed")
-  error.name = result.value !== null && typeof result.value === "object" && "_tag" in result.value &&
-      result.value._tag === callTimeoutTag
-    ? callTimeoutErrorName
-    : "FlowCallError"
-  Object.assign(error, { value: result.value })
-  return error
+const describe = (value: unknown): string => {
+  const decoded = Schema.decodeUnknownResult(Schema.Json)(value)
+  return decoded._tag === "Success" ? Cell.renderText(decoded.success) : String(value)
 }
 
 /**
@@ -855,7 +728,11 @@ export const makeRestricted = (): Sandbox =>
               ordinal: ordinal++,
               flow,
               input,
-              settle: (result) => result.outcome === "success" ? resolve(result.value) : reject(callFailure(result)),
+              // A failed call resolves; it does not throw. See
+              // {@link Cell.callFailure}. An *abort* still rejects: that is
+              // teardown, not a result, and a cell must unwind rather than
+              // branch on it.
+              settle: (result) => resolve(result.outcome === "success" ? result.value : Cell.callFailure(result)),
               abort: (message) => reject(new Error(message))
             })
             latch.wake()
@@ -867,6 +744,7 @@ export const makeRestricted = (): Sandbox =>
           has: () => true,
           get: (_target, property) => {
             if (property === Symbol.unscopables) return undefined
+            /* v8 ignore next -- a `with` binding resolves identifiers, which are strings, and the one symbol it consults is handled above; the guard is what keeps the branch below honest about the type it reads, and the only cell that ever reached it escaped the wrapper, which the boundary parse now refuses */
             if (typeof property !== "string") return undefined
             if (property === "ctx") return context
             if (Object.hasOwn(allowedGlobals, property)) return allowedGlobals[property]
@@ -896,9 +774,11 @@ export const makeRestricted = (): Sandbox =>
           try {
             started = cell(scope, hostless)
           } catch (cause) {
+            /* v8 ignore start -- `cell` is an async function, so it settles its rejection through the promise below rather than throwing synchronously; the only way to throw here was a cell that closed the wrapper and ran at the top level, which the boundary parse now refuses as the syntax error it is */
             settled = raised(cause)
             latch.wake()
             return
+            /* v8 ignore stop */
           }
           started.then(
             (value) => {
@@ -1008,12 +888,3 @@ export const driveCell = (options: {
  * @slop
  */
 export const raisedOutcome = (error: unknown): Cell.Raised => raised(error)
-
-/**
- * The exception a cell observes when a flow call fails.
- *
- * @category conversions
- * @since 0.1.0
- * @slop
- */
-export const failureError = (result: Cell.CallResult): Error => callFailure(result)

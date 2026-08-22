@@ -20,11 +20,17 @@ import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import * as ModelRequest from "@smthrs/model/ModelRequest"
 import * as Descriptor from "@smthrs/registry/Descriptor"
 import { Effect, Option, Result, Schema } from "effect"
+import * as elide from "./internal/elide.ts"
 
 const NonNegativeSafeInt = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)
 )
+
+/** How much of a decoder's own report one rejection message may carry. */
+const issueBytes = 1024
+
+const clipIssue = (message: string): string => elide.head(message, issueBytes, "the rest repeats the same shape")
 
 /**
  * The source language a cell is written in.
@@ -126,19 +132,36 @@ export class Continue extends Schema.TaggedClass<Continue>("flows/harness/Cell/C
   state: Schema.Json,
   context: Schema.Array(ContextEntry),
   /**
+   * Ordinals of settled calls whose results the next frame must be shown.
+   *
+   * The sibling of `render`, for the half of a run's knowledge that does not
+   * live in `state`. A cell is authored before any of its results exist, so
+   * deciding which of them to copy into `state` is a guess made before the
+   * answer is known; when the guess is wrong the only way back to a result the
+   * run already paid for was to issue the call again. Naming its ordinal here
+   * asks the harness to print the stored result in the next frame's prompt,
+   * which is the same mechanic `render` already uses and costs no model turn
+   * of its own.
+   *
+   * Ordinals are the numbers the call ledger prints. A number that names no
+   * settled call, or one whose result is past the recall bound, is answered by
+   * name in the next frame rather than dropped. See `CallLedger` `recall`.
+   */
+  recall: Schema.optional(Schema.Array(Schema.Number)),
+  /**
    * Durable-state keys the next frame must be shown in full.
    *
    * `state` is what the next *cell* computes with; this is what the next
    * *model turn* reads. Without it a state larger than the printable limit
-   * renders as a key roster, so the only way to look at what the run already
-   * knows is to author a cell that copies it into `context` — which is a whole
-   * model turn spent moving bytes the run already owns. Twenty-eight of
-   * ninety-one frames in one graded wave did exactly that, and the
-   * justifications those frames volunteered say so in the model's own words:
-   * "the stored excerpts were not visible in the model context".
+   * renders as a manifest of names and sizes, so the only way to look at what
+   * the run already knows is to author a cell that copies it into `context` —
+   * which is a whole model turn spent moving bytes the run already owns.
+   * Twenty-eight of ninety-one frames in one graded wave did exactly that, and
+   * the justifications those frames volunteered say so in the model's own
+   * words: "the stored excerpts were not visible in the model context".
    *
-   * Naming a key here renders its JSON in the next frame's state section
-   * instead of its roster line. See `CellTurn` `stateTeaching` for the bounds.
+   * Naming a key here renders its JSON in the next frame's state section as
+   * well as its manifest line. See `StateManifest` for the bounds.
    */
   render: Schema.optional(Schema.Array(Schema.String)),
   /**
@@ -205,6 +228,36 @@ export const Transition = Schema.Union([Continue, Complete, Park]).pipe(Schema.t
 export type Transition = typeof Transition.Type
 
 /**
+ * One projected context entry as a cell may write it.
+ *
+ * `text` is `Json` rather than `String` because a cell that hands a structured
+ * value straight to `context` is doing the obvious thing, and the two ways that
+ * used to end were both bad: the transition failed to decode and the frame died
+ * holding work it had already done, or the cell defended itself with
+ * `String(value)` and wrote `[object Object]` into its own next prompt.
+ * {@link renderText} settles it here instead, by rendering anything that is not
+ * a string as JSON.
+ */
+const ReturnedEntry = Schema.Struct({
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.Json
+})
+
+/**
+ * Renders a projected value as the text one context entry carries.
+ *
+ * A string is itself. Everything else is canonical JSON, which is the whole of
+ * the "render structs as JSON, always" rule: a structured value reaches the
+ * next model turn as the value it is.
+ *
+ * @category conversions
+ * @since 0.1.0
+ * @slop
+ */
+export const renderText = (value: Schema.Json): string =>
+  typeof value === "string" ? value : CanonicalJson.stringify(value)
+
+/**
  * The wire shape a cell returns, before decoding into a {@link Transition}.
  *
  * A cell is plain JavaScript, so it returns a plain object keyed by `intent`
@@ -216,21 +269,26 @@ const Returned = Schema.Union([
   Schema.Struct({
     intent: Schema.Literal("continue"),
     state: Schema.optional(Schema.Json),
-    context: Schema.Array(ContextEntry),
+    context: Schema.Array(ReturnedEntry),
     render: Schema.optional(Schema.Array(Schema.String)),
+    recall: Schema.optional(Schema.Array(Schema.Number)),
     justification: Schema.optional(Schema.String)
   }),
   Schema.Struct({
     intent: Schema.Literal("complete"),
     state: Schema.optional(Schema.Json),
-    output: Schema.String,
+    // `Json` for the same reason `context` carries `Json`: a frame that did all
+    // its work and handed back a structured answer is a frame that succeeded,
+    // and refusing it as malformed loses everything the frame paid for. It is
+    // rendered by {@link renderText}, never coerced.
+    output: Schema.Json,
     reason: Schema.optional(Schema.String)
   }),
   Schema.Struct({
     intent: Schema.Literal("park"),
     state: Schema.optional(Schema.Json),
     reason: Schema.Literals(["waiting-input", "waiting-event", "waiting-quota"]),
-    message: Schema.String
+    message: Schema.Json
   })
 ]).pipe(Schema.toTaggedUnion("intent"))
 
@@ -334,8 +392,15 @@ export const transition = (value: unknown): Outcome => {
   if (decoded._tag === "Failure") {
     return new Rejected({
       code: "invalid_transition",
+      // The exact issue, not only the shape. This message is the whole of what
+      // the next frame is told about a transition that did not decode, and a
+      // frame that spent real calls before returning it cannot be replayed — so
+      // "it was not a transition" costs a model turn to re-derive what the
+      // decoder already knew.
       message:
-        "The cell did not return a transition. Return { intent: \"continue\" | \"complete\" | \"park\", ... } exactly as the contract describes."
+        `The cell did not return a transition. Return { intent: "continue" | "complete" | "park", ... } exactly as the contract describes. The decoder reported:\n${
+          clipIssue(decoded.failure.message)
+        }`
     })
   }
   const returned = decoded.success
@@ -344,8 +409,11 @@ export const transition = (value: unknown): Outcome => {
       return new Settled({
         transition: new Continue({
           state: returned.state ?? null,
-          context: returned.context,
+          context: returned.context.map((entry) =>
+            new ContextEntry({ role: entry.role, text: renderText(entry.text) })
+          ),
           render: returned.render,
+          recall: returned.recall,
           justification: returned.justification
         })
       })
@@ -353,7 +421,7 @@ export const transition = (value: unknown): Outcome => {
       return new Settled({
         transition: new Complete({
           state: returned.state ?? null,
-          output: returned.output,
+          output: renderText(returned.output),
           reason: returned.reason
         })
       })
@@ -362,7 +430,7 @@ export const transition = (value: unknown): Outcome => {
         transition: new Park({
           state: returned.state ?? null,
           reason: returned.reason,
-          message: returned.message
+          message: renderText(returned.message)
         })
       })
   }
@@ -415,6 +483,70 @@ export const project = (descriptor: Descriptor.FlowDescriptor): FlowProjection =
     placement: descriptor.placement,
     input: descriptor.input._tag === "Inline" ? Option.some(descriptor.input.document) : Option.none()
   })
+
+/**
+ * Why one flow call failed, as a closed set a cell may branch on.
+ *
+ * Every member is a refusal or a budget the harness itself owns, plus one for
+ * everything a flow reports about its own work. Add a member; never repurpose
+ * one — a cell reads these, and so does a grader counting failure classes in a
+ * journal.
+ *
+ * @category models
+ * @since 0.1.0
+ * @slop
+ */
+export const CallFailureCode = Schema.Literals([
+  "unknown_flow",
+  "capability_refused",
+  "truncated_write",
+  "declaration_changed",
+  "invalid_input",
+  "unimplemented",
+  "timeout",
+  "flow_failed"
+])
+
+/**
+ * Why one flow call failed.
+ *
+ * @category models
+ * @since 0.1.0
+ * @slop
+ */
+export type CallFailureCode = typeof CallFailureCode.Type
+
+/**
+ * The code a failure carries when nothing classified it.
+ *
+ * @category constants
+ * @since 0.1.0
+ * @slop
+ */
+export const defaultCallFailureCode: CallFailureCode = "flow_failed"
+
+/**
+ * The one action that recovers each failure class, stated to the cell.
+ *
+ * A code says what happened; the hint says what to do next, in the same frame.
+ * They are here rather than at each raising site so the same class always reads
+ * the same way whichever boundary refused.
+ *
+ * @category constants
+ * @since 0.1.0
+ * @slop
+ */
+export const callFailureHint: Readonly<Record<CallFailureCode, string>> = Object.freeze({
+  unknown_flow: "Read ctx.flows and call one of the names it lists.",
+  capability_refused: "This run cannot reach that flow. Do the work with a flow ctx.flows lists.",
+  truncated_write:
+    "The bytes you passed were a fragment. Restore from source control instead of writing captured output.",
+  declaration_changed: "Read ctx.flows again and reissue the call with the shape it now declares.",
+  invalid_input: "Fix the input against the flow's declared schema in ctx.flows and call it again in this cell.",
+  unimplemented: "This host cannot run that flow. Choose another one from ctx.flows.",
+  timeout: "Narrow the call — a smaller root, a tighter pattern, a shorter command — and issue it again in this cell.",
+  flow_failed: "Read error.message: the flow itself says what went wrong, and it is usually fixable in this same cell."
+})
 
 /**
  * The complete identity of one flow call made inside one cell.
@@ -493,8 +625,51 @@ export class Call extends Schema.Class<Call>("flows/harness/Cell/Call")({
 export class CallResult extends Schema.Class<CallResult>("flows/harness/Cell/CallResult")({
   outcome: Schema.Literals(["success", "failure"]),
   value: Schema.Json,
-  message: Schema.optional(Schema.String)
+  message: Schema.optional(Schema.String),
+  /**
+   * Why a failed call failed, from the closed set the cell may branch on.
+   *
+   * Prose is what a boundary says; a code is what a program reads. Without one
+   * the only way for a cell to tell "that flow does not exist" from "that
+   * command timed out" was to match the message, so cells did not tell them
+   * apart at all. Absent means {@link defaultCallFailureCode}, which is what a
+   * flow's own failure gets: the flow said why in `message` and the harness
+   * does not classify it.
+   */
+  code: Schema.optional(CallFailureCode)
 }) {}
+
+/**
+ * The failure envelope a cell observes when a flow call does not succeed.
+ *
+ * A failed call **resolves** with this value; it does not throw. That is the
+ * whole of change 8: an unrecoverable rejection turned every failed call into a
+ * lost frame, because the recovery branch the model had already written sat
+ * behind the throw and never ran, and every sibling call the cell had already
+ * paid for went with it. `psf__requests-2317` lost two settled greps and a
+ * probe to one call against a directory that did not exist; `django-14351`
+ * spent ~$0.46 on the same class across five frames.
+ *
+ * The shape is fixed and small — `{ ok: false, error: { code, message, hint } }`
+ * — because a cell branches on `.ok` and reads `.error.code`. A successful call
+ * still resolves with the flow's own value, unwrapped, so the ordinary
+ * `result.stdout` shape a cell is trained on is unchanged.
+ *
+ * @category conversions
+ * @since 0.1.0
+ * @slop
+ */
+export const callFailure = (result: CallResult): Schema.Json => {
+  const code = result.code ?? defaultCallFailureCode
+  return {
+    ok: false,
+    error: {
+      code,
+      message: result.message ?? "The flow call failed",
+      hint: callFailureHint[code]
+    }
+  }
+}
 
 const fenced = /```(?<info>[^\n`]*)\n(?<body>[\s\S]*?)\n?```/g
 

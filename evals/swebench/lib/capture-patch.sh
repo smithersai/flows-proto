@@ -10,13 +10,12 @@
 #
 #   1. Files the image's own `pre_install` step mutated. The capture base
 #      already contains them, so they cancel.
-#   2. Files that did not exist when the agent started. The flows durability
-#      snapshot writes the whole working tree into git's index, so agent scratch
-#      is tracked by capture time and a diff would report it as a new file —
-#      wave 3 shipped `.tmp_init_collect_repro/` with an `assert False` in it.
-#      Restoring the index to the capture base drops them, which is also exactly
-#      the set the codex path never had in its index, so both harnesses are
-#      captured under the same rule.
+#   2. Files that did not exist when the agent started. Agent scratch left in
+#      the tree would otherwise be reported as a new file — wave 3 shipped
+#      `.tmp_init_collect_repro/` with an `assert False` in it. Restoring the
+#      index to the capture base drops them, which is also exactly the set the
+#      codex path never had in its index, so both harnesses are captured under
+#      the same rule.
 #
 # Anything dropped by rule 2 is listed in <out-patch>.untracked, so a wave can
 # see whether a run created a file it meant to keep.
@@ -44,7 +43,7 @@ CAPTURE="$(cd "$WORK" && git rev-parse --verify --quiet "$REF^{commit}")" || {
 # Restore the index to the capture base: it is the pre-agent set of tracked
 # paths, with the image's own permission bits, so the diff reports content the
 # agent wrote and neither scratch files nor the mode churn the host extraction
-# and the colocated jj snapshot introduce.
+# introduces.
 ( cd "$WORK" && git read-tree "$CAPTURE" )
 ( cd "$WORK" && git ls-files --others --exclude-standard ) > "$OUT.untracked"
 

@@ -249,11 +249,13 @@ describe("QuickJSSandbox realm", () => {
     expect(await outcomeOf(`throw { name: "Custom", message: "detail" }`)).toStrictEqual(
       new Cell.Raised({ name: "Custom", message: "detail" })
     )
+    // A structure is rendered as the structure it is. `[object Object]` is the
+    // defect PROGRAM change 1 names verbatim and it is not reachable from here.
     expect(await outcomeOf(`throw { name: "Custom", message: 7 }`)).toStrictEqual(
-      new Cell.Raised({ name: "Custom", message: "[object Object]" })
+      new Cell.Raised({ name: "Custom", message: `{"message":7,"name":"Custom"}` })
     )
     expect(await outcomeOf(`throw { code: 7 }`)).toStrictEqual(
-      new Cell.Raised({ name: "Error", message: "[object Object]" })
+      new Cell.Raised({ name: "Error", message: `{"code":7}` })
     )
   })
 
@@ -274,33 +276,22 @@ describe("QuickJSSandbox realm", () => {
     expect(contract.message).toContain("did not return a transition")
   })
 
-  it("reports a cell that escapes the async wrapper and throws a primitive as a compile failure", async () => {
-    // The cell text is interpolated into a wrapper, so a cell can close the
-    // wrapper and run at the top level of the evaluated program. A primitive
-    // thrown there is not an Error object, and the rejection must still read
-    // as one sentence the model can act on.
-    const outcome = await outcomeOf(`})(), (function () { throw "primitive" })(), (async () => {`)
-
-    expect(outcome).toStrictEqual(
-      new Cell.Rejected({ code: "compile_failed", message: "The cell did not compile: primitive" })
-    )
-  })
-
-  it("stops a cell that escapes the async wrapper and burns the step budget synchronously", async () => {
-    // Same escape, spending the budget where no promise can absorb the
-    // interrupt. The ceiling still wins, and it is reported as the ceiling it
-    // is rather than as a compile failure.
-    const outcome = await outcomeOf(
-      `})(), (function () { let t = 0; while (true) t = t + 1 })(), (async () => {`,
-      { limits: { steps: 20 } }
-    )
-
-    expect(outcome).toStrictEqual(
-      new Cell.Rejected({
-        code: "limit_exceeded",
-        message: "This cell exceeded its limit of 20 interpreter steps"
-      })
-    )
+  it("refuses a cell that would escape the async wrapper, before the realm sees it", async () => {
+    // The cell text is interpolated into a wrapper, so a cell that closed the
+    // wrapper would run at the top level of the evaluated program. Closing it
+    // needs unbalanced parentheses, which the boundary parse reads as the
+    // syntax error it is — so neither escape reaches the realm at all, and
+    // neither can spend the step budget getting there.
+    for (
+      const escape of [
+        `})(), (function () { throw "primitive" })(), (async () => {`,
+        `})(), (function () { let t = 0; while (true) t = t + 1 })(), (async () => {`
+      ]
+    ) {
+      const outcome = await outcomeOf(escape, { limits: { steps: 20 } })
+      expect(outcome, escape).toMatchObject({ _tag: "rejected", code: "compile_failed" })
+      expect((outcome as Cell.Rejected).message).toContain("line 1")
+    }
   })
 })
 
@@ -359,20 +350,28 @@ describe("QuickJSSandbox calls", () => {
     expect(outcome).toMatchObject({ _tag: "settled", transition: { _tag: "complete", output: "accepted" } })
   })
 
+  it("refuses source the boundary parse accepts and the realm does not", async () => {
+    // The boundary parse is TypeScript's; the realm's is QuickJS's, and the two
+    // do not draw the line in the same place. `#a in o` outside any class is a
+    // grammar error TypeScript reports semantically and QuickJS reports at
+    // compile, so the realm's own refusal is still reachable and still has to
+    // read as one sentence a model can act on.
+    const outcome = await outcomeOf(`const o = { a: 1 }\nreturn { intent: "complete", output: String(#a in o) }`)
+
+    expect(outcome).toMatchObject({ _tag: "rejected", code: "compile_failed" })
+    expect((outcome as Cell.Rejected).message).toContain("The cell did not compile:")
+  })
+
   it("names a failure the host reported without a message", async () => {
     const outcome = await outcomeOf(
-      `try {
-         await ctx.call("fs/list", {})
-       } catch (error) {
-         return { intent: "complete", output: error.name + "|" + error.message + "|" + JSON.stringify(error.value) }
-       }
-       return { intent: "complete", output: "unreachable" }`,
+      `const result = await ctx.call("fs/list", {})
+       return { intent: "complete", output: result.error.code + "|" + result.error.message }`,
       { call: () => Effect.succeed(new Cell.CallResult({ outcome: "failure", value: { why: "denied" } })) }
     )
 
     expect(outcome).toMatchObject({
       _tag: "settled",
-      transition: { _tag: "complete", output: `FlowCallError|The flow call failed|{"why":"denied"}` }
+      transition: { _tag: "complete", output: `flow_failed|The flow call failed` }
     })
   })
 
@@ -387,7 +386,9 @@ describe("QuickJSSandbox calls", () => {
       {
         call: (invocation) => {
           observed.push(invocation)
-          return Effect.succeed(new Cell.CallResult({ outcome: "success", value: { entries: ["a", "b"] } }))
+          return Effect.succeed(
+            new Cell.CallResult({ outcome: "success", value: { entries: ["a", "b"], exitCode: 0 } })
+          )
         }
       }
     )

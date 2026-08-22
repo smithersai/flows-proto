@@ -322,10 +322,10 @@ describe("Agent.run", () => {
     expect(requests[0]).not.toContain("fs/write")
     expect(executed).toEqual(["fs/list#0"])
 
-    // The cell threw on the refused call, which is durable evidence and a
-    // further frame, not a failed run.
+    // The refused call resolved with the failure envelope, so the cell ran to
+    // its own end: durable evidence and a further frame, not a failed run.
     const settled = events.filter((event) => event._tag === "cell-settled")
-    expect(settled.at(0)?._tag === "cell-settled" ? settled.at(0)?.outcome._tag : undefined).toBe("raised")
+    expect(settled.at(0)?._tag === "cell-settled" ? settled.at(0)?.outcome._tag : undefined).toBe("settled")
   })
 
   it("carries every declaration the host supplies through to the boundary", async () => {

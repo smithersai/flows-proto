@@ -31,7 +31,12 @@ try {
   )
   assert.equal(generated.status, 0, generated.stderr)
   assert.match(generated.stdout, /\.\/tests\/runtests\.py --verbosity 2/)
-  assert.match(generated.stdout, /git diff abc123/)
+  // The task commit is named in the opening sentence; the environment section
+  // no longer teaches a diff against it, because the harness's own snapshots
+  // are out of this repository and `git diff` reports the agent's edits.
+  assert.match(generated.stdout, /at commit abc123\./)
+  assert.match(generated.stdout, /Git in this checkout behaves normally/)
+  assert.doesNotMatch(generated.stdout, /colocated with Jujutsu/)
   assert.doesNotMatch(generated.stdout, /FAIL_TO_PASS|PASS_TO_PASS/)
 
   const missing = spawnSync(

@@ -360,9 +360,11 @@ describe("CellTurn durable state teaching", () => {
       state: state({ agentState: printable })
     })
     expect(stateSection(printed.model, 0)).toBe(
-      `Agent-owned durable state for this frame (JSON), also available in the cell as ctx.state:\n${
-        CanonicalJson.stringify(printable)
-      }`
+      [
+        "Durable state for this frame (ctx.state) is 2048 bytes across 1 key:",
+        "- plan (string, 2039b) — written before this run's stamps began",
+        `The whole of it, as JSON:\n${CanonicalJson.stringify(printable)}`
+      ].join("\n")
     )
 
     const oversized = { plan: "x".repeat(2_038) }
@@ -372,9 +374,9 @@ describe("CellTurn durable state teaching", () => {
       state: state({ agentState: oversized })
     })
     const teaching = stateSection(rostered.model, 0)
-    expect(teaching).toContain("durable state for this frame is 2049 bytes")
-    expect(teaching).toContain("- plan (2040 bytes)")
-    // The point of the roster is that the bytes are not paid twice.
+    expect(teaching).toContain("(ctx.state) is 2049 bytes across 1 key")
+    expect(teaching).toContain("- plan (string, 2040b)")
+    // The point of the manifest is that the bytes are not paid twice.
     expect(teaching).not.toContain("x".repeat(2_038))
   })
 
@@ -387,10 +389,10 @@ describe("CellTurn durable state teaching", () => {
     })
 
     const teaching = stateSection(model, 0)
-    expect(teaching).toContain("- notes (3002 bytes)")
-    expect(teaching).toContain("- counts (7 bytes)")
-    expect(teaching).toContain("- empty (4 bytes)")
-    expect(teaching).toContain("- flag (4 bytes)")
+    expect(teaching).toContain("- notes (string, 3002b)")
+    expect(teaching).toContain("- counts (array, 7b)")
+    expect(teaching).toContain("- empty (null, 4b)")
+    expect(teaching).toContain("- flag (boolean, 4b)")
   })
 
   it("reports only the size of an oversized state that has no keys to roster", async () => {
@@ -398,20 +400,20 @@ describe("CellTurn durable state teaching", () => {
       script: [emits(`return { intent: "complete", output: "done" }`)],
       state: state({ agentState: ["z".repeat(3_000)] })
     })
-    expect(stateSection(array.model, 0)).toContain("(3004 bytes)")
+    expect(stateSection(array.model, 0)).toContain("is 3004 bytes and holds no named keys")
 
     const scalar = await run({
       script: [emits(`return { intent: "complete", output: "done" }`)],
       state: state({ agentState: "z".repeat(3_000) })
     })
-    expect(stateSection(scalar.model, 0)).toContain("(3002 bytes)")
+    expect(stateSection(scalar.model, 0)).toContain("is 3002 bytes and holds no named keys")
   })
 
   it("prints an absent state as the literal null the cell will see", async () => {
     const { model } = await run({ script: [emits(`return { intent: "complete", output: "done" }`)] })
 
     expect(stateSection(model, 0)).toBe(
-      "Agent-owned durable state for this frame (JSON), also available in the cell as ctx.state:\nnull"
+      "Durable state for this frame (ctx.state) is 4 bytes and holds no named keys.\nThe whole of it, as JSON:\nnull"
     )
   })
 })
@@ -443,10 +445,10 @@ describe("CellTurn state projection", () => {
     expect(section).toContain("Rendered in full because your last transition named them in `render`:")
     expect(section).toContain("## probe\n\"exit 1\"")
     expect(section).toContain(`## excerpt\n"${"e".repeat(3_000)}"`)
-    // Every key not named keeps its roster line, and no key is stated twice.
-    expect(section).toContain("- notes (3002 bytes)")
-    expect(section).not.toContain("- probe (")
-    expect(section).not.toContain("- excerpt (")
+    // The manifest names every key the state holds, projected or not, with its
+    // type, size and the frame that wrote it.
+    expect(section).toContain("- notes (string, 3002b) — written at frame 0, 1 frame ago")
+    expect(section).toContain("- probe (string, 8b) — written at frame 0, 1 frame ago")
   })
 
   it("states the elision when a projected value is over the per-key bound", async () => {
@@ -467,7 +469,8 @@ describe("CellTurn state projection", () => {
     const section = stateSection(model, 1)
     // 9,002 canonical bytes against a 4,096-byte bound leaves 4,906 elided,
     // and the two ends survive because that is where the identifying bytes are.
-    expect(section).toContain("… 4906 bytes elided from the middle of this value")
+    expect(section).toContain("… 4906 of 9002 bytes elided from the middle.")
+    expect(section).toContain("the whole value is ctx.state.excerpt inside your cell")
     expect(section).toContain(`## excerpt\n"${"e".repeat(2_047)}\n`)
     expect(section).not.toContain("e".repeat(4_097))
   })
@@ -490,8 +493,8 @@ describe("CellTurn state projection", () => {
     })
 
     const section = stateSection(model, 1)
-    expect(section).toContain("Only the first 8 keys you named are rendered in full; i kept their roster line")
-    expect(section).toContain("- i (402 bytes)")
+    expect(section).toContain("Only the first 8 keys you named are rendered in full; i kept their manifest line")
+    expect(section).toContain("- i (string, 402b)")
     expect(section).toContain("## h\n")
   })
 
@@ -540,9 +543,11 @@ describe("CellTurn state projection", () => {
       ]
     })
 
-    expect(stateSection(model, 1)).toBe(
-      "Agent-owned durable state for this frame (JSON), also available in the cell as ctx.state:\n{\"plan\":\"read\"}"
-    )
+    const section = stateSection(model, 1)
+    expect(section).toContain("The whole of it, as JSON:\n{\"plan\":\"read\"}")
+    // Naming a key in a small state is not an error and is not ignored: the
+    // key is rendered as asked, under the whole state it is already inside.
+    expect(section).toContain("## plan\n\"read\"")
   })
 
   it("clears the projection when the next transition names none", async () => {
@@ -559,7 +564,7 @@ describe("CellTurn state projection", () => {
 
     expect(stateSection(model, 1)).toContain("## probe")
     expect(stateSection(model, 2)).not.toContain("## probe")
-    expect(stateSection(model, 2)).toContain("Read what you need from ctx.state instead of reconstructing it.")
+    expect(stateSection(model, 2)).toContain("Read what you need from ctx.state inside your cell")
   })
 })
 
@@ -793,7 +798,7 @@ describe("CellTurn call classification", () => {
     const { events } = await collect({ state: state(), flows: [lister] }, { engine: engine.layer })
 
     expect(of(events, "cell-call-settled")[0]?.result.outcome).toBe("failure")
-    expect(messagesOf(model, 1)).toContain("fs/list -> FAILED: failed")
+    expect(messagesOf(model, 1)).toContain("1. fs/list -> FAILED: failed")
     expect(resolvedText(events)).toBe("recovered")
   })
 
@@ -808,7 +813,7 @@ describe("CellTurn call classification", () => {
     const engine = stubEngine(model.model, { call: () => Effect.succeed(valueless()) })
     const { events } = await collect({ state: state(), flows: [lister] }, { engine: engine.layer })
 
-    expect(messagesOf(model, 1)).toContain("fs/list -> ok: null")
+    expect(messagesOf(model, 1)).toContain("1. fs/list -> ok: null")
     expect(resolvedText(events)).toBe("recovered")
   })
 

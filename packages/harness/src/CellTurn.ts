@@ -24,13 +24,16 @@ import { Clock, Effect, Option, Queue, Result, Schema, Stream } from "effect"
 import * as AgentEvent from "./AgentEvent.ts"
 import * as CallLedger from "./CallLedger.ts"
 import * as Cell from "./Cell.ts"
+import * as CellValidation from "./CellValidation.ts"
 import * as Compaction from "./Compaction.ts"
 import * as ContextWindow from "./ContextWindow.ts"
 import * as EngineLike from "./EngineLike.ts"
 import { HarnessError } from "./HarnessError.ts"
 import * as cellPrompt from "./internal/cellPrompt.ts"
+import * as elide from "./internal/elide.ts"
 import * as NarrowedCheck from "./NarrowedCheck.ts"
 import * as Sandbox from "./Sandbox.ts"
+import * as StateManifest from "./StateManifest.ts"
 import * as Steering from "./Steering.ts"
 import * as Sufficiency from "./Sufficiency.ts"
 import * as TruncatedOutput from "./TruncatedOutput.ts"
@@ -181,6 +184,33 @@ export const defaultUnmovedDemands = 1
  */
 export const defaultUnresolvedDemands = 1
 
+/**
+ * Default number of times one frame may answer its own unparseable cell.
+ *
+ * A cell that does not parse never ran, so nothing about the world has changed
+ * and the frame has nothing to record except the mistake. Ending the frame
+ * there is what the r90 wave did, and it charged a whole model turn for a
+ * missing brace nine times — `sympy__sympy-20154` $0.70 for a 53 KB program
+ * that never executed, `django__django-15987` 59 % of the instance's bill,
+ * `sympy__sympy-18763` twice on the same instance with the second cell
+ * repeating the first's syntax error character for character, because the
+ * failure was invisible to the model that wrote it.
+ *
+ * One re-prompt closes that. Everything before the trailing frame block —
+ * teaching, catalog, transcript — is byte-identical to the request just sent,
+ * so the provider serves it from its prefix cache and the retry costs the
+ * output it writes plus cached input. What it buys is the difference between
+ * an error the model reads *now* and one it reads after the frame is gone.
+ *
+ * Zero disarms it. More than one is not the answer to a model that has lost
+ * the shape twice: that is worth a fresh frame with the failure on the record,
+ * which is what the second one gets.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const defaultRevalidations = 1
+
 const MaxFrames = NonNegativeSafeInt.pipe(
   Schema.withConstructorDefault(Effect.succeed(defaultMaxFrames)),
   Schema.withDecodingDefaultKey(Effect.succeed(defaultMaxFrames))
@@ -201,6 +231,7 @@ const eventType = {
   cellCallSettled: "flows.harness.cell-call-settled.v1",
   cellCallStarted: "flows.harness.cell-call-started.v1",
   cellProduced: "flows.harness.cell-produced.v1",
+  cellRejectedInFrame: "flows.harness.cell-rejected-in-frame.v1",
   cellSettled: "flows.harness.cell-settled.v1",
   compactionSettled: "flows.harness.compaction-settled.v1",
   modelRetried: "flows.harness.model-retried.v1",
@@ -502,6 +533,42 @@ export class State extends Schema.Class<State>("flows/harness/CellTurn/State")({
     Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<string>>([]))
   ),
   /**
+   * Settled-call ordinals the next frame is shown in full.
+   *
+   * The `render` of the call ledger, and replaced by every `continue` for the
+   * same reason: a recall is a statement about the frame being opened, not a
+   * standing subscription. See `Cell.Continue` `recall` and `CallLedger`
+   * `recall`.
+   */
+  recallOrdinals: Schema.Array(Schema.Number).pipe(
+    Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<number>>([])),
+    Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<number>>([]))
+  ),
+  /**
+   * When each top-level durable-state key was last written.
+   *
+   * Carried in state because freshness is a property of the run: the frame that
+   * reads a key is rarely the frame that wrote it, and "how old is this" cannot
+   * be recovered from the value. See `StateManifest`.
+   */
+  stateStamps: StateManifest.Ledger,
+  /**
+   * How many times one frame may answer its own unparseable cell before the
+   * frame ends. Zero disarms the answer, which restores the old behaviour: a
+   * cell that does not parse settles the frame.
+   *
+   * One, because that is what the evidence asks for. A cell that does not parse
+   * is answered by a re-prompt whose whole prefix — teaching, catalog,
+   * transcript — is byte-identical to the one just sent, so the retry is paid
+   * for at cached-input price plus the output it writes. Two consecutive
+   * unparseable answers is a model that has lost the shape rather than
+   * mistyped, and that is worth a fresh frame with the failure on the record.
+   */
+  revalidations: NonNegativeSafeInt.pipe(
+    Schema.withConstructorDefault(Effect.succeed(defaultRevalidations)),
+    Schema.withDecodingDefaultKey(Effect.succeed(defaultRevalidations))
+  ),
+  /**
    * The output of the completion a completion demand handed back, if any.
    *
    * The demand takes a finished answer away and asks for one more frame. It is
@@ -655,6 +722,11 @@ export const make = (options: {
    * for an answer to come from may claim true.
    */
   readonly approvalChannel?: boolean | undefined
+  /**
+   * Caps how many times one frame may answer its own unparseable cell before
+   * the frame ends. Omitted takes {@link defaultRevalidations}; zero disarms it.
+   */
+  readonly revalidations?: number | undefined
 }): State =>
   new State({
     session: options.session,
@@ -689,6 +761,9 @@ export const make = (options: {
     mutations: 0,
     sufficiencyStated: false,
     renderKeys: [],
+    recallOrdinals: [],
+    stateStamps: [],
+    revalidations: options.revalidations ?? defaultRevalidations,
     approvalChannel: options.approvalChannel ?? false,
     workspace: undefined,
     truncatedOutputs: []
@@ -752,12 +827,13 @@ const placementFrom = (state: State): Placement.Placement | undefined =>
 
 const keyMaterialFrom = (
   state: State,
+  contextWindow: ContextWindow.ContextWindow,
   request: ModelRequest.ModelRequest
 ): KeyMaterial.KeyMaterial => ({
   version: "flows/key-material/v1",
   kind: "sealed",
   body: { _tag: "ModelCall", request },
-  inputs: [{ _tag: "Literal", value: { contextDigest: state.contextWindow.digest } }],
+  inputs: [{ _tag: "Literal", value: { contextDigest: contextWindow.digest } }],
   layers: [...new Set(state.layers)].sort(),
   capabilities: [...new Set(state.capabilityEnvelope.map(Capability.format))].sort(),
   effects: Effects.make({
@@ -771,115 +847,13 @@ const keyMaterialFrom = (
 })
 
 /**
- * The largest state, in bytes of canonical JSON, printed whole rather than
- * rostered.
- */
-const printableState = 2048
-
-/**
- * The largest projection, in bytes, one key named by `render` may occupy.
+ * Everything the model is told about the run's own memory this frame.
  *
- * A key over the bound renders its first and last {@link projectionEdge} bytes
- * with the elision stated between them, because the two ends of a file excerpt,
- * a diff, or a test log are where the identifying bytes are and the middle is
- * where the repetition is.
- */
-const projectionBytes = 4096
-
-/** Bytes kept at each end of an over-bound projection. */
-const projectionEdge = projectionBytes / 2
-
-/**
- * How many keys one transition may project.
- *
- * The bound exists because the model chooses the list and the section has to
- * stay bounded whatever it chooses. Eight keys at {@link projectionBytes} each
- * is 32 KB, which is under a fifth of the smallest context window this harness
- * runs against; keys named past the eighth keep their roster line and are told
- * why.
- */
-const projectionKeys = 8
-
-const projection = (value: unknown): string => {
-  const rendered = CanonicalJson.stringify(value)
-  if (rendered.length <= projectionBytes) return rendered
-  return `${rendered.slice(0, projectionEdge)}\n… ${
-    rendered.length - projectionBytes
-  } bytes elided from the middle of this value; the whole of it is in ctx.state …\n${
-    rendered.slice(rendered.length - projectionEdge)
-  }`
-}
-
-/**
- * Renders the durable state for the frame's own state section.
- *
- * The full value is the cell's `ctx.state` binding, so the prompt only needs
- * enough to plan with: the whole JSON while it is small, and a key roster with
- * sizes once it is not. Re-printing a large state every frame both paid its
- * bytes twice and taught the model to treat the prompt as the store — the
- * roster is Prime Agent's `<ipython_state>` pattern, naming what survives
- * outside the transcript instead of hauling it back in.
- *
- * The roster alone was not enough, and the price is measured. It names what
- * survives without saying what it says, and `ctx.state` is readable only from
- * inside a cell that has already been authored — so the only way to look at a
- * large state was to spend a frame copying it into `context`. That is what
- * `render` on the transition removes: a cell names the keys its next frame must
- * *see*, and those keys are printed here in full under the bounds above while
- * every other key keeps its roster line.
- */
-const stateTeaching = (agentState: Schema.Json, keys: ReadonlyArray<string>): string => {
-  const rendered = CanonicalJson.stringify(agentState)
-  if (rendered.length <= printableState) {
-    return `Agent-owned durable state for this frame (JSON), also available in the cell as ctx.state:\n${rendered}`
-  }
-  const members = new Map<string, Schema.Json>(
-    agentState !== null && typeof agentState === "object" && !Array.isArray(agentState)
-      ? Object.entries(agentState)
-      : []
-  )
-  // De-duplicated first, because the list is model-written and a repeated name
-  // would otherwise spend a slot of the projection budget on rendering one
-  // value twice — `render: ["a", "a", "a"]` printed the same key three times
-  // and left five slots for the seven keys the frame actually needed.
-  const asked = [...new Set(keys)]
-  const named = asked.filter((key) => members.has(key))
-  const shown = named.slice(0, projectionKeys)
-  const overflow = named.slice(projectionKeys)
-  const missing = asked.filter((key) => !members.has(key))
-  const roster = members.size === 0
-    ? `(${rendered.length} bytes)`
-    : [...members]
-      .filter(([key]) => !shown.includes(key))
-      // `CanonicalJson.stringify` above already rejected every value
-      // `JSON.stringify` renders as `undefined`, so each member has a length.
-      .map(([key, value]) => `- ${key} (${JSON.stringify(value).length} bytes)`)
-      .join("\n")
-  const notes = [
-    ...(overflow.length === 0
-      ? []
-      : [
-        `Only the first ${projectionKeys} keys you named are rendered in full; ${
-          overflow.join(", ")
-        } kept their roster line. Name fewer keys to see them.`
-      ]),
-    ...(missing.length === 0 ? [] : [`No such key in state: ${missing.join(", ")}.`])
-  ]
-  return [
-    `Agent-owned durable state for this frame is ${rendered.length} bytes and is available in the cell as ctx.state. Its keys:`,
-    roster,
-    ...(shown.length === 0
-      ? ["Read what you need from ctx.state instead of reconstructing it."]
-      : [
-        "Rendered in full because your last transition named them in `render`:",
-        ...shown.map((key) => `## ${key}\n${projection(members.get(key))}`)
-      ]),
-    ...notes
-  ].join("\n")
-}
-
-/**
- * Everything about this frame that is not stable across frames.
+ * Three sections, and each of them exists because a run paid for the same bytes
+ * twice without it: what `ctx.state` holds and how fresh each key is
+ * (`StateManifest`), what the run has already asked and which of those results
+ * are still recallable (`CallLedger`), and the results this frame's predecessor
+ * asked to see again.
  *
  * It is one trailing user message rather than a system part, and that placement
  * is the whole point: the teaching, the task and the flow catalog are
@@ -892,16 +866,26 @@ const stateTeaching = (agentState: Schema.Json, keys: ReadonlyArray<string>): st
  */
 const stateSection = (state: State): string => {
   const ledger = CallLedger.render(state.callLedger)
+  const recalled = CallLedger.recall(state.callLedger, state.recallOrdinals)
   return [
-    stateTeaching(state.agentState, state.renderKeys),
-    ...(ledger === undefined ? [] : [ledger])
+    StateManifest.render({
+      state: state.agentState,
+      stamps: state.stateStamps,
+      frame: state.frame,
+      keys: state.renderKeys
+    }),
+    ...(ledger === undefined ? [] : [ledger]),
+    ...(recalled === undefined ? [] : [recalled])
   ].join("\n\n")
 }
 
-const requestFrom = (state: State): Result.Result<ModelRequest.ModelRequest, HarnessError> => {
+const requestFrom = (
+  state: State,
+  contextWindow: ContextWindow.ContextWindow
+): Result.Result<ModelRequest.ModelRequest, HarnessError> => {
   let rendered: ModelRequest.ModelRequest
   try {
-    rendered = ContextWindow.render(state.contextWindow)
+    rendered = ContextWindow.render(contextWindow)
   } catch (cause) {
     return Result.fail(
       new HarnessError({
@@ -947,25 +931,110 @@ const permissionRequired = (error: unknown): Permission.PermissionRequired | und
  * A malformed cell, a thrown cell, or a rejected transition is durable
  * evidence, not a crash: the assistant text stays on the record and the
  * harness states plainly what went wrong so the next frame can fix it.
+ *
+ * How much of a cell that RAN is echoed back into the next prompt.
+ *
+ * Generous, because the model is being asked to fix source it can no longer
+ * see: the cell it wrote is only in the transcript, and a raise is repaired by
+ * editing the line that threw. Almost every real cell is far under this.
  */
-const observed = (
-  state: State,
+const liveCellEcho = 8192
+
+/**
+ * How much of a cell that never RAN is echoed back into the next prompt.
+ *
+ * Tight, because a dead cell is answered by its error and not by its text. The
+ * r90 wave charged `sympy__sympy-20154` $0.10 to read back a 53 KB program that
+ * had already failed to compile once — the error names the line, and the line
+ * is what the next cell needs. What is dropped is stated, so the model is never
+ * shown a truncated program it might mistake for a whole one.
+ */
+const deadCellEcho = 1024
+
+/**
+ * Appends one observation turn to a context window, bounding the echo.
+ *
+ * The assistant message is the model's own reply, and putting it back verbatim
+ * is how a frame's output becomes the next frame's input at full price. It is
+ * kept whole while it is small, and stated as an excerpt once it is not.
+ */
+const observedOn = (
+  contextWindow: ContextWindow.ContextWindow,
   assistant: ModelRequest.AssistantMessage,
-  observation: string
+  observation: string,
+  echo: number
 ): ContextWindow.ContextWindow =>
   ContextWindow.make({
-    modelId: state.contextWindow.modelId,
+    modelId: contextWindow.modelId,
     segments: [
-      ...state.contextWindow.segments,
+      ...contextWindow.segments,
       ContextWindow.makeSegment({
         kind: "transcript",
         zone: "tail",
-        content: [assistant, ModelRequest.Message.user(observation)]
+        content: [bounded(assistant, echo), ModelRequest.Message.user(observation)]
       })
     ],
-    activeTools: state.contextWindow.activeTools,
-    replaced: state.contextWindow.replaced
+    activeTools: contextWindow.activeTools,
+    replaced: contextWindow.replaced
   })
+
+/**
+ * The assistant's own reply, shortened from the middle when it is too long to
+ * re-read at input price, with the elision stated.
+ */
+/**
+ * The property name a thrown TypeError says could not be read, if it says one.
+ *
+ * Every realm this harness runs cells in words the same failure differently —
+ * V8 says "Cannot read properties of undefined (reading 'x')", QuickJS says
+ * "cannot read property 'x' of undefined" — so the property name is taken from
+ * the quotes rather than from the sentence around them.
+ */
+const missedProperty = (message: string): string | undefined => {
+  const match = /reading '([^']+)'|read property '([^']+)'/i.exec(message)
+  /* v8 ignore next -- the regex has exactly two alternatives and each binds one group, so a match always has one of them; the fallback only discharges the optional type on a capture */
+  return match === null ? undefined : (match[1] ?? match[2])
+}
+
+/**
+ * States what `ctx.state` actually holds, when a cell threw reading a path.
+ *
+ * PROGRAM change 5: "a state path that misses reports the available keys". The
+ * cell cannot be stopped from throwing — reading an absent key is legal
+ * JavaScript and every guard a cell writes depends on it staying legal — so the
+ * answer lands in the observation the throw already produces.
+ */
+const statePathMiss = (message: string, agentState: Schema.Json): string | undefined => {
+  const property = missedProperty(message)
+  if (property === undefined) return undefined
+  const keys = agentState !== null && typeof agentState === "object" && !Array.isArray(agentState)
+    ? Object.keys(agentState)
+    : []
+  return keys.length === 0
+    ? `If \`${property}\` was meant to come from ctx.state: this run's state holds no keys at all yet.`
+    : `If \`${property}\` was meant to come from ctx.state, these are the keys it holds: ${
+      keys.join(", ")
+    }. The manifest in the frame block gives each one's type, size and age.`
+}
+
+const revalidationNote = (rejection: Cell.Rejected): string =>
+  `${rejection.message}\n\nThis reply is not a frame. Nothing ran, nothing changed, and no call was made, so you are being asked again inside the same frame instead of losing it: everything above this line is already in the provider's cache, and only what you write next is paid for. Emit the corrected cell and nothing else.`
+
+/**
+ * The assistant's own reply, shortened from the middle when it is too long to
+ * re-read at input price, with the elision stated.
+ */
+const bounded = (
+  assistant: ModelRequest.AssistantMessage,
+  echo: number
+): ModelRequest.AssistantMessage => {
+  const text = assistantText(assistant)
+  if (text.length <= echo) return assistant
+  return ModelRequest.Message.assistant(
+    elide.middle(text, echo, "the reply is not re-read in full; the observation below names what went wrong"),
+    { stopReason: assistant.stopReason }
+  )
+}
 
 /**
  * Replaces the transcript with exactly the context the cell projected.
@@ -975,25 +1044,35 @@ const observed = (
  * cell's choice.
  */
 const projected = (
-  state: State,
+  contextWindow: ContextWindow.ContextWindow,
   entries: ReadonlyArray<Cell.ContextEntry>,
   steered: ReadonlyArray<ModelRequest.Message>
 ): ContextWindow.ContextWindow => {
   const messages = [...entries.map(Cell.renderEntry), ...steered]
   return ContextWindow.make({
-    modelId: state.contextWindow.modelId,
+    modelId: contextWindow.modelId,
     segments: [
-      ...state.contextWindow.segments.filter((segment) => segment.zone === "prefix"),
+      ...contextWindow.segments.filter((segment) => segment.zone === "prefix"),
       ...(messages.length === 0
         ? []
         : [ContextWindow.makeSegment({ kind: "transcript", zone: "tail", content: messages })])
     ],
-    activeTools: state.contextWindow.activeTools,
-    replaced: state.contextWindow.replaced
+    activeTools: contextWindow.activeTools,
+    replaced: contextWindow.replaced
   })
 }
 
-const clip = (text: string, width: number): string => text.length > width ? `${text.slice(0, width - 1)}…` : text
+const clip = (text: string, width: number): string => elide.head(text, width, "clipped")
+
+/**
+ * How much of one call's result the salvage list quotes back after a crash.
+ *
+ * A summary, not the result: the whole of it is in the call ledger under its
+ * ordinal, and the line says so. Before that, a clipped summary was the only
+ * copy the next frame would ever see, and the next cell re-issued the call to
+ * get the rest.
+ */
+const salvageSummary = 400
 
 /**
  * States, unambiguously, that a call this frame failed about itself.
@@ -1313,6 +1392,7 @@ const callHandler = (
       return new Cell.CallResult({
         outcome: "failure",
         value: null,
+        code: "unknown_flow",
         message: `Unknown flow ${invocation.flow}. Only the flows in ctx.flows are callable.`
       })
     }
@@ -1327,6 +1407,7 @@ const callHandler = (
       return new Cell.CallResult({
         outcome: "failure",
         value: null,
+        code: "capability_refused",
         message: `Flow ${invocation.flow} needs ${refused.join(", ")}, which is outside this run's capability envelope.`
       })
     }
@@ -1339,6 +1420,7 @@ const callHandler = (
         return new Cell.CallResult({
           outcome: "failure",
           value: null,
+          code: "truncated_write",
           message: TruncatedOutput.refusal(invocation.flow, found)
         })
       }
@@ -1425,7 +1507,7 @@ const compacted = (
     const events = yield* Stream.runCollect(
       engine.sealStep({
         request,
-        keyMaterial: keyMaterialFrom(state, request),
+        keyMaterial: keyMaterialFrom(state, state.contextWindow, request),
         modelCallMs: state.modelCallMs
       }).pipe(
         Stream.tap((event) => emitModelProgress(event, emit))
@@ -1495,56 +1577,106 @@ const frame = (
       })
     )
 
-    const request = yield* Effect.fromResult(requestFrom(state))
-    // Timed on the injected clock, never on ambient wall time, so a test that
-    // supplies a clock sees the duration it declared.
-    const startedAt = yield* Clock.currentTimeMillis
-    const events = yield* Stream.runCollect(
-      engine.sealStep({
-        request,
-        keyMaterial: keyMaterialFrom(state, request),
-        modelCallMs: state.modelCallMs
-      }).pipe(
-        Stream.tap((event) => emitModelProgress(event, emit))
+    // The sealed model step, and the boundary parse of whatever it answered
+    // with. A cell that does not parse never ran: the world is exactly where
+    // the frame found it, so there is nothing to record and everything to gain
+    // by asking again inside this frame. The prefix of the re-prompt is
+    // byte-identical to the one just sent, so the provider serves it from its
+    // cache and the answer costs the output it writes.
+    let contextWindow = state.contextWindow
+    let settled = undefined as ReturnType<typeof ModelEvent.ModelEvent.settledMessage> | undefined
+    let produced:
+      | { readonly source: Cell.Source; readonly blocks: number; readonly notice: string | undefined }
+      | undefined
+    let refused: Cell.Rejected | undefined
+    for (let attempt = 0;; attempt++) {
+      const request = yield* Effect.fromResult(requestFrom(state, contextWindow))
+      // Timed on the injected clock, never on ambient wall time, so a test that
+      // supplies a clock sees the duration it declared.
+      const startedAt = yield* Clock.currentTimeMillis
+      const events = yield* Stream.runCollect(
+        engine.sealStep({
+          request,
+          keyMaterial: keyMaterialFrom(state, contextWindow, request),
+          modelCallMs: state.modelCallMs
+        }).pipe(
+          Stream.tap((event) => emitModelProgress(event, emit))
+        )
+      ).pipe(Effect.map((collected) => Array.from(collected)))
+      const settledAt = yield* Clock.currentTimeMillis
+      if (!events.some((event) => event.type === "settle")) {
+        return yield* new HarnessError({
+          code: "model_failed",
+          message: "The sealed model step ended without a recorded settlement"
+        })
+      }
+      settled = ModelEvent.ModelEvent.settledMessage(events)
+      yield* emit(
+        new AgentEvent.ModelSettled({
+          eventType: eventType.modelSettled,
+          message: settled.message,
+          usage: settled.usage,
+          durationMillis: settledAt - startedAt
+        })
       )
-    ).pipe(Effect.map((collected) => Array.from(collected)))
-    const settledAt = yield* Clock.currentTimeMillis
-    if (!events.some((event) => event.type === "settle")) {
-      return yield* new HarnessError({
-        code: "model_failed",
-        message: "The sealed model step ended without a recorded settlement"
-      })
+      const extracted = Cell.extract(assistantText(settled.message))
+      let rejection: Cell.Rejected | undefined
+      if (extracted._tag === "Failure") rejection = extracted.failure
+      else {
+        // The parse the realm used to do, done here instead: a cell that cannot
+        // run is refused before the frame commits to it.
+        const validation = CellValidation.validate(extracted.success.source)
+        rejection = validation.rejected
+        if (rejection === undefined) {
+          produced = {
+            source: extracted.success.source,
+            blocks: extracted.success.blocks,
+            notice: validation.notice
+          }
+        }
+      }
+      if (rejection === undefined) break
+      if (attempt >= state.revalidations) {
+        refused = rejection
+        break
+      }
+      yield* emit(
+        new AgentEvent.CellRejectedInFrame({
+          eventType: eventType.cellRejectedInFrame,
+          attempt: attempt + 1,
+          code: rejection.code,
+          message: rejection.message
+        })
+      )
+      contextWindow = observedOn(
+        contextWindow,
+        settled.message,
+        revalidationNote(rejection),
+        deadCellEcho
+      )
     }
-    const settled = ModelEvent.ModelEvent.settledMessage(events)
-    yield* emit(
-      new AgentEvent.ModelSettled({
-        eventType: eventType.modelSettled,
-        message: settled.message,
-        usage: settled.usage,
-        durationMillis: settledAt - startedAt
-      })
-    )
+    const answer = settled
 
     /** Records an unusable frame and asks for another, budget permitting. */
     const observe = (
       note: string,
-      changes: Partial<ConstructorParameters<typeof State>[0]> = {}
+      changes: Partial<ConstructorParameters<typeof State>[0]> = {},
+      echo: number = liveCellEcho
     ): Step => {
       if (state.frame + 1 >= state.maxFrames) return { _tag: "Done" }
       return {
         _tag: "Continue",
         state: advance(state, {
           frame: state.frame + 1,
-          contextWindow: observed(state, settled.message, note),
+          contextWindow: observedOn(contextWindow, answer.message, note, echo),
           truncatedOutputs: TruncatedOutput.retain(ledger),
           ...changes
         })
       }
     }
 
-    const extracted = Cell.extract(assistantText(settled.message))
-    if (extracted._tag === "Failure") {
-      const rejection = extracted.failure
+    if (produced === undefined) {
+      const rejection = refused!
       yield* emit(
         new AgentEvent.CellSettled({
           eventType: eventType.cellSettled,
@@ -1564,12 +1696,12 @@ const frame = (
       if (state.readOnlyCap > 0 && rejectedFrames >= state.readOnlyCap * 2) {
         return yield* readOnlyCapFailure(state.readOnlyCap, rejectedFrames)
       }
-      const step = observe(rejection.message, { readOnlyFrames: rejectedFrames })
+      const step = observe(rejection.message, { readOnlyFrames: rejectedFrames }, deadCellEcho)
       if (step._tag === "Done") {
         yield* emit(
           new AgentEvent.TurnClosed({
             eventType: eventType.turnClosed,
-            stopReason: settled.message.stopReason,
+            stopReason: answer.message.stopReason,
             outcome: "resolved"
           })
         )
@@ -1584,19 +1716,19 @@ const frame = (
       yield* emit(
         new AgentEvent.TurnClosed({
           eventType: eventType.turnClosed,
-          stopReason: settled.message.stopReason,
+          stopReason: answer.message.stopReason,
           outcome: "continue"
         })
       )
       return step
     }
 
-    const cell = extracted.success.source
+    const cell = produced.source
     yield* emit(
       new AgentEvent.CellProduced({
         eventType: eventType.cellProduced,
         cell,
-        blocks: extracted.success.blocks
+        blocks: produced.blocks
       })
     )
 
@@ -1609,6 +1741,8 @@ const frame = (
       readonly flow: string
       readonly ok: boolean
       readonly summary: string
+      /** Where this call lands in the run's ledger, so a salvage line can name it. */
+      readonly ordinal: number
       /**
        * Whether the call reached the engine declaring a write, which is what
        * breaks a read-only run. A call the boundary refused is not one: it
@@ -1654,12 +1788,17 @@ const frame = (
             const rendered = result.outcome === "success"
               ? JSON.stringify(result.value) ?? "null"
               : result.message ?? "failed"
+            // The ordinal this call will carry in the run's ledger, computed
+            // here so the salvage line can name it: a summary the next frame
+            // cannot expand is a summary it will pay to re-fetch.
+            const ordinal = CallLedger.settled(state.callLedger) + observedCalls.length + 1
             const descriptor = descriptors.get(invocation.flow)
             const probe = result.outcome === "success" ? invalidProbeOf(result.value) : undefined
             observedCalls.push({
               flow: invocation.flow,
               ok: result.outcome === "success",
-              summary: clip(rendered, 400),
+              summary: elide.head(rendered, salvageSummary, `recall ${ordinal} for the whole result`),
+              ordinal,
               mutates: performed.has(invocation.ordinal) && descriptor !== undefined &&
                 mutating(descriptor, invocation.input),
               // Every invocation the cell issued, refused ones included: a
@@ -1843,9 +1982,9 @@ const frame = (
       // unbounded name here is an unbounded line in the notice.
       const salvage = observedCalls.length === 0
         ? ""
-        : `\nCalls this cell already completed (their results are durable; use them instead of redoing the work):\n${
+        : `\nCalls this cell already completed (their results are durable; use them instead of redoing the work, and name an ordinal in \`recall\` to have the whole result printed in your next prompt):\n${
           observedCalls.map((call) =>
-            `- ${clip(call.flow, CallLedger.width)} -> ${call.ok ? "ok" : "FAILED"}: ${call.summary}`
+            `- ${call.ordinal}. ${clip(call.flow, CallLedger.width)} -> ${call.ok ? "ok" : "FAILED"}: ${call.summary}`
           )
             .join("\n")
         }`
@@ -1855,11 +1994,19 @@ const frame = (
       // declare. The compiler says which name; only the controller knows the
       // reply's shape, so it says where the second declaration came from.
       const batched = outcome._tag === "rejected" && outcome.code === "compile_failed" &&
-          extracted.success.blocks > 1
-        ? `\nThis reply carried ${extracted.success.blocks} cell blocks. They run as ONE program, in order, so a name two of them declare is declared twice. Emit one program.`
+          produced.blocks > 1
+        ? `\nThis reply carried ${produced.blocks} cell blocks. They run as ONE program, in order, so a name two of them declare is declared twice. Emit one program.`
         : ""
+      // A property read through an absent path is the one throw the harness can
+      // diagnose without guessing, and it is the throw a cell reaching into
+      // `ctx.state` makes. The keys are already computed for the manifest, so
+      // naming them costs nothing and closes the loop the model would otherwise
+      // spend a frame on. See `StateManifest`.
+      const missed = outcome._tag === "raised" ? statePathMiss(outcome.message, state.agentState) : undefined
       const note = outcome._tag === "raised"
-        ? `The cell threw ${outcome.name}: ${outcome.message}. Emit a corrected cell.${salvage}${alert}`
+        ? `The cell threw ${outcome.name}: ${outcome.message}. Emit a corrected cell.${
+          missed === undefined ? "" : `\n${missed}`
+        }${salvage}${alert}`
         : `${outcome.message}${batched}${salvage}${alert}`
       const step = observe(note, {
         workspace: closed,
@@ -1876,7 +2023,7 @@ const frame = (
       yield* emit(
         new AgentEvent.TurnClosed({
           eventType: eventType.turnClosed,
-          stopReason: settled.message.stopReason,
+          stopReason: answer.message.stopReason,
           outcome: step._tag === "Done" ? "resolved" : "continue"
         })
       )
@@ -1934,6 +2081,7 @@ const frame = (
           ),
           {
             agentState: transition.state,
+            stateStamps: StateManifest.stamp(state.stateStamps, transition.state, state.frame),
             pendingReadOnlyDemand: undefined,
             workspace: closed,
             readOnlyFrames: parkFrames,
@@ -1950,7 +2098,7 @@ const frame = (
         yield* emit(
           new AgentEvent.TurnClosed({
             eventType: eventType.turnClosed,
-            stopReason: settled.message.stopReason,
+            stopReason: answer.message.stopReason,
             outcome: step._tag === "Done" ? "resolved" : "continue"
           })
         )
@@ -1967,7 +2115,7 @@ const frame = (
       yield* emit(
         new AgentEvent.TurnClosed({
           eventType: eventType.turnClosed,
-          stopReason: settled.message.stopReason,
+          stopReason: answer.message.stopReason,
           outcome: "suspended"
         })
       )
@@ -2138,7 +2286,7 @@ const frame = (
         yield* emit(
           new AgentEvent.TurnClosed({
             eventType: eventType.turnClosed,
-            stopReason: settled.message.stopReason,
+            stopReason: answer.message.stopReason,
             outcome: "continue"
           })
         )
@@ -2150,8 +2298,9 @@ const frame = (
             // was already holding, not a projected context: a completion names
             // no context for a next frame, and a run answering this one needs
             // the frame it just wrote.
-            contextWindow: observed(state, settled.message, demanded.note),
+            contextWindow: observedOn(contextWindow, answer.message, demanded.note, liveCellEcho),
             agentState: transition.state,
+            stateStamps: StateManifest.stamp(state.stateStamps, transition.state, state.frame),
             truncatedOutputs: TruncatedOutput.retain(ledger),
             workspace: closed,
             readOnlyFrames,
@@ -2181,7 +2330,7 @@ const frame = (
       yield* emit(
         new AgentEvent.TurnClosed({
           eventType: eventType.turnClosed,
-          stopReason: settled.message.stopReason,
+          stopReason: answer.message.stopReason,
           outcome: "resolved"
         })
       )
@@ -2217,7 +2366,7 @@ const frame = (
       yield* emit(
         new AgentEvent.TurnClosed({
           eventType: eventType.turnClosed,
-          stopReason: settled.message.stopReason,
+          stopReason: answer.message.stopReason,
           outcome: "resolved"
         })
       )
@@ -2232,7 +2381,7 @@ const frame = (
     yield* emit(
       new AgentEvent.TurnClosed({
         eventType: eventType.turnClosed,
-        stopReason: settled.message.stopReason,
+        stopReason: answer.message.stopReason,
         outcome: "continue"
       })
     )
@@ -2298,6 +2447,11 @@ const frame = (
       ? [ModelRequest.Message.user(repeatDemand(repeatFrames, state.repeatCap))]
       : []
     const alerts = probeNotice === undefined ? [] : [ModelRequest.Message.user(probeNotice)]
+    // What the boundary parse noticed and did not refuse. Delivered on the
+    // frame that continues, because a cell whose tail never ran still settled
+    // a transition and the model has no other way to learn that the work it
+    // wrote after its own `return` was never done. See `CellValidation`.
+    const parsed = produced.notice === undefined ? [] : [ModelRequest.Message.user(produced.notice)]
     // The counterweight, and the only notice here that asks for nothing. It is
     // written on the frame that completes the pair rather than at a completion,
     // because its whole purpose is to reach a run that is still deciding
@@ -2319,8 +2473,9 @@ const frame = (
       )
     }
     const held = sufficient === undefined ? [] : [ModelRequest.Message.user(Sufficiency.observation(sufficient))]
-    const context = projected(state, transition.context, [
+    const context = projected(contextWindow, transition.context, [
       ...drained.inserts,
+      ...parsed,
       ...alerts,
       ...demand,
       ...repeated,
@@ -2339,11 +2494,13 @@ const frame = (
           replaced: context.replaced
         }),
         agentState: transition.state,
+        stateStamps: StateManifest.stamp(state.stateStamps, transition.state, state.frame),
         // A projection is a statement about the frame being opened, so it is
         // replaced rather than merged: a cell that names nothing is shown the
-        // roster, and no key stays projected because some earlier frame wanted
-        // it.
+        // manifest alone, and no key stays projected because some earlier frame
+        // wanted it. `recall` is replaced for the same reason.
         renderKeys: transition.render ?? [],
+        recallOrdinals: transition.recall ?? [],
         truncatedOutputs: TruncatedOutput.retain(ledger),
         workspace: closed,
         readOnlyFrames,
@@ -2407,6 +2564,7 @@ export const run = (
             narrowingCap: current.narrowingCap,
             unmovedCap: current.unmovedCap,
             unresolvedCap: current.unresolvedCap,
+            revalidations: current.revalidations,
             ...limits
           })
         )

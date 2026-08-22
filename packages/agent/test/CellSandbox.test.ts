@@ -201,9 +201,10 @@ describe("a cell call through the workspace sandbox", () => {
       }).pipe(Effect.provide(NodeCrypto.layer))
     )
 
-    // The refusal is an ordinary call failure, so the cell catches it and the
-    // run keeps going — both frames of the budget try, and both are refused.
-    expect(outcome.settled).toEqual(["fs/write:failure", "fs/write:failure"])
+    // The refusal is an ordinary call failure that RESOLVES, so the cell runs
+    // to its own end and completes on the first frame carrying the failure
+    // envelope as its answer. Nothing is retried and nothing is written.
+    expect(outcome.settled).toEqual(["fs/write:failure"])
     const untouched = outcome.files.find((file) => file.path === "notes/todo.md")
     expect(decoder.decode(untouched!.content)).toBe("old")
   })

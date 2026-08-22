@@ -74,8 +74,20 @@ fi
 # can never name the same container.
 SLUG="$(printf '%s' "$INSTANCE" | tr '_.' '--')"
 
+# The hidden version-control store. `flows` snapshots the working copy around
+# every action, and a colocated jj repository writes those snapshots into the
+# task checkout's own `.git`: `git log`, `git log --all -S` and `git fsck` then
+# hand the agent its own attempt commits as if they were upstream history.
+# `django__django-13346` applied two of them as a fake fix, `django__django-13821`
+# `git show`-ed one as evidence, and `pydata__xarray-7229` chased two across
+# three frames. Pointing jj at a git repository OUTSIDE the working copy keeps
+# every snapshot out of the task repository's refs and out of its object store,
+# so both surfaces show only real history — and, as a side effect, `git diff` in
+# the checkout works the way an agent expects, because jj no longer writes the
+# task repository's index either.
 if [ "$HARNESS" = "flows" ]; then
   WORK_ROOT="$S/work"
+  VCS_ROOT="$S/work/.vcs"
   PATCH_ROOT="$S/patches"
   TIMINGS_ROOT="$S/timings"
   LOG_ROOT="$S/logs-agent"
@@ -85,6 +97,9 @@ else
   PATCH_ROOT="$S/patches-codex"
   TIMINGS_ROOT="$S/timings-codex"
   LOG_ROOT="$S/logs-codex"
+  # The codex harness snapshots nothing, so it needs no store; the key is still
+  # printed so both harnesses `eval` the same set of names.
+  VCS_ROOT="$S/work-codex/.vcs"
   CONTAINER="codexbench-${SLUG}${SUFFIX}"
 fi
 
@@ -93,6 +108,8 @@ printf 'RUN_ID=%s\n' "${INSTANCE}-${RUN_INDEX}"
 printf 'SUFFIX=%s\n' "\"$SUFFIX\""
 printf 'WORK_ROOT=%s\n' "\"$WORK_ROOT\""
 printf 'WORK=%s\n' "\"$WORK_ROOT/${INSTANCE}${SUFFIX}\""
+printf 'VCS_ROOT=%s\n' "\"$VCS_ROOT\""
+printf 'VCS=%s\n' "\"$VCS_ROOT/${INSTANCE}${SUFFIX}.git\""
 printf 'PATCH_ROOT=%s\n' "\"$PATCH_ROOT\""
 printf 'PATCH=%s\n' "\"$PATCH_ROOT/${INSTANCE}${SUFFIX}.patch\""
 printf 'TIMINGS_ROOT=%s\n' "\"$TIMINGS_ROOT\""

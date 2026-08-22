@@ -52,11 +52,10 @@ immediately, and vice versa.
 - This repository runs its tests with \`${testCommand}\`, which takes the test
   paths to run as trailing arguments. It is the runner this project actually
   uses: other runners are not necessarily installed here.
-- This checkout is colocated with Jujutsu, which snapshots the working copy, so
-  a plain \`git diff\` prints nothing even when your edits are on disk. To see
-  your own changes, diff against the base commit:
-
-      git diff ${instance.base_commit}
+- Git in this checkout behaves normally: \`git status\` and \`git diff\` show your
+  own uncommitted edits and nothing else. This harness snapshots the working
+  copy around every action, but it does so in a repository of its own, so
+  nothing it writes ever appears in this checkout's history, index, or refs.
 - To change a file, prefer the \`write\` flow: read the file, and write back the
   complete new contents. That is the most reliable edit available to you.
 - \`read\` and \`write\` act on this directory directly and need no container.

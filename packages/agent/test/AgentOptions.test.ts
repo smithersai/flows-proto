@@ -297,11 +297,13 @@ describe("system teaching crossed with memory", () => {
 describe("the capability envelope decides per flow", () => {
   // An envelope refusal is decided before the durable boundary opens, so the
   // cell sees it as a thrown exception rather than a settled call result.
-  // Catching it in the cell is the only way to observe both calls in one
-  // frame, which is what the mixing case needs.
+  // A refused call resolves with the failure envelope rather than throwing, so
+  // both calls are observable in one frame — which is what the mixing case
+  // needs.
   const both = `const results = []
 for (const flow of ["fs/read", "fs/write"]) {
-  try { await ctx.call(flow, {}); results.push(flow + ": ran") } catch (error) { results.push(flow + ": " + error.message) }
+  const result = await ctx.call(flow, {})
+  results.push(flow + ": " + (result.ok === false ? result.error.message : result))
 }
 return { intent: "complete", state: {}, output: results.join("\\n") }`
 
@@ -557,24 +559,27 @@ return { intent: "complete", state: {}, output: "done" }`
 
 describe("the resolved context window arms or disarms compaction", () => {
   /**
-   * A model that answers with a very long block of prose and no cell at all.
+   * A model that answers with a cell that throws a very large message.
    *
-   * That is the shape that grows a window: an unusable frame is recorded as an
+   * That is the shape that grows a window: a raise is recorded as an
    * observation appended to the transcript, so every reply adds a segment
    * instead of replacing one, and the window crosses its budget within a few
-   * frames.
+   * frames. Prose served here until the reply a dead frame echoes back was
+   * bounded; a test that grew a window that way would now be measuring a leak
+   * rather than compaction.
    */
   const rambling = (requests: Array<unknown>): Model.Model =>
     Model.make({
       stream: (request) =>
         Stream.suspend(() => {
           requests.push(request)
+          const cell = `throw new Error("detail ".repeat(12000))`
           return Stream.fromIterable([
             ModelEvent.ModelEvent.TextStart({ type: "text-start", id: `text-${requests.length}` }),
             ModelEvent.ModelEvent.TextDelta({
               type: "text-delta",
               id: `text-${requests.length}`,
-              text: `reply ${requests.length}: ${"detail ".repeat(12_000)}`
+              text: "```cell\n" + cell + "\n```"
             }),
             ModelEvent.ModelEvent.TextEnd({ type: "text-end", id: `text-${requests.length}` }),
             ModelEvent.ModelEvent.Settle({ type: "settle", stopReason: "stop" })

@@ -123,6 +123,18 @@ export * as NarrowedCheck from "./NarrowedCheck.ts"
  * @category models
  * @since 0.1.0
  */
+export * as StateManifest from "./StateManifest.ts"
+
+/**
+ * @category conversions
+ * @since 0.1.0
+ */
+export * as CellValidation from "./CellValidation.ts"
+
+/**
+ * @category models
+ * @since 0.1.0
+ */
 export * as UnmovedTree from "./UnmovedTree.ts"
 
 /**

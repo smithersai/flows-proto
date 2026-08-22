@@ -58,7 +58,7 @@ IMAGE="swebench/sweb.eval.x86_64.${IMAGE_ID}:latest"
 # reaches a path or a container name.
 RUN_PATHS="$("$S/lib/run-paths.sh" flows "$INSTANCE" ${INDEX:+"$INDEX"})" || exit $?
 eval "$RUN_PATHS"
-mkdir -p "$WORK_ROOT" "$PATCH_ROOT" "$LOG_ROOT" "$TIMINGS_ROOT"
+mkdir -p "$WORK_ROOT" "$PATCH_ROOT" "$LOG_ROOT" "$TIMINGS_ROOT" "$VCS_ROOT"
 WORK_ROOT="$(cd "$WORK_ROOT" && pwd -P)"
 WORK="$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1], process.argv[2]))' "$WORK_ROOT" "$(basename "$WORK")")"
 if [ "$(dirname "$WORK")" != "$WORK_ROOT" ]; then
@@ -126,7 +126,36 @@ TEST_CMD="$("$S/.venv-swb/bin/python" "$S/lib/test-command.py" "$DATASET" "$INST
 mkdir -p "$WORK/flows/fix"
 node "$S/lib/write-flow.mjs" "$DATASET" "$INSTANCE" "$SEAT" "$CONTAINER" "$TEST_CMD" > "$WORK/flows/fix/flow.mdx"
 
-( cd "$WORK" && jj git init --colocate >/dev/null 2>&1 )
+# Version control for the harness, kept out of the task repository entirely.
+#
+# `flows` snapshots the working copy around every action through its `Jj` layer,
+# and a COLOCATED jj repository writes those snapshots into `$WORK/.git`: it
+# moves git's HEAD onto each settlement commit and exports one `refs/jj/keep/*`
+# ref per visible change. `git log`, `git log --all -S` and `git fsck` then hand
+# the agent its own attempt commits as if they were upstream history — measured
+# on `django__django-13346` (~$0.54, two of them applied as a fake fix),
+# `pydata__xarray-7229` (~$0.20, chased across three frames) and
+# `django__django-13821` (~$0.06, `git show`-ed as evidence).
+#
+# Pointing jj at a bare git repository OUTSIDE the working copy fixes it at the
+# source. jj keeps the same working copy, snapshots and restores exactly as
+# before, and writes every commit, ref and object into `$VCS` instead. The task
+# checkout's refs and object store are untouched, so `git log --all` and
+# `git fsck` show only real history — and `git diff` starts working the way an
+# agent expects, because jj no longer writes the task repository's index either.
+# jj ignores `.git` in a non-colocated working copy, so the checkout's own
+# history is never snapshotted.
+#
+# The scaffolding is excluded through the store's own `core.excludesFile`, which
+# jj reads from its backing git repository. A colocated jj read the same list
+# out of `$WORK/.git/info/exclude`; a non-colocated one has no reason to look
+# there, and without this it would re-hash the growing journal database on every
+# action snapshot.
+rm -rf -- "$VCS"
+git init --bare --quiet "$VCS"
+printf 'flows/\n.flows/\nagent-run.log\n' > "$VCS/flows-excludes"
+git -C "$VCS" config core.excludesFile "$VCS/flows-excludes"
+( cd "$WORK" && jj git init --git-repo="$VCS" >/dev/null 2>&1 )
 
 # SWB_SKIP_AGENT=1 builds the workspace and captures its patch without running
 # the agent or spending a token. The captured patch must then be empty, which is
@@ -201,7 +230,7 @@ if [ "${SWB_KEEP_WORKSPACE:-0}" = "1" ]; then DELETE_WORKSPACE=0; fi
 if [ "${SWB_DELETE_WORKSPACE:-0}" = "1" ]; then DELETE_WORKSPACE=1; fi
 if [ "$DELETE_WORKSPACE" = "1" ]; then
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  rm -rf -- "$WORK"
+  rm -rf -- "$WORK" "$VCS"
   echo "[$RUN_ID] testbed deleted"
 fi
 

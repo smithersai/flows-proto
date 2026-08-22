@@ -268,6 +268,7 @@ describe("Cell.transition", () => {
           state: { seen: 2 },
           context: [new Cell.ContextEntry({ role: "user", text: "two files" })],
           render: undefined,
+          recall: undefined,
           justification: undefined
         })
       })
@@ -317,6 +318,7 @@ describe("Cell.transition", () => {
         state: null,
         context: [new Cell.ContextEntry({ role: "assistant", text: "still reading" })],
         render: undefined,
+        recall: undefined,
         justification: "the fix is not located yet"
       })
     )
@@ -332,6 +334,7 @@ describe("Cell.transition", () => {
         state: { excerpt: "…", probe: "…" },
         context: [],
         render: ["excerpt", "probe"],
+        recall: undefined,
         justification: undefined
       })
     )
@@ -374,17 +377,44 @@ describe("Cell.transition", () => {
       .toMatchObject({ _tag: "park", message: "" })
   })
 
-  it("refuses a context entry whose role or text is not what the contract declares", () => {
+  it("refuses a context entry whose role is not what the contract declares", () => {
     for (
       const context of [
         [{ role: "system", text: "no" }],
         [{ role: "user" }],
-        [{ role: "user", text: 42 }],
         ["plain string"]
       ]
     ) {
       const outcome = Cell.transition({ intent: "continue", context })
       expect(outcome._tag, JSON.stringify(context)).toBe("rejected")
     }
+  })
+
+  it("renders a structured context entry as JSON rather than losing the frame", () => {
+    // The frame that motivated this had already made every call it needed; the
+    // only thing wrong with it was that a structured value reached `text`. The
+    // two ways that used to end were a dead frame and `[object Object]`.
+    const outcome = Cell.transition({
+      intent: "continue",
+      context: [{ role: "user", text: { exitCode: 1, stderr: "boom" } }, { role: "user", text: [1, 2] }]
+    })
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "continue",
+      context: [
+        { role: "user", text: `{"exitCode":1,"stderr":"boom"}` },
+        { role: "user", text: "[1,2]" }
+      ]
+    })
+  })
+
+  it("names the decoder's own complaint in the rejection a bad transition gets", () => {
+    const outcome = Cell.transition({ intent: "continue", context: [{ role: "system", text: "no" }] })
+    expect((outcome as Cell.Rejected).message).toContain("did not return a transition")
+    expect((outcome as Cell.Rejected).message).toContain("The decoder reported:")
+  })
+
+  it("carries the recall ordinals a transition named", () => {
+    const outcome = Cell.transition({ intent: "continue", context: [], recall: [3, 7] })
+    expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "continue", recall: [3, 7] })
   })
 })

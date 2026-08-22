@@ -75,6 +75,18 @@ export class DisciplineArmed extends Schema.TaggedClass<DisciplineArmed>(
    */
   unmovedCap: Schema.Number,
   /**
+   * Times one frame may answer its own unparseable cell before ending; zero
+   * disarms the answer.
+   *
+   * Journaled with the rest because a wave that records no
+   * `cell-rejected-in-frame` must be able to say whether the answer was armed
+   * and never needed or never armed at all.
+   */
+  revalidations: Schema.Number.pipe(
+    Schema.withConstructorDefault(Effect.succeed(0)),
+    Schema.withDecodingDefaultKey(Effect.succeed(0))
+  ),
+  /**
    * Completions this run may have bounced for a failing check it replaced
    * rather than answered; zero disarms.
    */
@@ -204,6 +216,33 @@ export class CellProduced extends Schema.TaggedClass<CellProduced>(
     Schema.withConstructorDefault(Effect.succeed(1)),
     Schema.withDecodingDefaultKey(Effect.succeed(1))
   )
+}) {}
+
+/**
+ * One reply the boundary parse refused, answered inside the frame it arrived
+ * in rather than by ending the frame.
+ *
+ * Journaled because it is spend: a re-prompt is a real model call, cached
+ * prefix or not, and a wave counting cost per frame would otherwise see the
+ * output of an answer it has no record of asking for. It is also the only
+ * measure of whether validating at the boundary is worth what it costs — the
+ * ratio of this event to `cell-settled` rejections says how often one re-ask
+ * recovers a frame.
+ *
+ * @category events
+ * @since 0.1.0
+ * @slop
+ */
+export class CellRejectedInFrame extends Schema.TaggedClass<CellRejectedInFrame>(
+  "flows/harness/AgentEvent/CellRejectedInFrame"
+)("cell-rejected-in-frame", {
+  eventType: Schema.Literal("flows.harness.cell-rejected-in-frame.v1"),
+  /** Which attempt of this frame was refused, counting from one. */
+  attempt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  /** Why the parse refused it. */
+  code: Cell.RejectionCode,
+  /** What the frame told the model, verbatim. */
+  message: Schema.String
 }) {}
 
 /**
@@ -638,6 +677,7 @@ export const AgentEvent = Schema.Union([
   ModelRetried,
   ModelSettled,
   CellProduced,
+  CellRejectedInFrame,
   CellCallStarted,
   CellCallSettled,
   CellSettled,
