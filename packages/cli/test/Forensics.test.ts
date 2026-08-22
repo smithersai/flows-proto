@@ -272,7 +272,12 @@ describe("Forensics.digest boundaries", () => {
 describe("Forensics.eventLine", () => {
   it.each(
     [
-      ["a seated turn", "control.agent.turn-opened", { seat: "openai:gpt-5.6-sol" }, "turn opened · openai:gpt-5.6-sol"],
+      [
+        "a seated turn",
+        "control.agent.turn-opened",
+        { seat: "openai:gpt-5.6-sol" },
+        "turn opened · openai:gpt-5.6-sol"
+      ],
       ["an unseated turn", "control.agent.turn-opened", {}, "turn opened · "],
       [
         "a model reply",
@@ -283,10 +288,25 @@ describe("Forensics.eventLine", () => {
       ["a model reply with no usage", "control.agent.model-settled", {}, "model    (0 in / 0 out)"],
       ["a cell", "control.agent.cell-produced", { text: "return 1" }, "cell    return 1"],
       ["an empty cell", "control.agent.cell-produced", {}, "cell    "],
-      ["a call", "control.agent.cell-call-started", { flowName: "bash", input: { command: "ls" } }, "call    bash {\"command\":\"ls\"}"],
+      [
+        "a call",
+        "control.agent.cell-call-started",
+        { flowName: "bash", input: { command: "ls" } },
+        "call    bash {\"command\":\"ls\"}"
+      ],
       ["an unnamed call", "control.agent.cell-call-started", {}, "call    ? undefined"],
-      ["a successful call", "control.agent.cell-call-settled", { outcome: "success", value: { ok: true } }, "  -> ok {\"ok\":true}"],
-      ["a refused call", "control.agent.cell-call-settled", { outcome: "failure", message: "denied" }, "  -> FAIL denied"],
+      [
+        "a successful call",
+        "control.agent.cell-call-settled",
+        { outcome: "success", value: { ok: true } },
+        "  -> ok {\"ok\":true}"
+      ],
+      [
+        "a refused call",
+        "control.agent.cell-call-settled",
+        { outcome: "failure", message: "denied" },
+        "  -> FAIL denied"
+      ],
       ["an unlabelled refusal", "control.agent.cell-call-settled", { outcome: "failure" }, "  -> FAIL "],
       [
         "a completing transition",

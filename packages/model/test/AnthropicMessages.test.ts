@@ -704,7 +704,9 @@ describe("AnthropicMessages body lowering", () => {
     expect(classify(418, "{\"error\":{\"type\":\"api_error\",\"message\":\"teapot\"}}")).toMatchObject({
       code: "provider_internal"
     })
-    expect(classify(418, "{\"error\":{\"type\":\"tea_error\",\"message\":\"teapot\"}}")).toMatchObject({ code: "unknown" })
+    expect(classify(418, "{\"error\":{\"type\":\"tea_error\",\"message\":\"teapot\"}}")).toMatchObject({
+      code: "unknown"
+    })
     expect(classify(400, "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"unsafe content\"}}"))
       .toMatchObject({ code: "invalid_request" })
     expect(classify(400, "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"blocked by safety\"}}"))

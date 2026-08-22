@@ -74,7 +74,9 @@ describe("Endpoint", () => {
   it("treats an absent, empty, and slash-heavy path the same way", () => {
     expect(make({ url: "https://example.test/v1" }).url).toBe("https://example.test/v1")
     expect(make({ url: "https://example.test/v1", path: "" }).url).toBe("https://example.test/v1")
-    expect(make({ url: "https://example.test/v1//", path: "//responses" }).url).toBe("https://example.test/v1/responses")
+    expect(make({ url: "https://example.test/v1//", path: "//responses" }).url).toBe(
+      "https://example.test/v1/responses"
+    )
   })
 
   it("renders an endpoint without query pairs and one whose values need escaping", () => {

@@ -27,8 +27,9 @@ interface RunRow {
 const readRun = (file: string): RunRow => {
   const database = new DatabaseSync(file, { readOnly: true })
   try {
-    return database.prepare("SELECT status, owner_host_id FROM flows_runs WHERE run_id = ?").get(runId) as
-      unknown as RunRow
+    return database.prepare("SELECT status, owner_host_id FROM flows_runs WHERE run_id = ?").get(
+      runId
+    ) as unknown as RunRow
   } finally {
     database.close()
   }
