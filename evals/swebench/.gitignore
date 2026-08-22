@@ -55,3 +55,7 @@
 # liveness probe workspace (`./readonly-liveness.sh`).
 /.subject.json
 /work-liveness/
+
+# CPython's byte-cache. `fixtures/check-eval-exports.py` imports `lib/grade.py`
+# as a module, which is what makes `lib/__pycache__/` appear.
+__pycache__/

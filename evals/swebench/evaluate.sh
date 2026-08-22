@@ -39,6 +39,30 @@
 # `lib/fullbench-instance.sh` does, because it holds the lock across the verdict
 # it reads afterwards — and this then grades without taking it a second time.
 #
+# ## The psf/requests family and httpbin
+#
+# `psf/requests`' graded tests are network tests: `test_requests.py` reads
+# `HTTPBIN = os.environ.get('HTTPBIN_URL', 'http://httpbin.org/')`, and roughly a
+# third of the dataset's graded identifiers for `psf__requests-1766` and
+# `psf__requests-2317` route through it. The public httpbin.org answered 503
+# during the r90 grading, so those tests failed for reasons no patch could
+# change — 34 of 2317's `PASS_TO_PASS` tests among them, and a `PASS_TO_PASS`
+# test failing indicts the environment by construction.
+#
+# So when a grading includes any `psf/requests` instance, `lib/httpbin.sh
+# resolve` decides which httpbin it will meet and says so out loud: the public
+# service when it answers over both http and https, the rig's own container when
+# it does not, and a refusal when neither is available. The chosen URL reaches
+# `lib/grade.py`, which exports `HTTPBIN_URL` inside that instance's `eval.sh` —
+# the variable the suite already reads. It applies to `psf/requests` only, and to
+# whichever harness produced the patch, so both arms are graded under one rig.
+# Nothing else about the grading changes, and the export is visible in the
+# archived `eval.sh` and in `test_output.txt`.
+#
+#   SWB_HTTPBIN_URL=…  grade against this endpoint, whatever the probe says
+#   SWB_NO_HTTPBIN=1   skip the check entirely and let the suite use its own
+#                      default, as r90 did — including when it is down
+#
 # SWB_CACHE_LEVEL is the evaluator's `--cache_level`. It defaults to `env`,
 # which deletes each official instance image once that instance is graded — a
 # 3 GB re-pull for the next wave. Set it to `instance` for a supplementary
@@ -50,10 +74,21 @@ RUN_ID="$1"; shift
 HARNESS="${HARNESS:-flows}"
 WORKERS="${SWB_EVAL_WORKERS:-1}"
 CACHE_LEVEL="${SWB_CACHE_LEVEL:-env}"
+# The evaluator's per-instance timeout. 1800 s is the official default and is
+# ample for every repository here but one: `psf/requests`' `test_connection_error`
+# is hardcoded to `http://httpbin.org:1`, whose SYN packets are dropped rather
+# than refused, so the test sits in TCP retransmit against every A record the
+# name resolves to before it raises the ConnectionError it is asserting. Measured
+# on 2026-08-21: over 17 minutes for that one test, from a suite whose remaining
+# 142 tests take seconds. It is an environment cost, identical for both arms and
+# for any patch.
+EVAL_TIMEOUT="${SWB_EVAL_TIMEOUT:-1800}"
 
-case "$WORKERS" in
-  ''|*[!0-9]*|0) echo "SWB_EVAL_WORKERS must be a positive integer"; exit 2 ;;
-esac
+for PAIR in "SWB_EVAL_WORKERS:$WORKERS" "SWB_EVAL_TIMEOUT:$EVAL_TIMEOUT"; do
+  case "${PAIR#*:}" in
+    ''|*[!0-9]*|0) echo "${PAIR%%:*} must be a positive integer"; exit 2 ;;
+  esac
+done
 case "$CACHE_LEVEL" in
   none|base|env|instance) ;;
   *) echo "SWB_CACHE_LEVEL must be none, base, env or instance"; exit 2 ;;
@@ -82,6 +117,25 @@ fi
 node "$S/lib/make-preds.mjs" "$PATCHES" "$MODEL" "$SUFFIX" "$@" > "$S/preds-$RUN_ID.json"
 cd "$S" || exit 1
 
+# The httpbin the psf/requests family is graded against. Decided from the
+# predictions file rather than from "$@", so a call that named no instances and
+# grades every collected patch is covered by the same rule.
+NEEDS_HTTPBIN="$(node -e '
+  const preds = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
+  process.stdout.write(Object.keys(preds).some((id) => id.startsWith("psf__requests-")) ? "1" : "")
+' "$S/preds-$RUN_ID.json")"
+if [ -n "$NEEDS_HTTPBIN" ] && [ "${SWB_NO_HTTPBIN:-0}" != "1" ]; then
+  HTTPBIN_ENDPOINT="$("$S/lib/httpbin.sh" resolve)" || {
+    echo "evaluate.sh: no httpbin is answering, and psf/requests cannot be graded against"
+    echo "  a dead service without repeating the r90 rig fault. Pass SWB_NO_HTTPBIN=1 to do it anyway."
+    exit 1; }
+  export SWB_EVAL_EXPORTS="$(node -e '
+    process.stdout.write(JSON.stringify({ HTTPBIN_URL: process.argv[1] }))
+  ' "$HTTPBIN_ENDPOINT")"
+  export SWB_EVAL_EXPORTS_REPOS="psf/requests"
+  echo "evaluate.sh: psf/requests instances grade against $HTTPBIN_ENDPOINT"
+fi
+
 HELD=0
 if [ "${SWB_GRADE_LOCK_HELD:-0}" != "1" ]; then
   "$S/lib/lock.sh" acquire "$S/.grade-lock" --owner $$ --label "evaluate.sh $RUN_ID" \
@@ -101,7 +155,7 @@ fi
   --instance_ids "$@" \
   --max_workers "$WORKERS" \
   --cache_level "$CACHE_LEVEL" \
-  --timeout 1800
+  --timeout "$EVAL_TIMEOUT"
 STATUS=$?
 
 if [ "$HELD" = "1" ]; then
