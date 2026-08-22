@@ -10,8 +10,20 @@
  * request is rejected. Patterns are capped at 4096 ASCII bytes and counted
  * repetitions at 1000. Invalid UTF-8 is replacement-decoded; NUL-bearing
  * files are skipped and counted, while an explicitly named binary file is a
- * typed failure. Results are globally bounded by `limit` and disclose
- * truncation through `notice`.
+ * typed failure.
+ *
+ * Results are match-centric, which is `rg --json`'s own grouping: `limit`
+ * counts matches, each match carries the context lines that belong to it, and
+ * every context line belongs to exactly one match. A budget that counted rows
+ * could spend itself on context and drop the match — astropy-7166 paid three
+ * frames for exactly that — so a hit is never droppable to make room for its
+ * own surroundings. Truncation is disclosed through `notice`.
+ *
+ * Each returned hit also carries the definition enclosing it when the file's
+ * shape says so plainly, so a read window is computed rather than guessed, and
+ * a metacharacter pattern that finds nothing is retried as a literal with
+ * `retriedAsLiteral` set. Both are properties of the contract rather than of a
+ * peer: they are computed in `internal/Grouping.ts` for both implementations.
  *
  * `globs` accepts exactly the shapes `glob` accepts and reads them the same
  * way: every pattern is matched against each candidate's path *relative to
@@ -52,7 +64,8 @@ export const name = "grep"
  * @category descriptions
  * @since 0.1.0
  */
-export const description = "Search file contents through the Flows Ripgrep Subset v1 contract."
+export const description =
+  "Search file contents through the Flows Ripgrep Subset v1 contract. limit counts matches, each carrying its own context and enclosing definition; fixedStrings searches a literal, and one is retried."
 
 /**
  * Input accepted by {@link flow} and {@link run}.
@@ -84,6 +97,9 @@ export const Input = Schema.Struct({
   }),
   filesWithMatches: Schema.optional(Schema.Boolean).annotate({ description: "Ripgrep --files-with-matches." }),
   hidden: Schema.optional(Schema.Boolean).annotate({ description: "Ripgrep --hidden." }),
+  symbols: Schema.optional(Schema.Boolean).annotate({
+    description: "Report the definition enclosing each returned hit; true by default."
+  }),
   noIgnore: Schema.optional(Schema.Boolean).annotate({
     description: "Must be true in v1; ignore files are not consulted."
   }),
@@ -101,11 +117,39 @@ export const Input = Schema.Struct({
  * @category schemas
  * @since 0.1.0
  */
+export const ContextLine = Schema.Struct({
+  line: Schema.Int.annotate({ description: "1-based line number" }),
+  text: Schema.String
+})
+
+/**
+ * The definition a hit sits inside, when the file's shape says so plainly.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const Symbol = Schema.Struct({
+  kind: Schema.String.annotate({ description: "The declaration keyword, such as def or class" }),
+  name: Schema.String,
+  startLine: Schema.Int.annotate({ description: "1-based first line of the definition" }),
+  endLine: Schema.Int.annotate({
+    description: "1-based last line of the definition; read this range, do not guess one"
+  })
+})
+
+/**
+ * One hit and the context that belongs to it.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
 export const Match = Schema.Struct({
   file: Schema.String,
   line: Schema.Int,
   text: Schema.String,
-  kind: Schema.Literals(["match", "context"])
+  before: Schema.Array(ContextLine),
+  after: Schema.Array(ContextLine),
+  symbol: Schema.optional(Symbol)
 })
 
 /**
@@ -120,6 +164,9 @@ export const Output = Schema.Struct({
   filesSearched: Schema.Int,
   skippedBinary: Schema.Int,
   truncated: Schema.Boolean,
+  retriedAsLiteral: Schema.optional(Schema.Boolean).annotate({
+    description: "Present when the pattern found nothing as a regex and these results come from re-running it literally"
+  }),
   notice: Schema.optional(Schema.String)
 })
 
@@ -192,12 +239,23 @@ const normalize = (input: typeof Input.Type): Search.GrepInput | StdError.StdErr
     maxCount: input.maxCount,
     filesWithMatches: input.filesWithMatches ?? false,
     hidden: input.hidden ?? false,
+    symbols: input.symbols ?? true,
     limit: Math.min(input.limit ?? MAX_GREP_MATCHES, MAX_GREP_MATCHES)
   }
 }
 
+const metacharacters = /[\\^$.|?*+()[\]{}]/
+
+const empty = (output: typeof Output.Type): boolean => output.matches.length === 0 && output.files.length === 0
+
 /**
  * Runs one validated ripgrep-contract call through the selected peer implementation.
+ *
+ * A pattern full of metacharacters that finds nothing is the most common way a
+ * search lies: `sphinx-16612` searched 867 files for a parenthesised name and
+ * read `0 of 867` as "this symbol is not used here". The retry costs one more
+ * pass over the same tree only in the case that already found nothing, and the
+ * result says plainly that the answer came from the literal reading.
  *
  * @category handlers
  * @since 0.1.0
@@ -208,5 +266,15 @@ export const run = Effect.fn("Grep.run")(function*(
   const normalized = normalize(input)
   if (normalized instanceof StdError.StdError) return yield* Effect.fail(normalized)
   const search = yield* Search.Search
-  return yield* search.grep(normalized)
+  const result = yield* search.grep(normalized)
+  if (normalized.fixedStrings || !empty(result) || !metacharacters.test(normalized.pattern)) return result
+  const literal = yield* search.grep({ ...normalized, fixedStrings: true })
+  if (empty(literal)) return result
+  const explanation =
+    `The pattern found nothing as a regular expression and these results come from re-running it literally (fixedStrings: true).`
+  return {
+    ...literal,
+    retriedAsLiteral: true,
+    notice: literal.notice === undefined ? explanation : `${explanation} ${literal.notice}`
+  }
 })

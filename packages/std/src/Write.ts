@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Schema from "effect/Schema"
 import { capability, envelope } from "./internal/Declaration.ts"
+import * as Preserve from "./internal/Preserve.ts"
 import * as StdError from "./StdError.ts"
 
 /**
@@ -102,7 +103,7 @@ export const run = Effect.fn("Write.run")(function*(
   yield* fileSystem.makeDirectory(path.dirname(input.path), { recursive: true }).pipe(
     Effect.mapError(() => writeError(input.path, `Could not create the parent directory of ${input.path}`))
   )
-  yield* fileSystem.writeFileString(input.path, input.content).pipe(
+  yield* Preserve.writeFileString(fileSystem, input.path, input.content).pipe(
     Effect.mapError(() => writeError(input.path, `Could not write ${input.path}`))
   )
   return {

@@ -6,16 +6,16 @@ import { layer } from "./TestLayers.ts"
 const execute = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect)
 
 describe("Read", () => {
-  it("reads line-numbered text with the default page", async () => {
+  it("reads raw text with the default page and numbers it in sibling fields", async () => {
     const result = await execute(Effect.provide(
       Read.run({ path: "/a.txt" }),
       layer({
         files: { "/a.txt": "alpha\nbeta\ngamma" }
       })
     ))
-    expect(result).toMatchObject({ startLine: 1, totalLines: 3, truncated: false })
-    expect(result.content).toContain("1\talpha")
-    expect(result.content).toContain("3\tgamma")
+    expect(result).toMatchObject({ startLine: 1, endLine: 3, totalLines: 3, truncated: false })
+    // Raw: a line of this is an edit anchor as it stands.
+    expect(result.content).toBe("alpha\nbeta\ngamma")
   })
 
   it("pages from a 1-based offset", async () => {
@@ -25,8 +25,8 @@ describe("Read", () => {
         files: { "/a.txt": "one\ntwo\nthree" }
       })
     ))
-    expect(result).toMatchObject({ startLine: 2, totalLines: 3, truncated: true })
-    expect(result.content).toContain("2\ttwo")
+    expect(result).toMatchObject({ startLine: 2, endLine: 2, totalLines: 3, truncated: true })
+    expect(result.content).toBe("two")
     expect(result.notice).toBeDefined()
   })
 
@@ -83,6 +83,21 @@ describe("Read", () => {
       if (reason === undefined) return
       expect(Cause.isFailReason(reason) && reason.error.code).toBe("offset_out_of_range")
     }
+  })
+
+  it("ends a byte-capped page on a whole line", async () => {
+    // A partial last line reads like an anchor and is not one, so the page ends
+    // at the last whole line the budget could afford.
+    const result = await execute(Effect.provide(
+      Read.run({ path: "/a.txt" }),
+      layer({
+        files: { "/a.txt": Array.from({ length: 2_000 }, (_, index) => `${index}:${"x".repeat(100)}`).join("\n") }
+      })
+    ))
+    expect(result.truncated).toBe(true)
+    expect(result.content.endsWith("x")).toBe(true)
+    expect(result.content.split("\n")).toHaveLength(result.endLine - result.startLine + 1)
+    expect(result.content.split("\n").at(-1)).toBe(`${result.endLine - 1}:${"x".repeat(100)}`)
   })
 
   it("declares sealed hermetic effects and narrows each invocation", () => {

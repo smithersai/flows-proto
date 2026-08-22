@@ -14,8 +14,8 @@ describe("Grep", () => {
     const literal = await execute(
       Effect.provide(Grep.run({ pattern: "foo.bar", fixedStrings: true, root: "/src" }), layer({ files }))
     )
-    expect(regex.matches).toEqual([{ file: "/src/a.ts", line: 2, text: "foo.bar", kind: "match" }])
-    expect(literal.matches).toEqual([{ file: "/src/a.ts", line: 2, text: "foo.bar", kind: "match" }])
+    expect(regex.matches).toEqual([{ file: "/src/a.ts", line: 2, text: "foo.bar", before: [], after: [] }])
+    expect(literal.matches).toEqual([{ file: "/src/a.ts", line: 2, text: "foo.bar", before: [], after: [] }])
     expect(regex.filesSearched).toBe(1)
   })
 
@@ -55,7 +55,7 @@ describe("Grep", () => {
     ))
     expect(result).toMatchObject({
       truncated: true,
-      matches: [{ file: "/src/a.txt", line: 1, text: "hit", kind: "match" }]
+      matches: [{ file: "/src/a.txt", line: 1, text: "hit", before: [], after: [] }]
     })
     expect(result.notice).toBeDefined()
   })
@@ -77,13 +77,78 @@ describe("Grep", () => {
     )
 
     expect(broad).toMatchObject({
-      matches: [{ file: "/repo/source.py", line: 1, text: "needle", kind: "match" }],
+      matches: [{ file: "/repo/source.py", line: 1, text: "needle", before: [], after: [] }],
       filesSearched: 1
     })
     expect(explicit).toMatchObject({
-      matches: [{ file: "/repo/.git/objects/object.py", line: 1, text: "needle", kind: "match" }],
+      matches: [{ file: "/repo/.git/objects/object.py", line: 1, text: "needle", before: [], after: [] }],
       filesSearched: 1
     })
+  })
+
+  it("spends the limit on matches and keeps each hit's own context", async () => {
+    // The row budget used to be spendable on context, so a hit could be dropped
+    // to make room for the lines around another one.
+    const result = await execute(Effect.provide(
+      Grep.run({ pattern: "needle", root: "/src", context: 1, limit: 1 }),
+      layer({ files: { "/src/a.txt": "before\nneedle one\nbetween\nneedle two\nafter" } })
+    ))
+    expect(result.matches).toEqual([{
+      file: "/src/a.txt",
+      line: 2,
+      text: "needle one",
+      before: [{ line: 1, text: "before" }],
+      after: [{ line: 3, text: "between" }]
+    }])
+    expect(result.truncated).toBe(true)
+    expect(result.notice).toBe("Showing 1 of 2 matches; output was truncated.")
+  })
+
+  it("gives every context line to exactly one hit", async () => {
+    const result = await execute(Effect.provide(
+      Grep.run({ pattern: "needle", root: "/src", context: 2 }),
+      layer({ files: { "/src/a.txt": "one\nneedle\nthree\nfour\nneedle\nsix" } })
+    ))
+    const lines = result.matches.flatMap((match) => [...match.before, ...match.after].map((line) => line.line))
+    expect(lines).toEqual([1, 3, 4, 6])
+    expect(result.matches.map((match) => match.line)).toEqual([2, 5])
+  })
+
+  it("reports the definition a hit sits in", async () => {
+    const result = await execute(Effect.provide(
+      Grep.run({ pattern: "return value", root: "/src" }),
+      layer({
+        files: {
+          "/src/mod.py":
+            "class Widget:\n    def widen(self, value):\n        return value\n\n\ndef other():\n    pass\n"
+        }
+      })
+    ))
+    expect(result.matches[0]?.symbol).toEqual({ kind: "def", name: "widen", startLine: 2, endLine: 3 })
+  })
+
+  it("omits the enclosing definition when the caller turns it off", async () => {
+    const result = await execute(Effect.provide(
+      Grep.run({ pattern: "return value", root: "/src", symbols: false }),
+      layer({ files: { "/src/mod.py": "def widen(value):\n    return value\n" } })
+    ))
+    expect(result.matches).toHaveLength(1)
+    expect(Object.hasOwn(result.matches[0] ?? {}, "symbol")).toBe(false)
+  })
+
+  it("retries a metacharacter pattern as a literal and says that it did", async () => {
+    const files = { "/src/a.py": "value = compute(a, b)\n" }
+    const retried = await execute(
+      Effect.provide(Grep.run({ pattern: "compute(a, b)", root: "/src" }), layer({ files }))
+    )
+    const genuinelyAbsent = await execute(
+      Effect.provide(Grep.run({ pattern: "absent(x)", root: "/src" }), layer({ files }))
+    )
+    expect(retried.matches.map((match) => match.line)).toEqual([1])
+    expect(retried.retriedAsLiteral).toBe(true)
+    expect(retried.notice).toContain("fixedStrings: true")
+    expect(genuinelyAbsent.matches).toEqual([])
+    expect(Object.hasOwn(genuinelyAbsent, "retriedAsLiteral")).toBe(false)
   })
 
   it("declares sealed hermetic effects and narrows to the root subtree", () => {

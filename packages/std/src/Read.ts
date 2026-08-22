@@ -1,6 +1,19 @@
 /**
  * Read flow declaration and portable handler.
  *
+ * `content` is raw file text. It used to be rendered as `NNN\t<line>`, and that
+ * rendering was the single most expensive tool defect measured on the 45-instance
+ * SWE-bench trace program: an anchor copied out of a read carried the gutter, so
+ * every `edit` built from a read missed, and every cell that wanted a literal
+ * line had to strip the prefix in JavaScript first. Two instances (django-13346,
+ * django-14351) spent whole frames writing string surgery against text the file
+ * does not contain. Line numbers are facts about the page, so they are page
+ * fields — `startLine` and `endLine` — and never bytes inside the text.
+ *
+ * Every line in `content` is a whole line: a page cut short by the byte budget
+ * drops its trailing partial line rather than handing back a fragment that looks
+ * like an anchor and is not one.
+ *
  * @since 0.1.0
  */
 import * as Flow from "@smthrs/core/Flow"
@@ -8,15 +21,7 @@ import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Schema from "effect/Schema"
 import { capability, envelope } from "./internal/Declaration.ts"
-import {
-  DEFAULT_READ_LIMIT,
-  MAX_LINE_CHARS,
-  MAX_OUTPUT_BYTES,
-  notice,
-  numberLines,
-  slice,
-  truncateBytes
-} from "./internal/Text.ts"
+import { DEFAULT_READ_LIMIT, MAX_LINE_CHARS, MAX_OUTPUT_BYTES, notice, slice, truncateBytes } from "./internal/Text.ts"
 import * as StdError from "./StdError.ts"
 
 /**
@@ -34,7 +39,7 @@ export const name = "read"
  * @since 0.1.0
  */
 export const description =
-  "Read a text file with 1-based line offset and limit; output is line-numbered. Long files are truncated with a notice — page with offset."
+  "Read a text file by 1-based offset and limit. content is RAW file text with no line-number prefixes, so any line of it is an edit anchor as it stands; the numbers are startLine/endLine."
 
 /**
  * Input schema for the read flow.
@@ -59,8 +64,11 @@ export const Input = Schema.Struct({
  * @since 0.1.0
  */
 export const Output = Schema.Struct({
-  content: Schema.String.annotate({ description: "Line-numbered text" }),
+  content: Schema.String.annotate({
+    description: "Raw page text, byte-for-byte as the file holds it and never line-number prefixed"
+  }),
   startLine: Schema.Number.annotate({ description: "First returned 1-based line number" }),
+  endLine: Schema.Number.annotate({ description: "Last returned 1-based line number" }),
   totalLines: Schema.Number.annotate({ description: "Total number of source lines" }),
   truncated: Schema.Boolean.annotate({ description: "Whether displayed output was truncated" }),
   notice: Schema.optional(Schema.String.annotate({ description: "Truncation disclosure" }))
@@ -180,15 +188,24 @@ export const run = Effect.fn("Read.run")(function*(
   }
   const lines = page.lines.map((line) => line.length > MAX_LINE_CHARS ? line.slice(0, MAX_LINE_CHARS) : line)
   const longLinesTruncated = lines.some((line, index) => line !== page.lines[index])
-  const numbered = numberLines(lines.join("\n"), { start: page.startLine })
-  const rendered = truncateBytes(numbered, MAX_OUTPUT_BYTES, { keep: "head" })
+  const rendered = truncateBytes(lines.join("\n"), MAX_OUTPUT_BYTES, { keep: "head" })
+  // A byte budget cuts mid-line. A partial line reads like an anchor and is not
+  // one, so the page ends at the last whole line it could afford.
+  const whole = rendered.truncated
+    ? rendered.text.slice(0, Math.max(0, rendered.text.lastIndexOf("\n")))
+    : rendered.text
+  const shown = rendered.truncated ? (whole === "" ? 0 : whole.split("\n").length) : lines.length
+  const endLine = page.startLine + Math.max(0, shown - 1)
   const truncated = longLinesTruncated || rendered.truncated || page.endLine < page.totalLines
-  const shown = page.endLine - page.startLine + 1
+  const clipped = longLinesTruncated
+    ? ` Lines longer than ${MAX_LINE_CHARS} characters are clipped, so such a line is not an edit anchor.`
+    : ""
   return {
-    content: rendered.text,
+    content: whole,
     startLine: page.startLine,
+    endLine,
     totalLines: page.totalLines,
     truncated,
-    ...(truncated ? { notice: notice("lines", shown, page.totalLines) } : {})
+    ...(truncated ? { notice: `${notice("lines", shown, page.totalLines)}${clipped}` } : {})
   }
 })
