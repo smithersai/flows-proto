@@ -10,6 +10,7 @@ import { Effect, Exit, Option, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import * as Cell from "../src/Cell.ts"
 import * as CellValidation from "../src/CellValidation.ts"
+import * as CellPrompt from "../src/internal/cellPrompt.ts"
 import * as QuickJSSandbox from "../src/QuickJSSandbox.ts"
 import * as Sandbox from "../src/Sandbox.ts"
 import type * as VariablesPanel from "../src/VariablesPanel.ts"
@@ -209,10 +210,61 @@ describe("QuickJSSandbox.openRealm", () => {
   it("keeps the realm alive after a heap exhaustion and frees it by assignment", async () => {
     const frames = await session([
       "var big = []\ntry { while (true) big.push('x'.repeat(1024)) } catch (error) { console.log(error.name) }",
+      "console.log('the frame the budget refuses')",
       "big = null\nconsole.log('recovered')"
     ], { limits: { memoryBytes: 4 * 1024 * 1024 } })
+    // The ceiling reaches the cell as an ordinary throw it can catch, and every
+    // name the cell had already bound is still bound after it.
     expect(frames[0]!.prints).toContain("Error")
-    expect(frames[1]!.prints).toBe("recovered")
+    // What that cell kept is what the run is now over its ceiling by, so the
+    // next frame is refused — naming `big`, which is the name the frame after
+    // it assigns over.
+    expect(frames[1]!.outcome._tag === "rejected" && frames[1]!.outcome.code).toBe("limit_exceeded")
+    expect(frames[1]!.outcome._tag === "rejected" && frames[1]!.outcome.message).toContain("big (")
+    expect(frames[2]!.prints).toBe("recovered")
+  })
+
+  /** Two strings each under the ceiling, together over it. */
+  const accumulate = [
+    "var first = 'w'.repeat(3 * 1024 * 1024)",
+    "var second = 'w'.repeat(3 * 1024 * 1024)"
+  ]
+
+  it("spends the memory refusal on the frame it lands in, so the freeing cell runs", async () => {
+    const frames = await session([
+      ...accumulate,
+      "console.log('this frame is refused')",
+      "second = null\nconsole.log('freed')",
+      "console.log('still open for business')"
+    ], { limits: { memoryBytes: 4 * 1024 * 1024 } })
+    // Nothing stops either binding cell: the weight is only knowable once the
+    // cell that made it has run.
+    expect(frames[0]!.outcome._tag).toBe("settled")
+    expect(frames[1]!.outcome._tag).toBe("settled")
+    // The frame that opens over the ceiling is refused, and the refusal is spent
+    // there: it says the next cell runs, and the next cell does.
+    const refusal = frames[2]!.outcome
+    expect(refusal._tag === "rejected" && refusal.code).toBe("limit_exceeded")
+    expect(refusal._tag === "rejected" && refusal.message).toContain("your next cell does run")
+    expect(frames[2]!.prints).toBe("")
+    // Frame 3 is the freeing cell. It ran, which is the whole point: a refusal
+    // that stood would have refused this one too and asked it again to free.
+    expect(frames[3]!.prints).toBe("freed")
+    // And with the realm back under its ceiling, nothing is refused after it.
+    expect(frames[4]!.outcome._tag).toBe("settled")
+    expect(frames[4]!.prints).toBe("still open for business")
+  })
+
+  it("refuses again when the frame it let through freed nothing", async () => {
+    const frames = await session([
+      ...accumulate,
+      "console.log('this frame is refused')",
+      "console.log('and this cell frees nothing')",
+      "console.log('so this frame is refused too')"
+    ], { limits: { memoryBytes: 4 * 1024 * 1024 } })
+    expect(frames[2]!.outcome._tag === "rejected" && frames[2]!.outcome.code).toBe("limit_exceeded")
+    expect(frames[3]!.prints).toBe("and this cell frees nothing")
+    expect(frames[4]!.outcome._tag === "rejected" && frames[4]!.outcome.code).toBe("limit_exceeded")
   })
 
   it("reports a cell that awaits something the realm can never settle", async () => {
@@ -358,15 +410,90 @@ describe("QuickJSSandbox.openRealm", () => {
     expect(outcome._tag === "rejected" && outcome.code).toBe("limit_exceeded")
   })
 
-  it("keeps the last panel it could read when a cell replaces the reflection it reads through", async () => {
+  it("keeps reading the panel after a cell replaces the reflection it reads through", async () => {
     const frames = await session([
       "const kept = 'held'",
       "Object.getOwnPropertyNames = null\nconst added = 1"
     ])
     expect(named(frames[0]!.bindings, "kept")).toBeDefined()
-    // The second frame's reading is the first frame's: nothing false is said,
-    // and nothing new can be.
+    // The probe holds the intrinsics a fresh realm had, so the frame that broke
+    // reflection for its own later code is still the frame whose new name the
+    // panel reports. A panel that read `Object` at call time would have gone
+    // silent here, and gone silent for the rest of the run.
+    expect(named(frames[1]!.bindings, "added")?.type).toBe("number")
+    expect(named(frames[1]!.bindings, "kept")).toBeDefined()
+  })
+
+  it("keeps the last panel it could read when a cell spends the budget the probe shares", async () => {
+    let now = 0
+    let tick = 0
+    const frames = await Effect.gen(function*() {
+      const sandbox = yield* QuickJSSandbox.makeWithClock
+      const realm = yield* sandbox.openRealm!({
+        flows,
+        limits: { timeMs: 5, steps: Number.MAX_SAFE_INTEGER }
+      })
+      // Wide enough that weighing it costs the interpreter real time, which is
+      // what puts the probe inside the budget the cell has already spent.
+      const first = yield* realm.evaluate({
+        cell: Cell.source(
+          "const kept = 'held'\nvar wide = []\nfor (var index = 0; index < 100000; index++) wide.push(index)"
+        ),
+        frame: 0,
+        call: succeeds
+      })
+      tick = 100
+      const second = yield* realm.evaluate({
+        cell: Cell.source("var added = 1\nwhile (true) {}"),
+        frame: 1,
+        call: succeeds
+      })
+      return [first, second]
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(QuickJSSandbox.ComputeClock, { now: () => (now += tick) }),
+      Effect.runPromise
+    )
+    expect(named(frames[0]!.bindings, "kept")).toBeDefined()
+    expect(frames[1]!.outcome._tag).toBe("rejected")
+    // The frame's interrupt is still raised when the probe runs, so the reading
+    // is the previous frame's. Nothing false is said; nothing new can be.
     expect(frames[1]!.bindings).toEqual(frames[0]!.bindings)
+  })
+
+  it("goes on serving ctx.call and console.log to a cell that rebound an intrinsic", async () => {
+    const frames = await session([
+      "const Object = { gone: true }\nconst JSON = 1",
+      "const answer = await ctx.call('echo', { n: 7 })\nconsole.log('still here', answer)"
+    ])
+    // Under a realm that outlives the cell, one top-level declaration of a name
+    // the host's own realm-side code reads through would have killed every
+    // later frame of the run with `TypeError: not a function`. The prelude binds
+    // what it needs before any cell runs, so the cost of shadowing `Object` is
+    // the cell's own code and nothing else.
+    expect(frames[0]!.outcome._tag).toBe("settled")
+    expect(frames[1]!.outcome._tag).toBe("settled")
+    expect(frames[1]!.prints).toBe(`still here {"seen":{"n":7}}`)
+  })
+
+  it("names a value JSON cannot walk instead of printing [object Object]", async () => {
+    const frames = await session([
+      "var loop = { name: 'root' }\nloop.self = loop\nconsole.log(loop)"
+    ])
+    expect(frames[0]!.prints).toContain("unprintable object")
+    expect(frames[0]!.prints).toContain("still bound")
+    expect(frames[0]!.prints).not.toContain("[object Object]")
+  })
+
+  it("bounds what the host keeps while a cell prints, and says how much it dropped", async () => {
+    const frames = await session([
+      `var chunk = 'p'.repeat(1024)\nfor (var index = 0; index < 4000; index++) console.log(chunk)`
+    ], { limits: { steps: 100_000 } })
+    expect(frames[0]!.outcome._tag).toBe("settled")
+    expect(frames[0]!.prints).toContain("further print statements were not kept")
+    // The model still reads a frame-sized buffer; what changed is that the host
+    // stopped copying payloads out of the sandbox once it had one.
+    expect(frames[0]!.prints.length).toBeLessThan(Sandbox.printFrameBytes * 2)
   })
 })
 
@@ -431,5 +558,111 @@ describe("CellValidation.normalize", () => {
     )
     expect(nested.rejected?.code).toBe("compile_failed")
     expect(nested.rejected?.message).toContain("line 2")
+  })
+
+  /**
+   * The realm's own two names, in every shape a top-level declaration takes.
+   *
+   * The refusal is what keeps the normalization honest: a top-level `const ctx`
+   * becomes a `var ctx`, and a `var` over an existing global assigns rather than
+   * shadows, so without this the declaration would take `ctx.call` away from
+   * every later cell of the run.
+   */
+  it.each([
+    ["a const", "const ctx = 1", "ctx"],
+    ["a let", "let console = 1", "console"],
+    ["a function", "function ctx() {}", "ctx"],
+    ["a class", "class console {}", "console"],
+    ["an object pattern", "const { ctx } = { ctx: 1 }", "ctx"],
+    ["a nested object pattern", "const { a: { console: console } } = { a: { console: 1 } }", "console"],
+    ["an array pattern with a hole", "const [, ctx] = [1, 2]", "ctx"]
+  ])("refuses %s that claims the realm's own binding", (_shape, text, name) => {
+    const refused = CellValidation.validate(Cell.source(text), "repl")
+    expect(refused.rejected?.code).toBe("compile_failed")
+    expect(refused.rejected?.message).toContain(`may not declare \`${name}\``)
+  })
+
+  it("leaves a nested declaration of the realm's names alone, because it shadows nothing", () => {
+    const nested = CellValidation.validate(
+      Cell.source("function scope() {\n  const ctx = 1\n  return ctx\n}\nvar out = scope()"),
+      "repl"
+    )
+    expect(nested.rejected).toBeUndefined()
+  })
+
+  it("lets the filing mode declare the names its per-cell realm throws away", () => {
+    const filed = CellValidation.validate(Cell.source("const ctx = 1\nreturn { intent: 'continue' }"), "filing")
+    expect(filed.rejected).toBeUndefined()
+  })
+})
+
+describe("the REPL contract's worked example", () => {
+  /**
+   * A model imitates the example, so the example has to be code that runs.
+   *
+   * The two cells the contract shows are extracted from the rendered text and
+   * evaluated against a real realm, with a handler standing in for the flows
+   * they name. Nothing here checks prose: it checks that the second cell reads
+   * names the first one bound, that the failed-call branch the comment promises
+   * is the branch that runs, and that the run finishes through `ctx.done` —
+   * which is the whole shape the example is teaching.
+   */
+  const shown = {
+    grep: projection("grep"),
+    read: projection("read"),
+    bash: projection("bash"),
+    edit: projection("edit")
+  }
+
+  it("runs, in order, in the realm it is written for", async () => {
+    const contract = CellPrompt.make(shown, {}, "repl").find((section) => section.id === "cell-contract")?.text ?? ""
+    const blocks = [...contract.matchAll(/```cell\n([\s\S]*?)```/g)].map((match) => match[1]!)
+    expect(blocks).toHaveLength(2)
+
+    let edited = false
+    const stubbed: Sandbox.Handler = (invocation) =>
+      Effect.sync(() => {
+        const value = ((): unknown => {
+          switch (invocation.flow) {
+            case "grep":
+              return { ok: true, matches: [{ file: "src/units/widen.ts", line: 42, text: "  return value" }] }
+            case "read":
+              return { content: "line one\n  return value\nline three" }
+            case "bash":
+              return { stdout: edited ? "1 passed" : "1 failed", exitCode: edited ? 0 : 1 }
+            case "edit":
+              edited = true
+              return { ok: true, hunk: "-  return value\n+  return widen(value)" }
+            default:
+              return null
+          }
+        })()
+        return new Cell.CallResult({ outcome: "success", value: value as never })
+      })
+
+    const frames = await Effect.gen(function*() {
+      const sandbox = yield* QuickJSSandbox.make
+      const realm = yield* sandbox.openRealm!({ flows: shown })
+      const out: Array<Sandbox.RealmFrame> = []
+      for (const [index, text] of blocks.entries()) {
+        out.push(yield* realm.evaluate({ cell: Cell.source(text), frame: index, call: stubbed }))
+      }
+      return out
+    }).pipe(Effect.scoped, Effect.runPromise)
+
+    // The recon cell settles, binds every name the second cell reads, and prints
+    // the bytes the edit is chosen from.
+    expect(frames[0]!.outcome._tag).toBe("settled")
+    expect(frames[0]!.bindings.map((binding) => binding.name))
+      .toEqual(["found", "hit", "region", "verification", "before"])
+    expect(frames[0]!.prints).toContain("return value")
+
+    // The fix-and-prove cell reads those names, replays the identical check and
+    // finishes the run in the same frame.
+    const finished = frames[1]!.outcome
+    expect(finished._tag === "settled" && finished.transition._tag).toBe("complete")
+    expect(finished._tag === "settled" && finished.transition._tag === "complete" && finished.transition.output)
+      .toContain("failed before the edit and exits 0 after it")
+    expect(frames[1]!.prints).toContain("+  return widen(value)")
   })
 })

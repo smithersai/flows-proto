@@ -202,6 +202,47 @@ const topLevelReturn = (source: ts.SourceFile): ts.ReturnStatement | undefined =
 }
 
 /**
+ * The two names a REPL cell may not declare at its top level.
+ *
+ * They are the realm's own host bindings, and in a persistent realm a top-level
+ * declaration of one is not a shadow — {@link normalize} makes it a `var`, and a
+ * `var` over an existing global assigns. Under the per-cell realm that
+ * assignment died with the cell; here it would take `ctx.call` or `console.log`
+ * away from every later cell of the run.
+ *
+ * @private
+ */
+const reserved = ["ctx", "console"]
+
+/**
+ * Names every identifier one top-level declaration binds, patterns included.
+ *
+ * @private
+ */
+const declaredNames = (source: ts.SourceFile): ReadonlyArray<string> => {
+  const found: Array<string> = []
+  const fromName = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) {
+      found.push(name.text)
+      return
+    }
+    for (const element of name.elements) {
+      if (ts.isBindingElement(element)) fromName(element.name)
+    }
+  }
+  for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) fromName(declaration.name)
+    } else if (
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name !== undefined
+    ) {
+      found.push(statement.name.text)
+    }
+  }
+  return found
+}
+
+/**
  * Rewrites a cell's top-level declarations so a persistent realm can re-run it.
  *
  * Raw persistence is not enough. Consecutive global evals in one QuickJS context
@@ -353,6 +394,17 @@ export const validate = (cell: Cell.Source, mode: Cell.Mode = Cell.defaultMode):
             at.line + 1
           } would not compile and nothing would run. ` +
           "Finish by calling instead: ctx.done(output) ends the run, ctx.park(reason, message) waits durably, and a cell that calls neither simply ends its turn."
+      })
+    )
+  }
+  const claimed = declaredNames(parsed).find((name) => reserved.includes(name))
+  if (claimed !== undefined) {
+    return refuse(
+      new Cell.Rejected({
+        code: "compile_failed",
+        message:
+          `A cell may not declare \`${claimed}\` at its top level: the realm outlives the cell, so that name is ` +
+          "the run's own binding and declaring it would take it away from every later cell. Rename the variable."
       })
     )
   }
