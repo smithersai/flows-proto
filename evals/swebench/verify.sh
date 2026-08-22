@@ -137,3 +137,6 @@ node "$S/fixtures/check-run-45.mjs"
 
 echo "== the two-arm scoreboard"
 node "$S/fixtures/check-compare-arms.mjs"
+
+echo "== the program evidence a re-run report reads off its journals"
+node "$S/fixtures/check-program-evidence.mjs"
