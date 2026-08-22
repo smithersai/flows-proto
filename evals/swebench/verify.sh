@@ -58,8 +58,11 @@
 # using a stated fact and hunting for it; `check-round3-evidence.mjs` pins the
 # difference between a run told its proof was vacuous and a run that then did
 # something about it, and between a retry ladder that recovered and one that
-# did not; `check-prompt-bytes.mjs` pins that an unstated fact is never
-# reported as a stated one.
+# did not; `check-repl-evidence.mjs` pins the difference between a name a realm
+# carried across frames and a name that merely appears in two cells, and between
+# a call re-issued inside one frame and one re-issued across two;
+# `check-prompt-bytes.mjs` pins that an unstated fact is never reported as a
+# stated one.
 #
 # Spends no tokens, needs no docker, needs no dataset. Run it after touching
 # scorecard.ts, prices.ts, the journal's event shapes, patch capture,
@@ -69,7 +72,7 @@
 # fullbench.sh, fullbench-report.mjs, lib/grade.py, lib/httpbin.sh,
 # lib/rerun-queue.mjs, run-45.sh, compare-runs.mjs, three-way.mjs, regrade.sh,
 # lib/program-evidence.mjs, lib/surgery-evidence.mjs, lib/round3-evidence.mjs,
-# lib/excluded.mjs or
+# lib/repl-evidence.mjs, lib/excluded.mjs or
 # anything under lib/fullbench-*. The subject check needs a built CLI: run ./preflight.sh first
 # if `packages/cli/dist` is absent.
 set -eu
