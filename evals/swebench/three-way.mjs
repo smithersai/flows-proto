@@ -28,6 +28,13 @@
  * instance no wave has resolved since the baseline is not a regression the
  * middle wave introduced; it is one this wave did not fix.
  *
+ * The exclusion rule comes with the fold: `compare-runs.mjs` computes the
+ * scored totals and the raw ones side by side, so every column here states
+ * both. An instance `lib/excluded.mjs` names is still shown per instance and
+ * still marked; it is outside the three totals rows and outside the recovered,
+ * still-lost, newly-lost and gained sets, because a verdict decided by a
+ * grading environment is not a verdict any of those four is about.
+ *
  * It reads three ledgers and nothing else: no evaluator report, no journal, no
  * clock, no network.
  *
@@ -36,6 +43,7 @@
 import { existsSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { compare } from "./compare-runs.mjs"
+import { isExcluded, renderExclusions } from "./lib/excluded.mjs"
 
 const money = (usd) => `$${usd.toFixed(2)}`
 const signed = (value) => `${value < 0 ? "-" : "+"}${Math.abs(value).toFixed(2)}`
@@ -69,7 +77,7 @@ export const threeWay = ({ baselinePath, firstPath, secondPath }) => {
     deltaFromFirst: againstFirst.instances.find((one) => one.id === row.id)?.delta
   }))
 
-  const done = rows.filter((row) => !row.pending && row.first !== undefined)
+  const done = rows.filter((row) => !row.pending && row.first !== undefined && !isExcluded(row.id))
   const isResolved = (facts) => facts !== undefined && facts.resolved
   return {
     baselinePath,
@@ -78,7 +86,14 @@ export const threeWay = ({ baselinePath, firstPath, secondPath }) => {
     population: againstBaseline.population,
     comparedCount: againstBaseline.comparedCount,
     pending: againstBaseline.pending,
+    scoredCount: againstBaseline.scoredCount,
+    excluded: againstBaseline.excluded,
     totals: {
+      baseline: againstBaseline.totals.scored.baseline,
+      first: againstFirst.totals.scored.baseline,
+      second: againstBaseline.totals.scored.rerun
+    },
+    rawTotals: {
       baseline: againstBaseline.totals.compared.baseline,
       first: againstFirst.totals.compared.baseline,
       second: againstBaseline.totals.compared.rerun
@@ -110,6 +125,7 @@ export const threeWay = ({ baselinePath, firstPath, secondPath }) => {
 export const render = (summary, names = { baseline: "baseline", first: "first", second: "second" }) => {
   const lines = []
   const { baseline, first, second } = summary.totals
+  const raw = summary.rawTotals
   lines.push("# Three ledgers, one population")
   lines.push("")
   lines.push(`${names.baseline}: \`${summary.baselinePath}\``)
@@ -120,6 +136,13 @@ export const render = (summary, names = { baseline: "baseline", first: "first", 
     `${summary.comparedCount} of ${summary.population} instances compared`
       + (summary.pending > 0 ? `; ${summary.pending} not re-run yet` : "")
   )
+  if (summary.excluded.length > 0) {
+    lines.push(
+      `Scored: ${summary.scoredCount} of ${summary.comparedCount} run.`
+        + ` Excluded by name, for every arm and every column:`
+        + ` ${summary.excluded.map((row) => row.id).join(", ")}.`
+    )
+  }
   lines.push("")
   lines.push(`| | ${names.baseline} | ${names.first} | ${names.second} |`)
   lines.push("| --- | ---: | ---: | ---: |")
@@ -127,7 +150,15 @@ export const render = (summary, names = { baseline: "baseline", first: "first", 
     `| resolved | ${baseline.resolved}/${baseline.instances} | ${first.resolved}/${first.instances}`
       + ` | ${second.resolved}/${second.instances} |`
   )
+  lines.push(
+    `| resolved (raw) | ${raw.baseline.resolved}/${raw.baseline.instances}`
+      + ` | ${raw.first.resolved}/${raw.first.instances}`
+      + ` | ${raw.second.resolved}/${raw.second.instances} |`
+  )
   lines.push(`| total cost | ${money(baseline.usd)} | ${money(first.usd)} | ${money(second.usd)} |`)
+  lines.push(
+    `| total cost (raw) | ${money(raw.baseline.usd)} | ${money(raw.first.usd)} | ${money(raw.second.usd)} |`
+  )
   lines.push(`| agent wall | ${baseline.agentSeconds} s | ${first.agentSeconds} s | ${second.agentSeconds} s |`)
   lines.push(
     `| instance wall | ${baseline.wallSeconds} s | ${first.wallSeconds} s | ${second.wallSeconds} s |`
@@ -141,6 +172,7 @@ export const render = (summary, names = { baseline: "baseline", first: "first", 
     `- gained over ${names.baseline} (${summary.gainedOverBaseline.length}):`
       + ` ${summary.gainedOverBaseline.join(", ") || "—"}`
   )
+  lines.push(...renderExclusions(summary.excluded))
   lines.push("")
   lines.push("## Per instance")
   lines.push("")
@@ -160,7 +192,8 @@ export const render = (summary, names = { baseline: "baseline", first: "first", 
       continue
     }
     lines.push(
-      `| ${row.id} | ${cell(row.baseline)} | ${cell(row.first)} | ${cell(row.second)}`
+      `| ${row.id}${isExcluded(row.id) ? " **excluded**" : ""}`
+        + ` | ${cell(row.baseline)} | ${cell(row.first)} | ${cell(row.second)}`
         + ` | ${money(row.baseline.usd)} | ${money(row.first.usd)} | ${money(row.second.usd)}`
         + ` | ${signed(row.delta.usd)}`
         + ` | ${row.baseline.frames} → ${row.first.frames} → ${row.second.frames}`
@@ -205,8 +238,10 @@ const main = () => {
   writeFileSync(join(out, "three-way.json"), `${JSON.stringify(summary, undefined, 2)}\n`)
   writeFileSync(join(out, "three-way.md"), render(summary, names))
   process.stdout.write(
-    `three-way.mjs: ${summary.comparedCount}/${summary.population} compared, resolved `
-      + `${summary.totals.baseline.resolved} -> ${summary.totals.first.resolved} -> ${summary.totals.second.resolved}, `
+    `three-way.mjs: ${summary.scoredCount} scored of ${summary.comparedCount} run of ${summary.population}, resolved `
+      + `${summary.totals.baseline.resolved} -> ${summary.totals.first.resolved} -> ${summary.totals.second.resolved} `
+      + `(raw ${summary.rawTotals.baseline.resolved} -> ${summary.rawTotals.first.resolved} -> `
+      + `${summary.rawTotals.second.resolved}), `
       + `cost ${money(summary.totals.baseline.usd)} -> ${money(summary.totals.first.usd)} -> `
       + `${money(summary.totals.second.usd)}\n`
   )

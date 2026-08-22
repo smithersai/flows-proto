@@ -34,10 +34,19 @@
  * re-run-resolved, `lost` is the reverse, and a `lost` instance is a regression
  * the re-run has to answer for however good its totals look.
  *
+ * **Two denominators, always both.** `lib/excluded.mjs` names the instances
+ * whose verdicts are statements about the grading environment rather than about
+ * a harness. They are run, graded and listed per instance exactly as before;
+ * they are outside the totals and the criteria, and every count here carries the
+ * scored number and the raw number in the same phrase. Nothing about an
+ * exclusion is per-arm: it removes the row for both harnesses or it is not an
+ * exclusion.
+ *
  * @since 0.1.0
  */
 import { existsSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { denominatorLabel, denominators, isExcluded, renderExclusions } from "./lib/excluded.mjs"
 import { isDone, read } from "./lib/fullbench-manifest.mjs"
 
 const rigRoot = import.meta.dirname
@@ -126,6 +135,10 @@ export const compare = ({ baselinePath, rerunPath }) => {
 
   const instances = []
   const compared = { baseline: zeroTotals(), rerun: zeroTotals() }
+  // The same fold over the same rows, minus the instances `lib/excluded.mjs`
+  // names. Kept beside `compared` rather than replacing it so both numbers are
+  // always in hand and no rate can be printed without the other.
+  const scored = { baseline: zeroTotals(), rerun: zeroTotals() }
   const wholeBaseline = zeroTotals()
   let pending = 0
 
@@ -143,6 +156,10 @@ export const compare = ({ baselinePath, rerunPath }) => {
     const afterUsd = rerunSpend.get(id) ?? 0
     addTo(compared.baseline, before, beforeUsd)
     addTo(compared.rerun, after, afterUsd)
+    if (!isExcluded(id)) {
+      addTo(scored.baseline, before, beforeUsd)
+      addTo(scored.rerun, after, afterUsd)
+    }
     instances.push({
       id,
       before: { ...before, usd: beforeUsd },
@@ -159,31 +176,41 @@ export const compare = ({ baselinePath, rerunPath }) => {
   }
 
   const done = instances.filter((row) => !row.pending)
-  const gained = done.filter((row) => row.moved === "gained").map((row) => row.id)
-  const lost = done.filter((row) => row.moved === "lost").map((row) => row.id)
+  const counted = done.filter((row) => !isExcluded(row.id))
+  const gained = counted.filter((row) => row.moved === "gained").map((row) => row.id)
+  const lost = counted.filter((row) => row.moved === "lost").map((row) => row.id)
+  const denominator = denominators(population)
 
   // The criteria are about the whole 45, so they are only answerable when the
   // re-run has run all of them. A partial re-run reports them as pending rather
   // than as met by a subset.
   const complete = pending === 0
-  const overBudgetUsd = done.filter((row) => row.after.usd > CRITERIA.instanceUsd).map((row) => row.id)
-  const overFrames = done.filter((row) => row.after.frames > CRITERIA.instanceFrames).map((row) => row.id)
+  const overBudgetUsd = counted.filter((row) => row.after.usd > CRITERIA.instanceUsd).map((row) => row.id)
+  const overFrames = counted.filter((row) => row.after.frames > CRITERIA.instanceFrames).map((row) => row.id)
+  // The criteria are answered over the scored set, and every one of them
+  // carries the raw number beside it so the exclusion can never hide inside a
+  // "met".
   const criteria = {
     complete,
     resolved: {
       target: CRITERIA.resolved,
-      actual: compared.rerun.resolved,
-      met: complete ? compared.rerun.resolved >= CRITERIA.resolved : undefined
+      actual: scored.rerun.resolved,
+      raw: compared.rerun.resolved,
+      of: scored.rerun.instances,
+      ofRaw: compared.rerun.instances,
+      met: complete ? scored.rerun.resolved >= CRITERIA.resolved : undefined
     },
     totalUsd: {
       target: CRITERIA.totalUsd,
-      actual: compared.rerun.usd,
-      met: complete ? compared.rerun.usd <= CRITERIA.totalUsd : undefined
+      actual: scored.rerun.usd,
+      raw: compared.rerun.usd,
+      met: complete ? scored.rerun.usd <= CRITERIA.totalUsd : undefined
     },
     wallMinutes: {
       target: CRITERIA.wallMinutes,
-      actual: compared.rerun.wallSeconds / 60,
-      met: complete ? compared.rerun.wallSeconds / 60 <= CRITERIA.wallMinutes : undefined
+      actual: scored.rerun.wallSeconds / 60,
+      raw: compared.rerun.wallSeconds / 60,
+      met: complete ? scored.rerun.wallSeconds / 60 <= CRITERIA.wallMinutes : undefined
     },
     perInstanceUsd: { target: CRITERIA.instanceUsd, over: overBudgetUsd, met: overBudgetUsd.length === 0 },
     perInstanceFrames: { target: CRITERIA.instanceFrames, over: overFrames, met: overFrames.length === 0 },
@@ -196,8 +223,10 @@ export const compare = ({ baselinePath, rerunPath }) => {
     rerunPath,
     population: population.length,
     comparedCount: done.length,
+    scoredCount: counted.length,
+    excluded: denominator.excluded,
     pending,
-    totals: { compared, wholeBaseline },
+    totals: { compared, scored, wholeBaseline },
     gained,
     lost,
     criteria,
@@ -214,7 +243,7 @@ const verdictCell = (facts) => (facts === undefined ? "—" : facts.resolved ? "
  * @since 0.1.0
  */
 export const render = (summary) => {
-  const { compared, wholeBaseline } = summary.totals
+  const { compared, scored, wholeBaseline } = summary.totals
   const lines = []
   lines.push("# Baseline vs re-run")
   lines.push("")
@@ -225,31 +254,49 @@ export const render = (summary) => {
     `${summary.comparedCount} of ${summary.population} instances compared`
       + (summary.pending > 0 ? `; ${summary.pending} not re-run yet` : "")
   )
+  if (summary.excluded.length > 0) {
+    lines.push(
+      `${summary.excluded.length} of them are excluded from the scoreboard by name, for both arms`
+        + ` (${summary.excluded.map((row) => row.id).join(", ")}), so every total and criterion below is over`
+        + ` **${summary.scoredCount} scored of ${summary.comparedCount} run**. Both numbers are printed everywhere.`
+    )
+  }
   lines.push("")
-  lines.push("## Totals over the compared instances")
+  lines.push("## Totals over the scored instances")
   lines.push("")
   lines.push("| | baseline | re-run | delta |")
   lines.push("| --- | ---: | ---: | ---: |")
   lines.push(
-    `| resolved | ${compared.baseline.resolved}/${compared.baseline.instances}`
-      + ` | ${compared.rerun.resolved}/${compared.rerun.instances}`
-      + ` | ${signedInt(compared.rerun.resolved - compared.baseline.resolved)} |`
+    `| resolved | ${scored.baseline.resolved}/${scored.baseline.instances}`
+      + ` | ${scored.rerun.resolved}/${scored.rerun.instances}`
+      + ` | ${signedInt(scored.rerun.resolved - scored.baseline.resolved)} |`
   )
   lines.push(
-    `| total cost | ${money(compared.baseline.usd)} | ${money(compared.rerun.usd)}`
-      + ` | ${signed(compared.rerun.usd - compared.baseline.usd)} |`
+    `| total cost | ${money(scored.baseline.usd)} | ${money(scored.rerun.usd)}`
+      + ` | ${signed(scored.rerun.usd - scored.baseline.usd)} |`
   )
   lines.push(
-    `| instance wall | ${compared.baseline.wallSeconds} s | ${compared.rerun.wallSeconds} s`
-      + ` | ${signedInt(compared.rerun.wallSeconds - compared.baseline.wallSeconds)} s |`
+    `| instance wall | ${scored.baseline.wallSeconds} s | ${scored.rerun.wallSeconds} s`
+      + ` | ${signedInt(scored.rerun.wallSeconds - scored.baseline.wallSeconds)} s |`
   )
   lines.push(
-    `| agent wall | ${compared.baseline.agentSeconds} s | ${compared.rerun.agentSeconds} s`
-      + ` | ${signedInt(compared.rerun.agentSeconds - compared.baseline.agentSeconds)} s |`
+    `| agent wall | ${scored.baseline.agentSeconds} s | ${scored.rerun.agentSeconds} s`
+      + ` | ${signedInt(scored.rerun.agentSeconds - scored.baseline.agentSeconds)} s |`
   )
   lines.push(
-    `| frames | ${compared.baseline.frames} | ${compared.rerun.frames}`
-      + ` | ${signedInt(compared.rerun.frames - compared.baseline.frames)} |`
+    `| frames | ${scored.baseline.frames} | ${scored.rerun.frames}`
+      + ` | ${signedInt(scored.rerun.frames - scored.baseline.frames)} |`
+  )
+  lines.push("")
+  // The raw column, unconditionally. When nothing is excluded it repeats the
+  // table above, which is the point: a reader never has to work out which
+  // denominator a number is over.
+  lines.push(
+    `The same fold over every compared instance, exclusions included`
+      + ` (${denominatorLabel({ scored: summary.scoredCount, raw: summary.comparedCount })}):`
+      + ` ${compared.baseline.resolved}/${compared.baseline.instances} -> ${compared.rerun.resolved}/${compared.rerun.instances} resolved,`
+      + ` ${money(compared.baseline.usd)} -> ${money(compared.rerun.usd)},`
+      + ` ${compared.baseline.agentSeconds} s -> ${compared.rerun.agentSeconds} s agent wall.`
   )
   lines.push("")
   lines.push(
@@ -270,15 +317,20 @@ export const render = (summary) => {
   const mark = (met) => (met === undefined ? "pending" : met ? "yes" : "NO")
   lines.push(
     `| resolved | >= ${summary.criteria.resolved.target}`
-      + ` | ${summary.criteria.resolved.actual} | ${mark(summary.criteria.resolved.met)} |`
+      + ` | ${summary.criteria.resolved.actual}/${summary.criteria.resolved.of}`
+      + ` (raw ${summary.criteria.resolved.raw}/${summary.criteria.resolved.ofRaw})`
+      + ` | ${mark(summary.criteria.resolved.met)} |`
   )
   lines.push(
     `| total cost | <= ${money(summary.criteria.totalUsd.target)}`
-      + ` | ${money(summary.criteria.totalUsd.actual)} | ${mark(summary.criteria.totalUsd.met)} |`
+      + ` | ${money(summary.criteria.totalUsd.actual)} (raw ${money(summary.criteria.totalUsd.raw)})`
+      + ` | ${mark(summary.criteria.totalUsd.met)} |`
   )
   lines.push(
     `| instance wall | <= ${summary.criteria.wallMinutes.target} min`
-      + ` | ${summary.criteria.wallMinutes.actual.toFixed(1)} min | ${mark(summary.criteria.wallMinutes.met)} |`
+      + ` | ${summary.criteria.wallMinutes.actual.toFixed(1)} min`
+      + ` (raw ${summary.criteria.wallMinutes.raw.toFixed(1)} min)`
+      + ` | ${mark(summary.criteria.wallMinutes.met)} |`
   )
   lines.push(
     `| no instance over ${money(summary.criteria.perInstanceUsd.target)}`
@@ -300,8 +352,11 @@ export const render = (summary) => {
     lines.push("")
     lines.push(`Over ${CRITERIA.instanceFrames} frames: ${summary.criteria.perInstanceFrames.over.join(", ")}.`)
   }
+  lines.push(...renderExclusions(summary.excluded))
   lines.push("")
   lines.push("## Per instance")
+  lines.push("")
+  lines.push("Rows marked **excluded** are outside every total and criterion above, for both arms.")
   lines.push("")
   lines.push("| instance | baseline | re-run | $ before | $ after | Δ$ | frames | Δframes | agent s | Δagent s |")
   lines.push("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
@@ -313,7 +368,13 @@ export const render = (summary) => {
       )
       continue
     }
-    const flag = row.moved === "gained" ? " **+**" : row.moved === "lost" ? " **-**" : ""
+    const flag = isExcluded(row.id)
+      ? " **excluded**"
+      : row.moved === "gained"
+      ? " **+**"
+      : row.moved === "lost"
+      ? " **-**"
+      : ""
     lines.push(
       `| ${row.id}${flag} | ${verdictCell(row.before)} | ${verdictCell(row.after)}`
         + ` | ${money(row.before.usd)} | ${money(row.after.usd)} | ${signed(row.delta.usd)}`
@@ -348,9 +409,11 @@ const main = () => {
   writeFileSync(join(out, "compare.md"), render(summary))
   process.stdout.write(
     `compare-runs.mjs: ${summary.comparedCount}/${summary.population} compared, `
-      + `resolved ${summary.totals.compared.baseline.resolved} -> ${summary.totals.compared.rerun.resolved}, `
-      + `cost ${money(summary.totals.compared.baseline.usd)} -> ${money(summary.totals.compared.rerun.usd)}, `
-      + `agent wall ${summary.totals.compared.baseline.agentSeconds} s -> ${summary.totals.compared.rerun.agentSeconds} s\n`
+      + `scored ${summary.scoredCount} of ${summary.comparedCount} run, `
+      + `resolved ${summary.totals.scored.baseline.resolved} -> ${summary.totals.scored.rerun.resolved} `
+      + `(raw ${summary.totals.compared.baseline.resolved} -> ${summary.totals.compared.rerun.resolved}), `
+      + `cost ${money(summary.totals.scored.baseline.usd)} -> ${money(summary.totals.scored.rerun.usd)}, `
+      + `agent wall ${summary.totals.scored.baseline.agentSeconds} s -> ${summary.totals.scored.rerun.agentSeconds} s\n`
   )
   process.stdout.write(`  wrote ${join(out, "compare.md")}\n`)
 }

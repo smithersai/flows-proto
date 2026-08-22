@@ -15,6 +15,10 @@
  * - **cost is every attempt**, including the one a crash replaced, because that
  *   is what the invoice says;
  * - **a lost verdict is reported as lost**, whatever the totals do;
+ * - **an excluded instance leaves the totals, the criteria and the moved-verdict
+ *   sets, and never leaves the report** — it keeps its per-instance row, it is
+ *   marked, its documented cause is printed, and every number carries the scored
+ *   denominator and the raw one together;
  * - and the program's success criteria are answered `pending` until the whole
  *   population is in, rather than declared met by a favourable prefix.
  *
@@ -26,6 +30,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { compare, render, spendByInstance } from "../compare-runs.mjs"
+import { EXCLUDED } from "../lib/excluded.mjs"
 import { read } from "../lib/fullbench-manifest.mjs"
 
 const root = resolve(import.meta.dirname, "..")
@@ -80,6 +85,11 @@ try {
   assert.equal(summary.totals.compared.rerun.agentSeconds, 240)
   assert.equal(summary.totals.compared.baseline.frames, 35)
   assert.equal(summary.totals.compared.rerun.frames, 9)
+  // Nothing here is excluded, so scored and raw are the same fold — the state
+  // every population outside `psf/requests` is in.
+  assert.equal(summary.scoredCount, 3)
+  assert.deepEqual(summary.excluded, [])
+  assert.deepEqual(summary.totals.scored, summary.totals.compared)
 
   // A cheaper, faster run that lost a verdict has still lost it, and the
   // criteria say so.
@@ -150,6 +160,50 @@ try {
   assert.ok(!stray.instances.some((row) => row.id === "z__z-9"))
 
   // -----------------------------------------------------------------------
+  // An excluded instance, with a real name and its documented cause.
+  // -----------------------------------------------------------------------
+  const [excludedId, excludedEntry] = [...EXCLUDED.entries()][0]
+  const scopedBaseline = ledger(join(temporary, "scoped-baseline.jsonl"), [
+    { kind: "header", at: 0, runId: "fullbench" },
+    ...graded("a__a-1", "resolved", { usd: 2, frames: 20, wallSeconds: 400, agentSeconds: 380 }),
+    ...graded(excludedId, "resolved", { usd: 1, frames: 4, wallSeconds: 100, agentSeconds: 90 })
+  ])
+  const scopedRerun = ledger(join(temporary, "scoped-rerun.jsonl"), [
+    { kind: "header", at: 0, runId: "rerun" },
+    ...graded("a__a-1", "resolved", { usd: 0.5, frames: 4, wallSeconds: 120, agentSeconds: 110 }),
+    // The row the grading environment decided. Without the exclusion this is a
+    // lost verdict and a failed `noRegression` criterion.
+    ...graded(excludedId, "unresolved", { usd: 0.25, frames: 3, wallSeconds: 90, agentSeconds: 80 })
+  ])
+  const scoped = compare({ baselinePath: scopedBaseline, rerunPath: scopedRerun })
+  assert.equal(scoped.comparedCount, 2)
+  assert.equal(scoped.scoredCount, 1)
+  assert.deepEqual(scoped.excluded.map((row) => row.id), [excludedId])
+  // Out of the totals and out of the moved-verdict sets...
+  assert.deepEqual(scoped.lost, [])
+  assert.equal(scoped.criteria.noRegression.met, true)
+  assert.equal(scoped.totals.scored.rerun.instances, 1)
+  assert.equal(scoped.totals.scored.rerun.usd, 0.5)
+  // ...and still in the raw fold, which is printed beside it every time.
+  assert.equal(scoped.totals.compared.rerun.instances, 2)
+  assert.equal(scoped.totals.compared.rerun.usd, 0.75)
+  assert.equal(scoped.criteria.resolved.actual, 1)
+  assert.equal(scoped.criteria.resolved.of, 1)
+  assert.equal(scoped.criteria.resolved.raw, 1)
+  assert.equal(scoped.criteria.resolved.ofRaw, 2)
+  assert.equal(scoped.criteria.totalUsd.actual, 0.5)
+  assert.equal(scoped.criteria.totalUsd.raw, 0.75)
+
+  const scopedMarkdown = render(scoped)
+  assert.match(scopedMarkdown, /1 scored of 2 run/)
+  assert.match(scopedMarkdown, /Excluded from the scoreboard, by name/)
+  assert.ok(scopedMarkdown.includes(excludedEntry.cause), "the documented cause is printed")
+  assert.ok(scopedMarkdown.includes(excludedEntry.reportedIn), "the report the cause came from is named")
+  assert.ok(scopedMarkdown.includes(`| ${excludedId} **excluded** |`), "the per-instance row is marked")
+  assert.match(scopedMarkdown, /The same fold over every compared instance, exclusions included/)
+  assert.match(scopedMarkdown, /\(raw 1\/2\)/)
+
+  // -----------------------------------------------------------------------
   // The CLI writes both artifacts and is a pure function of its inputs.
   // -----------------------------------------------------------------------
   const out = join(temporary, "out")
@@ -164,6 +218,7 @@ try {
   const first = run()
   assert.equal(first.status, 0, first.stderr)
   assert.match(first.stdout, /resolved 2 -> 2/)
+  assert.match(first.stdout, /scored 3 of 3 run/)
   assert.match(first.stdout, /cost \$3\.50 -> \$1\.00/)
   const once = readFileSync(join(out, "compare.md"), "utf8")
   const twice = (run(), readFileSync(join(out, "compare.md"), "utf8"))
@@ -179,7 +234,10 @@ try {
   assert.equal(missing.status, 1)
   assert.match(missing.stderr, /no baseline ledger/)
 
-  console.log("check-compare-runs: the comparison is like-for-like, counts every attempt's dollars, and reports a lost verdict.")
+  console.log(
+    "check-compare-runs: the comparison is like-for-like, counts every attempt's dollars, reports a lost verdict,"
+      + " and prints both denominators around every exclusion."
+  )
 } finally {
   rmSync(temporary, { recursive: true, force: true })
 }

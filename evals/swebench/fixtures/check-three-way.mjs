@@ -15,6 +15,11 @@
  *   They belong in different rows because they call for different work.
  * - **the middle column is the middle ledger's own fold**, not a re-derivation:
  *   its dollars are every attempt, exactly as `compare-runs.mjs` counts them.
+ * - **an excluded instance is in none of the four movement rows and in every
+ *   printed denominator.** A verdict a grading environment decided is not a
+ *   recovery, a gain, a still-lost or a newly-lost — and hiding it would be
+ *   worse than counting it, so the raw totals sit under the scored ones and the
+ *   per-instance row stays and is marked.
  *
  * Spends nothing, needs no docker, needs no dataset.
  */
@@ -23,6 +28,7 @@ import { spawnSync } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { EXCLUDED } from "../lib/excluded.mjs"
 import { render, threeWay } from "../three-way.mjs"
 
 const root = resolve(import.meta.dirname, "..")
@@ -96,6 +102,10 @@ try {
   assert.equal(summary.totals.baseline.usd, 5)
   assert.equal(summary.totals.first.usd, 10)
   assert.equal(summary.totals.second.usd, 2.5)
+  // Nothing here is excluded, so the scored and raw rows are the same fold.
+  assert.equal(summary.scoredCount, 5)
+  assert.deepEqual(summary.excluded, [])
+  assert.deepEqual(summary.rawTotals, summary.totals)
 
   // The middle column is a fold of every attempt, like the outer two. A crash
   // that was replaced still burned tokens, and the invoice says so.
@@ -128,6 +138,43 @@ try {
   assert.match(render(partial), /not re-run/)
 
   // -------------------------------------------------------------------------
+  // An excluded instance, in no movement row and in both denominators.
+  // -------------------------------------------------------------------------
+  const [excludedId, excludedEntry] = [...EXCLUDED.entries()][0]
+  const withExclusion = (path, verdicts) =>
+    ledger(join(temporary, path), [
+      { kind: "header", at: 0, runId: path },
+      ...graded("a__recovered-1", verdicts[0], cost(1)),
+      ...graded(excludedId, verdicts[1], cost(1))
+    ])
+  // The excluded row would otherwise read as "still lost": resolved by the
+  // baseline, unresolved by both re-runs. That is the exact shape the r92
+  // report's `psf/requests` pair has, and the exact shape it is not.
+  const scoped = threeWay({
+    baselinePath: withExclusion("scoped-r90.jsonl", ["resolved", "resolved"]),
+    firstPath: withExclusion("scoped-r91.jsonl", ["empty patch", "unresolved"]),
+    secondPath: withExclusion("scoped-r92.jsonl", ["resolved", "unresolved"])
+  })
+  assert.equal(scoped.comparedCount, 2)
+  assert.equal(scoped.scoredCount, 1)
+  assert.deepEqual(scoped.excluded.map((row) => row.id), [excludedId])
+  assert.deepEqual(scoped.recovered, ["a__recovered-1"])
+  assert.deepEqual(scoped.stillLost, [], "a verdict the grading environment decided is not a regression")
+  assert.equal(scoped.totals.second.instances, 1)
+  assert.equal(scoped.rawTotals.second.instances, 2)
+  assert.equal(scoped.totals.baseline.resolved, 1)
+  assert.equal(scoped.rawTotals.baseline.resolved, 2)
+
+  const scopedMarkdown = render(scoped)
+  assert.match(scopedMarkdown, /Scored: 1 of 2 run/)
+  assert.match(scopedMarkdown, /\| resolved \| 1\/1 \| 0\/1 \| 1\/1 \|/)
+  assert.match(scopedMarkdown, /\| resolved \(raw\) \| 2\/2 \| 0\/2 \| 1\/2 \|/)
+  assert.match(scopedMarkdown, /\| total cost \(raw\) \| \$2\.00 \| \$2\.00 \| \$2\.00 \|/)
+  assert.match(scopedMarkdown, /Excluded from the scoreboard, by name/)
+  assert.ok(scopedMarkdown.includes(excludedEntry.cause), "the documented cause is printed")
+  assert.ok(scopedMarkdown.includes(`| ${excludedId} **excluded** |`), "the per-instance row is marked")
+
+  // -------------------------------------------------------------------------
   // The command line writes both artifacts and names all three ledgers.
   // -------------------------------------------------------------------------
   const out = join(temporary, "out")
@@ -152,6 +199,7 @@ try {
   ], { encoding: "utf8" })
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /resolved 3 -> 2 -> 3/)
+  assert.match(run.stdout, /5 scored of 5 run of 5/)
   const markdown = readFileSync(join(out, "three-way.md"), "utf8")
   assert.match(markdown, /\| \| r90 \| r91 \| r92 \|/)
   assert.match(markdown, /recovered \(1\): a__recovered-1/)
@@ -167,7 +215,8 @@ try {
 
   console.log(
     "check-three-way: a recovery is told from a gain, a regression this wave did not fix from one it"
-      + " introduced, and the middle column is the middle ledger's own fold."
+      + " introduced, the middle column is the middle ledger's own fold, and an exclusion is in no movement"
+      + " row and in both denominators."
   )
 } finally {
   rmSync(temporary, { recursive: true, force: true })
