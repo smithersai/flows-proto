@@ -8,6 +8,19 @@
 #   ./run-45.sh --stop          ask a running driver to stop after its
 #                               in-flight instances finish
 #   ./run-45.sh --limit N       schedule at most N instances this session
+#   ./run-45.sh --lane NAME     name the lane: ledger, archive, artifact index
+#                               and evaluator run id all derive from it
+#
+# ## The lane
+#
+# A lane is one measurement of the population on one subject. `--lane r92`
+# writes `fullbench/rerun-r92/`, indexes artifacts `r92`, and grades into the
+# evaluator run id `rerun-r92`. The default is `r91`, the first re-run, so an
+# operator who names no lane resumes that one rather than starting a nameless
+# sixth. Every subcommand takes it, because `--status` on the wrong lane reads
+# the wrong ledger. `SWB_RERUN_LANE` sets it from the environment; `FB_DIR`,
+# `SWB_RERUN_INDEX` and `SWB_RERUN_RUN_ID` still override the three values it
+# derives, one at a time, for the rig's own tests.
 #
 # `analysis/PROGRAM.md` names eleven harness changes and, for each, a falsifiable
 # prediction about what the same 45 instances would then cost. This is the
@@ -56,10 +69,12 @@
 #
 # ## Where it writes
 #
-# Its own ledger and archive, under `fullbench/rerun-r91/`, so the baseline's
+# Its own ledger and archive, under `fullbench/rerun-<lane>/`, so the baseline's
 # `fullbench/manifest.jsonl` is never appended to and stays exactly what
-# `compare-runs.mjs` compares against. Artifacts carry the `r91` index and grade
-# into the evaluator run id `rerun-r91`.
+# `compare-runs.mjs` compares against. Artifacts carry the lane as their index
+# and grade into the evaluator run id `rerun-<lane>`. One lane never writes into
+# another's ledger, which is what makes a second measurement of the same 45
+# instances a second measurement rather than an append to the first.
 #
 # Resume is the ledger, as the full benchmark's is: an instance whose last row is
 # `graded` or `cleaned` is skipped and everything else re-runs from the top.
@@ -76,12 +91,10 @@
 # program's changes work. See README.md, "The re-run".
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"
-FB="${FB_DIR:-$S/fullbench/rerun-r91}"
 BASELINE="${SWB_RERUN_BASELINE:-$S/fullbench/manifest.jsonl}"
 
+LANE="${SWB_RERUN_LANE:-r91}"
 JOBS="${SWB_RERUN_JOBS:-3}"
-INDEX="${SWB_RERUN_INDEX:-r91}"
-RUN_ID="${SWB_RERUN_RUN_ID:-rerun-r91}"
 SEAT="${SWB_SEAT:-openai:gpt-5.6-sol}"
 INSTANCE_BUDGET="${SWB_FULLBENCH_BUDGET:-1200}"
 BUDGET_USD="${SWB_RERUN_BUDGET_USD:-60}"
@@ -111,6 +124,7 @@ while [ "$#" -gt 0 ]; do
     --status) MODE=status; shift ;;
     --stop) MODE=stop; shift ;;
     --limit) SESSION_LIMIT="${2:-}"; shift 2 || shift ;;
+    --lane) LANE="${2:-}"; shift 2 || shift ;;
     *) echo "run-45.sh: unknown argument '$1'"; exit 2 ;;
   esac
 done
@@ -119,6 +133,19 @@ if [ -n "$SESSION_LIMIT" ]; then
     ''|*[!0-9]*) echo "run-45.sh: --limit must be a non-negative integer, got '$SESSION_LIMIT'"; exit 2 ;;
   esac
 fi
+# The lane names a directory and an evaluator run id, so it is spelled the way
+# both can hold: a path component that is only ever itself.
+case "$LANE" in
+  ''|*[!A-Za-z0-9._-]*|.|..|-*)
+    echo "run-45.sh: --lane must be a name of letters, digits, '.', '_' or '-', got '$LANE'"; exit 2 ;;
+esac
+
+# The three values the lane derives. Each is still overridable on its own, which
+# is what lets `fixtures/check-run-45.mjs` point a whole lane at a temporary
+# directory without inventing a lane name for it.
+FB="${FB_DIR:-$S/fullbench/rerun-$LANE}"
+INDEX="${SWB_RERUN_INDEX:-$LANE}"
+RUN_ID="${SWB_RERUN_RUN_ID:-rerun-$LANE}"
 
 MANIFEST="$FB/manifest.jsonl"
 mkdir -p "$FB/patches" "$FB/journals" "$FB/timings" "$FB/logs" "$FB/reports" "$FB/workers" "$FB/claims"
@@ -176,13 +203,14 @@ fi
 # double fork `fullbench.sh` uses and for the same reason.
 # ---------------------------------------------------------------------------
 if [ "$FOREGROUND" != "1" ] && [ "${SWB_RERUN_CHILD:-0}" != "1" ]; then
-  ( SWB_RERUN_CHILD=1 nohup "$0" --foreground ${SESSION_LIMIT:+--limit "$SESSION_LIMIT"} \
+  ( SWB_RERUN_CHILD=1 nohup "$0" --foreground --lane "$LANE" \
+      ${SESSION_LIMIT:+--limit "$SESSION_LIMIT"} \
       >> "$FB/driver.log" 2>&1 < /dev/null & echo $! > "$FB/driver.pid" ) &
   sleep 1
   echo "run-45.sh: driver detached as pid $(cat "$FB/driver.pid" 2>/dev/null || printf '?')"
   echo "  log      $FB/driver.log"
-  echo "  status   ./run-45.sh --status"
-  echo "  stop     ./run-45.sh --stop"
+  echo "  status   ./run-45.sh --lane $LANE --status"
+  echo "  stop     ./run-45.sh --lane $LANE --stop"
   exit 0
 fi
 echo $$ > "$FB/driver.pid"
@@ -196,6 +224,7 @@ SUBJECT="$(node -e '
 ' "$S/.subject.json" 2>/dev/null || printf 'unknown')"
 
 append "$MANIFEST" "$(row --kind header --at "$(now_ms)" --run-id "$RUN_ID" --index "$INDEX" \
+  --lane "$LANE" \
   --subject "$SUBJECT" --head "$HEAD_AT_START" --seat "$SEAT" --jobs "$JOBS" \
   --instance-budget-seconds "$INSTANCE_BUDGET" --budget-usd "$BUDGET_USD" \
   --min-free-mib "$MIN_FREE_MIB" --baseline "$BASELINE" --dataset "$DATASET")"
@@ -319,6 +348,6 @@ done
 set -- $(queue --count)
 log "run-45: $1 of $3 re-run, $2 left"
 if [ "$2" = "0" ]; then
-  log "compare with: node compare-runs.mjs"
+  log "compare with: node compare-runs.mjs --rerun $MANIFEST --out $FB"
 fi
 exit 0

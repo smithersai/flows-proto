@@ -1418,9 +1418,30 @@ settled against, and `compare-runs.mjs` is the arithmetic that settles them.
 
 ```sh
 ./preflight.sh                    # pin the subject first; a wave measures the tree
-./run-45.sh                       # detached; ./run-45.sh --status to read it
-node compare-runs.mjs             # baseline vs re-run, once it has finished
+./run-45.sh --lane r92            # detached; ./run-45.sh --lane r92 --status to read it
+node compare-runs.mjs \
+  --rerun fullbench/rerun-r92/manifest.jsonl \
+  --out fullbench/rerun-r92       # baseline vs this lane, once it has finished
 ```
+
+### The lane
+
+A lane is one measurement of the population on one subject. `--lane r92` writes
+`fullbench/rerun-r92/`, indexes every artifact `r92`, and grades into the
+evaluator run id `rerun-r92`; all three move together, because a lane that moved
+only some of them would grade one wave's patches into another wave's run id.
+Every subcommand takes it — `--status` on the wrong lane reads the wrong ledger.
+
+The default is `r91`, the first re-run, so an operator who names no lane resumes
+that one rather than starting a nameless sixth. A lane name is a path component
+and an evaluator run id at once, so it is refused unless it is letters, digits,
+`.`, `_` and `-`. `SWB_RERUN_LANE` sets it from the environment, and `FB_DIR`,
+`SWB_RERUN_INDEX` and `SWB_RERUN_RUN_ID` still override the three values it
+derives, one at a time.
+
+One lane never writes into another's ledger. That is what makes a second
+measurement of the same 45 instances a second measurement rather than an append
+to the first, and it is what `three-way.mjs` below depends on.
 
 ### What is held fixed
 
@@ -1455,18 +1476,19 @@ corrected verdicts into `fullbench/manifest.jsonl`, so the baseline the re-run i
 compared against is the same rig, not the one that lost six verdicts to its own
 concurrency and to a third party's outage.
 
-It writes its own ledger and archive under `fullbench/rerun-r91/`, carries the
-`r91` index, and grades into the evaluator run id `rerun-r91`. The baseline's
-`fullbench/manifest.jsonl` is never appended to. Resume is the ledger, exactly as
-the full benchmark's is.
+It writes its own ledger and archive under `fullbench/rerun-<lane>/`, carries the
+lane as its index, and grades into the evaluator run id `rerun-<lane>`. The
+baseline's `fullbench/manifest.jsonl` is never appended to. Resume is the ledger,
+exactly as the full benchmark's is.
 
 ### Knobs
 
 | Variable | Default | What it changes |
 | --- | --- | --- |
 | `SWB_RERUN_JOBS` | 3 | instances in flight |
-| `SWB_RERUN_INDEX` | `r91` | the index every artifact carries |
-| `SWB_RERUN_RUN_ID` | `rerun-r91` | the evaluator run id all 45 accumulate into |
+| `SWB_RERUN_LANE` | `r91` | the lane, and with it the three rows below |
+| `SWB_RERUN_INDEX` | the lane | the index every artifact carries |
+| `SWB_RERUN_RUN_ID` | `rerun-<lane>` | the evaluator run id all 45 accumulate into |
 | `SWB_RERUN_BASELINE` | `fullbench/manifest.jsonl` | the ledger the population comes from |
 | `SWB_RERUN_BUDGET_USD` | 60 | cumulative spend gate; the baseline was $37.84 |
 | `SWB_FULLBENCH_BUDGET` | 1200 | per-instance seconds |
@@ -1504,10 +1526,37 @@ a favourable prefix. A seventh row is the standing superset rule: **an instance
 the baseline resolved and the re-run did not is a regression**, listed by name,
 however good the totals look.
 
+### Three lanes, one population
+
+```sh
+node three-way.mjs --baseline f --first f --second f [--out dir] [--json] \
+  [--baseline-name r90] [--first-name r91] [--second-name r92]
+```
+
+`compare-runs.mjs` answers "did this change help", which is a question about two
+ledgers. A programme already measured once asks a different one: a wave lands, its
+report says what regressed, a surgical change answers that report, and the second
+wave has to be read against **both** — against the baseline, which is what "did we
+get back to where we were" means, and against the wave in between, which is what
+"did the surgery act" means. Reading it against only one of them is how a
+recovery gets reported as a win, or a remaining regression gets lost behind a
+large improvement.
+
+So this composes `compare-runs.mjs` twice rather than recomputing anything, and
+adds the two rows that only exist with three ledgers:
+
+- **recovered** — the baseline resolved it, the middle wave did not, this one
+  does. That is the surgery's own scoreboard, and it is disjoint from **gained**,
+  which is an instance no wave before this one had ever resolved.
+- **still lost** — the baseline resolved it and this wave does not, whatever the
+  middle wave did. That is what the next report has to answer for, and it is
+  counted apart from **newly lost**, a regression this wave introduced.
+
 ### What the agent actually did
 
 ```sh
 node lib/program-evidence.mjs <journals-dir> [--json]
+node lib/surgery-evidence.mjs <journals-dir> [--json] [--interpreters <driver.log>]
 ```
 
 The comparison answers what a wave cost. This answers what its agent *did*,
@@ -1522,8 +1571,34 @@ a reading of it cannot drift from what happened. A database a live run is
 mid-write in is reported unreadable rather than guessed at, so it is safe to run
 against a wave still in flight.
 
-`fixtures/check-program-evidence.mjs` pins every count against a synthesised
-journal whose every event is known, inside `./verify.sh`.
+`lib/surgery-evidence.mjs` answers the four next-steps the r91 report ended in,
+and each is a count of the same events: `test` calls and which asked for the
+pristine base; `bash` calls that used an absolute interpreter path against ones
+that passed a bare `python3`; calls that went **hunting** for an interpreter —
+`which python`, `ls /opt`, `sys.executable`, `conda env list` — against calls
+that merely used the path they were handed, which is the distinction the whole
+change turns on; results carrying `ModuleNotFoundError`; probes the flow itself
+refused; and `model-retried` events, with `transport` counted apart because a
+truncated response body was a class no retry classification saw until it was put
+on the ladder. `--interpreters` sharpens "an absolute path" into "the path this
+instance was told", by reading the `project interpreter` lines `run-instance.sh`
+writes into the driver log.
+
+```sh
+lib/prompt-bytes.sh <driver.log> [index]
+```
+
+The cell contract's size is pinned by a unit test. The task prompt's is not: it is
+rendered per instance out of the dataset row, the repository's own test command,
+and the project interpreter measured off that instance's container. This renders
+the prompt each instance was actually given — reading the interpreter back out of
+the wave's own log rather than re-measuring it today — and prints its bytes. An
+instance whose image answered nothing usable renders without the bullet and is
+reported as `none`, so a wave that stated no fact is never credited with one.
+
+`fixtures/check-program-evidence.mjs`, `fixtures/check-surgery-evidence.mjs` and
+`fixtures/check-prompt-bytes.mjs` pin every count against synthesised inputs
+whose every field is known, inside `./verify.sh`.
 
 ### Proving both without spending a token
 
@@ -1533,9 +1608,10 @@ the derived population, the resume boundary, the concurrency bound (measured fro
 the stub's own overlap, not from the configured number), `--limit`, `--stop` and
 resume after it, the budget gate's pause row, and the refusals.
 `fixtures/check-compare-runs.mjs` replays the comparison over synthesised
-ledgers. Both run inside `./verify.sh`, which needs no docker and no dataset. The
-per-instance pipeline itself is `lib/fullbench-instance.sh`, already proved
-against real docker by `./fullbench-dryrun.sh`.
+ledgers, and `fixtures/check-three-way.mjs` the three-column one. All run inside
+`./verify.sh`, which needs no docker and no dataset. The per-instance pipeline
+itself is `lib/fullbench-instance.sh`, already proved against real docker by
+`./fullbench-dryrun.sh`.
 
 ## Score
 

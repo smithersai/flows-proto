@@ -40,8 +40,16 @@
 # `SWB_EVAL_EXPORTS` puts inside `eval.sh` and where, and the scoped image
 # cleanup that stops one grading deleting another grading's image — the defect
 # that produced every r90 `eval error`. So is the re-run: the population it takes
-# from the baseline ledger, its scheduler over a stub pipeline, and the
-# baseline-vs-re-run comparison.
+# from the baseline ledger, its scheduler over a stub pipeline, the lane that
+# names one whole measurement, and the baseline-vs-re-run comparison.
+#
+# A programme that has been measured twice needs a third column and a second
+# evidence reader, and both are checked here for the same reason the first ones
+# were: a miscount in either would be invisible in a report and would read as
+# data. `check-three-way.mjs` pins the difference between recovering a verdict
+# and gaining one; `check-surgery-evidence.mjs` pins the difference between
+# using a stated fact and hunting for it; `check-prompt-bytes.mjs` pins that an
+# unstated fact is never reported as a stated one.
 #
 # Spends no tokens, needs no docker, needs no dataset. Run it after touching
 # scorecard.ts, prices.ts, the journal's event shapes, patch capture,
@@ -49,7 +57,8 @@
 # lib/write-prompt-codex.mjs, lib/run-paths.sh, lib/lock.sh,
 # lib/journal-facts.mjs, select-candidate.mjs, run-matrix.sh, matrix-report.mjs,
 # fullbench.sh, fullbench-report.mjs, lib/grade.py, lib/httpbin.sh,
-# lib/rerun-queue.mjs, run-45.sh, compare-runs.mjs, regrade.sh or anything under
+# lib/rerun-queue.mjs, run-45.sh, compare-runs.mjs, three-way.mjs, regrade.sh,
+# lib/program-evidence.mjs, lib/surgery-evidence.mjs or anything under
 # lib/fullbench-*. The subject check needs a built CLI: run ./preflight.sh first
 # if `packages/cli/dist` is absent.
 set -eu
@@ -132,6 +141,9 @@ fi
 echo "== the baseline-vs-rerun comparison"
 node "$S/fixtures/check-compare-runs.mjs"
 
+echo "== the three-ledger scoreboard"
+node "$S/fixtures/check-three-way.mjs"
+
 echo "== the re-run's instance list and knobs"
 node "$S/fixtures/check-run-45.mjs"
 
@@ -140,3 +152,9 @@ node "$S/fixtures/check-compare-arms.mjs"
 
 echo "== the program evidence a re-run report reads off its journals"
 node "$S/fixtures/check-program-evidence.mjs"
+
+echo "== the surgical evidence a second re-run reads off its journals"
+node "$S/fixtures/check-surgery-evidence.mjs"
+
+echo "== what a wave's prompts weighed"
+node "$S/fixtures/check-prompt-bytes.mjs"
