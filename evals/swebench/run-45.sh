@@ -42,6 +42,25 @@
 # | testbeds and images | deleted after the verdict | deleted after the verdict |
 # | grading | official evaluator, x86_64 images | the same, plus the rig fixes in `lib/grade.py` |
 # | in flight | 2 | 3 |
+# | authoring surface | `filing` | `filing`, unless `FLOWS_CELL_MODE=repl` |
+#
+# ## The arm
+#
+# `FLOWS_CELL_MODE` selects the cell authoring surface, and it is the one
+# variable a lane may move. `filing` is the shipped surface. `repl` gives every
+# run one persistent realm for its whole life — a cell's top-level names are
+# still bound in the next cell, `console.log` is the channel to the next model
+# turn, and the transition is `ctx.done`/`ctx.park` rather than a returned
+# object (`docs/specs/Concepts/Repl Realm.md`). Both arms run the same 45
+# instances in the same order at the same seat and the same budgets, and the
+# task prompt is byte-identical: `lib/write-flow.mjs` is not a knob.
+#
+#   FLOWS_CELL_MODE=repl ./run-45.sh --lane r95-repl
+#
+# The arm is journaled per run in `discipline-armed` and written into this
+# lane's ledger header, so a report never has to infer which surface a wave ran
+# under. Adoption is resolved first, then cost and wall clock: a drop in
+# resolved is disqualifying whatever else moves.
 #
 # Two of those rows deserve their reason stated rather than assumed.
 #
@@ -101,6 +120,14 @@ BUDGET_USD="${SWB_RERUN_BUDGET_USD:-60}"
 MIN_FREE_MIB="${SWB_FULLBENCH_MIN_FREE_MIB:-8192}"
 DATASET="${SWB_DATASET:-$S/swb-verified.json}"
 MODEL_NAME="${SWB_MODEL_NAME:-flows-cell-harness}"
+# The one variable an A/B lane is allowed to move. `filing` is the shipped
+# surface; `repl` gives every run one persistent realm for its whole life. The
+# harness reads it in `packages/cli/src/NodeControl.ts` beside
+# `FLOWS_TEST_COMMAND`, so the rig selects an arm the way it selects a test
+# runner and nothing benchmark-specific lives in the harness. It is journaled in
+# `discipline-armed`, so a report reads the arm each run actually ran under
+# rather than the arm the operator meant to select.
+CELL_MODE="${FLOWS_CELL_MODE:-filing}"
 POLL_SECONDS="${SWB_RERUN_POLL_SECONDS:-5}"
 SESSION_LIMIT=""
 
@@ -113,6 +140,12 @@ for PAIR in "JOBS:$JOBS" "INSTANCE_BUDGET:$INSTANCE_BUDGET" "MIN_FREE_MIB:$MIN_F
 done
 case "$BUDGET_USD" in
   ''|*[!0-9.]*|*.*.*|.|*.) echo "run-45.sh: SWB_RERUN_BUDGET_USD must be a number, got '$BUDGET_USD'"; exit 2 ;;
+esac
+# Refused rather than defaulted: an arm nobody meant to select is a wave that
+# measures the wrong thing and cannot say so afterwards.
+case "$CELL_MODE" in
+  filing|repl) ;;
+  *) echo "run-45.sh: FLOWS_CELL_MODE must be 'filing' or 'repl', got '$CELL_MODE'"; exit 2 ;;
 esac
 
 MODE=start
@@ -227,6 +260,7 @@ append "$MANIFEST" "$(row --kind header --at "$(now_ms)" --run-id "$RUN_ID" --in
   --lane "$LANE" \
   --subject "$SUBJECT" --head "$HEAD_AT_START" --seat "$SEAT" --jobs "$JOBS" \
   --instance-budget-seconds "$INSTANCE_BUDGET" --budget-usd "$BUDGET_USD" \
+  --cell-mode "$CELL_MODE" \
   --min-free-mib "$MIN_FREE_MIB" --baseline "$BASELINE" --dataset "$DATASET")"
 
 export FB_DIR="$FB"
@@ -236,6 +270,7 @@ export SWB_FULLBENCH_MIN_FREE_MIB="$MIN_FREE_MIB"
 export SWB_FULLBENCH_BUDGET="$INSTANCE_BUDGET"
 export SWB_MODEL_NAME="$MODEL_NAME"
 export SWB_SEAT="$SEAT"
+export FLOWS_CELL_MODE="$CELL_MODE"
 # Nothing is pinned: the baseline's five pinned images belong to the best-of-n
 # matrix, and a re-run that kept 15 GB of images warm would sit in the disk gate
 # instead of running.
@@ -243,7 +278,7 @@ export SWB_FULLBENCH_PINNED=""
 
 QUEUE="$(queue --remaining)"
 set -- $(queue --count)
-log "run-45: $1 of $3 already re-run, $2 to go, $JOBS in flight, ${INSTANCE_BUDGET}s each"
+log "run-45: $1 of $3 already re-run, $2 to go, $JOBS in flight, ${INSTANCE_BUDGET}s each, $CELL_MODE arm"
 
 # ---------------------------------------------------------------------------
 # The budget gate, read from this re-run's own ledger before every launch. A
