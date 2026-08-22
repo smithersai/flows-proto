@@ -773,11 +773,19 @@ export const makeRestricted = (): Sandbox =>
           try {
             started = cell(scope, hostless)
           } catch (cause) {
-            /* v8 ignore start -- `cell` is an async function, so it settles its rejection through the promise below rather than throwing synchronously; the only way to throw here was a cell that closed the wrapper and ran at the top level, which the boundary parse now refuses as the syntax error it is */
+            // `cell` is an async function, so it settles its rejection
+            // through the promise below rather than throwing synchronously;
+            // the only way to throw here was a cell that closed the wrapper
+            // and ran at the top level, which the boundary parse now refuses
+            // as the syntax error it is. Each line carries its own directive:
+            // a start/stop range would hide the whole region behind a single
+            // allowlist count, which `packages/flows` forbids outright.
+            /* v8 ignore next -- unreachable, see above */
             settled = raised(cause)
+            /* v8 ignore next -- unreachable, see above */
             latch.wake()
+            /* v8 ignore next -- unreachable, see above */
             return
-            /* v8 ignore stop */
           }
           started.then(
             (value) => {
