@@ -1124,6 +1124,42 @@ describe("CellTurn park without a human", () => {
     expect(of(events, "transition-applied")).toHaveLength(2)
   })
 
+  it("counts a frame that only recalls against the cap, so recall cannot loop forever", async () => {
+    // `recall` is satisfied while the NEXT prompt is assembled, which makes it
+    // free of an extra call — but not free of a turn: the frame that reads the
+    // recalled bytes is an ordinary model call. A cell that answers every frame
+    // with `{ intent: "continue", recall: [...] }` and nothing else is
+    // therefore a paid loop, and `maxFrames` alone is a hundred turns of it.
+    //
+    // What bounds it is the read-only streak, which is measured rather than
+    // declared: a recall names no call and writes nothing, so every such frame
+    // increments the streak and twice the cap ends the run as a typed failure.
+    // This case is the proof, because nothing in `Cell.Continue.recall` says so
+    // on its own.
+    const { events, failure, model } = await run({
+      state: state({ readOnlyCap: 1, maxFrames: 40 }),
+      flows: [lister],
+      script: [
+        emits(
+          `await ctx.call("fs/list", { path: "src" })
+           return { intent: "continue", state: {}, recall: [1], context: [] }`
+        ),
+        emits(`return { intent: "continue", state: {}, recall: [1], context: [] }`),
+        emits(`return { intent: "continue", state: {}, recall: [1], context: [] }`),
+        emits(`return { intent: "complete", output: "never reached" }`)
+      ],
+      calls: [{ _tag: "Success", value: { entries: ["models.py"] } }]
+    })
+
+    expect(failure).toMatchObject({ code: "read_only_cap" })
+    // Two frames at a cap of one, and the third cell is never asked for.
+    expect(model.recorder.requests).toHaveLength(2)
+    expect(of(events, "transition-applied")).toHaveLength(2)
+    // The recall itself worked on the frame that had one: this is a bound on a
+    // working mechanic, not a mechanic that never delivered.
+    expect(messagesOf(model, 1)).toContain("## recall 1")
+  })
+
   it("restarts the streak from a refused frame that changed something", async () => {
     const { events, failure } = await run({
       state: state({ readOnlyCap: 2, maxFrames: 8, envelope: ["fs:read:**", "fs:write:**"] }),

@@ -39,6 +39,20 @@ try {
   assert.doesNotMatch(generated.stdout, /colocated with Jujutsu/)
   assert.doesNotMatch(generated.stdout, /FAIL_TO_PASS|PASS_TO_PASS/)
 
+  // The preamble names the tools this harness actually ships. Both of these
+  // taught the opposite until 2026-08-21, against tools that had already
+  // changed underneath them: a whole-file `write` where `edit` anchors byte
+  // exactly and answers with its hunk, and a hand-composed `docker exec` line
+  // where `bash` takes the container as a field and builds the argv itself.
+  // Teaching a tool the harness no longer offers is the same defect as not
+  // offering it.
+  assert.match(generated.stdout, /container: "test-container", cwd: "\/testbed"/)
+  assert.match(generated.stdout, /interpreter: "python3", script:/)
+  assert.doesNotMatch(generated.stdout, /docker exec/)
+  assert.match(generated.stdout, /use the `edit` flow with an anchor a call just handed you/)
+  assert.match(generated.stdout, /answers\n {2}with the hunk it applied/)
+  assert.doesNotMatch(generated.stdout, /prefer the `write` flow/)
+
   const missing = spawnSync(
     process.execPath,
     [join(root, "lib/write-flow.mjs"), dataset, "django__django-1", "openai:test", "test-container"],

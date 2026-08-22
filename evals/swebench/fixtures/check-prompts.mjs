@@ -92,11 +92,25 @@ try {
   // The example command is a placeholder on both sides. Spelling a runner into
   // it is how the two drifted apart the first time: the codex prompt's example
   // said `python -m pytest`, which is not the runner for every repository.
-  const example = `      docker exec ${container} bash -lc 'cd /testbed && <command>'`
-  assert.ok(flowsPrompt.includes(example), "the flows prompt's example is a placeholder")
-  assert.ok(codexPrompt.includes(example), "the codex prompt's example is the same placeholder")
+  //
+  // The two examples differ in one controlled way, and only since the `bash`
+  // flow gained a container transport: codex has a shell and nothing else, so
+  // it composes the `docker exec` line itself, while flows names the container
+  // in the call and the harness builds the argv. Each side is shown the best
+  // route its own tools offer, which is the rule this file pins; what neither
+  // may carry is a runner, a path, or anything about this instance.
+  const codexExample = `      docker exec ${container} bash -lc 'cd /testbed && <command>'`
+  const flowsExample =
+    `      { mode: "unhermetic", container: "${container}", cwd: "/testbed", command: "<command>" }`
+  assert.ok(codexPrompt.includes(codexExample), "the codex prompt's example is a placeholder")
+  assert.ok(flowsPrompt.includes(flowsExample), "the flows prompt's example is the same placeholder")
+  assert.ok(
+    !flowsPrompt.includes("docker exec"),
+    "the flows prompt never asks the agent to compose a docker line: `bash` owns the transport"
+  )
   for (const prompt of [flowsPrompt, codexPrompt]) {
     assert.ok(!prompt.includes("python -m pytest"), "no prompt hard-codes one repository's runner")
+    assert.ok(prompt.includes("<command>"), "the example stays a placeholder")
   }
 
   // -------------------------------------------------------------------------
@@ -116,13 +130,30 @@ try {
     // names the `bash` flow where the codex side says "shell".
     "Your `bash` flow runs on a macOS host with BSD userland. The repository's own",
     "Linux environment and Python interpreter are in a container that has this exact",
+    // The container transport: flows names the container in the call and the
+    // harness builds the argv, where codex composes the `docker exec` line.
+    "  container, by naming it rather than by typing a docker line:",
+    `      { mode: "unhermetic", container: "${container}", cwd: "/testbed", command: "<command>" }`,
+    "  For a program rather than a line, pass the program itself and let `bash`",
+    "  deliver it: `{ ..., interpreter: \"python3\", script: \"<program text>\", args: [] }`",
+    "  reaches the interpreter on standard input as data, so nothing quotes it,",
+    "  escapes it, or terminates it with a heredoc marker.",
+    "  in the container, or avoid it.",
     "- Git in this checkout behaves normally: `git status` and `git diff` show your",
     "  own uncommitted edits and nothing else. This harness snapshots the working",
     "  copy around every action, but it does so in a repository of its own, so",
     "  nothing it writes ever appears in this checkout's history, index, or refs.",
-    "- To change a file, prefer the `write` flow: read the file, and write back the",
-    "  complete new contents. That is the most reliable edit available to you.",
-    "- `read` and `write` act on this directory directly and need no container.",
+    // The edit contract. codex has its own editing tools and its own teaching
+    // for them; this is flows' `edit`, stated where flows' agent reads it.
+    "- To change a file, use the `edit` flow with an anchor a call just handed you:",
+    "  a `read`'s `content` is raw file text and a `grep` hit's `text` is the line",
+    "  itself, so either is an anchor exactly as it stands. `edit` matches those",
+    "  bytes or fails with the file's own text at the nearest region, and it answers",
+    "  with the hunk it applied. You may also anchor by a prior hit's `startLine`",
+    "  and `endLine`. Do not rewrite a whole file to change part of one: `write`",
+    "  replaces every byte, and a `read` that came back `truncated` is a fragment.",
+    "- `read`, `grep`, `edit` and `write` act on this directory directly and need",
+    "  no container.",
     "Complete only when you have applied the fix to the source files and confirmed it",
     "by running code. When you complete, set `output` to a short description of the",
     "change you made."
@@ -130,6 +161,9 @@ try {
   const codexOnly = [
     "Your shell runs on a macOS host with BSD userland. The repository's own Linux",
     "environment and Python interpreter are in a container that has this exact",
+    "  container:",
+    codexExample,
+    "  through docker exec, or avoid it.",
     "Finish only when you have applied the fix to the source files and confirmed it",
     "by running code."
   ]

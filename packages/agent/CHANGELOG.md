@@ -9,6 +9,16 @@
   tool that does not exist, which is the same reason all seven filesystem flows
   are bound rather than two.
 
+- `StandardFlows.shell` now supplies a `Container` transport, defaulting to the
+  docker/podman CLI, so `bash`'s `container` field means something in the
+  production composition. Without one the field resolves `{ ok: false }` with
+  "this host has no container transport", and the agent goes back to typing
+  `docker exec c bash -lc '…'` itself — the quoting stack that cost the measured
+  SWE-bench program twelve failed probes and one instance's most expensive frame.
+  A host with a different route passes its own transport; a host with neither
+  docker nor podman fails the spawn with the shell's own "not found", which is
+  the honest answer.
+
 ### Changed
 
 - Renamed the package from `@smthrs/engine-harness` to `@smthrs/agent`. The
