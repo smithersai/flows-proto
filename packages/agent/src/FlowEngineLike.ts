@@ -549,7 +549,8 @@ export const defaultModelRetryTimes = 5
  * when the wall clock says the incident has outlasted the window this policy
  * was written to cover, rather than when the fifth rung happens to arrive. Past
  * that point waiting is not what is wrong, which is exactly what
- * {@link RequestExecutor.layerRebuilding} is for.
+ * `@smthrs/model` `RequestExecutor` `makeWith` and its `Transport` are for: a
+ * client the host can replace, rather than a longer wait on the one that died.
  *
  * The elapsed time is the schedule's own, taken on the injected clock, so a
  * test that supplies one sees the window it declared and never a wall-clock

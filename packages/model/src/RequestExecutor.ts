@@ -631,13 +631,14 @@ export type RequestError =
  * jittered backoff each, and both runs died anyway against a socket that never
  * came back.
  *
- * Three is where waiting has stopped being the explanation. It is one more than
- * this executor's own ladder ({@link MAX_RETRIES}), so a request that exhausts
- * its retries and fails is not enough on its own: the caller has to come back
- * and fail again on the transport before the client is replaced. That keeps a
- * single unlucky request from discarding a healthy connection pool, and it puts
- * the replacement on the first rung of the *outer* ladder — the sealed model
- * step's — which is where a socket that is genuinely dead first shows itself.
+ * Three is where waiting has stopped being the explanation. It is exactly what
+ * one `execute` spends when every attempt fails on the transport — the first
+ * attempt plus `MAX_RETRIES` — so no attempt inside a request ever runs on a
+ * client the request itself discarded, and the replacement lands on the first
+ * rung of the *outer* ladder, the sealed model step's, which is where a socket
+ * that is genuinely dead first shows itself. A single request cannot both
+ * throw away a connection pool and go on using the replacement, and a request
+ * that fails on anything other than the transport leaves the pool alone.
  *
  * The counter is about the transport, which every request in the process
  * shares, so it is shared too. Any success resets it: a client that answers is
