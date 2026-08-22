@@ -350,6 +350,22 @@ export const trace = (
           nextFrame: event.nextFrame
         }
       }
+    case "vacuous-verification-observed":
+      // The stored check travels with the identity the controller matched it
+      // by, because the whole judgement is that this exact call had already
+      // been watched passing: a reader with only the text cannot tell an exact
+      // reuse from a command that merely reads like one, and the signature
+      // reconciles the row directly against the run's own
+      // `cell-call-settled` record.
+      return {
+        eventType: "control.agent.vacuous-verification-observed",
+        payload: {
+          flow: event.flow,
+          check: event.check,
+          signature: event.signature,
+          nextFrame: event.nextFrame
+        }
+      }
     case "suspended":
       return { eventType: "control.agent.suspended", payload: { reason: event.reason } }
     case "compaction-settled":

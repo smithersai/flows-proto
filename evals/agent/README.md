@@ -55,6 +55,7 @@ loop and its seams, not durability and not a real catalog.
 | `cell-calls-a-flow`                    | A cell reaches a host capability through `ctx.call`, and the flow's typed result reaches the answer.                   |
 | `read-only-cap-stops-a-reading-run`    | A task run that only reads is told to write or justify at its cap, and stops as `/harness/HarnessError` at twice it.   |
 | `sufficiency-signal-reaches-the-next-frame` | A run holding a check that failed before its change and a broader one that passed after is told so, and completes on it. |
+| `vacuous-verification-signal-reaches-the-next-frame` | A run that stores as its proof a check it had already watched pass on the untouched tree is told so, once, and continues. |
 | `park-without-a-human-is-answered`     | A park in a run with no approval channel is refused, answered in-frame, and the run spends the budget it still held.  |
 | `park-every-frame-still-hits-the-read-only-cap` | A run that answers every refusal with another park stops at twice its read-only cap instead of spending the frame budget. |
 | `max-frames-stops-the-run`             | A run that never completes stops at its frame budget and reports `/harness/HarnessError`.                              |

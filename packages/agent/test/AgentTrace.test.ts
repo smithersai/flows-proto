@@ -201,6 +201,29 @@ describe("trace", () => {
         }
       ],
       [
+        "vacuous-verification-observed",
+        new AgentEvent.VacuousVerificationObserved({
+          eventType: "flows.harness.vacuous-verification-observed.v1",
+          flow: "bash",
+          check: "{\"command\":\"run the whole check\"}",
+          signature: "e3b0c44298fc1c14",
+          nextFrame: 15
+        }),
+        {
+          eventType: "control.agent.vacuous-verification-observed",
+          // The stored input and the identity it was matched by: the whole
+          // judgement is that this exact call had already been watched passing,
+          // and a reader with only the text cannot tell an exact reuse from a
+          // command that merely reads like one.
+          payload: {
+            flow: "bash",
+            check: "{\"command\":\"run the whole check\"}",
+            signature: "e3b0c44298fc1c14",
+            nextFrame: 15
+          }
+        }
+      ],
+      [
         "read-only-demanded",
         new AgentEvent.ReadOnlyDemanded({
           eventType: "flows.harness.read-only-demanded.v1",

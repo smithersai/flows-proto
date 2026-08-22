@@ -269,6 +269,36 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     expected: answered("completed on the pair I was shown", 4, ["check:one", "apply", "check"])
   },
 
+  "vacuous-verification-signal-reaches-the-next-frame": {
+    summary:
+      "A run that stores as its proof a check it had already watched pass on the untouched tree is told so, once, and the run continues.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // The completing cell is keyed on the sentence itself, so the case
+        // proves the fact reached the model rather than that a run ended:
+        // without it the second frame would store the same empty proof again
+        // and the run would spend its budget instead of answering.
+        respond: (prompt) =>
+          prompt.includes("Vacuous verification")
+            ? `return { intent: "complete", state: {}, output: "the proof I stored was already green" }`
+            : `await ctx.call("check", { command: "verify a/b.py", only: "green" })
+               return {
+                 intent: "continue",
+                 state: { verification: { flow: "check", input: { command: "verify a/b.py", only: "green" } } },
+                 context: [{ role: "user", text: "stored the proof" }]
+               }`,
+        maxFrames: 8,
+        flows: [Subject.checkSource(recorder)]
+      })
+    },
+    // Two frames: store the empty proof, then read the fact and answer. Nothing
+    // is bounced and no cap is spent — the frame that stored it continued
+    // exactly as its transition asked.
+    expected: answered("the proof I stored was already green", 2, ["check:green"])
+  },
+
   "park-without-a-human-is-answered": {
     summary:
       "A park in a run with no approval channel is refused and answered in the frame that asked, and the run spends the budget it still held instead of suspending on nobody.",
