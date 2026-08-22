@@ -309,9 +309,20 @@ describe("cellPrompt", () => {
     // oracles, revisable premises, minimal edits, completion on recorded
     // evidence — against the r90 contract on the same 45 instances. Resolved
     // fell 35 to 30, cost rose 59 %, and the doctrine's own instances are the
-    // ones that got dearer. Three of the four are reverted and stay reverted.
-    // Re-adding any of them needs a trace that says teaching, and not a tool,
-    // was the gap.
+    // ones that got dearer. It is reverted, so the tool half of the same
+    // program can be measured on its own. Re-adding any of these needs a trace
+    // that says teaching, and not a tool, was the gap.
+    //
+    // Two of them were re-added anyway, and priced again. `rerun-r93.md` ran
+    // the minimal-edit rule alone, with `astropy__astropy-14369` as its own
+    // built-in A/B, beside a same-shape sweep written for
+    // `django__django-13212`. Both failed. `14369` went from 8 frames and
+    // $0.67 to 41 frames and $3.06 and stayed unresolved; `13212` still
+    // captured one file and stayed unresolved, and across the wave the patches
+    // got *less* multi-file, 6 to 3. The two rules are 522 characters and 131
+    // estimated tokens, and the wave they produced is three verdicts and $9.47
+    // worse than r92's. Both are reverted, and the sweep is pinned out here
+    // beside the four so a third re-add has to move this list.
     const contract = contractText()
     for (
       const added of [
@@ -319,8 +330,10 @@ describe("cellPrompt", () => {
         "A recorded probe is a premise you may revise",
         "asserting the behaviour the issue explicitly replaces is stale evidence",
         "run the identical command against the unmodified base tree",
+        "Fix what the reproduction implicates, and stop",
         "Complete on evidence already in hand",
-        "is detected and is not evidence"
+        "is detected and is not evidence",
+        "search the whole repository for that shape"
       ]
     ) {
       expect(contract).not.toContain(added)
@@ -328,39 +341,6 @@ describe("cellPrompt", () => {
     // What r90 said about the recorded check stands, in r90's own words.
     expect(contract).toContain("reuse its exact `flow` and `input` after edits")
     expect(contract).toContain("rather than deriving or broadening another command")
-  })
-
-  it("carries change 2(f) back alone, in r91's own wording", () => {
-    // The fourth rule of change #2 is the one piece of the reverted doctrine
-    // with a verdict to its name: `astropy__astropy-14369` resolved under r91
-    // in 5 frames and failed under r90 and r92 in 8, and r92's patch for it is
-    // byte-identical to r90's. It is re-added byte for byte so the next wave
-    // measures the rule rather than a paraphrase of it, and it is re-added
-    // alone so the wave measures one rule rather than four.
-    const contract = contractText()
-    expect(contract).toContain(
-      "9. Fix what the reproduction implicates, and stop; the rules beside it are not yours to restructure."
-        + " When the change adds behaviour across an enumerable set of sites, your probe covers every site the"
-        + " edit touches, and one lookup of the changed symbol's consumers belongs in the cell that locates,"
-        + " not in a later frame."
-    )
-  })
-
-  it("teaches the same-shape sweep in one line, and names no language", () => {
-    // `django__django-13212` fixed 14 of 14 sites in the file it was reading
-    // and 0 in the gold patch's second file; codex fails it the same way, so
-    // this is a shape neither harness sweeps for rather than a difference
-    // between them. The line has to hold for any repository, so it names a
-    // call shape and a symbol and nothing else — a rule that named a language,
-    // a test runner or a framework would be tuning against the sample.
-    const contract = contractText()
-    expect(contract).toContain(
-      "10. When your fix changes a call shape or a symbol, search the whole repository for that shape rather"
-        + " than the file you edited, and treat every hit as a candidate site to decide about in that same cell."
-    )
-    for (const named of ["python", "django", "pytest", "Python", "Django"]) {
-      expect(contract.split("\n10. ")[1]?.split("\n")[0] ?? "").not.toContain(named)
-    }
   })
 
   it("teaches that a file is restored with git, never through captured stdout", () => {
@@ -490,16 +470,36 @@ describe("cellPrompt", () => {
     // re-ask for a cell that does not parse. Those are ~1,000 characters, and
     // every one of them replaces a frame a graded wave actually spent.
     //
-    // The ceiling was r90's own budget plus that mechanics delta, at 2,400, and
-    // it now carries two named additions and nothing else. Change 2(f) is 81
-    // estimated tokens and has one instance's verdict behind it; the same-shape
-    // sweep is 52, and has one instance both arms fail behind it. The contract
-    // measures 9,715 characters / 2,483 estimated tokens against r92's 9,193 /
-    // 2,352, and the ceiling is set at 2,500 — that measurement plus 17, which
-    // is less than either rule. The next addition has to move this number
-    // again, which is the whole reason the number is here.
-    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2_500)
+    // The ceiling is therefore r90's own budget plus that mechanics delta, and
+    // not one token of the doctrine that was priced and rejected.
+    //
+    // It was raised to 2,500 once, for two rules re-added under r92's ranked
+    // list, and `rerun-r93.md` priced them: +522 characters, +131 estimated
+    // tokens, and against that +115 frames, +$9.47 and −3 verdicts. The number
+    // is back at 2,400 with the contract, and the round says what the ceiling
+    // is for — 131 estimated tokens of teaching bought a 43 % larger bill.
+    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2_400)
     expect(Tokens.estimate(sectionOf("cell-environment", {}, { locale: "C.UTF-8", absentTools: ["rg", "ruff"] })))
       .toBeLessThanOrEqual(300)
+  })
+
+  it("is byte-for-byte the contract the r92 subject measured", () => {
+    // A ceiling bounds the text; it does not identify it. Four waves have now
+    // been decided by the contract's exact wording, and two of them — r90's
+    // text and r92's revert to it — are the cheapest and highest-scoring on
+    // record, so the text itself is a measured artefact and gets a number.
+    //
+    // This is that number: the SHA-256 of the rendered `cell-contract`
+    // section's text. The r92 subject — stamp
+    // `sha256:c9e4166913e167ee6cd76ac293d621e02843833c1736d62b5ed770e1a1e7e45c`
+    // in `fullbench/rerun-r92/manifest.jsonl`'s header, at `de1de1a82` —
+    // renders the text below at 9,193 characters. The r93 subject rendered
+    // `sha256:82603dd246056b2265c2b37c1553f26b2dd51c4743ed9a6f6e0694db61bf0948`
+    // instead, 9,715 characters, and lost three verdicts and $9.47 for the
+    // difference. Changing the contract means changing this line, and
+    // changing this line means a wave has to be run for it.
+    expect(contractText()).toHaveLength(9_193)
+    expect(Digest.digest(contractText()))
+      .toBe("25a1c933ad18e979fe4282848edee5987b61783f939ac72ff45fee2b6655e8c5")
   })
 })
