@@ -13,6 +13,7 @@ import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import { Effect, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import * as NarrowedCheck from "../src/NarrowedCheck.ts"
+import * as Sufficiency from "../src/Sufficiency.ts"
 import * as UnresolvedFailure from "../src/UnresolvedFailure.ts"
 import * as VacuousVerification from "../src/VacuousVerification.ts"
 import wave from "./fixtures/vacuousJournals.json" with { type: "json" }
@@ -46,7 +47,7 @@ const ran = (
 }
 
 const pristine = (text: string): VacuousVerification.Ledger =>
-  VacuousVerification.remember([], { frame: [ran(text)], epoch: 0 })
+  VacuousVerification.remember([], { frame: [ran(text)], epoch: 0, failed: [] })
 
 describe("VacuousVerification.remember", () => {
   it("records a check that passed over the tree the run was handed", () => {
@@ -61,7 +62,7 @@ describe("VacuousVerification.remember", () => {
   it("records nothing once some earlier frame has changed the workspace", () => {
     // A pass taken after an edit says nothing about the tree the run was
     // handed, which is the only tree this ledger is about.
-    expect(VacuousVerification.remember([], { frame: [ran("check a/b.py")], epoch: 1 })).toEqual([])
+    expect(VacuousVerification.remember([], { frame: [ran("check a/b.py")], epoch: 1, failed: [] })).toEqual([])
   })
 
   it("records nothing from a frame that changed the workspace itself", () => {
@@ -69,7 +70,7 @@ describe("VacuousVerification.remember", () => {
     // records, so this check might have passed on either side of the change.
     // `Sufficiency` refuses the same stamp from the other direction.
     expect(
-      VacuousVerification.remember([], { frame: [ran("check a/b.py", { stable: false })], epoch: 0 })
+      VacuousVerification.remember([], { frame: [ran("check a/b.py", { stable: false })], epoch: 0, failed: [] })
     ).toEqual([])
   })
 
@@ -78,16 +79,24 @@ describe("VacuousVerification.remember", () => {
     // subject, and a run whose file reads counted as green proofs would be told
     // its verification was vacuous every time it stored one.
     expect(
-      VacuousVerification.remember([], { frame: [ran("check a/b.py", { passing: false })], epoch: 0 })
+      VacuousVerification.remember([], { frame: [ran("check a/b.py", { passing: false })], epoch: 0, failed: [] })
     ).toEqual([])
     expect(
-      VacuousVerification.remember([], { frame: [ran("check a/b.py", { passing: false, failing: true })], epoch: 0 })
+      VacuousVerification.remember([], {
+        frame: [ran("check a/b.py", { passing: false, failing: true })],
+        epoch: 0,
+        failed: []
+      })
     ).toEqual([])
   })
 
   it("keeps the first entry when the same check passes again", () => {
     const first = pristine("check a/b.py")
-    const again = VacuousVerification.remember(first, { frame: [ran("check a/b.py"), ran("check c/d.py")], epoch: 0 })
+    const again = VacuousVerification.remember(first, {
+      frame: [ran("check a/b.py"), ran("check c/d.py")],
+      epoch: 0,
+      failed: []
+    })
 
     expect(again.map((entry) => entry.label)).toEqual([first[0]?.label, ran("check c/d.py").label])
   })
@@ -95,10 +104,51 @@ describe("VacuousVerification.remember", () => {
   it("forgets its oldest passes first once the bound is reached", () => {
     const many = Array.from({ length: VacuousVerification.retained + 2 }, (_, index) => ran(`check ${index}`))
 
-    const ledger = VacuousVerification.remember([], { frame: many, epoch: 0 })
+    const ledger = VacuousVerification.remember([], { frame: many, epoch: 0, failed: [] })
 
     expect(ledger).toHaveLength(VacuousVerification.retained)
     expect(ledger[0]?.label).toContain("check 2")
+  })
+
+  it("records nothing for a check this run has already watched fail on that same tree", () => {
+    // The reading that takes the observation back. A command the run watched
+    // exit non-zero before any edit is a command it has done the contract's
+    // work on; a later green reading of it at the same epoch says the command
+    // is unsteady, not that no red was ever seen. Admitting it would let the
+    // harness tell a run its proof "was already green" in a sentence the run's
+    // own journal refutes.
+    expect(
+      VacuousVerification.remember([], {
+        frame: [ran("check a/b.py")],
+        epoch: 0,
+        failed: [signatureOf("bash", command("check a/b.py"))]
+      })
+    ).toEqual([])
+  })
+
+  it("forgets a pass it had already recorded once the same check is watched failing", () => {
+    // The two readings can arrive in either order, and the refusal has to hold
+    // in both. Here the pass came first.
+    const first = pristine("check a/b.py")
+    expect(first).toHaveLength(1)
+
+    expect(
+      VacuousVerification.remember(first, {
+        frame: [ran("check a/b.py", { passing: false, failing: true })],
+        epoch: 0,
+        failed: [signatureOf("bash", command("check a/b.py"))]
+      })
+    ).toEqual([])
+  })
+
+  it("keeps the passes a pre-edit failure says nothing about", () => {
+    const ledger = VacuousVerification.remember([], {
+      frame: [ran("check a/b.py"), ran("check c/d.py")],
+      epoch: 0,
+      failed: [signatureOf("bash", command("check c/d.py"))]
+    })
+
+    expect(ledger.map((entry) => entry.signature)).toEqual([signatureOf("bash", command("check a/b.py"))])
   })
 })
 
@@ -265,6 +315,10 @@ describe("VacuousVerification over the r92 wave", () => {
 
   const replay = (journal: Journal): ReadonlyArray<{ readonly frame: number; readonly check: string }> => {
     let ledger: VacuousVerification.Ledger = []
+    // The failing half of the same fold, kept exactly as `CellTurn` keeps it,
+    // because the refusal this module makes is read off it and a replay that
+    // derived it some other way would be measuring a different controller.
+    let failing: Sufficiency.Ledger = []
     let mutations = 0
     let stated: Array<string> = []
     const fired: Array<{ readonly frame: number; readonly check: string }> = []
@@ -287,7 +341,12 @@ describe("VacuousVerification over the r92 wave", () => {
         })
         return recorded === undefined ? [] : [recorded]
       })
-      const remembered = VacuousVerification.remember(ledger, { frame: checks, epoch: mutations })
+      failing = Sufficiency.remember(failing, { frame: checks, epoch: mutations })
+      const remembered = VacuousVerification.remember(ledger, {
+        frame: checks,
+        epoch: mutations,
+        failed: failing.filter((entry) => entry.epoch === 0).map((entry) => entry.signature)
+      })
       const declared = storedBy(frame)
       if (declared !== undefined && (frame.transition === "continue" || frame.transition === "complete")) {
         const found = VacuousVerification.find({

@@ -2533,6 +2533,26 @@ describe("CellTurn vacuous verification", () => {
     expect(JSON.stringify(model.recorder.requests[1]?.messages)).not.toContain("Vacuous verification")
   })
 
+  it("says nothing about a check the run watched fail on that tree before it watched it pass", async () => {
+    // The run did the contract's work: it watched this command go red on the
+    // unmodified tree. That it printed green a frame later, with nothing yet
+    // changed, says the command is unsteady — not that no failure was ever
+    // seen. Telling this run its proof "was already green" would be a sentence
+    // its own journal refutes, so the signature is never admitted.
+    const { events, model } = await running(
+      [
+        checking("check a.py"),
+        checking("check a.py"),
+        storing("check a.py"),
+        `return { intent: "complete", state: {}, output: "done" }`
+      ],
+      [exits(1), exits(0), exits(0)]
+    )
+
+    expect(of(events, "vacuous-verification-observed")).toEqual([])
+    expect(JSON.stringify(model.recorder.requests[3]?.messages)).not.toContain("Vacuous verification")
+  })
+
   it("says nothing about a pass taken after the run had already changed something", async () => {
     const { events } = await running(
       [

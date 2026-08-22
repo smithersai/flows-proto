@@ -24,6 +24,13 @@
  * cell stores that exact call as its verification, the run is standing on a
  * proof that cannot distinguish its own change from no change at all.
  *
+ * One reading takes it back: the same call reported *failing* over that same
+ * untouched tree. Then the run has watched the red the contract asks for, and a
+ * second, green reading of it before any edit says the command is unsteady
+ * rather than that the run never saw it fail. Such a signature is never
+ * admitted, so the observation can only ever be made about a check this run has
+ * no pre-edit failure for.
+ *
  * So the harness says so, and does nothing else. It is delivered on the
  * `invalidProbe` channel — the one place the loop already contradicts a
  * reading of a result the flow itself could see through — because it is the
@@ -97,14 +104,29 @@ export type Ledger = typeof Ledger.Type
 /**
  * Records one frame's passing checks, but only while the tree is untouched.
  *
- * Two conditions, and both are refusals rather than readings. `epoch` is the
- * run's own count of frames that changed the workspace *before* this one, so a
- * non-zero epoch means some earlier frame already edited and a pass taken now
- * says nothing about the tree the run was handed. `stable` is the same
- * question inside one frame: a frame's calls are not ordered against its edits
- * in anything the harness records, so a check from a frame that also edited
- * might have run on either side of it. `Sufficiency` refuses the same stamp
- * for the same reason; see `NarrowedCheck` `Check` `stable`.
+ * Three conditions, and all of them are refusals rather than readings. `epoch`
+ * is the run's own count of frames that changed the workspace *before* this
+ * one, so a non-zero epoch means some earlier frame already edited and a pass
+ * taken now says nothing about the tree the run was handed. `stable` is the
+ * same question inside one frame: a frame's calls are not ordered against its
+ * edits in anything the harness records, so a check from a frame that also
+ * edited might have run on either side of it. `Sufficiency` refuses the same
+ * stamp for the same reason; see `NarrowedCheck` `Check` `stable`.
+ *
+ * `failed` is the third, and it is the one that keeps the observation from
+ * contradicting the record it is read off. A check the run has already watched
+ * *fail* over the tree it was handed is a check the run has done the contract's
+ * work on, whatever it printed the second time: it is red on the unmodified
+ * tree, and a later green reading of it at the same epoch says the command is
+ * unsteady, not that the run never saw it fail. Telling such a run its proof
+ * was "already green" would be a sentence its own journal refutes, so the
+ * signature is refused on the way in and evicted if an earlier pass already put
+ * it there. The list is the run's failing-check ledger read at epoch zero —
+ * `Sufficiency` already keeps it, stamped with the epoch each failure was
+ * watched in — so nothing new is measured or stored for this. That ledger is
+ * bounded, so a run with more distinct pre-edit failures than `Sufficiency`
+ * retains can forget one; forgetting can cost the refusal and can never invent
+ * a pass.
  *
  * A repeated signature keeps its first entry rather than taking a second slot:
  * the entries are all the same tree, so re-running one adds no information and
@@ -120,14 +142,21 @@ export const remember = (
     readonly frame: ReadonlyArray<NarrowedCheck.Check>
     /** Frames that had changed the workspace before this one. */
     readonly epoch: number
+    /** Signatures this run has watched fail over the tree it was handed. */
+    readonly failed: ReadonlyArray<string>
   }
 ): Ledger => {
-  if (options.epoch !== 0) return ledger
-  const kept = new Map(ledger.map((entry) => [entry.signature, entry]))
-  for (const check of options.frame) {
-    if (!check.passing || !check.stable) continue
-    if (kept.has(check.signature)) continue
-    kept.set(check.signature, new Pass({ flow: check.flow, signature: check.signature, label: check.label }))
+  const refused = new Set(options.failed)
+  const kept = new Map(
+    ledger.filter((entry) => !refused.has(entry.signature)).map((entry) => [entry.signature, entry])
+  )
+  if (options.epoch === 0) {
+    for (const check of options.frame) {
+      if (!check.passing || !check.stable) continue
+      if (refused.has(check.signature)) continue
+      if (kept.has(check.signature)) continue
+      kept.set(check.signature, new Pass({ flow: check.flow, signature: check.signature, label: check.label }))
+    }
   }
   const distinct = [...kept.values()]
   return distinct.slice(Math.max(0, distinct.length - retained))
