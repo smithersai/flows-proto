@@ -1,0 +1,332 @@
+/**
+ * Replays `lib/repl-evidence.mjs` over synthesised journals.
+ *
+ * The REPL A/B report claims that a persistent realm was actually used as one —
+ * that cells reused names their predecessors bound, that printing carried the
+ * context, that nothing was filed, and that no run lost track of what it had
+ * read. Every one of those claims is a count this module takes off a journal,
+ * and a miscount would read as evidence, so each definition is pinned here
+ * against events whose every field is known.
+ *
+ * What is pinned:
+ *
+ * - **a carry is a name an earlier cell bound and this one did not**. A cell
+ *   that redeclares the name is reading its own value, so it counts as a
+ *   rebinding and never as a carry, and the depth is measured from the frame
+ *   that bound the name rather than from the previous frame.
+ * - **identifiers inside strings, template literals, comments and regular
+ *   expressions are not identifiers**. A `bash` script that mentions a variable
+ *   name is data, and counting it would manufacture carries out of shell
+ *   commands.
+ * - **a top-level binding starts at column 0**. A `const` inside a callback is
+ *   not a name the next cell inherits, and destructuring patterns bind every
+ *   name in the pattern.
+ * - **filing is read off the durable transition**, so a `continue` carrying
+ *   state or context is counted whatever the cell's source looked like.
+ * - **a repeat is one call signature settled in two different frames**, never
+ *   twice inside one, and two spellings of one input are one signature. It is
+ *   split by flow, because re-issuing a check after an edit is rule 7 being
+ *   obeyed while re-issuing a read is the note-taking failure, and a count that
+ *   added them would report the contract working as a defect.
+ * - **a ReferenceError is the realm failing to hold a name**, told apart from
+ *   every other throw.
+ *
+ * Spends nothing, needs no docker, needs no dataset.
+ */
+import assert from "node:assert/strict"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
+import { declared, readAll, readRun, referenced, strip, totals } from "../lib/repl-evidence.mjs"
+
+const temporary = mkdtempSync(join(tmpdir(), "flows-swebench-repl-"))
+
+/** Writes one journal database out of a list of `[type, payload]` events. */
+const journal = (name, events) => {
+  const directory = join(temporary, name)
+  mkdirSync(directory, { recursive: true })
+  const path = join(directory, "engine.db")
+  const database = new DatabaseSync(path)
+  database.exec(
+    "create table flows_journal_events ("
+      + " run_id text not null, seq integer not null, event_id text not null unique,"
+      + " source_id text not null, source_seq integer not null, emitted_at_ms integer not null,"
+      + " event_type text not null, payload_json text not null, meta_json text not null,"
+      + " primary key (run_id, seq))"
+  )
+  const insert = database.prepare(
+    "insert into flows_journal_events"
+      + " (run_id, seq, event_id, source_id, source_seq, emitted_at_ms, event_type, payload_json, meta_json)"
+      + " values (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  )
+  events.forEach(([type, payload], index) => {
+    insert.run("run-1", index, `e${index}`, "agent", index, 1000 + index, type, JSON.stringify(payload), "{}")
+  })
+  database.close()
+  return path
+}
+
+const armed = (cellMode) => ["control.agent.discipline-armed", { cellMode }]
+const opened = () => ["control.agent.turn-opened", { seat: "openai:gpt-5.6-sol" }]
+const produced = (text) => ["control.agent.cell-produced", { language: "javascript", digest: `d${text.length}`, text }]
+const printed = (text) => ["control.agent.cell-printed", { cell: "d", text }]
+const call = (flowName, input) => [
+  ["control.agent.cell-call-started", { flowName, input }],
+  ["control.agent.cell-call-settled", { flowName, outcome: "success", value: { exitCode: 0 } }]
+]
+const continued = (state = null, context = []) => [
+  "control.agent.transition-applied",
+  { transition: { _tag: "continue", state, context } }
+]
+const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _tag: "raised", name, message } }]
+
+// ---------------------------------------------------------------------------
+// strip: an identifier inside data is not an identifier.
+// ---------------------------------------------------------------------------
+{
+  assert.equal(strip("const a = 1 // hits\n").includes("hits"), false, "a line comment is not code")
+  assert.equal(strip("const a = 1 /* hits */\n").includes("hits"), false, "a block comment is not code")
+  assert.equal(strip("ctx.call('bash', {command: 'grep hits'})").includes("hits"), false, "a string is not code")
+  assert.equal(strip("ctx.call(`run ${x} hits`)").includes("hits"), false, "a template literal is not code")
+  assert.equal(strip("const r = /hits/g").includes("hits"), false, "a regular expression is not code")
+  assert.equal(strip("const q = total / hits").includes("hits"), true, "division is not a regular expression")
+  assert.equal(strip("const s = \"a\\\"hits\"").includes("hits"), false, "an escaped quote does not end a string")
+}
+
+// ---------------------------------------------------------------------------
+// referenced: a member access and an object key are not names.
+// ---------------------------------------------------------------------------
+{
+  assert.deepEqual([...referenced("hits.matches")], ["hits"], "a property is not a name")
+  assert.deepEqual([...referenced("hits?.matches")], ["hits"], "optional chaining is the same shape")
+  assert.deepEqual([...referenced("ctx.call(\"read\", { path: hit })")].sort(), ["ctx", "hit"], "a key is not a name")
+  assert.deepEqual([...referenced("({ found })")], ["found"], "shorthand really does reference the binding")
+  assert.deepEqual([...referenced("a ? b : c")].sort(), ["a", "b", "c"], "a ternary is not an object literal")
+}
+
+// ---------------------------------------------------------------------------
+// declared: column 0, and every name in a pattern.
+// ---------------------------------------------------------------------------
+{
+  assert.deepEqual([...declared("const hits = 1\n")], ["hits"])
+  assert.deepEqual([...declared("  const inner = 1\n")], [], "an indented declaration is not top level")
+  assert.deepEqual(
+    [...declared("const { matches, files } = found\n")].sort(),
+    ["files", "matches"],
+    "object destructuring binds every name"
+  )
+  assert.deepEqual([...declared("const [head, tail] = list\n")].sort(), ["head", "tail"])
+  assert.deepEqual([...declared("function widen(value) { return value }\n")], ["widen"])
+  assert.deepEqual([...declared("async function probe() {}\n")], ["probe"])
+  assert.deepEqual([...declared("class Card {}\n")], ["Card"])
+  assert.deepEqual([...declared("const ctx = 1\n")], [], "an ambient name is never a binding")
+  assert.deepEqual(
+    [...declared("const region = await ctx.call(\"read\", { path: hit.file })\n")],
+    ["region"],
+    "the initialiser is not part of the pattern"
+  )
+}
+
+// ---------------------------------------------------------------------------
+// A carry is a name an earlier cell bound and this one did not.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("carry", [
+    armed("repl"),
+    opened(),
+    produced("const hits = await ctx.call(\"grep\", {})\nconsole.log(hits)\n"),
+    printed("[]"),
+    continued(),
+    opened(),
+    produced("const region = hits.matches[0]\nconsole.log(region)\n"),
+    printed("x"),
+    continued(),
+    opened(),
+    produced("console.log(hits, region)\n"),
+    printed("y"),
+    continued()
+  ])
+  const run = readRun(path)
+  assert.equal(run.mode, "repl")
+  assert.equal(run.frames, 3)
+  assert.equal(run.cells, 3)
+  assert.equal(run.carriedFrames, 2, "frames two and three each reach back")
+  assert.equal(run.carriedReferences, 3, "region in three, hits in two and three")
+  assert.equal(run.carriedDepth, 2, "the last frame reaches back to the first")
+  assert.deepEqual(run.carriedNames, ["hits", "region"])
+  assert.equal(run.bindings, 2)
+  assert.equal(run.printedFrames, 3)
+  assert.equal(run.silentFrames, 0)
+}
+
+// ---------------------------------------------------------------------------
+// A redeclared name is a rebinding, never a carry.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("rebind", [
+    armed("repl"),
+    opened(),
+    produced("const hits = 1\n"),
+    printed(""),
+    continued(),
+    opened(),
+    produced("const hits = 2\nconsole.log(hits)\n"),
+    printed("2"),
+    continued()
+  ])
+  const run = readRun(path)
+  assert.equal(run.carriedFrames, 0, "the second cell reads its own binding")
+  assert.equal(run.carriedReferences, 0)
+  assert.equal(run.rebindings, 1)
+  assert.equal(run.silentFrames, 1, "a cell that printed nothing is counted")
+}
+
+// ---------------------------------------------------------------------------
+// A name mentioned only inside a shell command is not a carry.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("data", [
+    armed("repl"),
+    opened(),
+    produced("const hits = 1\n"),
+    printed(""),
+    continued(),
+    opened(),
+    produced("await ctx.call(\"bash\", { command: \"echo hits\" })\n"),
+    printed(""),
+    continued()
+  ])
+  assert.equal(readRun(path).carriedReferences, 0, "a string mentioning the name is data")
+}
+
+// ---------------------------------------------------------------------------
+// Filing is read off the transition, and a filing arm reads as one.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("filing", [
+    armed("filing"),
+    opened(),
+    produced("const found = await ctx.call(\"grep\", {})\nreturn { intent: \"continue\", state: { found } }\n"),
+    printed(""),
+    continued({ found: 1 }, [{ role: "user", text: "keep going" }]),
+    opened(),
+    produced("return { intent: \"continue\", state: ctx.state }\n"),
+    printed(""),
+    continued({ found: 1 })
+  ])
+  const run = readRun(path)
+  assert.equal(run.mode, "filing")
+  assert.equal(run.filedState, 2, "both transitions carried state")
+  assert.equal(run.projectedContext, 1, "one transition projected context")
+}
+{
+  const path = journal("unfiled", [armed("repl"), opened(), produced("const a = 1\n"), printed("1"), continued()])
+  const run = readRun(path)
+  assert.equal(run.filedState, 0, "a repl transition files nothing")
+  assert.equal(run.projectedContext, 0)
+}
+
+// ---------------------------------------------------------------------------
+// A repeat is one signature settled in two different frames, split by flow.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("repeats", [
+    armed("repl"),
+    opened(),
+    ...call("bash", { command: "pytest -k one", cwd: "/testbed" }),
+    ...call("bash", { cwd: "/testbed", command: "pytest -k one" }),
+    ...call("read", { path: "a.py" }),
+    ...call("edit", { path: "a.py", oldString: "x", newString: "y" }),
+    produced("const a = 1\n"),
+    printed(""),
+    continued(),
+    opened(),
+    ...call("bash", { command: "pytest -k one", cwd: "/testbed" }),
+    ...call("read", { path: "a.py" }),
+    ...call("edit", { path: "a.py", oldString: "x", newString: "y" }),
+    ...call("grep", { pattern: "z" }),
+    produced("const b = 2\n"),
+    printed(""),
+    continued()
+  ])
+  const run = readRun(path)
+  assert.equal(run.calls, 8)
+  assert.equal(
+    run.repeats.check,
+    1,
+    "twice inside one frame is not a repeat; the same check in a later frame is rule 7"
+  )
+  assert.equal(run.repeats.information, 1, "the re-read is the note-taking failure")
+  assert.equal(run.repeats.edit, 1, "the re-applied hunk is its own class")
+  assert.equal(run.repeats.other, 0)
+  assert.deepEqual(run.repeatCalls, { information: 1, check: 1, edit: 1, other: 0 })
+  assert.deepEqual(
+    run.repeated.filter((entry) => entry.kind === "information").map((entry) => entry.frames),
+    [[0, 1]],
+    "a repeat names the frames it spanned"
+  )
+}
+{
+  // A flow outside every list lands in `other` rather than in the number the
+  // A/B turns on.
+  const path = journal("unclassified", [
+    armed("repl"),
+    opened(),
+    ...call("remember", { key: "a" }),
+    produced("const a = 1\n"),
+    printed(""),
+    continued(),
+    opened(),
+    ...call("remember", { key: "a" }),
+    produced("const b = 1\n"),
+    printed(""),
+    continued()
+  ])
+  const run = readRun(path)
+  assert.equal(run.repeats.other, 1)
+  assert.equal(run.repeats.information, 0)
+}
+
+// ---------------------------------------------------------------------------
+// A ReferenceError is the realm failing to hold a name.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("lost", [
+    armed("repl"),
+    opened(),
+    produced("console.log(region)\n"),
+    raised("ReferenceError", "region is not defined"),
+    printed(""),
+    continued(),
+    opened(),
+    produced("throw new Error(\"nope\")\n"),
+    raised("Error", "nope"),
+    printed(""),
+    continued()
+  ])
+  const run = readRun(path)
+  assert.equal(run.referenceErrors.length, 1, "only the reference failure counts")
+  assert.equal(run.referenceErrors[0].frame, 0)
+}
+
+// ---------------------------------------------------------------------------
+// readAll and totals fold a directory of runs.
+// ---------------------------------------------------------------------------
+{
+  const all = readAll(temporary)
+  assert.ok(Object.keys(all).length >= 7, "every synthesised journal is read")
+  const sum = totals(all)
+  assert.equal(sum.runs, Object.keys(all).length)
+  assert.equal(sum.modes.filing, 1)
+  assert.ok(sum.modes.repl >= 6)
+  assert.equal(sum.runsWithCarry, 1, "only the carry journal carries")
+  assert.equal(sum.runsRereading, 1, "only the repeats journal re-read")
+  assert.equal(sum.repeats.information, 1)
+  assert.equal(sum.repeats.check, 1)
+  assert.equal(sum.repeats.other, 1)
+  assert.equal(sum.filedState, 2, "filing is summed across the arm")
+}
+
+rmSync(temporary, { recursive: true, force: true })
+console.log("check-repl-evidence.mjs: ok")
