@@ -518,15 +518,32 @@ describe("vitest coverage isolation conformance", () => {
       // fallbacks only discharge the optional type on
       // `RegExpMatchArray.groups`.
       "harness/src/Cell.ts": 2,
-      // `withDefaults` fills each declared limit from `defaultLimits`, so the
-      // optional chains and coalesces never take their fallbacks; they only
-      // discharge the optional types on `Sandbox.Limits`.
-      "harness/src/QuickJSSandbox.ts": 3,
-      // The `Function` constructor rejects unparseable source with a
-      // `SyntaxError` and raises nothing else, so `cause` is always an
-      // `Error`; the `String` arm only discharges the `unknown` a `catch`
-      // binding is typed as.
-      "harness/src/Sandbox.ts": 1,
+      // The lexer's alternation binds exactly one of its two groups on every
+      // match, so the fallback only discharges the optional type on a
+      // capture.
+      "harness/src/CellTurn.ts": 1,
+      // `transpileModule` reports syntactic diagnostics only, and attaches a
+      // source file and a position to every one of them; the position came
+      // from the same text this splits. Both guards discharge optional types
+      // rather than reachable states.
+      "harness/src/CellValidation.ts": 2,
+      // Three are limits: `withDefaults` fills each declared limit from
+      // `defaultLimits`, so the optional chains and coalesces never take their
+      // fallbacks. Two are the realm's compile path: reaching it needs the
+      // boundary parse and QuickJS to disagree about what parses, and reaching
+      // it with the interrupt budget spent needs that disagreement to be
+      // reported by a handler that never ran, because nothing evaluates before
+      // that point.
+      "harness/src/QuickJSSandbox.ts": 5,
+      // One coalesce over `validate`'s closed two-member answer, one guard on
+      // a `with` binding's identifier, and two on the host cell's failure
+      // path: the `Function` constructor rejects unparseable source with a
+      // `SyntaxError` and raises nothing else, and `cell` is an async function
+      // that settles its rejection through its promise rather than throwing
+      // synchronously. The only cells that ever reached either escaped the
+      // wrapper, which the boundary parse now refuses as the syntax error it
+      // is.
+      "harness/src/Sandbox.ts": 6,
       // Both callers pass an `Error` (`JSON.parse` throws `SyntaxError`;
       // `Schema.decodeUnknownEffect` fails with `SchemaError`, which extends
       // `Error`), so the `String` arm only discharges the `unknown` a `catch`
