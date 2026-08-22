@@ -1553,11 +1553,29 @@ adds the two rows that only exist with three ledgers:
   middle wave did. That is what the next report has to answer for, and it is
   counted apart from **newly lost**, a regression this wave introduced.
 
+### Every wave in one table
+
+```sh
+node n-way.mjs --wave r90=f --wave r91=f --wave r92=f --wave r93=f [--out dir] [--json]
+```
+
+`three-way.mjs` with the arity taken out. From the fourth wave on there is no
+"the wave in between" to compare against: there are several, and the reason to
+keep them all is that a number only means something beside the ones before it —
+a recovery reads as a win without the middle columns, and a cost that halved
+twice reads as a plateau without the first. The first `--wave` is the baseline
+every other is folded against, so each column is `compare-runs.mjs`'s own fold
+of that wave's ledger: one rule applied as many times as there are waves, rather
+than one report quoting another. `recovered`, `still lost` and `gained` are all
+statements about the **last** wave in the list, and every total is printed twice,
+scored and raw.
+
 ### What the agent actually did
 
 ```sh
 node lib/program-evidence.mjs <journals-dir> [--json]
 node lib/surgery-evidence.mjs <journals-dir> [--json] [--interpreters <driver.log>]
+node lib/round3-evidence.mjs <journals-dir> [--json] [--instance <id>]
 ```
 
 The comparison answers what a wave cost. This answers what its agent *did*,
@@ -1585,6 +1603,30 @@ on the ladder. `--interpreters` sharpens "an absolute path" into "the path this
 instance was told", by reading the `project interpreter` lines `run-instance.sh`
 writes into the driver log.
 
+`lib/round3-evidence.mjs` answers the next-steps the r92 report ended in, and
+they are about two things the earlier readers have no column for.
+
+**A vacuous-verification observation** is the controller telling a run that the
+check it stored as `state.verification` is one it had already watched pass over
+the tree it was handed. Nothing is refused when it fires, so the count alone
+settles nothing: every firing carries its own after-record — how many frames the
+run still had, whether it then stored a different proof, whether it went and
+watched that same check fail, and how the run ended. The named check is matched
+by re-deriving the text the observation quotes from the call's own input, so a
+run that re-ran the check it was told about is told from one that ran a
+different one.
+
+**A ladder** is a maximal contiguous run of `model-retried` events. Every rung of
+one sealed model step is journaled when that step settles, so a ladder's own wall
+clock is read as the span from its frame's `turn-opened` to the rungs' shared
+timestamp — the attempts and the sleeps together, which is the quantity
+`defaultModelRetryWindowMillis` bounds. A ladder **survived** when the frame it
+ran in went on to settle a model call; that is the only observable a transport
+rebuild produces, because the rebuild itself is a process-internal exchange of
+one HTTP client for another and no event records it. Ladders that did not survive
+are split into ones that exhausted the declared rung count and ones that stopped
+short of it.
+
 ```sh
 lib/prompt-bytes.sh <driver.log> [index]
 ```
@@ -1597,9 +1639,10 @@ the wave's own log rather than re-measuring it today — and prints its bytes. A
 instance whose image answered nothing usable renders without the bullet and is
 reported as `none`, so a wave that stated no fact is never credited with one.
 
-`fixtures/check-program-evidence.mjs`, `fixtures/check-surgery-evidence.mjs` and
-`fixtures/check-prompt-bytes.mjs` pin every count against synthesised inputs
-whose every field is known, inside `./verify.sh`.
+`fixtures/check-program-evidence.mjs`, `fixtures/check-surgery-evidence.mjs`,
+`fixtures/check-round3-evidence.mjs` and `fixtures/check-prompt-bytes.mjs` pin
+every count against synthesised inputs whose every field is known, inside
+`./verify.sh`.
 
 ### Excluded from the scoreboard, by name
 
@@ -1640,9 +1683,10 @@ the derived population, the resume boundary, the concurrency bound (measured fro
 the stub's own overlap, not from the configured number), `--limit`, `--stop` and
 resume after it, the budget gate's pause row, and the refusals.
 `fixtures/check-compare-runs.mjs` replays the comparison over synthesised
-ledgers, and `fixtures/check-three-way.mjs` the three-column one; both put a real
-excluded id through the fold and check that it leaves every total and every
-movement row while keeping its own row and its raw column.
+ledgers, `fixtures/check-three-way.mjs` the three-column one and
+`fixtures/check-n-way.mjs` the n-column one; all three put a real excluded id
+through the fold and check that it leaves every total and every movement row
+while keeping its own row and its raw column.
 `fixtures/check-excluded.mjs` checks the list itself. All run inside
 `./verify.sh`, which needs no docker and no dataset. The per-instance pipeline
 itself is `lib/fullbench-instance.sh`, already proved against real docker by

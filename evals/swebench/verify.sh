@@ -48,8 +48,11 @@
 # were: a miscount in either would be invisible in a report and would read as
 # data. `check-three-way.mjs` pins the difference between recovering a verdict
 # and gaining one; `check-surgery-evidence.mjs` pins the difference between
-# using a stated fact and hunting for it; `check-prompt-bytes.mjs` pins that an
-# unstated fact is never reported as a stated one.
+# using a stated fact and hunting for it; `check-round3-evidence.mjs` pins the
+# difference between a run told its proof was vacuous and a run that then did
+# something about it, and between a retry ladder that recovered and one that
+# did not; `check-prompt-bytes.mjs` pins that an unstated fact is never
+# reported as a stated one.
 #
 # Spends no tokens, needs no docker, needs no dataset. Run it after touching
 # scorecard.ts, prices.ts, the journal's event shapes, patch capture,
@@ -58,7 +61,8 @@
 # lib/journal-facts.mjs, select-candidate.mjs, run-matrix.sh, matrix-report.mjs,
 # fullbench.sh, fullbench-report.mjs, lib/grade.py, lib/httpbin.sh,
 # lib/rerun-queue.mjs, run-45.sh, compare-runs.mjs, three-way.mjs, regrade.sh,
-# lib/program-evidence.mjs, lib/surgery-evidence.mjs, lib/excluded.mjs or
+# lib/program-evidence.mjs, lib/surgery-evidence.mjs, lib/round3-evidence.mjs,
+# lib/excluded.mjs or
 # anything under lib/fullbench-*. The subject check needs a built CLI: run ./preflight.sh first
 # if `packages/cli/dist` is absent.
 set -eu
@@ -158,6 +162,12 @@ node "$S/fixtures/check-program-evidence.mjs"
 
 echo "== the surgical evidence a second re-run reads off its journals"
 node "$S/fixtures/check-surgery-evidence.mjs"
+
+echo "== the round-3 evidence a third re-run reads off its journals"
+node "$S/fixtures/check-round3-evidence.mjs"
+
+echo "== every wave in one table"
+node "$S/fixtures/check-n-way.mjs"
 
 echo "== what a wave's prompts weighed"
 node "$S/fixtures/check-prompt-bytes.mjs"
