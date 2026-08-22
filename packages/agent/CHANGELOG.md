@@ -4,6 +4,10 @@
 
 ### Added
 
+- Added `defaultModelRetryWindowMillis` (45,000 ms), a wall clock on the transport retry ladder. Five rungs bounds how many attempts are made, not what they cost: r92 of the SWE-bench full benchmark burned ten `transport` retries and $0.85 across two instances against a socket that stayed dead for half a minute, and each of those attempts re-sent a whole prompt and streamed a partial body before dying. The window is the declared ladder's own jittered ceiling plus a rung's headroom, so a transport that fails fast still gets all five rungs, while one whose attempts are slow stops when the window closes. Elapsed time is the schedule's own, on the injected clock.
+
+- `AgentSession.trace` now journals `control.agent.vacuous-verification-observed` with its payload — the stored check, the flow, and the controller's identity for that call — rather than letting it fall through to an empty one.
+
 - Added `StandardFlows.tests`, which binds `@smthrs/std`'s `test` flow to a
   host's `TestRunner` declaration. A tool no production composition offers is a
   tool that does not exist, which is the same reason all seven filesystem flows
