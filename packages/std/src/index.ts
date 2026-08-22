@@ -59,6 +59,15 @@ export * as Bash from "./Bash.ts"
 export * as Container from "./Container.ts"
 
 /**
+ * @category flows
+ * @since 0.1.0
+ */
+export * as TestRun from "./TestRun.ts"
+
+/** @category services @since 0.1.0 */
+export * as TestRunner from "./TestRunner.ts"
+
+/**
  * @category classification
  * @since 0.1.0
  */

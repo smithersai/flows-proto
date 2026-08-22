@@ -52,6 +52,8 @@ import * as Ls from "@smthrs/std/Ls"
 import * as PortableSearch from "@smthrs/std/PortableSearch"
 import * as Read from "@smthrs/std/Read"
 import * as Search from "@smthrs/std/Search"
+import * as TestRun from "@smthrs/std/TestRun"
+import type * as TestRunner from "@smthrs/std/TestRunner"
 import * as Write from "@smthrs/std/Write"
 import { Context, Duration, Effect, Schema } from "effect"
 import type * as Crypto from "effect/Crypto"
@@ -102,6 +104,25 @@ export const shell = (
 ): FlowBinding.Source =>
   FlowBinding.source("std/shell", [
     FlowBinding.provide(FlowBinding.make({ flow: Bash.flow, handler: Bash.run }), services)
+  ])
+
+/**
+ * The repository's own test runner, as one ordinary flow.
+ *
+ * Separate from {@link shell} because it needs one thing a shell does not: the
+ * host's declaration of how this repository runs its tests. A host that has one
+ * binds `TestRunner`; a host that does not binds `TestRunner.layerNoop` and the
+ * flow says so when it is called. A host whose runner lives in a container adds
+ * `Container` to the same context, which is also what `bash` reads it from.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const tests = (
+  services: Context.Context<ChildProcessSpawner.ChildProcessSpawner | TestRunner.TestRunner>
+): FlowBinding.Source =>
+  FlowBinding.source("std/tests", [
+    FlowBinding.provide(FlowBinding.make({ flow: TestRun.flow, handler: TestRun.run }), services)
   ])
 
 /**

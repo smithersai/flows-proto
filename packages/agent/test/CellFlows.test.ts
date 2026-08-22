@@ -34,6 +34,7 @@ import type { FlowsHooks, PluginInput } from "@smthrs/plugin"
 import { make as makePlugin } from "@smthrs/plugin"
 import * as Descriptor from "@smthrs/registry/Descriptor"
 import * as Registry from "@smthrs/registry/Registry"
+import * as TestRunner from "@smthrs/std/TestRunner"
 import {
   Cause,
   Context,
@@ -335,6 +336,62 @@ return { intent: "complete", state: { kept: kept }, output: page.content + "|" +
     expect(requests[0]).toContain("read")
     expect(requests[0]).toContain("bash")
     expect(requests[0]).toContain("remember")
+  })
+
+  it("runs the declared test runner as a flow and answers with a reading of its report", async () => {
+    // The runner is a declaration, not a parameter: the cell selects which
+    // tests, never how to run them, so a guessed label cannot happen here.
+    const spawned: Array<string> = []
+    const outcome = await drive(
+      collect({
+        flows: [
+          StandardFlows.tests(
+            Context.make(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.makeNoop({
+                spawn: (command) =>
+                  Effect.sync(() => {
+                    spawned.push(CommandLine.render(command))
+                    const report = new TextEncoder().encode(
+                      "FAILED tests/test_widen.py::test_narrows - AssertionError\n1 failed, 41 passed in 1.2s\n"
+                    )
+                    return makeHandle({
+                      pid: ProcessId(1),
+                      exitCode: Effect.succeed(ExitCode(1)),
+                      isRunning: Effect.succeed(false),
+                      kill: () => Effect.void,
+                      stdin: Sink.drain,
+                      stdout: Stream.fromArray([report]),
+                      stderr: Stream.empty,
+                      all: Stream.fromArray([report]),
+                      getInputFd: () => Sink.drain,
+                      getOutputFd: () => Stream.empty,
+                      unref: Effect.succeed(Effect.void)
+                    })
+                  })
+              })
+            ).pipe(
+              Context.add(TestRunner.TestRunner, TestRunner.make({ command: "python -m pytest -rA", cwd: "/repo" }))
+            )
+          )
+        ],
+        cells: [
+          `const suite = await ctx.call("test", { selection: ["tests/test_widen.py"] })
+return { intent: "complete", state: { suite: suite }, output: suite.passed + " passed, " + suite.failed.join(",") }`
+        ]
+      })
+    )
+
+    expect(outcome._tag).toBe("completed")
+    const settled = settledCalls(eventsOf(outcome))
+    expect(settled.map((event) => event.flowName)).toEqual(["test"])
+    const suite = settled[0]?.result.value as {
+      readonly passed: number
+      readonly failed: ReadonlyArray<string>
+      readonly parsed: boolean
+    }
+    expect(suite).toMatchObject({ passed: 41, failed: ["tests/test_widen.py::test_narrows"], parsed: true })
+    expect(spawned[0]).toContain("tests/test_widen.py")
   })
 
   it("refuses a failing standard flow catchably rather than failing the run", async () => {
