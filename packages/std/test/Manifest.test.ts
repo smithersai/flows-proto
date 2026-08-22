@@ -10,6 +10,7 @@ const expectedNames = [
   "glob",
   "grep",
   "bash",
+  "test",
   "shell_command",
   "apply_patch",
   "update_plan",

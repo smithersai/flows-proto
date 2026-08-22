@@ -15,6 +15,7 @@ import * as Ls from "./Ls.ts"
 import * as Lsp from "./Lsp.ts"
 import * as Read from "./Read.ts"
 import * as ShellCommand from "./ShellCommand.ts"
+import * as TestRun from "./TestRun.ts"
 import * as UpdatePlan from "./UpdatePlan.ts"
 import * as WebFetch from "./WebFetch.ts"
 import * as WebSearch from "./WebSearch.ts"
@@ -34,6 +35,7 @@ export const flows = Object.freeze({
   [Glob.name]: Glob.flow,
   [Grep.name]: Grep.flow,
   [Bash.name]: Bash.flow,
+  [TestRun.name]: TestRun.flow,
   [ShellCommand.name]: ShellCommand.flow,
   [ApplyPatch.name]: ApplyPatch.flow,
   [UpdatePlan.name]: UpdatePlan.flow,
@@ -61,6 +63,7 @@ export const handlers = Object.freeze({
   [Glob.name]: Glob.run,
   [Grep.name]: Grep.run,
   [Bash.name]: Bash.run,
+  [TestRun.name]: TestRun.run,
   [ShellCommand.name]: ShellCommand.run,
   [ApplyPatch.name]: ApplyPatch.run,
   [UpdatePlan.name]: UpdatePlan.run,
@@ -86,6 +89,7 @@ export const names = Object.freeze(
     Glob.name,
     Grep.name,
     Bash.name,
+    TestRun.name,
     ShellCommand.name,
     ApplyPatch.name,
     UpdatePlan.name,

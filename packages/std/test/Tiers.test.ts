@@ -11,6 +11,7 @@ const expectedTiers = {
   glob: "sealed",
   grep: "sealed",
   bash: "irreversible",
+  test: "irreversible",
   shell_command: "irreversible",
   apply_patch: "compensable",
   update_plan: "sealed",
