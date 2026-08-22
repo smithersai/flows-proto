@@ -44,6 +44,7 @@ CLI wrapper, and the evaluator environment with it.
 | `lib/httpbin.sh`           | Decides and proves the httpbin the psf/requests family is graded against |
 | `run-45.sh`                | The re-run: the baseline's 45 instances again, on today's harness    |
 | `compare-runs.mjs`         | Baseline vs re-run — resolved, dollars, wall, per-instance deltas    |
+| `lib/excluded.mjs`         | The instances excluded from the scoreboard by name, and the cause on record |
 | `lib/program-evidence.mjs` | What a run's agent actually did, counted off its journals            |
 | `lib/trace-bundle.mjs`     | One instance's two traces and two bills, as the brief for an analyst |
 | `regen-patch.sh`           | Re-derives one patch from a surviving workspace                      |
@@ -1600,6 +1601,36 @@ reported as `none`, so a wave that stated no fact is never credited with one.
 `fixtures/check-prompt-bytes.mjs` pin every count against synthesised inputs
 whose every field is known, inside `./verify.sh`.
 
+### Excluded from the scoreboard, by name
+
+`lib/excluded.mjs` is the only place this rig removes an instance from a
+denominator, and it exists because three waves produced three different verdicts
+for one byte-identical patch. `psf__requests-1766` and `psf__requests-2317` are
+graded against `httpbin`: the container has no https route, `lib/httpbin.sh`
+serves a documented local fallback that says in its own words it cannot answer
+`test_mixed_case_scheme_acceptable`, and a re-grade against the public service
+found that service degraded too. Those two rows are statements about the grading
+environment, and no reading of them says anything about a harness.
+
+Three rules make that scoping rather than tuning, and `fixtures/check-excluded.mjs`
+enforces all three:
+
+1. **Both arms, or neither.** An exclusion removes the row for flows and for
+   codex identically. `compare-arms.mjs` computes the four-cell table over the
+   scored intersection *and* over the raw one, and prints both.
+2. **The cause is documented and names something outside the agent** — a
+   container, a public service, a dataset defect. A cause mentioning a harness,
+   a prompt or a model fails the check.
+3. **Both denominators are printed, always.** Every rate in `compare-runs.mjs`,
+   `three-way.mjs` and `compare-arms.mjs` states the scored count and the raw
+   count in the same sentence: on the 45-instance population that reads
+   **43 scored of 45 run**, never 43 alone. Excluded instances keep their
+   per-instance rows and are marked there.
+
+The repair that ends the exclusion is an https listener the graded container
+trusts, at which point both rows are measurements again and both arms can be
+re-graded against it. Delete the entry when that lands.
+
 ### Proving both without spending a token
 
 `fixtures/check-run-45.mjs` drives the whole scheduler through
@@ -1608,7 +1639,10 @@ the derived population, the resume boundary, the concurrency bound (measured fro
 the stub's own overlap, not from the configured number), `--limit`, `--stop` and
 resume after it, the budget gate's pause row, and the refusals.
 `fixtures/check-compare-runs.mjs` replays the comparison over synthesised
-ledgers, and `fixtures/check-three-way.mjs` the three-column one. All run inside
+ledgers, and `fixtures/check-three-way.mjs` the three-column one; both put a real
+excluded id through the fold and check that it leaves every total and every
+movement row while keeping its own row and its raw column.
+`fixtures/check-excluded.mjs` checks the list itself. All run inside
 `./verify.sh`, which needs no docker and no dataset. The per-instance pipeline
 itself is `lib/fullbench-instance.sh`, already proved against real docker by
 `./fullbench-dryrun.sh`.

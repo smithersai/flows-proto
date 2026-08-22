@@ -58,8 +58,8 @@
 # lib/journal-facts.mjs, select-candidate.mjs, run-matrix.sh, matrix-report.mjs,
 # fullbench.sh, fullbench-report.mjs, lib/grade.py, lib/httpbin.sh,
 # lib/rerun-queue.mjs, run-45.sh, compare-runs.mjs, three-way.mjs, regrade.sh,
-# lib/program-evidence.mjs, lib/surgery-evidence.mjs or anything under
-# lib/fullbench-*. The subject check needs a built CLI: run ./preflight.sh first
+# lib/program-evidence.mjs, lib/surgery-evidence.mjs, lib/excluded.mjs or
+# anything under lib/fullbench-*. The subject check needs a built CLI: run ./preflight.sh first
 # if `packages/cli/dist` is absent.
 set -eu
 S="$(cd "$(dirname "$0")" && pwd)"
@@ -137,6 +137,9 @@ if [ -x "$S/.venv-swb/bin/python" ]; then
 else
   echo "  skipped: no evaluator venv at $S/.venv-swb — run ./bootstrap.sh first"
 fi
+
+echo "== the instances excluded from the scoreboard, and why"
+node "$S/fixtures/check-excluded.mjs"
 
 echo "== the baseline-vs-rerun comparison"
 node "$S/fixtures/check-compare-runs.mjs"

@@ -28,6 +28,14 @@
  * (51 %)" are the same numerator, and quoting the first without the denominator
  * that produced it is how an incomplete arm reads as a better one.
  *
+ * **An excluded instance is excluded from both arms.** `lib/excluded.mjs` names
+ * the instances whose verdicts are statements about the grading environment
+ * rather than about a harness, with the cause on record. They leave the
+ * four-cell table for flows and for codex identically — an exclusion that moved
+ * one cell and not the other would be tuning, not scoping — they are still
+ * listed per instance, and every count here prints the scored number and the
+ * raw number together.
+ *
  * Reads two ledgers and nothing else: no evaluator report, no journal, no clock,
  * no network. Running it twice over the same files produces the same bytes.
  *
@@ -36,6 +44,7 @@
 import { existsSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { attempted, population } from "./lib/codex-backfill-queue.mjs"
+import { denominators, isExcluded, renderExclusions } from "./lib/excluded.mjs"
 
 const rigRoot = import.meta.dirname
 
@@ -72,13 +81,23 @@ export const compareArms = ({ manifestPath, codexManifestPath }) => {
   }))
 
   const graded = rows.filter((row) => row.flows.graded && row.codex.graded)
-  const cell = (f, c) => graded.filter((row) => row.flows.resolved === f && row.codex.resolved === c).map((row) => row.id)
-  const agreement = {
-    both: cell(true, true),
-    flowsOnly: cell(true, false),
-    codexOnly: cell(false, true),
-    neither: cell(false, false)
+  // The table is over the graded intersection minus the excluded names, and
+  // the raw table over the whole graded intersection is computed beside it so
+  // both are always available to print.
+  const scoredRows = graded.filter((row) => !isExcluded(row.id))
+  const cellOver = (set) => (f, c) => set.filter((row) => row.flows.resolved === f && row.codex.resolved === c).map((row) => row.id)
+  const tableOver = (set) => {
+    const cell = cellOver(set)
+    return {
+      both: cell(true, true),
+      flowsOnly: cell(true, false),
+      codexOnly: cell(false, true),
+      neither: cell(false, false)
+    }
   }
+  const agreement = tableOver(scoredRows)
+  const rawAgreement = tableOver(graded)
+  const denominator = denominators(rows.map((row) => row.id))
 
   const ungraded = {
     flows: rows.filter((row) => !row.flows.graded).map((row) => ({ id: row.id, verdict: row.flows.verdict })),
@@ -89,20 +108,28 @@ export const compareArms = ({ manifestPath, codexManifestPath }) => {
     manifestPath,
     codexManifestPath,
     population: rows.length,
+    scoredPopulation: denominator.scored,
+    excluded: denominator.excluded,
     gradedBoth: graded.length,
+    scoredBoth: scoredRows.length,
     coverage: {
       flows: rows.filter((row) => row.flows.graded).length,
       codex: rows.filter((row) => row.codex.graded).length
     },
     resolvedOverPopulation: {
-      flows: rows.filter((row) => row.flows.resolved).length,
-      codex: rows.filter((row) => row.codex.resolved).length
+      flows: rows.filter((row) => !isExcluded(row.id) && row.flows.resolved).length,
+      codex: rows.filter((row) => !isExcluded(row.id) && row.codex.resolved).length,
+      rawFlows: rows.filter((row) => row.flows.resolved).length,
+      rawCodex: rows.filter((row) => row.codex.resolved).length
     },
     resolvedOverGradedBoth: {
-      flows: graded.filter((row) => row.flows.resolved).length,
-      codex: graded.filter((row) => row.codex.resolved).length
+      flows: scoredRows.filter((row) => row.flows.resolved).length,
+      codex: scoredRows.filter((row) => row.codex.resolved).length,
+      rawFlows: graded.filter((row) => row.flows.resolved).length,
+      rawCodex: graded.filter((row) => row.codex.resolved).length
     },
     agreement,
+    rawAgreement,
     // The standing goal: flows resolves everything codex does, and possibly more.
     superset: { met: agreement.codexOnly.length === 0, provisional: ungraded.codex.length > 0 || ungraded.flows.length > 0 },
     ungraded,
@@ -121,34 +148,57 @@ const list = (ids) => (ids.length === 0 ? "—" : ids.join(", "))
  * @since 0.1.0
  */
 export const render = (summary) => {
-  const { agreement, coverage, resolvedOverGradedBoth, resolvedOverPopulation } = summary
+  const { agreement, coverage, rawAgreement, resolvedOverGradedBoth, resolvedOverPopulation } = summary
   const lines = []
   lines.push("# flows vs codex on the full-benchmark population")
   lines.push("")
-  lines.push(`Population: ${summary.population} instances (every instance the full benchmark graded).`)
   lines.push(
-    `Graded by both arms: ${summary.gradedBoth}.`
+    `Population: ${summary.scoredPopulation} scored of ${summary.population} run`
+      + " (every instance the full benchmark graded)."
+  )
+  lines.push(
+    `Graded by both arms: ${summary.scoredBoth} scored of ${summary.gradedBoth} run.`
       + ` flows has a grading on ${coverage.flows}, codex on ${coverage.codex}.`
   )
+  if (summary.excluded.length > 0) {
+    lines.push(
+      `Excluded by name, for both arms: ${summary.excluded.map((row) => row.id).join(", ")}.`
+        + " Both denominators are printed on every line below."
+    )
+  }
   lines.push("")
   lines.push("## Agreement over the instances both arms graded")
   lines.push("")
-  lines.push("| | count | instances |")
-  lines.push("| --- | ---: | --- |")
-  lines.push(`| both resolved | ${agreement.both.length} | ${list(agreement.both)} |`)
-  lines.push(`| **flows only** | ${agreement.flowsOnly.length} | ${list(agreement.flowsOnly)} |`)
-  lines.push(`| **codex only** | ${agreement.codexOnly.length} | ${list(agreement.codexOnly)} |`)
-  lines.push(`| neither | ${agreement.neither.length} | ${list(agreement.neither)} |`)
-  lines.push("")
+  lines.push(`| | scored (${summary.scoredBoth}) | raw (${summary.gradedBoth}) | instances |`)
+  lines.push("| --- | ---: | ---: | --- |")
   lines.push(
-    `On that graded-${summary.gradedBoth} subset: flows ${resolvedOverGradedBoth.flows}`
-      + ` (${percent(resolvedOverGradedBoth.flows, summary.gradedBoth)}),`
-      + ` codex ${resolvedOverGradedBoth.codex} (${percent(resolvedOverGradedBoth.codex, summary.gradedBoth)}).`
+    `| both resolved | ${agreement.both.length} | ${rawAgreement.both.length} | ${list(agreement.both)} |`
   )
   lines.push(
-    `Over the whole ${summary.population}: flows ${resolvedOverPopulation.flows}`
-      + ` (${percent(resolvedOverPopulation.flows, summary.population)}),`
-      + ` codex ${resolvedOverPopulation.codex} (${percent(resolvedOverPopulation.codex, summary.population)}).`
+    `| **flows only** | ${agreement.flowsOnly.length} | ${rawAgreement.flowsOnly.length} | ${list(agreement.flowsOnly)} |`
+  )
+  lines.push(
+    `| **codex only** | ${agreement.codexOnly.length} | ${rawAgreement.codexOnly.length} | ${list(agreement.codexOnly)} |`
+  )
+  lines.push(
+    `| neither | ${agreement.neither.length} | ${rawAgreement.neither.length} | ${list(agreement.neither)} |`
+  )
+  lines.push("")
+  lines.push(
+    `On that graded subset: flows ${resolvedOverGradedBoth.flows}/${summary.scoredBoth}`
+      + ` (${percent(resolvedOverGradedBoth.flows, summary.scoredBoth)}),`
+      + ` codex ${resolvedOverGradedBoth.codex}/${summary.scoredBoth}`
+      + ` (${percent(resolvedOverGradedBoth.codex, summary.scoredBoth)});`
+      + ` raw ${resolvedOverGradedBoth.rawFlows}/${summary.gradedBoth} and`
+      + ` ${resolvedOverGradedBoth.rawCodex}/${summary.gradedBoth}.`
+  )
+  lines.push(
+    `Over the whole population: flows ${resolvedOverPopulation.flows}/${summary.scoredPopulation}`
+      + ` (${percent(resolvedOverPopulation.flows, summary.scoredPopulation)}),`
+      + ` codex ${resolvedOverPopulation.codex}/${summary.scoredPopulation}`
+      + ` (${percent(resolvedOverPopulation.codex, summary.scoredPopulation)});`
+      + ` raw ${resolvedOverPopulation.rawFlows}/${summary.population} and`
+      + ` ${resolvedOverPopulation.rawCodex}/${summary.population}.`
   )
   lines.push("")
   lines.push("## The superset goal")
@@ -168,6 +218,7 @@ export const render = (summary) => {
         + " gradings, and a missing grading can move either cell."
     )
   }
+  lines.push(...renderExclusions(summary.excluded))
   if (summary.ungraded.flows.length > 0 || summary.ungraded.codex.length > 0) {
     lines.push("")
     lines.push("## Instances outside the graded intersection")
@@ -182,7 +233,11 @@ export const render = (summary) => {
   lines.push("")
   lines.push("| instance | flows | codex |")
   lines.push("| --- | --- | --- |")
-  for (const row of summary.rows) lines.push(`| ${row.id} | ${row.flows.verdict} | ${row.codex.verdict} |`)
+  for (const row of summary.rows) {
+    lines.push(
+      `| ${row.id}${isExcluded(row.id) ? " **excluded**" : ""} | ${row.flows.verdict} | ${row.codex.verdict} |`
+    )
+  }
   lines.push("")
   return `${lines.join("\n")}\n`
 }
@@ -209,9 +264,12 @@ const main = () => {
   writeFileSync(join(out, "arms.json"), `${JSON.stringify(summary, undefined, 2)}\n`)
   writeFileSync(join(out, "arms.md"), render(summary))
   process.stdout.write(
-    `compare-arms.mjs: ${summary.gradedBoth}/${summary.population} graded by both — `
+    `compare-arms.mjs: ${summary.scoredBoth} scored of ${summary.gradedBoth} graded by both, `
+      + `of ${summary.scoredPopulation} scored of ${summary.population} run — `
       + `both ${summary.agreement.both.length}, flows-only ${summary.agreement.flowsOnly.length}, `
-      + `codex-only ${summary.agreement.codexOnly.length}, neither ${summary.agreement.neither.length}\n`
+      + `codex-only ${summary.agreement.codexOnly.length}, neither ${summary.agreement.neither.length} `
+      + `(raw ${summary.rawAgreement.both.length}/${summary.rawAgreement.flowsOnly.length}/`
+      + `${summary.rawAgreement.codexOnly.length}/${summary.rawAgreement.neither.length})\n`
   )
   process.stdout.write(`  wrote ${join(out, "arms.md")}\n`)
 }

@@ -16,6 +16,13 @@
  * marked provisional whenever either arm is missing gradings — an incomplete arm
  * with a good rate is the easiest wrong conclusion in the whole rig.
  *
+ * And the exclusion rule, which is the newest way to get the table wrong: an
+ * instance `lib/excluded.mjs` names leaves the table for *both* arms, the raw
+ * table is computed beside the scored one, and both denominators appear in
+ * every rate. An exclusion that moved one cell and not the other would be
+ * tuning rather than scoping, so the fixture puts a real excluded id on each
+ * side of the table in turn and checks the raw column still holds it.
+ *
  * Spends nothing, needs no docker, needs no dataset.
  */
 import assert from "node:assert/strict"
@@ -24,6 +31,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { compareArms, readVerdict, render } from "../compare-arms.mjs"
+import { EXCLUDED } from "../lib/excluded.mjs"
 
 const root = resolve(import.meta.dirname, "..")
 const temporary = mkdtempSync(join(tmpdir(), "flows-swebench-arms-"))
@@ -80,6 +88,12 @@ try {
   const summary = compareArms({ manifestPath: flows, codexManifestPath: codex })
   assert.equal(summary.population, 8, "an instance the benchmark never graded entered the population")
   assert.equal(summary.gradedBoth, 5)
+  // Nothing here is on the exclusion list, so scored and raw agree exactly —
+  // which is the state every population outside `psf/requests` is in.
+  assert.equal(summary.scoredPopulation, 8)
+  assert.equal(summary.scoredBoth, 5)
+  assert.deepEqual(summary.excluded, [])
+  assert.deepEqual(summary.rawAgreement, summary.agreement)
   assert.deepEqual(summary.agreement.both, ["both__x-1"])
   assert.deepEqual(summary.agreement.flowsOnly, ["flowsonly__x-2"])
   assert.deepEqual(summary.agreement.codexOnly, ["codexonly__x-3", "empty__x-5"])
@@ -102,7 +116,8 @@ try {
   assert.equal(summary.superset.provisional, true)
 
   const markdown = render(summary)
-  assert.match(markdown, /Graded by both arms: 5\./)
+  assert.match(markdown, /Population: 8 scored of 8 run/)
+  assert.match(markdown, /Graded by both arms: 5 scored of 5 run\./)
   assert.match(markdown, /Fails on the graded subset/)
   assert.match(markdown, /provisional in both directions/)
   assert.match(markdown, /\| ourfault__x-6 \| flows \| eval error \|/)
@@ -137,6 +152,60 @@ try {
   assert.ok(!render(clean).includes("provisional"))
 
   // -----------------------------------------------------------------------
+  // The exclusion, with a real name from `lib/excluded.mjs`, on each side.
+  // -----------------------------------------------------------------------
+  const [excludedId, excludedEntry] = [...EXCLUDED.entries()][0]
+  assert.ok(typeof excludedEntry.cause === "string" && excludedEntry.cause.length > 40, "an exclusion needs a cause")
+
+  // The excluded instance resolves for codex and not for flows: without the
+  // exclusion it is a codex-only cell, which is the cell the superset goal
+  // turns on.
+  const excludedFlows = jsonl(join(temporary, "flows-excluded.jsonl"), [
+    ...flowsRows("both__x-1", "resolved"),
+    ...flowsRows(excludedId, "unresolved")
+  ])
+  const excludedCodex = jsonl(join(temporary, "codex-excluded.jsonl"), [
+    codexRow("both__x-1", "resolved"),
+    codexRow(excludedId, "resolved")
+  ])
+  const scoped = compareArms({ manifestPath: excludedFlows, codexManifestPath: excludedCodex })
+  assert.equal(scoped.population, 2)
+  assert.equal(scoped.scoredPopulation, 1)
+  assert.equal(scoped.gradedBoth, 2)
+  assert.equal(scoped.scoredBoth, 1)
+  assert.deepEqual(scoped.excluded.map((row) => row.id), [excludedId])
+  // Gone from the scored table, still counted in the raw one. Both are on the
+  // record, so nothing is hidden by the exclusion.
+  assert.deepEqual(scoped.agreement.codexOnly, [])
+  assert.deepEqual(scoped.rawAgreement.codexOnly, [excludedId])
+  assert.equal(scoped.superset.met, true)
+
+  const scopedMarkdown = render(scoped)
+  assert.match(scopedMarkdown, /Population: 1 scored of 2 run/)
+  assert.match(scopedMarkdown, /Graded by both arms: 1 scored of 2 run\./)
+  assert.match(scopedMarkdown, /Excluded from the scoreboard, by name/)
+  assert.ok(scopedMarkdown.includes(excludedEntry.cause), "the documented cause is printed")
+  assert.ok(scopedMarkdown.includes(`| ${excludedId} **excluded** |`), "the per-instance row is marked")
+  // The raw column is still there and still says 1, which is what makes this
+  // scoping rather than deletion.
+  assert.match(scopedMarkdown, /\| \*\*codex only\*\* \| 0 \| 1 \|/)
+
+  // The mirror case: the same id resolving for flows and not codex. It leaves
+  // the flows-only cell by exactly the same rule.
+  const mirrored = compareArms({
+    manifestPath: jsonl(join(temporary, "flows-mirror.jsonl"), [
+      ...flowsRows("both__x-1", "resolved"),
+      ...flowsRows(excludedId, "resolved")
+    ]),
+    codexManifestPath: jsonl(join(temporary, "codex-mirror.jsonl"), [
+      codexRow("both__x-1", "resolved"),
+      codexRow(excludedId, "unresolved")
+    ])
+  })
+  assert.deepEqual(mirrored.agreement.flowsOnly, [])
+  assert.deepEqual(mirrored.rawAgreement.flowsOnly, [excludedId])
+
+  // -----------------------------------------------------------------------
   // The CLI writes both artifacts, and twice over one pair is the same bytes.
   // -----------------------------------------------------------------------
   const out = join(temporary, "out")
@@ -151,6 +220,7 @@ try {
   const first = run()
   assert.equal(first.status, 0, first.stderr)
   assert.match(first.stdout, /both 1, flows-only 1, codex-only 2, neither 1/)
+  assert.match(first.stdout, /8 scored of 8 run/)
   const once = readFileSync(join(out, "arms.md"), "utf8")
   assert.equal(once, (run(), readFileSync(join(out, "arms.md"), "utf8")))
 
@@ -160,7 +230,10 @@ try {
   assert.equal(missing.status, 1)
   assert.match(missing.stderr, /no flows ledger/)
 
-  console.log("check-compare-arms: an eval error is never a loss, an empty patch always is, and coverage precedes the rate.")
+  console.log(
+    "check-compare-arms: an eval error is never a loss, an empty patch always is, coverage precedes the rate,"
+      + " and an exclusion leaves both arms with both denominators printed."
+  )
 } finally {
   rmSync(temporary, { recursive: true, force: true })
 }
