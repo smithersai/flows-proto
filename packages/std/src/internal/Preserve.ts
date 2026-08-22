@@ -40,9 +40,34 @@ export const writeFileString = (
   path: string,
   content: string
 ): Effect.Effect<void, PlatformError.PlatformError> =>
+  around(fileSystem, path, fileSystem.writeFileString(path, content))
+
+/**
+ * Replaces a file's bytes, restoring its permission bits if the write moved
+ * them.
+ *
+ * `apply_patch` writes bytes rather than text and is reached by the same agent,
+ * for the same reason, on the same files as `edit`. A mode section in a patch is
+ * noise wherever it comes from, so both doors have the same rule.
+ *
+ * @category filesystem
+ * @since 0.1.0
+ */
+export const writeFile = (
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+  content: Uint8Array
+): Effect.Effect<void, PlatformError.PlatformError> => around(fileSystem, path, fileSystem.writeFile(path, content))
+
+/** Reads the bits, runs the write, and puts the bits back when they moved. */
+const around = (
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+  write: Effect.Effect<void, PlatformError.PlatformError>
+): Effect.Effect<void, PlatformError.PlatformError> =>
   Effect.gen(function*() {
     const before = yield* mode(fileSystem, path)
-    yield* fileSystem.writeFileString(path, content)
+    yield* write
     if (before === undefined) return
     const after = yield* mode(fileSystem, path)
     if (after !== undefined && after !== before) yield* Effect.ignore(fileSystem.chmod(path, before))

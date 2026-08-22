@@ -45,6 +45,7 @@ import type * as MemoryStore from "@smthrs/memory/MemoryStore"
 import type * as Recall from "@smthrs/memory/Recall"
 import * as ApplyPatch from "@smthrs/std/ApplyPatch"
 import * as Bash from "@smthrs/std/Bash"
+import * as Container from "@smthrs/std/Container"
 import * as Edit from "@smthrs/std/Edit"
 import * as Glob from "@smthrs/std/Glob"
 import * as Grep from "@smthrs/std/Grep"
@@ -96,14 +97,29 @@ export const filesystem = (
 /**
  * Shell execution, as one ordinary flow.
  *
+ * `container` is what makes `bash`'s `container` field mean anything. The flow
+ * reads the transport optionally, so a composition that supplies none simply
+ * refuses a containerised call — which is the same thing as not offering the
+ * affordance at all. A task whose interpreter and test runner live in a
+ * container is the ordinary SWE-bench shape, and without a transport the only
+ * way in is the agent typing `docker exec c bash -lc '…'` itself: twelve failed
+ * probes and one instance's most expensive frame across the measured 45. So the
+ * default is the docker/podman CLI rather than `undefined`, because a host with
+ * neither fails the spawn with the shell's own "not found" — which is honest —
+ * while a host with docker gets the transport it plainly has.
+ *
  * @category constructors
  * @since 0.1.0
  */
 export const shell = (
-  services: Context.Context<ChildProcessSpawner.ChildProcessSpawner | Path.Path>
+  services: Context.Context<ChildProcessSpawner.ChildProcessSpawner | Path.Path>,
+  container: Container.Container = Container.makeCommand()
 ): FlowBinding.Source =>
   FlowBinding.source("std/shell", [
-    FlowBinding.provide(FlowBinding.make({ flow: Bash.flow, handler: Bash.run }), services)
+    FlowBinding.provide(
+      FlowBinding.make({ flow: Bash.flow, handler: Bash.run }),
+      Context.add(services, Container.Container, container)
+    )
   ])
 
 /**

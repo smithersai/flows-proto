@@ -15,6 +15,7 @@ import * as FileSystem from "effect/FileSystem"
 import * as Schema from "effect/Schema"
 import * as ApplyPatchText from "./internal/ApplyPatch.ts"
 import { capability, envelope } from "./internal/Declaration.ts"
+import * as Preserve from "./internal/Preserve.ts"
 import * as StdError from "./StdError.ts"
 
 /**
@@ -182,7 +183,7 @@ export const run = Effect.fn("ApplyPatch.run")(function*(
             )
           }
         }
-        yield* fileSystem.writeFile(destination, encoder.encode(contents)).pipe(
+        yield* Preserve.writeFile(fileSystem, destination, encoder.encode(contents)).pipe(
           Effect.mapError(() => ioError(`Failed to write file ${destination}`, destination))
         )
         if (hunk.movePath !== undefined && hunk.movePath !== hunk.path) {

@@ -206,8 +206,31 @@ describe("cellPrompt", () => {
     const contract = contractText()
     expect(contract).toContain("Before the first write")
     expect(contract).toContain("state.verification")
-    expect(contract).toContain("language-aware per-file diagnostics")
+    expect(contract).toContain("language-aware checker")
     expect(contract).toContain("undefined-name")
+  })
+
+  it("names only checkers a run can actually reach, never a `diagnostics` flow nothing binds", () => {
+    // The contract is read as a catalog by the model that imitates it. Naming a
+    // flow no composition offers spends a frame on `{ ok: false, code:
+    // "unknown_flow" }` and, when the cell then reads a field off that
+    // envelope, the whole frame on a TypeError. `@smthrs/std` declares no
+    // `diagnostics` flow and neither `StandardFlows.filesystem` nor
+    // `StandardFlows.shell` binds one, so the teaching points at the shell
+    // flow and at what the image actually ships.
+    const contract = contractText()
+    expect(contract).not.toContain("diagnostics")
+    expect(contract).toContain("whatever language-aware checker `ctx.flows` and this image actually offer")
+    expect(contract).toContain("through the shell flow")
+  })
+
+  it("teaches that an edit answers with the hunk it applied", () => {
+    // `@smthrs/std`'s `edit` returns `hunk` — the applied region raw, with its
+    // real indentation — precisely so a mis-indented edit costs one glance.
+    // sphinx-7233 lost its verdict to a hunk nobody could see.
+    const contract = contractText()
+    expect(contract).toContain("An edit answers with the hunk it applied")
+    expect(contract).toContain("costs one glance there")
   })
 
   it("teaches that a check is evidence only once it has failed for the right reason", () => {
@@ -342,10 +365,14 @@ describe("cellPrompt", () => {
     // The anchor is a literal line a call returned, never in-cell surgery over
     // bytes the model has not seen.
     expect(contract).toContain("const anchor = hit.text")
-    expect(contract).toContain(`await ctx.call("edit", { path: hit.file, oldString: anchor`)
-    // Two independent checks in the one frame, then the conditional exit.
+    expect(contract).toContain(`const applied = await ctx.call("edit", { path: hit.file, oldString: anchor`)
+    // A one-line bail on the edit's own failure envelope, so the fail-soft
+    // rule is shown and not only stated.
+    expect(contract).toContain("if (applied.ok === false) return {")
+    // Two independent readings in the one frame — the replayed probe says the
+    // behaviour moved, the returned hunk says what moved — then the exit.
     expect(contract).toContain("const after = await ctx.call(probe.flow, probe.input)")
-    expect(contract).toContain(`const lint = await ctx.call("diagnostics", { path: hit.file })`)
+    expect(contract).toContain(`applied.hunk.includes("return widen(value)")`)
     expect(contract).toContain(`intent: "complete", state: { verification: probe }`)
     expect(contract).toContain("One frame: locate, read, probe, edit, verify, answer.")
   })
@@ -423,7 +450,15 @@ describe("cellPrompt", () => {
     // clipped rule, the failure envelope, and the in-frame re-ask. Every one of
     // them replaces a frame the r90 wave actually spent, so the ceiling moved
     // to 2,850 rather than the teaching being trimmed to fit.
-    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2850)
+    //
+    // Then +44 for rule 7 naming the hunk an `edit` answers with. That spend
+    // bought a deletion as well: the worked example used to call a
+    // `diagnostics` flow no composition binds, which under change 8 resolves
+    // `{ ok: false, code: "unknown_flow" }` and then throws on the next
+    // property read — a whole frame spent on a name that does not exist.
+    // Reading the returned hunk is the check that replaces it, and
+    // sphinx-7233 lost its verdict for want of exactly that glance.
+    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2900)
     expect(Tokens.estimate(sectionOf("cell-environment", {}, { locale: "C.UTF-8", absentTools: ["rg", "ruff"] })))
       .toBeLessThanOrEqual(300)
   })

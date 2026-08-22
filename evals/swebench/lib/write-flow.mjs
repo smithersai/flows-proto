@@ -42,13 +42,17 @@ directory mounted at /testbed, so a file you change here changes there
 immediately, and vice versa.
 
 - Run anything that touches the project — imports, scripts, tests — inside the
-  container:
+  container, by naming it rather than by typing a docker line:
 
-      docker exec ${container} bash -lc 'cd /testbed && <command>'
+      { mode: "unhermetic", container: "${container}", cwd: "/testbed", command: "<command>" }
 
+  For a program rather than a line, pass the program itself and let \`bash\`
+  deliver it: \`{ ..., interpreter: "python3", script: "<program text>", args: [] }\`
+  reaches the interpreter on standard input as data, so nothing quotes it,
+  escapes it, or terminates it with a heredoc marker.
   GNU grep, GNU sed, and the project's dependencies are all available there.
   \`sed -i\` on the host is BSD sed and will not behave like GNU sed; run it
-  through docker exec, or avoid it.
+  in the container, or avoid it.
 - This repository runs its tests with \`${testCommand}\`, which takes the test
   paths to run as trailing arguments. It is the runner this project actually
   uses: other runners are not necessarily installed here.
@@ -56,9 +60,15 @@ immediately, and vice versa.
   own uncommitted edits and nothing else. This harness snapshots the working
   copy around every action, but it does so in a repository of its own, so
   nothing it writes ever appears in this checkout's history, index, or refs.
-- To change a file, prefer the \`write\` flow: read the file, and write back the
-  complete new contents. That is the most reliable edit available to you.
-- \`read\` and \`write\` act on this directory directly and need no container.
+- To change a file, use the \`edit\` flow with an anchor a call just handed you:
+  a \`read\`'s \`content\` is raw file text and a \`grep\` hit's \`text\` is the line
+  itself, so either is an anchor exactly as it stands. \`edit\` matches those
+  bytes or fails with the file's own text at the nearest region, and it answers
+  with the hunk it applied. You may also anchor by a prior hit's \`startLine\`
+  and \`endLine\`. Do not rewrite a whole file to change part of one: \`write\`
+  replaces every byte, and a \`read\` that came back \`truncated\` is a fragment.
+- \`read\`, \`grep\`, \`edit\` and \`write\` act on this directory directly and need
+  no container.
 
 ## How to work
 

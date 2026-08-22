@@ -1,4 +1,4 @@
-import { Effect, Exit } from "effect"
+import { Effect, Exit, FileSystem, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import * as ApplyPatch from "../src/ApplyPatch.ts"
 import {
@@ -395,6 +395,54 @@ describe("ApplyPatch.run", () => {
     expect(result.added).toEqual(["/added.txt"])
     expect(result.modified).toEqual(["/update.txt", "/move-dst.txt"])
     expect(result.deleted).toEqual(["/gone.txt"])
+  })
+
+  it("puts back permission bits the host's write moved", async () => {
+    // The same rule `edit` and `write` follow, at the third door onto the same
+    // files. Five graded SWE-bench patches shipped spurious 100644 -> 100755
+    // sections around their real edits, and a grader that reverse-applies a
+    // patch can fail on a mode section the agent never intended.
+    const chmods: Array<{ readonly path: string; readonly mode: number }> = []
+    let mode = 0o100644
+    const info = (value: number): FileSystem.File.Info => ({
+      type: "File",
+      mtime: Option.none(),
+      atime: Option.none(),
+      birthtime: Option.none(),
+      dev: 0,
+      ino: Option.none(),
+      mode: value,
+      nlink: Option.none(),
+      uid: Option.none(),
+      gid: Option.none(),
+      rdev: Option.none(),
+      size: FileSystem.Size(0),
+      blksize: Option.none(),
+      blocks: Option.none()
+    })
+    const host = FileSystem.makeNoop({
+      stat: () => Effect.succeed(info(mode)),
+      readFile: () => Effect.succeed(new TextEncoder().encode("old\n")),
+      writeFile: () =>
+        Effect.sync(() => {
+          // A host that writes by replacing the file loses its bits.
+          mode = 0o100755
+        }),
+      chmod: (path, value) =>
+        Effect.sync(() => {
+          chmods.push({ path, mode: value })
+          mode = 0o100000 | value
+        })
+    })
+    await execute(Effect.provide(
+      Effect.provideService(
+        ApplyPatch.run({ input: wrap("*** Update File: /a.txt\n@@\n-old\n+new") }),
+        FileSystem.FileSystem,
+        host
+      ),
+      layer()
+    ))
+    expect(chmods).toEqual([{ path: "/a.txt", mode: 0o644 }])
   })
 
   it("fails with invalid_input and the Codex parse message", async () => {

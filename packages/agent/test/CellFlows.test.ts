@@ -338,6 +338,56 @@ return { intent: "complete", state: { kept: kept }, output: page.content + "|" +
     expect(requests[0]).toContain("remember")
   })
 
+  it("routes a containerised bash call through the transport the shell binding supplies", async () => {
+    // `bash`'s `container` field reads the transport out of the context the
+    // binding provides. A composition that supplies none makes the field inert
+    // — the call resolves `{ ok: false }` with "this host has no container
+    // transport" — and the agent goes back to typing `docker exec c bash -lc
+    // '…'`, which is the quoting stack the field exists to delete. So the
+    // default binding carries one, and the argv it builds is the harness's,
+    // never the cell's.
+    const spawned: Array<string> = []
+    const outcome = await drive(
+      collect({
+        flows: [
+          StandardFlows.shell(
+            Context.make(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.makeNoop({
+                spawn: (command) =>
+                  Effect.sync(() => {
+                    spawned.push(CommandLine.render(command))
+                    return makeHandle({
+                      pid: ProcessId(1),
+                      exitCode: Effect.succeed(ExitCode(0)),
+                      isRunning: Effect.succeed(false),
+                      kill: () => Effect.void,
+                      stdin: Sink.drain,
+                      stdout: Stream.fromArray([new TextEncoder().encode("3\n")]),
+                      stderr: Stream.empty,
+                      all: Stream.fromArray([new TextEncoder().encode("3\n")]),
+                      getInputFd: () => Sink.drain,
+                      getOutputFd: () => Stream.empty,
+                      unref: Effect.succeed(Effect.void)
+                    })
+                  })
+              })
+            ).pipe((spawner) => Context.merge(spawner, pathServices))
+          )
+        ],
+        cells: [
+          `const probe = await ctx.call("bash", { mode: "unhermetic", container: "testbed", cwd: "/testbed", interpreter: "python3", script: "print(1 + 2)" })
+return { intent: "complete", state: {}, output: probe.stdout.trim() }`
+        ]
+      })
+    )
+
+    expect(outcome._tag).toBe("completed")
+    // No shell line anywhere: the payload rides on standard input as data and
+    // every other part of the invocation is an argv element.
+    expect(spawned[0]).toBe("docker exec -i -w /testbed testbed python3 -")
+  })
+
   it("runs the declared test runner as a flow and answers with a reading of its report", async () => {
     // The runner is a declaration, not a parameter: the cell selects which
     // tests, never how to run them, so a guessed label cannot happen here.
