@@ -100,7 +100,12 @@ docker run -d --platform linux/amd64 --name "$CONTAINER" \
 TEST_CMD="$("$S/.venv-swb/bin/python" "$S/lib/test-command.py" "$DATASET" "$INSTANCE")" || {
   echo "[$RUN_ID] NO TEST COMMAND — run ./bootstrap.sh first"; exit 1; }
 
-node "$S/lib/write-prompt-codex.mjs" "$DATASET" "$INSTANCE" "$CONTAINER" "$TEST_CMD" > "$LOG_PREFIX.prompt.md"
+# How this image runs the project's Python, from the same place the flows side
+# reads it, and withheld from neither for the same reason as the test command.
+INTERPRETER="$("$S/lib/interpreter.sh" "$CONTAINER" 2>/dev/null)" || INTERPRETER=""
+
+node "$S/lib/write-prompt-codex.mjs" "$DATASET" "$INSTANCE" "$CONTAINER" "$TEST_CMD" "$INTERPRETER" \
+  > "$LOG_PREFIX.prompt.md"
 
 # Network access is a benchmark condition, not a detail. SWB_CODEX_NETWORK=off
 # runs codex under its workspace-write sandbox, which denies network egress;

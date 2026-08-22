@@ -383,9 +383,13 @@ return { intent: "complete", state: {}, output: probe.stdout.trim() }`
     )
 
     expect(outcome._tag).toBe("completed")
-    // No shell line anywhere: the payload rides on standard input as data and
-    // every other part of the invocation is an argv element.
-    expect(spawned[0]).toBe("docker exec -i -w /testbed testbed python3 -")
+    // The payload still rides on standard input as data and every other part
+    // of the invocation is an argv element — and the interpreter is reached
+    // through the image's login shell, because that is what activates the
+    // project's environment. `exec "$@"` replaces the shell rather than
+    // wrapping it, so the script arrives on the inherited stdin and nothing is
+    // re-parsed as shell text.
+    expect(spawned[0]).toBe(`docker exec -i -w /testbed testbed bash -lc 'exec "$@"' bash python3 -`)
   })
 
   it("runs the declared test runner as a flow and answers with a reading of its report", async () => {

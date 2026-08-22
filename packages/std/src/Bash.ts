@@ -378,15 +378,15 @@ const outsideEnvelope = (
 /**
  * How each known interpreter is told to read its program from standard input.
  *
- * A login shell is used only inside a container, because a container's
- * environment is what its profile makes it — that is exactly why the rig had to
- * teach `bash -lc` — while a local spawn already inherits the host's.
+ * No login flag appears here. Inside a container every invocation is wrapped in
+ * a login shell by {@link request}, and a local spawn already inherits the
+ * host's environment, so the interpreter is asked for nothing but "read the
+ * program from stdin".
  */
-const stdinArguments = (interpreter: string, login: boolean): ReadonlyArray<string> => {
+const stdinArguments = (interpreter: string): ReadonlyArray<string> => {
   switch (interpreter) {
     case "bash":
     case "zsh":
-      return login ? ["-l", "-s"] : ["-s"]
     case "sh":
     case "dash":
       return ["-s"]
@@ -444,7 +444,7 @@ const plan = (input: Input): Plan | StdError.StdError => {
   if (input.command !== undefined) {
     return { file: input.command, args: undefined, stdin: input.stdin, quoted: input.command }
   }
-  const args = [...stdinArguments(interpreter, input.container !== undefined), ...(input.args ?? [])]
+  const args = [...stdinArguments(interpreter), ...(input.args ?? [])]
   return {
     file: interpreter,
     args,
@@ -473,14 +473,32 @@ const routed = (
 }
 
 /**
- * One containerised request. A command line becomes a single argument to a
- * login shell inside the container, which is the one place quoting still
- * happens and the one place it is ours rather than the caller's.
+ * One containerised request, always through a login shell.
+ *
+ * A container's environment is what its profile makes it. The images this
+ * harness runs against activate the project's interpreter — a conda env, a
+ * virtualenv, a modified `PATH` — from `/etc/profile.d`, so a program spawned
+ * directly by `docker exec` gets a different Python from the one that owns the
+ * repository's dependencies. That is measured, not theoretical: r90 typed
+ * `docker exec … bash -lc '…'` by hand and got the activation for free, r91
+ * routed `interpreter: "python3"` straight at the container and filled its
+ * traces with `ModuleNotFoundError: No module named 'numpy'` and
+ * `exec: "/usr/local/bin/python": no such file or directory`. Thirty of 45
+ * instances then spent 138 cells scanning `/opt` for the real interpreter.
+ *
+ * So the login shell is the transport's, not the caller's. A command line is
+ * one argument to `bash -lc`, as before. A program run under an interpreter
+ * becomes `bash -lc 'exec "$@"' bash <interpreter> <args…>`: the shell reads
+ * the profile, then `exec` replaces it with the interpreter, so the script
+ * still arrives on the inherited standard input and no argument is ever
+ * re-parsed as shell text.
  */
 const request = (plan: Plan, input: Input): Container.Request => ({
   container: input.container ?? "",
-  file: plan.args === undefined ? "bash" : plan.file,
-  args: plan.args === undefined ? ["-lc", plan.file] : plan.args,
+  file: "bash",
+  args: plan.args === undefined
+    ? ["-lc", plan.file]
+    : ["-lc", `exec "$@"`, "bash", plan.file, ...plan.args],
   ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
   ...(input.env === undefined ? {} : { env: input.env }),
   stdin: plan.stdin !== undefined

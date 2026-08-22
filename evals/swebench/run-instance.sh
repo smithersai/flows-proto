@@ -123,8 +123,22 @@ printf 'flows/\n.flows/\n.jj/\nagent-run.log\n' >> "$WORK/.git/info/exclude"
 TEST_CMD="$("$S/.venv-swb/bin/python" "$S/lib/test-command.py" "$DATASET" "$INSTANCE")" || {
   echo "[$RUN_ID] NO TEST COMMAND — run ./bootstrap.sh first"; exit 1; }
 
+# How this image runs the project's Python, read off the container it is about
+# to run in. r91 spent 138 cells across 30 instances rediscovering this one
+# path, because `interpreter: "python3"` resolves to a Python the repository's
+# dependencies are not installed against. A fact the harness can measure at
+# setup is stated once instead. A container that answers nothing usable simply
+# leaves the bullet out; nothing here is fatal.
+INTERPRETER="$("$S/lib/interpreter.sh" "$CONTAINER" 2>/dev/null)" || INTERPRETER=""
+if [ -n "$INTERPRETER" ]; then
+  echo "[$RUN_ID] project interpreter $INTERPRETER"
+else
+  echo "[$RUN_ID] project interpreter not measurable — the run discovers it"
+fi
+
 mkdir -p "$WORK/flows/fix"
-node "$S/lib/write-flow.mjs" "$DATASET" "$INSTANCE" "$SEAT" "$CONTAINER" "$TEST_CMD" > "$WORK/flows/fix/flow.mdx"
+node "$S/lib/write-flow.mjs" "$DATASET" "$INSTANCE" "$SEAT" "$CONTAINER" "$TEST_CMD" "$INTERPRETER" \
+  > "$WORK/flows/fix/flow.mdx"
 
 # Version control for the harness, kept out of the task repository entirely.
 #
@@ -170,6 +184,16 @@ else
   set +e
   (
     cd "$WORK" || exit 1
+    # How this repository runs its tests, declared to the CLI so the `test`
+    # flow is in `ctx.flows` at all. Without a declaration the composition binds
+    # no `test` flow, which is what r91 measured: zero `test` calls across 45
+    # journals while the contract's doctrine assumed the call existed. The
+    # container and the container-side path are the same ones `bash` uses, and
+    # the pristine base the flow diffs against is the ref snapshot-base.sh
+    # already wrote.
+    export FLOWS_TEST_COMMAND="$TEST_CMD"
+    export FLOWS_TEST_CONTAINER="$CONTAINER"
+    export FLOWS_TEST_CWD="/testbed"
     A=$("$S/flows.sh" --json plan fix | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.stringify(JSON.parse(s).approval))}catch{process.exit(1)}})') || exit 1
     "$S/flows.sh" --json approve "$A" --scope run >/dev/null 2>&1 || {
       echo "[$RUN_ID] APPROVAL FAILED"; exit 1;

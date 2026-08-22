@@ -48,6 +48,7 @@ const instance = {
 
 const container = "flowsbench-stub--prompt-1"
 const testCommand = "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+const interpreter = "/opt/miniconda3/envs/testbed/bin/python3.10"
 
 const write = (script, args) => {
   const result = spawnSync(process.execPath, [join(root, "lib", script), ...args], { encoding: "utf8" })
@@ -58,9 +59,22 @@ try {
   const dataset = join(temporary, "dataset.json")
   writeFileSync(dataset, JSON.stringify([instance]))
 
-  const flowsRun = write("write-flow.mjs", [dataset, instance.instance_id, "openai:gpt-5.6-sol", container, testCommand])
+  const flowsRun = write("write-flow.mjs", [
+    dataset,
+    instance.instance_id,
+    "openai:gpt-5.6-sol",
+    container,
+    testCommand,
+    interpreter
+  ])
   assert.equal(flowsRun.status, 0, flowsRun.stderr)
-  const codexRun = write("write-prompt-codex.mjs", [dataset, instance.instance_id, container, testCommand])
+  const codexRun = write("write-prompt-codex.mjs", [
+    dataset,
+    instance.instance_id,
+    container,
+    testCommand,
+    interpreter
+  ])
   assert.equal(codexRun.status, 0, codexRun.stderr)
 
   const flowsPrompt = flowsRun.stdout
@@ -88,6 +102,34 @@ try {
   uses: other runners are not necessarily installed here.`
   assert.ok(flowsPrompt.includes(runnerBullet), "the flows prompt names the repository's runner")
   assert.ok(codexPrompt.includes(runnerBullet), "the codex prompt names the same runner, byte for byte")
+
+  // The interpreter is the same kind of fact as the runner, measured off the
+  // container by lib/interpreter.sh rather than guessed. r91 shipped the test
+  // command without it, and 30 of 45 instances spent 138 cells hunting for
+  // `/opt/miniconda3/envs/testbed/bin/python3.10` on their own. Withholding it
+  // from one side would reintroduce exactly the asymmetry this file exists for.
+  const interpreterBullet = `- This image runs the project's Python as \`${interpreter}\`. The
+  repository's dependencies are installed against that interpreter; a bare
+  \`python\` or \`python3\` resolves to a different one, and importing the
+  project with it fails.`
+  assert.ok(flowsPrompt.includes(interpreterBullet), "the flows prompt names the project's interpreter")
+  assert.ok(codexPrompt.includes(interpreterBullet), "the codex prompt names the same interpreter, byte for byte")
+
+  // A fact the image would not answer is not stated at all, on either side.
+  const withoutInterpreter = [
+    write("write-flow.mjs", [dataset, instance.instance_id, "openai:gpt-5.6-sol", container, testCommand]),
+    write("write-flow.mjs", [dataset, instance.instance_id, "openai:gpt-5.6-sol", container, testCommand, "  "]),
+    write("write-prompt-codex.mjs", [dataset, instance.instance_id, container, testCommand]),
+    write("write-prompt-codex.mjs", [dataset, instance.instance_id, container, testCommand, "  "])
+  ]
+  for (const run of withoutInterpreter) {
+    assert.equal(run.status, 0, run.stderr)
+    assert.ok(
+      !run.stdout.includes("runs the project's Python as"),
+      "an unmeasured interpreter is left out, never rendered blank"
+    )
+    assert.ok(run.stdout.includes(runnerBullet), "dropping the interpreter drops nothing else")
+  }
 
   // The example command is a placeholder on both sides. Spelling a runner into
   // it is how the two drifted apart the first time: the codex prompt's example
@@ -204,6 +246,13 @@ try {
     encoding: "utf8"
   })
   assert.equal(script.status, 0, "run-instance-codex.sh derives the test command from lib/test-command.py")
+
+  // And so does the interpreter, on both sides, from the one script that reads
+  // it off the container.
+  for (const runner of ["run-instance.sh", "run-instance-codex.sh"]) {
+    const derived = spawnSync("grep", ["-c", "lib/interpreter.sh", join(root, runner)], { encoding: "utf8" })
+    assert.equal(derived.status, 0, `${runner} derives the interpreter from lib/interpreter.sh`)
+  }
 } finally {
   rmSync(temporary, { recursive: true, force: true })
 }

@@ -44,7 +44,9 @@ import type * as Descriptor from "@smthrs/registry/Descriptor"
 import * as Discovery from "@smthrs/registry/Discovery"
 import * as Registry from "@smthrs/registry/Registry"
 import { Migrations as RunStoreMigrations, RunStore } from "@smthrs/run-store"
+import * as Container from "@smthrs/std/Container"
 import * as NativeSearch from "@smthrs/std/NativeSearch"
+import * as TestRunner from "@smthrs/std/TestRunner"
 import type { FileSystem, Path, Result } from "effect"
 import { Context, Effect, Layer, Redacted } from "effect"
 import { HttpRouter } from "effect/unstable/http"
@@ -489,6 +491,48 @@ const cellLimits: Sandbox.Limits = {
 }
 
 /**
+ * The repository's own test invocation, as this host declares it.
+ *
+ * `TestRun` is a declaration flow: a caller selects *which* tests, never *how*
+ * to run them, so the composition has to supply the how. This host reads it off
+ * the environment, which is the same place it reads a seat's credentials, and
+ * the only field that decides anything is the command — the rest describe where
+ * that command runs.
+ *
+ * `undefined` means this host knows of no runner, and then the `test` flow is
+ * not bound at all. That is the rule the r91 wave broke in the other direction:
+ * `StandardFlows.tests` existed, the cell contract's doctrine assumed it, and
+ * no composition offered it, so all 45 graded runs saw zero `test` calls. A
+ * flow no composition offers is a flow that does not exist — and a flow bound
+ * over a declaration that can only refuse is worse, because the catalog then
+ * advertises a call whose every answer is "not configured".
+ *
+ * @category constructors
+ * @since 0.1.0
+ * @slop
+ */
+export const testRunner = (
+  environment: Readonly<Record<string, string | undefined>>,
+  root: string
+): TestRunner.Runner | undefined => {
+  const command = environment["FLOWS_TEST_COMMAND"]?.trim()
+  if (command === undefined || command === "") return undefined
+  const container = environment["FLOWS_TEST_CONTAINER"]?.trim()
+  const cwd = environment["FLOWS_TEST_CWD"]?.trim()
+  const timeout = Number(environment["FLOWS_TEST_TIMEOUT_MS"])
+  return {
+    command,
+    // The runner's directory and the repository's are the same path until a
+    // container gives the tree a second name; `root` stays the host's, because
+    // that is where a baseline worktree is checked out from.
+    cwd: cwd === undefined || cwd === "" ? root : cwd,
+    root,
+    ...(container === undefined || container === "" ? {} : { container }),
+    ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMs: timeout } : {})
+  }
+}
+
+/**
  * Provides the production run executor: the `@smthrs/agent` composition root
  * over the durable control stores, the local flow registry, and the standard
  * host capabilities — filesystem and shell through the kernel's guarded
@@ -539,11 +583,25 @@ export const layerExecutor = (
       >()
       const memoryServices = yield* Effect.context<MemoryStore.MemoryStore | Recall.Recall>()
       const nativeSearch = NativeSearch.make(Context.merge(filesystemServices, shellServices))
+      // `test` is offered exactly when this host can say how the repository
+      // runs its tests. The declaration carries the container too, so the
+      // runner reaches the same transport `bash` does.
+      const runner = testRunner(environment, root)
+      const container = Container.makeCommand()
       return yield* AgentSession.make({
         flows: [
           StandardFlows.filesystem(filesystemServices, nativeSearch),
-          StandardFlows.shell(shellServices),
-          StandardFlows.memory(memoryServices)
+          StandardFlows.shell(shellServices, container),
+          StandardFlows.memory(memoryServices),
+          ...(runner === undefined ? [] : [
+            StandardFlows.tests(
+              Context.add(
+                Context.add(shellServices, TestRunner.TestRunner, TestRunner.make(runner)),
+                Container.Container,
+                container
+              )
+            )
+          ])
         ],
         limits: cellLimits
       })

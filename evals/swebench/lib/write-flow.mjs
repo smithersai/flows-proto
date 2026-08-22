@@ -1,16 +1,21 @@
 /**
  * Writes the fix flow the built-in harness runs on one instance.
  *
- *   node lib/write-flow.mjs <dataset.json> <instance_id> <seat> <container> <test-command>
+ *   node lib/write-flow.mjs <dataset.json> <instance_id> <seat> <container> <test-command> [interpreter]
  *
  * Ported from the 2026-08 benchmark rig; the dataset is addressed by path
  * instead of by a flat scratch directory, and the repository's test command is
  * supplied by the caller (see lib/test-command.py) instead of assumed to be
  * pytest.
+ *
+ * The interpreter is the same kind of fact and comes from lib/interpreter.sh:
+ * how this image runs the project's Python, read off the container at setup.
+ * It is optional because a fact the harness could not measure is not stated —
+ * the bullet is simply absent and the run discovers it the ordinary way.
  */
 import { readFileSync } from "node:fs"
 
-const [, , datasetPath, instanceId, seat, container, testCommand] = process.argv
+const [, , datasetPath, instanceId, seat, container, testCommand, interpreter] = process.argv
 if (testCommand === undefined || testCommand.trim() === "") {
   console.error("write-flow.mjs: no test command given; see lib/test-command.py")
   process.exit(1)
@@ -21,6 +26,16 @@ if (instance === undefined) {
   console.error(`unknown instance ${instanceId}`)
   process.exit(1)
 }
+
+// One bullet, shared byte for byte with lib/write-prompt-codex.mjs, because
+// the interpreter is environment teaching and not a tool: a harness that knows
+// which Python owns the repository's dependencies and a baseline that does not
+// are not the same measurement. Absent when the image answered nothing usable.
+const interpreterBullet = interpreter === undefined || interpreter.trim() === "" ? "" : `
+- This image runs the project's Python as \`${interpreter.trim()}\`. The
+  repository's dependencies are installed against that interpreter; a bare
+  \`python\` or \`python3\` resolves to a different one, and importing the
+  project with it fails.`
 
 // The frontmatter body is the agent's whole task. Nothing here reveals the
 // gold patch, the test patch, or which tests the grader runs — only the issue
@@ -52,7 +67,7 @@ immediately, and vice versa.
   escapes it, or terminates it with a heredoc marker.
   GNU grep, GNU sed, and the project's dependencies are all available there.
   \`sed -i\` on the host is BSD sed and will not behave like GNU sed; run it
-  in the container, or avoid it.
+  in the container, or avoid it.${interpreterBullet}
 - This repository runs its tests with \`${testCommand}\`, which takes the test
   paths to run as trailing arguments. It is the runner this project actually
   uses: other runners are not necessarily installed here.

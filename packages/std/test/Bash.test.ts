@@ -358,9 +358,29 @@ describe("Bash", () => {
       Bash.run({ mode: "unhermetic", container: "swebench-1", cwd: "/testbed", command: "pytest -q tests/test_x.py" }),
       Layer.merge(recorder(spawns), transport)
     ))
+    // Both shapes reach the container through a login shell. The image's own
+    // profile is what activates the project's interpreter, and r91 measured
+    // what skipping it costs: `interpreter: "python3"` resolved to a Python
+    // without the repository's dependencies on 30 of 45 graded instances.
+    // `exec "$@"` replaces the shell with the interpreter, so the script still
+    // arrives on the inherited standard input and no argument is re-parsed.
     expect(spawns[0]).toEqual({
       file: "docker",
-      args: ["exec", "-i", "-w", "/testbed", "-e", "PYTHONHASHSEED=0", "swebench-1", "python", "-"],
+      args: [
+        "exec",
+        "-i",
+        "-w",
+        "/testbed",
+        "-e",
+        "PYTHONHASHSEED=0",
+        "swebench-1",
+        "bash",
+        "-lc",
+        `exec "$@"`,
+        "bash",
+        "python",
+        "-"
+      ],
       stdin: "print('it ran')",
       shell: false,
       // The container owns the working directory, so the host spawn does not.
@@ -370,6 +390,22 @@ describe("Bash", () => {
       file: "docker",
       args: ["exec", "-w", "/testbed", "swebench-1", "bash", "-lc", "pytest -q tests/test_x.py"],
       stdin: undefined
+    })
+  })
+
+  it("asks a containerised shell script for no login flag of its own", async () => {
+    // The wrapper is already a login shell, so the inner interpreter is asked
+    // for nothing but "read the program from stdin". Two login shells would
+    // read the profile twice for the same activation.
+    const spawns: Array<Spawned> = []
+    await execute(Effect.provide(
+      Bash.run({ mode: "unhermetic", container: "swebench-1", script: "echo hello" }),
+      Layer.merge(recorder(spawns), Layer.succeed(Container.Container)(Container.makeCommand()))
+    ))
+    expect(spawns[0]).toMatchObject({
+      file: "docker",
+      args: ["exec", "-i", "swebench-1", "bash", "-lc", `exec "$@"`, "bash", "bash", "-s"],
+      stdin: "echo hello"
     })
   })
 

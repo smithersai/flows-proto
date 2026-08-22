@@ -120,6 +120,52 @@ describe("NodeControl database locations", () => {
   })
 })
 
+describe("NodeControl.testRunner", () => {
+  it("declares no runner until the host names a command", () => {
+    // A `test` flow bound over a declaration that can only refuse is worse than
+    // no flow at all: the catalog then advertises a call whose every answer is
+    // "not configured", and a run spends a frame finding that out.
+    expect(NodeControl.testRunner({}, "/work")).toBeUndefined()
+    expect(NodeControl.testRunner({ FLOWS_TEST_COMMAND: "   " }, "/work")).toBeUndefined()
+  })
+
+  it("reads the runner, its container and its two directories off the environment", () => {
+    // The container path and the host path are the same tree under two names:
+    // the runner runs at `cwd` inside the container, and a baseline worktree is
+    // checked out from `root` on the host.
+    expect(
+      NodeControl.testRunner(
+        {
+          FLOWS_TEST_COMMAND: "./tests/runtests.py --settings=test_sqlite",
+          FLOWS_TEST_CONTAINER: "swebench-1",
+          FLOWS_TEST_CWD: "/testbed",
+          FLOWS_TEST_TIMEOUT_MS: "600000"
+        },
+        "/work/repo"
+      )
+    ).toEqual({
+      command: "./tests/runtests.py --settings=test_sqlite",
+      container: "swebench-1",
+      cwd: "/testbed",
+      root: "/work/repo",
+      timeoutMs: 600_000
+    })
+  })
+
+  it("defaults the runner's directory to the repository and drops an unusable timeout", () => {
+    expect(NodeControl.testRunner({ FLOWS_TEST_COMMAND: "pytest -q" }, "/work/repo")).toEqual({
+      command: "pytest -q",
+      cwd: "/work/repo",
+      root: "/work/repo"
+    })
+    for (const timeout of ["", "soon", "0", "-1"]) {
+      expect(
+        NodeControl.testRunner({ FLOWS_TEST_COMMAND: "pytest -q", FLOWS_TEST_TIMEOUT_MS: timeout }, "/work/repo")
+      ).not.toHaveProperty("timeoutMs")
+    }
+  })
+})
+
 describe("NodeControl.layerRegistry failures", () => {
   it("dies on a source root that exists but cannot be scanned", async () => {
     const broken = await mkdtemp(join(tmpdir(), "flows-cli-broken-"))
