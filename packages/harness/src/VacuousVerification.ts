@@ -1,6 +1,42 @@
 /**
  * The proof that was already true before anything changed.
  *
+ * **This control is not wired into `CellTurn`. Nothing in a production run
+ * reads it, and no run is told anything by it.** The module, this suite and
+ * `AgentEvent.VacuousVerificationObserved` are kept intact so it can be
+ * measured on its own, in its own wave, against the contract text r92
+ * measured. Everything below describes what it does when an arm turns it on.
+ *
+ * It was live for exactly one wave. `fullbench/reports/rerun-r93.md` §1 reads
+ * the result off the 45 journals, and the reason it is off is that the wave
+ * cannot price it:
+ *
+ * - It fired **twice in 45 journals**, and on neither of the instances the
+ *   diagnosis or the replay predicted. `django__django-14351`, the run it was
+ *   written for, resolved that wave with **no observation on its journal at
+ *   all** — so the row it was built to close was closed by something else, and
+ *   two prompt rules landed in the same round.
+ * - `sympy__sympy-13878` is the firing that worked: told at frame 1 that its
+ *   stored check was already green, the run replaced it, spent seventeen more
+ *   frames on a different proof, and resolved — cheaper and in fewer frames
+ *   than any earlier wave.
+ * - `django__django-15732` is the firing that did not. The observation landed
+ *   on frame 7, which is the frame that made the correct edit. On frame 8 the
+ *   run made a second edit that rewrote the enclosing block and restored the
+ *   first edit's text **byte for byte**. Both edits reported `mutated: true`
+ *   on an `observed` basis, the final tree equalled the base, and the captured
+ *   diff was zero bytes. The instance had resolved in r90, r91 and r92; it is
+ *   the wave's only empty patch.
+ *
+ * Nothing in this module's contract asks a run to revert, and one instance is
+ * not a mechanism. But it is the first evidence that a fact delivered on the
+ * `invalidProbe` channel can be read by a run as an instruction to retreat,
+ * and the one consequential firing in the wave preceded the wave's only
+ * revert-to-empty-patch. Two firings is not a rate. Turning this back on is a
+ * wave of its own — this control alone, on r92's contract text, with
+ * `django__django-15732` and `sympy__sympy-13878` as the rows to read — and
+ * not a change that rides along with another.
+ *
  * A run is asked to store the check it verified with as
  * `state.verification: { flow, input }` and to re-run that exact check after
  * its edit. Nothing in that rule says the check ever failed. A run may pick a
