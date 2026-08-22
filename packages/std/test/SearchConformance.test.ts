@@ -62,6 +62,12 @@ beforeAll(() => {
   file("globs/.hidden/h.ts", "")
   file("globs/é.ts", "")
   file("globs/😀.ts", "")
+  file(
+    "symbols/mod.py",
+    "class Widget:\n    def widen(self, value):\n        needle = value\n        return needle\n\n\ndef other():\n    pass\n"
+  )
+  file("symbols/plain.txt", "needle at top level\n")
+  file("budget/many.txt", "one\nneedle a\nthree\nfour\nneedle b\nsix\n")
   file("counted/one.txt", "counted needle\n")
   file("counted/two.txt", "nothing here\n")
   file("counted/three.txt", "nothing here\n")
@@ -142,11 +148,20 @@ for (const [peer, implementation] of peers) {
       })
       expect(result).toEqual({
         matches: [
-          { file: join(root, "src/a.ts"), line: 1, text: "intro", kind: "context" },
-          { file: join(root, "src/a.ts"), line: 2, text: "Needle one", kind: "match" },
-          { file: join(root, "src/a.ts"), line: 3, text: "context after", kind: "context" },
-          { file: join(root, "src/nested/b.ts"), line: 1, text: "needle b", kind: "match" },
-          { file: join(root, "src/nested/b.ts"), line: 2, text: "more", kind: "context" }
+          {
+            file: join(root, "src/a.ts"),
+            line: 2,
+            text: "Needle one",
+            before: [{ line: 1, text: "intro" }],
+            after: [{ line: 3, text: "context after" }]
+          },
+          {
+            file: join(root, "src/nested/b.ts"),
+            line: 1,
+            text: "needle b",
+            before: [],
+            after: [{ line: 2, text: "more" }]
+          }
         ],
         files: [],
         filesSearched: 2,
@@ -180,14 +195,14 @@ for (const [peer, implementation] of peers) {
       const unicode = await grep({ pattern: "^.$", root: join(root, "edge/unicode.txt") })
       const invalidUtf8 = await grep({ pattern: "needle", root: join(root, "edge/invalid-utf8.txt") })
       expect(crlf.matches).toEqual([
-        { file: join(root, "edge/crlf.txt"), line: 1, text: "foo", kind: "match" }
+        { file: join(root, "edge/crlf.txt"), line: 1, text: "foo", before: [], after: [] }
       ])
       expect(unicode.matches.map(({ line, text }) => ({ line, text }))).toEqual([
         { line: 1, text: "é" },
         { line: 2, text: "😀" }
       ])
       expect(invalidUtf8.matches).toEqual([
-        { file: join(root, "edge/invalid-utf8.txt"), line: 1, text: "needle �", kind: "match" }
+        { file: join(root, "edge/invalid-utf8.txt"), line: 1, text: "needle �", before: [], after: [] }
       ])
     })
 
@@ -199,7 +214,7 @@ for (const [peer, implementation] of peers) {
       )))
       expect(directory).toEqual({
         matches: [
-          { file: join(root, "edge/binary/text.txt"), line: 1, text: "needle text", kind: "match" }
+          { file: join(root, "edge/binary/text.txt"), line: 1, text: "needle text", before: [], after: [] }
         ],
         files: [],
         filesSearched: 2,
@@ -221,7 +236,7 @@ for (const [peer, implementation] of peers) {
       const result = await grep({ pattern: "needle", root: join(root, "src"), globs: ["*.ts"], limit: 1 })
       expect(result).toMatchObject({ truncated: true })
       expect(result.matches).toHaveLength(1)
-      expect(result.notice).toBe("Showing 1 of 3 lines; output was truncated.")
+      expect(result.notice).toBe("Showing 1 of 3 matches; output was truncated.")
     })
 
     it("keeps hidden search opt-in and fixed skip roots explicit", async () => {
@@ -420,6 +435,43 @@ for (const [peer, implementation] of peers) {
         code: "invalid_input",
         message: "Invalid ripgrep options: --max-count must be at least 1"
       })
+    })
+
+    it("spends the limit on matches and never drops a hit to fit its context", async () => {
+      const clipped = await grep({ pattern: "needle", root: join(root, "budget"), context: 2, limit: 1 })
+      const whole = await grep({ pattern: "needle", root: join(root, "budget"), context: 2 })
+      expect(clipped.matches).toEqual([{
+        file: join(root, "budget/many.txt"),
+        line: 2,
+        text: "needle a",
+        before: [{ line: 1, text: "one" }],
+        after: [{ line: 3, text: "three" }]
+      }])
+      expect(clipped.truncated).toBe(true)
+      expect(clipped.notice).toBe("Showing 1 of 2 matches; output was truncated.")
+      expect(whole.matches.map((match) => match.line)).toEqual([2, 5])
+      // Every context line the search selected belongs to exactly one hit.
+      expect(whole.matches.flatMap((match) => [...match.before, ...match.after].map((line) => line.line)))
+        .toEqual([1, 3, 4, 6])
+    })
+
+    it("reports the definition a hit sits in, and omits it on request", async () => {
+      const python = await grep({ pattern: "needle", root: join(root, "symbols"), globs: ["*.py"] })
+      const topLevel = await grep({ pattern: "needle", root: join(root, "symbols"), globs: ["*.txt"] })
+      const without = await grep({ pattern: "needle", root: join(root, "symbols"), globs: ["*.py"], symbols: false })
+      expect(python.matches[0]?.symbol).toEqual({ kind: "def", name: "widen", startLine: 2, endLine: 4 })
+      expect(topLevel.matches[0]?.symbol).toBeUndefined()
+      expect(without.matches[0]?.symbol).toBeUndefined()
+    })
+
+    it("retries a metacharacter pattern as a literal and flags that it did", async () => {
+      const retried = await grep({ pattern: "widen(self, value)", root: join(root, "symbols"), globs: ["*.py"] })
+      const absent = await grep({ pattern: "absent(x)", root: join(root, "symbols") })
+      expect(retried.matches.map((match) => match.line)).toEqual([2])
+      expect(retried.retriedAsLiteral).toBe(true)
+      expect(retried.notice).toContain("fixedStrings: true")
+      expect(absent.matches).toEqual([])
+      expect(absent.retriedAsLiteral).toBeUndefined()
     })
 
     it("returns clean empty results and a typed missing-root failure", async () => {

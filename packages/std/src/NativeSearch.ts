@@ -8,6 +8,7 @@ import * as Path from "@smthrs/kernel/Path"
 import { type Context, Effect, Layer, Stream } from "effect"
 import * as FileSystem from "effect/FileSystem"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
+import * as Grouping from "./internal/Grouping.ts"
 import * as Contract from "./internal/SearchContract.ts"
 import { notice, truncateBytes } from "./internal/Text.ts"
 import * as Walk from "./internal/Walk.ts"
@@ -230,8 +231,19 @@ const grep = (
     if (!sawSummary) return yield* Effect.fail(malformedJson())
     for (const file of binaryFiles) files.delete(file)
     const visibleLines = lines.filter((line) => !binaryFiles.has(line.file)).sort(pathOrder)
-    const entries = input.filesWithMatches ? [...files].sort() : visibleLines
+    const grouped = input.filesWithMatches ? [] : Grouping.group(visibleLines)
+    const entries = input.filesWithMatches ? [...files].sort() : grouped
     const truncated = entries.length > input.limit
+    const shown = grouped.slice(0, input.limit)
+    // `rg` reports lines, not files, so the enclosing definition costs one read
+    // of each file whose hits survived the limit — never one per file searched.
+    const contents = new Map<string, ReadonlyArray<string>>()
+    if (input.symbols) {
+      for (const file of new Set(shown.map((match) => match.file))) {
+        const bytes = yield* Effect.orElseSucceed(fileSystem.readFile(file), () => undefined)
+        if (bytes !== undefined) contents.set(file, Grouping.sourceLines(new TextDecoder().decode(bytes)))
+      }
+    }
     const unsatisfiable = entries.length > 0 ? undefined : yield* Contract.unsatisfiableNotice({
       fileSystem,
       path,
@@ -240,12 +252,14 @@ const grep = (
       hidden: input.hidden
     })
     return {
-      matches: input.filesWithMatches ? [] : visibleLines.slice(0, input.limit),
+      matches: Grouping.annotate(shown, contents),
       files: input.filesWithMatches ? [...files].sort().slice(0, input.limit) : [],
       filesSearched: nulSeparated(listingResult.stdout).length,
       skippedBinary: binaryFiles.size,
       truncated,
-      ...(truncated ? { notice: notice(input.filesWithMatches ? "files" : "lines", input.limit, entries.length) } : {}),
+      ...(truncated
+        ? { notice: notice(input.filesWithMatches ? "files" : "matches", input.limit, entries.length) }
+        : {}),
       ...(unsatisfiable === undefined ? {} : { notice: unsatisfiable })
     }
   })

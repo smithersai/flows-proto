@@ -6,6 +6,7 @@
 import * as Path from "@smthrs/kernel/Path"
 import { type Context, Effect, Layer } from "effect"
 import * as FileSystem from "effect/FileSystem"
+import * as Grouping from "./internal/Grouping.ts"
 import * as Contract from "./internal/SearchContract.ts"
 import { notice, truncateBytes } from "./internal/Text.ts"
 import * as Walk from "./internal/Walk.ts"
@@ -146,6 +147,7 @@ const grep = (
     const regex = Contract.expression(input.pattern, input.fixedStrings, insensitive)
     const output: Array<Search.GrepLine> = []
     const matchingFiles: Array<string> = []
+    const contents = new Map<string, ReadonlyArray<string>>()
     let filesSearched = 0
     let skippedBinary = 0
 
@@ -171,8 +173,7 @@ const grep = (
         continue
       }
       const content = new TextDecoder().decode(bytes)
-      const lines = content.length === 0 ? [] : content.split(/\r?\n/)
-      if (content.endsWith("\n")) lines.pop()
+      const lines = Grouping.sourceLines(content)
       const matched: Array<number> = []
       for (let index = 0; index < lines.length; index++) {
         if (input.maxCount !== undefined && matched.length >= input.maxCount) break
@@ -182,6 +183,7 @@ const grep = (
       if (matched.length === 0) continue
       matchingFiles.push(file)
       if (input.filesWithMatches) continue
+      if (input.symbols) contents.set(file, lines)
       const selected = new Set<number>()
       for (const index of matched) {
         for (
@@ -203,9 +205,10 @@ const grep = (
       }
     }
 
-    const entries = input.filesWithMatches ? matchingFiles : output
+    const grouped = input.filesWithMatches ? [] : Grouping.group(output)
+    const entries = input.filesWithMatches ? matchingFiles : grouped
     const truncated = entries.length > input.limit
-    const shownMatches = input.filesWithMatches ? [] : output.slice(0, input.limit)
+    const shownMatches = Grouping.annotate(grouped.slice(0, input.limit), contents)
     const shownFiles = input.filesWithMatches ? matchingFiles.slice(0, input.limit) : []
     const unsatisfiable = entries.length > 0 ? undefined : yield* Contract.unsatisfiableNotice({
       fileSystem,
@@ -220,7 +223,9 @@ const grep = (
       filesSearched,
       skippedBinary,
       truncated,
-      ...(truncated ? { notice: notice(input.filesWithMatches ? "files" : "lines", input.limit, entries.length) } : {}),
+      ...(truncated
+        ? { notice: notice(input.filesWithMatches ? "files" : "matches", input.limit, entries.length) }
+        : {}),
       ...(unsatisfiable === undefined ? {} : { notice: unsatisfiable })
     }
   })

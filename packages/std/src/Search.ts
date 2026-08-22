@@ -29,11 +29,12 @@ export interface GrepInput {
   readonly maxCount?: number | undefined
   readonly filesWithMatches: boolean
   readonly hidden: boolean
+  readonly symbols: boolean
   readonly limit: number
 }
 
 /**
- * One matching or context line.
+ * One matching or context line, as a peer produces it before grouping.
  *
  * @category models
  * @since 0.1.0
@@ -46,13 +47,53 @@ export interface GrepLine {
 }
 
 /**
+ * One context line carried inside the match it belongs to.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface ContextLine {
+  readonly line: number
+  readonly text: string
+}
+
+/**
+ * The definition enclosing a hit, when the file's shape says so plainly.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface Symbol {
+  readonly kind: string
+  readonly name: string
+  readonly startLine: number
+  readonly endLine: number
+}
+
+/**
+ * One hit: the matching line, the context that belongs to it, and the
+ * definition it sits in.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface GrepMatch {
+  readonly file: string
+  readonly line: number
+  readonly text: string
+  readonly before: ReadonlyArray<ContextLine>
+  readonly after: ReadonlyArray<ContextLine>
+  readonly symbol?: Symbol | undefined
+}
+
+/**
  * Normalized grep output.
  *
  * @category models
  * @since 0.1.0
  */
 export interface GrepOutput {
-  readonly matches: ReadonlyArray<GrepLine>
+  readonly matches: ReadonlyArray<GrepMatch>
   readonly files: ReadonlyArray<string>
   readonly filesSearched: number
   readonly skippedBinary: number
