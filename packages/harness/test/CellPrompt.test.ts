@@ -503,3 +503,45 @@ describe("cellPrompt", () => {
       .toBe("25a1c933ad18e979fe4282848edee5987b61783f939ac72ff45fee2b6655e8c5")
   })
 })
+
+describe("the repl contract", () => {
+  const replText = () => CellPrompt.make({}, {}, "repl").find((section) => section.id === "cell-contract")?.text ?? ""
+
+  it("is the shorter of the two arms, and by a stated amount", () => {
+    // The arm exists to be measured against the filing one, and a teaching
+    // change is the most expensive kind this harness has: r91 grew the filing
+    // contract from 8,197 to 11,312 characters and lost five verdicts for it.
+    // So the REPL text gets the same treatment the filing text gets — a pinned
+    // length, so that changing it is a decision somebody made rather than
+    // something that happened.
+    expect(replText()).toHaveLength(7_711)
+    expect(replText().length).toBeLessThan(contractText().length)
+  })
+
+  it("teaches none of the filing mode's mechanics", () => {
+    // The REPL has no returned transition, no store to file into, and no
+    // `render`/`recall` pair, so a contract that still named any of them would
+    // be teaching a mechanism the realm does not have. This is the assertion
+    // that keeps the two texts from converging by accident.
+    for (
+      const absent of [
+        /\bctx\.state\b/,
+        /\bstate\b/i,
+        /\brender\b/i,
+        /\brecall\b/i,
+        /\bmanifest\b/i,
+        /\bintent\b/i,
+        /\btransition\b/i,
+        /async function/i
+      ]
+    ) {
+      expect(replText()).not.toMatch(absent)
+    }
+  })
+
+  it("teaches the three calls that replace the returned transition", () => {
+    for (const named of ["ctx.done(output)", "ctx.park(reason, message)", "ctx.justify(", "console.log"]) {
+      expect(replText()).toContain(named)
+    }
+  })
+})

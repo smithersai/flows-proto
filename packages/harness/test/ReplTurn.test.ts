@@ -447,4 +447,68 @@ describe("CellTurn repl durability", () => {
     expect(new Set(kept.executed).size).toBe(kept.executed.length)
     expect(kept.executed).toEqual(unkilled.executed)
   })
+
+  /**
+   * The same proof over the paths a happy run never takes.
+   *
+   * A restore is only worth the name if it reproduces the frames that went
+   * wrong, because those are the frames whose effect on the realm is least
+   * obvious: a cell that mutates a name an earlier cell bound and then throws
+   * leaves the mutation and loses nothing else, a cell that does not parse
+   * never reaches the realm at all, and both change the counters the next
+   * prompt is built from.
+   */
+  const rough: ScriptedModel.Script = [
+    emits(`var seen = await ctx.call("fs/list", { path: "src" })\nvar log = [seen.ran]\nconsole.log("first", log)`),
+    emits(
+      `log.push("mutated")\nvar half = await ctx.call("fs/list", { path: "src/half" })\nlog.push(half.ran)\nundefinedName.reach()`
+    ),
+    emits(`console.log("log survived as", log)`),
+    emits(`var broken = (`),
+    emits(`var recovered = log.join("|")\nconsole.log(recovered)`),
+    emits(`ctx.done("rough run ends at " + recovered)`)
+  ]
+
+  it("reproduces a throw, a mutation and an unparseable cell across a restore", async () => {
+    const unkilled = journal()
+    const control = await run({ script: rough, journal: unkilled, state: state({ maxFrames: 8 }) })
+    const kept = journal()
+    const killed = await run({ script: rough, journal: kept, state: state({ maxFrames: 8 }), killAfterCells: 4 })
+    const restored = await run({ script: rough, journal: kept, state: state({ maxFrames: 8 }) })
+
+    // The control really did take every rough path: a throw, and a cell that
+    // never parsed and was re-asked inside its own frame.
+    expect(of(control.events, "cell-settled").map((event) => event.outcome._tag))
+      .toEqual(["settled", "raised", "settled", "settled", "settled"])
+    expect(of(control.events, "cell-rejected-in-frame")).toHaveLength(1)
+    expect(killed.events.filter((event) => event._tag === "resolved")).toHaveLength(0)
+
+    // Every prompt after the kill, not only the last: the mutation the throwing
+    // cell made is in the realm, the throw's own notice is in the transcript,
+    // and the unparseable cell's re-ask is in the frame it was asked in.
+    for (const frame of [4, 5]) {
+      expect(conversation(restored.model.recorder.requests[frame]))
+        .toEqual(conversation(control.model.recorder.requests[frame]))
+      expect(frameBlock(restored.model.recorder.requests[frame]))
+        .toEqual(frameBlock(control.model.recorder.requests[frame]))
+    }
+    expect(of(restored.events, "cell-printed").map((event) => event.text))
+      .toEqual(of(control.events, "cell-printed").map((event) => event.text))
+    expect(of(restored.events, "resolved")[0]?.message.content)
+      .toEqual(of(control.events, "resolved")[0]?.message.content)
+
+    // The mutation is the thing at risk: `log` was bound in frame 0, appended
+    // to in a frame that threw after appending, and read in frame 2. A realm
+    // rebuilt by re-execution carries all three, and the frame that read it
+    // back reads the same array on both runs.
+    expect(conversation(control.model.recorder.requests[3])).toContain(`log survived as [1,"mutated",2]`)
+    expect(conversation(restored.model.recorder.requests[3]))
+      .toEqual(conversation(control.model.recorder.requests[3]))
+
+    // The call the throwing cell had already settled before it threw is a
+    // recorded boundary like any other, so the restore is served it rather than
+    // running it again.
+    expect(new Set(kept.executed).size).toBe(kept.executed.length)
+    expect(kept.executed).toEqual(unkilled.executed)
+  })
 })
