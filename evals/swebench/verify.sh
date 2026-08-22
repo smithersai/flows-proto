@@ -36,14 +36,22 @@
 # lane freeing another's lock — because a defect there is silent until two
 # multi-gigabyte extractions are already running on one disk.
 #
+# The grader's two rewrites of the official evaluator are checked as well: what
+# `SWB_EVAL_EXPORTS` puts inside `eval.sh` and where, and the scoped image
+# cleanup that stops one grading deleting another grading's image — the defect
+# that produced every r90 `eval error`. So is the re-run: the population it takes
+# from the baseline ledger, its scheduler over a stub pipeline, and the
+# baseline-vs-re-run comparison.
+#
 # Spends no tokens, needs no docker, needs no dataset. Run it after touching
 # scorecard.ts, prices.ts, the journal's event shapes, patch capture,
 # lib/subject.mjs, lib/check-liveness.mjs, lib/write-flow.mjs,
 # lib/write-prompt-codex.mjs, lib/run-paths.sh, lib/lock.sh,
 # lib/journal-facts.mjs, select-candidate.mjs, run-matrix.sh, matrix-report.mjs,
-# fullbench.sh, fullbench-report.mjs or anything under lib/fullbench-*. The
-# subject check needs a built CLI: run ./preflight.sh first if
-# `packages/cli/dist` is absent.
+# fullbench.sh, fullbench-report.mjs, lib/grade.py, lib/httpbin.sh,
+# lib/rerun-queue.mjs, run-45.sh, compare-runs.mjs, regrade.sh or anything under
+# lib/fullbench-*. The subject check needs a built CLI: run ./preflight.sh first
+# if `packages/cli/dist` is absent.
 set -eu
 S="$(cd "$(dirname "$0")" && pwd)"
 
@@ -113,3 +121,19 @@ node "$S/fixtures/check-fullbench.mjs"
 
 echo "== the analysis bundle, and what it withholds"
 node "$S/fixtures/check-trace-bundle.mjs"
+
+echo "== what the grader exports inside the eval script"
+if [ -x "$S/.venv-swb/bin/python" ]; then
+  "$S/.venv-swb/bin/python" "$S/fixtures/check-eval-exports.py"
+else
+  echo "  skipped: no evaluator venv at $S/.venv-swb — run ./bootstrap.sh first"
+fi
+
+echo "== the baseline-vs-rerun comparison"
+node "$S/fixtures/check-compare-runs.mjs"
+
+echo "== the re-run's instance list and knobs"
+node "$S/fixtures/check-run-45.mjs"
+
+echo "== the two-arm scoreboard"
+node "$S/fixtures/check-compare-arms.mjs"

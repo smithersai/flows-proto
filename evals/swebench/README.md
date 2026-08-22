@@ -40,6 +40,10 @@ CLI wrapper, and the evaluator environment with it.
 | `fullbench-dryrun.sh`      | Proves that driver against real docker, with no model spend          |
 | `codex-backfill.sh`        | One codex attempt on every instance the full benchmark graded        |
 | `codex-backfill-dryrun.sh` | Proves the backfill against real docker, with no model spend         |
+| `regrade.sh`               | Re-grades a collected patch when the rig, not the patch, was at fault |
+| `lib/httpbin.sh`           | Decides and proves the httpbin the psf/requests family is graded against |
+| `run-45.sh`                | The re-run: the baseline's 45 instances again, on today's harness    |
+| `compare-runs.mjs`         | Baseline vs re-run — resolved, dollars, wall, per-instance deltas    |
 | `lib/trace-bundle.mjs`     | One instance's two traces and two bills, as the brief for an analyst |
 | `regen-patch.sh`           | Re-derives one patch from a surviving workspace                      |
 | `scorecard.ts`             | Quality + speed + cost, per instance and in aggregate                |
@@ -413,13 +417,150 @@ It writes `preds-<run-id>.json` and the evaluator's own
 the report — see the script). `SWB_CACHE_LEVEL` sets `--cache_level` (default
 `env`, which deletes each official instance image once it is graded); use
 `instance` for a supplementary grading that should leave the image cache as it
-found it.
+found it. `SWB_EVAL_TIMEOUT` sets the evaluator's per-instance timeout (default
+1800 s, the official one). One repository needs more: `psf/requests`'
+`test_connection_error` is hardcoded to `http://httpbin.org:1`, whose SYN packets
+are dropped rather than refused, so it sits in TCP retransmit against every A
+record the name resolves to before raising the `ConnectionError` it asserts —
+over 17 minutes on 2026-08-21, from a suite whose other 142 tests take seconds.
+It is an environment cost, identical for both arms and for any patch.
 
 Three overrides exist for the best-of-n matrix, where one instance has n patches
 and the evaluator's predictions can only ever be keyed by instance id:
 `SWB_PATCH_SUFFIX=-r3` grades `<id>-r3.patch` as `<id>`'s prediction,
 `SWB_PATCHES=selected` grades a different directory, and `SWB_MODEL_NAME`
 changes the name the report is filed under. `grade-matrix.sh` drives all three.
+
+### Two rig faults the r90 benchmark found, and what closes them
+
+A verdict is a statement about a patch **and** about the rig that graded it. The
+r90 full benchmark produced six verdicts that were statements about the rig
+alone, and both causes are now closed in `lib/grade.py`. The evaluator's own
+code, dataset and grading logic still run untouched; what changed is what the
+rig does around it.
+
+**One grading deleted another grading's image.** The evaluator's post-run
+`clean_images` removes, at `--cache_level env`, every `sweb.eval.*` image that
+was not on the daemon when *that* process started — not only the instance it
+graded. This rig runs the benchmark as concurrent per-instance workers; grading
+is serialized by `.grade-lock` but pulling is not, so worker B's `docker pull`
+routinely lands inside worker A's evaluator process, and A deletes it on the way
+out. B then grades against nothing and the ledger records `eval error`:
+
+```
+docker.errors.ImageNotFound: 404 ... No such image: sweb.eval.x86_64.django_1776_django-12741
+```
+
+That is verbatim what `django__django-12741`, `django__django-13406`,
+`django__django-15380` and `matplotlib__matplotlib-22865` recorded, and it
+reproduced live on `astropy__astropy-7166` during the 2026-08-21 codex backfill.
+`lib/grade.py` now scopes the cleanup to the instances the invocation was asked
+to grade, by adding every other instance's eval image to the evaluator's
+"existed before" set. It removes no image the evaluator would have kept, and
+keeps none it would have removed, for the instances it graded.
+
+**The psf/requests family was graded against a dead httpbin.** Those tests are
+network tests: `test_requests.py` reads
+`HTTPBIN = os.environ.get('HTTPBIN_URL', 'http://httpbin.org/')`, and roughly a
+third of the dataset's graded identifiers for `psf__requests-1766` and
+`psf__requests-2317` route through it. On 2026-08-21 the public service answered
+**503** — `assert 503 == 200` in the logs, not a connection error — failing 8 of
+8 and 6 of 6 `FAIL_TO_PASS` tests and 34 and 22 `PASS_TO_PASS` tests. A
+`PASS_TO_PASS` test failing indicts the environment by construction: it passed on
+the unmodified checkout when the dataset was built.
+
+So a grading that includes any `psf/requests` instance now begins with
+`lib/httpbin.sh resolve`, which states which service it will use:
+
+| in order | what it means |
+| --- | --- |
+| `SWB_HTTPBIN_URL` | an endpoint the operator named; their rig, their call |
+| the public `httpbin.org`, when it answers 200 over **both** http and https | the service the dataset's tests name and the official evaluation uses |
+| the rig's own `kennethreitz/httpbin` container, on the same docker bridge the evaluator uses | the deterministic fallback, **degraded** and loudly labelled |
+
+The chosen URL is exported as `HTTPBIN_URL` inside that instance's `eval.sh`,
+after `set -uxo pipefail` and before the evaluator's first command, so it is
+visible in the archived `eval.sh` and in `test_output.txt`. It applies to
+`psf/requests` only and to whichever harness produced the patch, so both arms
+are graded under one rig.
+
+The fallback is labelled degraded for a measured reason. The suite asserts both
+schemes against the same host:
+
+```python
+def test_mixed_case_scheme_acceptable(self):
+    parts = urlparse(httpbin('get'))
+    for scheme in ['http://', 'HTTP://', ..., 'https://', 'HTTPS://', ...]:
+        assert s.send(requests.Request('GET', scheme + parts.netloc + parts.path).prepare()).status_code == 200
+```
+
+and `requests` verifies certificates. A container on a private bridge address
+cannot present a certificate this checkout's `requests` trusts, and making the
+graded container trust one would be a change to the grading environment far
+larger than the outage it works around. Measured on `psf__requests-1766`: against
+the 503 outage, 0 of 6 `FAIL_TO_PASS` and 57 of 79 `PASS_TO_PASS`; against the
+local fallback, **6 of 6 and 78 of 79**, the one failure being
+`test_mixed_case_scheme_acceptable`. So the fallback recovers everything that
+speaks `http://` and cannot recover the rest — which is why the public service is
+preferred whenever it is whole, and why an `unresolved` produced under the
+fallback is reported as a rig result rather than a patch result.
+
+`SWB_NO_HTTPBIN=1` skips the check entirely and lets the suite use its own
+default, which is what r90 did.
+
+### What re-grading r90 recovered, 2026-08-22
+
+Every one of the six was the rig. The agent side is untouched — same patches,
+same journals, no second attempt — and the flows baseline the re-run is measured
+against is **35/45 resolved, not 29/45**, at the same $37.84 and 17,106 s.
+
+| instance | r90 verdict | why | re-graded |
+| --- | --- | --- | --- |
+| `django__django-12741` | eval error | image deleted mid-flight | **resolved** |
+| `django__django-13406` | eval error | image deleted mid-flight | **resolved** |
+| `django__django-15380` | eval error | image deleted mid-flight | **resolved** |
+| `matplotlib__matplotlib-22865` | eval error | image deleted mid-flight | **resolved** |
+| `psf__requests-1766` | unresolved | httpbin 503 | **resolved** |
+| `psf__requests-2317` | unresolved | httpbin 503 | **resolved** |
+
+`sphinx-doc__sphinx-7590` stays `empty patch`: the agent produced no diff, which
+is a fact about the agent and is not re-gradeable.
+
+The codex arm was completed in the same session — 16 instances back filled to
+45/45 — and its own seven `eval error` verdicts, from the same image-cleanup
+race, re-graded to `resolved`. `matplotlib__matplotlib-22865` is worth naming:
+`analysis/PROGRAM.md` predicted it would stay failed because "the run never
+completed", and the patch its 36-frame run left on disk in fact grades resolved.
+The prediction was wrong in our favour, and both arms resolve it.
+
+### Re-grading a verdict the rig got wrong
+
+```sh
+./regrade.sh --reason "<why the first verdict was the rig's fault>" <instance_id> ...
+HARNESS=codex ./regrade.sh --reason "..." <instance_id> ...
+```
+
+`regrade.sh` re-grades an **already-collected** patch and cannot become a second
+attempt: it runs no agent, spends no tokens, reads only the patch archived under
+`fullbench/patches/`, refuses an instance with no patch on disk, and refuses an
+empty one ("the agent changed nothing" is a fact about the agent, not the rig).
+`--reason` is required — a verdict that changed with no recorded reason is not
+evidence.
+
+Per instance it claims the id, gates on disk, pulls the image if it is not
+already local, moves the superseded evaluator log directory aside to
+`<id>.superseded-<epoch>` (the evaluator skips any instance that already has a
+`report.json` under the run id, and the old `test_output.txt` is the evidence for
+the re-grade, so it has to move and must not be deleted), grades under the shared
+`.grade-lock`, appends a fresh `graded` row carrying `regrade` and `supersedes`,
+and deletes the image only if this call pulled it. The ledger stays append-only:
+the fold takes the last row, so the scoreboard reads the new verdict while the
+row it replaced is still in the file.
+
+Two instances of one image are one image, so a re-grade refuses an instance the
+*other* arm is running right now — on 2026-08-21 a re-grade and a codex backfill
+overlapped on `django__django-13406` and `django__django-15380` and each deleted
+the image the other was about to grade against.
 
 ## Best-of-n
 
@@ -1088,6 +1229,37 @@ harnesses measured over different populations — which is exactly what makes tw
 rates incomparable. Every ledger row carries `flowsVerdict` and
 `flowsEvalError`, `--flagged` lists them, and `--table` marks them.
 
+### The scoreboard
+
+```sh
+node compare-arms.mjs        # writes fullbench/arms.md and fullbench/arms.json
+```
+
+`--table` prints one row per instance; `compare-arms.mjs` turns the two ledgers
+into the four-cell table the standing superset goal is stated in — both,
+flows-only, codex-only, neither — so nobody counts by hand again. Two rules make
+it honest, and they are the reason it is a script rather than a paragraph:
+
+- **A verdict that is not a grading is not a verdict.** `eval error` means the
+  evaluator never ran the patch, on whichever side it happened. Those instances
+  are computed *outside* the table, listed by name with the arm that failed, and
+  never counted as a loss — counting one manufactures a codex-only or flows-only
+  win out of a docker fault. `empty patch` is the exception that still counts:
+  the agent finished and changed nothing, which is a fact about the agent.
+- **Coverage is stated before the rate.** "23 of 27 (85 %)" and "23 of 45 (51 %)"
+  share a numerator, and quoting the first without its denominator is how an
+  incomplete arm reads as a better one. Whenever either arm is missing a grading
+  the report marks the superset claim **provisional in both directions**.
+
+As of 2026-08-22 both arms have a real grading on all 45: **both 34, flows-only 1
+(`django__django-14351`), codex-only 6, neither 4** — flows 35/45, codex 40/45.
+The standing superset goal fails on this sample by six instances, which are the
+six `analysis/PROGRAM.md` section 4 diagnoses and the re-run has to close. Two
+caveats travel with the codex column and do not go away: it ran with network
+egress and used it (its `24970` patch came from fetching the merged upstream PR,
+its `7590` fix from the project's later 3.x history), and its dollar cost is not
+derivable from what the CLI publishes.
+
 Per instance, in one process, the same shape `lib/fullbench-instance.sh` uses:
 
 ```
@@ -1235,6 +1407,113 @@ is launched only once both are known to be inside their instances, so "the third
 waits" is a fact about the semaphore rather than about which invocation won a
 race. `busybox` and `hello-world` are pulled and deleted; `alpine` stands in for a
 pinned instance's image and is still present at the end.
+
+## The re-run
+
+`fullbench/analysis/PROGRAM.md` reads 45 instances' traces and ends in eleven
+harness changes, each with a falsifiable prediction about what the **same 45
+instances** would then cost. `run-45.sh` is the measurement those predictions are
+settled against, and `compare-runs.mjs` is the arithmetic that settles them.
+
+```sh
+./preflight.sh                    # pin the subject first; a wave measures the tree
+./run-45.sh                       # detached; ./run-45.sh --status to read it
+node compare-runs.mjs             # baseline vs re-run, once it has finished
+```
+
+### What is held fixed
+
+Everything except the harness, because the comparison is worthless otherwise:
+
+| | r90 baseline | the re-run |
+| --- | --- | --- |
+| instances | 45, seeded draw order | **the same 45**, same order, read out of the baseline ledger |
+| attempts per instance | one | one |
+| per-instance budget | 1200 s | 1200 s |
+| seat | `openai:gpt-5.6-sol` | `openai:gpt-5.6-sol` |
+| journals | archived per instance | archived per instance |
+| testbeds and images | deleted after the verdict | deleted after the verdict |
+| grading | official evaluator, x86_64 images | the same, plus the two rig fixes above |
+| in flight | 2 | 3 |
+
+**The instance list is derived, never typed.** `lib/rerun-queue.mjs` takes the ids
+the baseline ledger actually graded and orders them by the same seeded draw.
+There is no flag that adds or drops one, so a re-run cannot quietly become a
+re-run of an easier set, and a baseline instance the dataset does not contain is
+a refusal rather than a smaller comparison.
+
+**Three in flight rather than two** changes wall-clock scheduling, not what any
+instance is measured at: every instance still gets its own container, its own
+testbed and its own 1200 s budget, and the numbers being compared are
+per-instance. What it does change is disk — three testbeds and three images
+against the same 8 GiB gate — which is why the gate is still there and still
+blocks. `SWB_RERUN_JOBS=2` holds even this fixed.
+
+**The grading rig is fixed on both sides.** `./regrade.sh` has already written the
+corrected verdicts into `fullbench/manifest.jsonl`, so the baseline the re-run is
+compared against is the same rig, not the one that lost six verdicts to its own
+concurrency and to a third party's outage.
+
+It writes its own ledger and archive under `fullbench/rerun-r91/`, carries the
+`r91` index, and grades into the evaluator run id `rerun-r91`. The baseline's
+`fullbench/manifest.jsonl` is never appended to. Resume is the ledger, exactly as
+the full benchmark's is.
+
+### Knobs
+
+| Variable | Default | What it changes |
+| --- | --- | --- |
+| `SWB_RERUN_JOBS` | 3 | instances in flight |
+| `SWB_RERUN_INDEX` | `r91` | the index every artifact carries |
+| `SWB_RERUN_RUN_ID` | `rerun-r91` | the evaluator run id all 45 accumulate into |
+| `SWB_RERUN_BASELINE` | `fullbench/manifest.jsonl` | the ledger the population comes from |
+| `SWB_RERUN_BUDGET_USD` | 60 | cumulative spend gate; the baseline was $37.84 |
+| `SWB_FULLBENCH_BUDGET` | 1200 | per-instance seconds |
+| `SWB_FULLBENCH_MIN_FREE_MIB` | 8192 | the disk gate |
+
+`--limit N` spends one session's worth and leaves the rest queued; `--stop` ends
+a live driver after its in-flight instances finish, and the next start clears the
+marker so a stopped run resumes rather than wedging.
+
+### The comparison
+
+```sh
+node compare-runs.mjs [--baseline f] [--rerun f] [--out dir] [--json]
+```
+
+It reads two ledgers and nothing else — no evaluator report, no journal, no
+clock, no network — and writes `compare.json` and `compare.md` beside the re-run.
+Three things it is careful about:
+
+- **a partial re-run is compared like with like.** Totals cover the instances
+  both ledgers finished, and the baseline's own numbers over that same subset sit
+  beside them, so a re-run 20 instances in is never scored against the baseline's
+  45. The whole-baseline totals are printed too, and labelled.
+- **money is every attempt**, including one a crash replaced, because that is what
+  the invoice says. The fold answers everything else.
+- **wall clock comes in two labelled numbers**: `wallSeconds` is the whole
+  instance (pull, extract, agent, capture) and `agentSeconds` is the journal's own
+  span across the agent's frames. Neither is the wall clock of the run as a whole,
+  which depends on concurrency and is not a property of a harness.
+
+The program's success criteria are answered directly — resolved ≥ 33, cost ≤ $15,
+instance wall ≤ 120 min, no instance over $1.00 or over 20 frames — and are
+reported `pending` until the whole population is in, rather than declared met by
+a favourable prefix. A seventh row is the standing superset rule: **an instance
+the baseline resolved and the re-run did not is a regression**, listed by name,
+however good the totals look.
+
+### Proving both without spending a token
+
+`fixtures/check-run-45.mjs` drives the whole scheduler through
+`SWB_RERUN_INSTANCE_CMD`, a stub that stands in for the per-instance pipeline:
+the derived population, the resume boundary, the concurrency bound (measured from
+the stub's own overlap, not from the configured number), `--limit`, `--stop` and
+resume after it, the budget gate's pause row, and the refusals.
+`fixtures/check-compare-runs.mjs` replays the comparison over synthesised
+ledgers. Both run inside `./verify.sh`, which needs no docker and no dataset. The
+per-instance pipeline itself is `lib/fullbench-instance.sh`, already proved
+against real docker by `./fullbench-dryrun.sh`.
 
 ## Score
 
