@@ -188,9 +188,11 @@ fi
 echo $$ > "$FB/driver.pid"
 
 HEAD_AT_START="$(cd "$S" && git rev-parse HEAD 2>/dev/null || printf 'unknown')"
+# `preflight.sh` writes the fingerprint under `stamp`; the other two spellings
+# are read as well so a pin written by an older preflight still names itself.
 SUBJECT="$(node -e '
   const pin = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
-  process.stdout.write(pin.fingerprint ?? pin.subject ?? "unknown")
+  process.stdout.write(pin.stamp ?? pin.fingerprint ?? pin.subject ?? "unknown")
 ' "$S/.subject.json" 2>/dev/null || printf 'unknown')"
 
 append "$MANIFEST" "$(row --kind header --at "$(now_ms)" --run-id "$RUN_ID" --index "$INDEX" \

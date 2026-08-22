@@ -44,6 +44,7 @@ CLI wrapper, and the evaluator environment with it.
 | `lib/httpbin.sh`           | Decides and proves the httpbin the psf/requests family is graded against |
 | `run-45.sh`                | The re-run: the baseline's 45 instances again, on today's harness    |
 | `compare-runs.mjs`         | Baseline vs re-run — resolved, dollars, wall, per-instance deltas    |
+| `lib/program-evidence.mjs` | What a run's agent actually did, counted off its journals            |
 | `lib/trace-bundle.mjs`     | One instance's two traces and two bills, as the brief for an analyst |
 | `regen-patch.sh`           | Re-derives one patch from a surviving workspace                      |
 | `scorecard.ts`             | Quality + speed + cost, per instance and in aggregate                |
@@ -1502,6 +1503,27 @@ reported `pending` until the whole population is in, rather than declared met by
 a favourable prefix. A seventh row is the standing superset rule: **an instance
 the baseline resolved and the re-run did not is a regression**, listed by name,
 however good the totals look.
+
+### What the agent actually did
+
+```sh
+node lib/program-evidence.mjs <journals-dir> [--json]
+```
+
+The comparison answers what a wave cost. This answers what its agent *did*,
+which is what settles a claim that a harness change acted: `recall` ordinals and
+`render` keys named by a transition, frames that issued no call, frames that
+applied no transition, calls that failed and whether their cell survived them,
+`bash` calls carrying a payload as data against ones composing a shell string,
+`test` calls and which of them asked for the pristine base, failed mutations, and
+the cache rate. Every number is a count of `control.agent.*` events — no clock,
+no network, no detector of its own — so a run's journal is the whole evidence and
+a reading of it cannot drift from what happened. A database a live run is
+mid-write in is reported unreadable rather than guessed at, so it is safe to run
+against a wave still in flight.
+
+`fixtures/check-program-evidence.mjs` pins every count against a synthesised
+journal whose every event is known, inside `./verify.sh`.
 
 ### Proving both without spending a token
 
