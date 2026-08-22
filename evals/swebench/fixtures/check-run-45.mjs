@@ -9,6 +9,9 @@
  * - **the population is derived from the baseline ledger**, in the seeded draw
  *   order, with no flag that could add or drop one — a re-run cannot quietly
  *   become a re-run of an easier set;
+ * - **the lane names one whole measurement** — ledger, archive, artifact index
+ *   and evaluator run id — so a second wave over the same 45 instances is a
+ *   second ledger and never an append to the first;
  * - **the resume boundary is the ledger**, so a driver restarted after a kill
  *   re-runs what did not finish and nothing else;
  * - **concurrency is bounded**, because three testbeds and three images share
@@ -29,7 +32,7 @@
  */
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { read } from "../lib/fullbench-manifest.mjs"
@@ -172,6 +175,7 @@ try {
   const header = ledger.header
   assert.equal(header.runId, "rerun-r91")
   assert.equal(header.index, "r91")
+  assert.equal(header.lane, "r91")
   assert.equal(header.jobs, 3)
   assert.equal(header.instanceBudgetSeconds, 1200)
   assert.equal(header.baseline, baseline)
@@ -279,6 +283,45 @@ try {
     !/already running as pid/.test(driverLog),
     `the detached child refused to start: ${driverLog}`
   )
+
+  // -----------------------------------------------------------------------
+  // The lane. It decides which ledger a wave writes, which index its artifacts
+  // carry and which evaluator run id grades them; all three move together, and
+  // a lane that moved only some of them would grade one wave's patches into
+  // another wave's run id.
+  // -----------------------------------------------------------------------
+  writeFileSync(trace, "")
+  const laned = join(temporary, "fb-lane")
+  const lane = drive(laned, ["--lane", "r92", "--limit", "1"], { SWB_RERUN_JOBS: "1" })
+  assert.equal(lane.status, 0, `${lane.stdout}\n${lane.stderr}`)
+  const laneHeader = read(join(laned, "manifest.jsonl")).header
+  assert.equal(laneHeader.lane, "r92")
+  assert.equal(laneHeader.index, "r92")
+  assert.equal(laneHeader.runId, "rerun-r92")
+
+  // …and the directory it writes, which the header cannot show because the test
+  // above pins it. Named lanes live beside each other under `fullbench/`.
+  const derived = join(root, "fullbench", "rerun-check-run-45")
+  rmSync(derived, { recursive: true, force: true })
+  try {
+    const listed = spawnSync(join(root, "run-45.sh"), ["--lane", "check-run-45", "--list"], {
+      encoding: "utf8",
+      env: { ...process.env, FB_DIR: "", SWB_DATASET: dataset, SWB_RERUN_BASELINE: baseline }
+    })
+    assert.equal(listed.status, 0, listed.stderr)
+    assert.deepEqual(listed.stdout.trim().split("\n").sort(), [...IDS].sort())
+    assert.ok(existsSync(derived), "a named lane did not derive its own directory under fullbench/")
+  } finally {
+    rmSync(derived, { recursive: true, force: true })
+  }
+
+  // A lane is a path component and an evaluator run id at once, so a name that
+  // is neither is refused before it can escape either.
+  for (const bad of ["../escape", "", "a b", "-r92"]) {
+    const refused = drive(join(temporary, "fb-lane-bad"), ["--lane", bad, "--status"])
+    assert.equal(refused.status, 2, `--lane '${bad}' was accepted`)
+    assert.match(refused.stdout + refused.stderr, /--lane must be a name/)
+  }
 
   // -----------------------------------------------------------------------
   // Refusals.
