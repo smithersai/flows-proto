@@ -473,6 +473,13 @@ export const readRun = (databasePath) => {
   }
 
   const printed = prints.filter((print) => print.text.length > 0)
+  // A frame that printed past what the harness keeps says so in its own buffer,
+  // in one of two sentences the sandbox writes. Counting them is how a report
+  // can say whether the print channel was ever the binding constraint, rather
+  // than assuming a 16 KiB ceiling nobody reached was doing work.
+  const elidedFrames = prints.filter((print) =>
+    /further print statements were not kept|print less next time/.test(print.text)
+  ).length
   const printBytes = prints.reduce((total, print) => total + print.text.length, 0)
   const printLines = prints.reduce(
     (total, print) => total + (print.text.length === 0 ? 0 : print.text.split("\n").length),
@@ -492,6 +499,7 @@ export const readRun = (databasePath) => {
     rebindings,
     printedFrames: printed.length,
     silentFrames: prints.length - printed.length,
+    elidedFrames,
     printBytes,
     printLines,
     filedState,
@@ -540,6 +548,7 @@ export const totals = (runs) => {
     rebindings: 0,
     printedFrames: 0,
     silentFrames: 0,
+    elidedFrames: 0,
     printBytes: 0,
     printLines: 0,
     filedState: 0,
@@ -563,6 +572,7 @@ export const totals = (runs) => {
     sum.rebindings += run.rebindings
     sum.printedFrames += run.printedFrames
     sum.silentFrames += run.silentFrames
+    sum.elidedFrames += run.elidedFrames
     sum.printBytes += run.printBytes
     sum.printLines += run.printLines
     sum.filedState += run.filedState
