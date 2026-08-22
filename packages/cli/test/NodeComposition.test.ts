@@ -123,6 +123,22 @@ describe("NodeControl database locations", () => {
   })
 })
 
+describe("NodeControl.cellMode", () => {
+  it("arms the shipped surface unless the host asks for the other one", () => {
+    // The rig selects an arm the way it selects a test runner, and a mistyped
+    // variable can only fail to select the arm — never select a third thing.
+    expect(NodeControl.cellMode({})).toBe("filing")
+    expect(NodeControl.cellMode({ FLOWS_CELL_MODE: "" })).toBe("filing")
+    expect(NodeControl.cellMode({ FLOWS_CELL_MODE: "rebl" })).toBe("filing")
+    expect(NodeControl.cellMode({ FLOWS_CELL_MODE: "filing" })).toBe("filing")
+  })
+
+  it("arms the persistent realm when the host names it, however it is cased", () => {
+    expect(NodeControl.cellMode({ FLOWS_CELL_MODE: "repl" })).toBe("repl")
+    expect(NodeControl.cellMode({ FLOWS_CELL_MODE: "  REPL " })).toBe("repl")
+  })
+})
+
 describe("NodeControl.testRunner", () => {
   it("declares no runner until the host names a command", () => {
     // A `test` flow bound over a declaration that can only refuse is worse than

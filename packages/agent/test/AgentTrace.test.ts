@@ -124,6 +124,10 @@ describe("trace", () => {
             // — journaled for the same reason and read the same way.
             unmovedCap: 1,
             unresolvedCap: 1,
+            // Which authoring surface the run was armed for. The one arming a
+            // grader cannot infer from behaviour, so it is journaled with the
+            // budgets rather than left to be guessed from a run's own shape.
+            cellMode: "filing",
             calls: 64,
             memoryBytes: 134_217_728,
             steps: 1_000,
@@ -317,6 +321,18 @@ describe("trace", () => {
             value: null
           }
         }
+      ],
+      [
+        "cell-printed",
+        // The whole of the REPL mode's context channel. Journaled with the cell
+        // that produced it, so a transcript projection rebuilds a resumed run's
+        // window from the journal rather than by re-running anything.
+        new AgentEvent.CellPrinted({
+          eventType: "flows.harness.cell-printed.v1",
+          cell: cell.digest,
+          text: "found 2"
+        }),
+        { eventType: "control.agent.cell-printed", payload: { cell: cell.digest, text: "found 2" } }
       ],
       [
         "cell-settled",

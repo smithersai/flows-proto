@@ -156,6 +156,15 @@ export interface Options {
    * at medium and resolved four times as many instances).
    */
   readonly reasoningEffort?: ModelRequest.ReasoningEffort | undefined
+  /**
+   * Which authoring surface this executor's runs are armed for.
+   *
+   * Passed straight through to `Agent.Options.cellMode`, whose default is
+   * `filing`. A host selects `repl` per run — the rig reads `FLOWS_CELL_MODE`
+   * beside `FLOWS_TEST_COMMAND` — so the arm is a property of the run and is
+   * journaled with the rest of its discipline.
+   */
+  readonly cellMode?: Cell.Mode | undefined
 }
 
 const sourceId = JournalEvent.SourceId.make("/control/executor")
@@ -224,6 +233,10 @@ export const trace = (
           // needed" from "never armed".
           unmovedCap: event.unmovedCap,
           unresolvedCap: event.unresolvedCap,
+          // Which authoring surface the run was armed for. The one arming a
+          // grader cannot infer from behaviour: a REPL run that binds nothing
+          // and a filing run that files nothing look identical in the events.
+          cellMode: event.cellMode,
           calls: event.calls,
           memoryBytes: event.memoryBytes,
           steps: event.steps,
@@ -268,6 +281,14 @@ export const trace = (
           message: event.result.message,
           value: event.result.value
         }
+      }
+    case "cell-printed":
+      // The whole of the REPL mode's context channel. Journaled with the cell
+      // that produced it so a transcript projection can rebuild a resumed run's
+      // window without re-running anything.
+      return {
+        eventType: "control.agent.cell-printed",
+        payload: { cell: event.cell, text: event.text }
       }
     case "cell-settled":
       return { eventType: "control.agent.cell-settled", payload: { outcome: event.outcome } }
@@ -949,7 +970,8 @@ export const make = (
           narrowingCap: options.narrowingCap,
           unmovedCap: options.unmovedCap,
           unresolvedCap: options.unresolvedCap,
-          approvalChannel: options.approvalChannel ?? false
+          approvalChannel: options.approvalChannel ?? false,
+          cellMode: options.cellMode
         }).pipe(
           Stream.runForEach(record),
           Effect.provide(QuickJSSandbox.layer),
