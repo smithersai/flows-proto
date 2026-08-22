@@ -98,7 +98,7 @@ describe("TestRun", () => {
       TestRun.run({}),
       Layer.merge(host(spawns, [["pytest", { stderr: "Segmentation fault\n", exitCode: 139 }]]), runner)
     ))
-    expect(result).toMatchObject({ parsed: false, passed: 0, failed: [] })
+    expect(result).toMatchObject({ parsed: false, passed: 0, failed: [], tailTruncated: false })
     expect(result.tail).toContain("Segmentation fault")
   })
 

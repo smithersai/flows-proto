@@ -89,6 +89,13 @@ export const Outcome = Schema.Struct({
     description: "Whether the runner's report could be read; when false, tail is all there is"
   }),
   tail: Schema.String.annotate({ description: "The end of the runner's combined output" }),
+  // `<field>Truncated` beside `<field>` is the wire convention
+  // `@smthrs/harness/TruncatedOutput` reads to refuse a later write of these
+  // exact bytes. A tail written over a file replaces it with its own end.
+  tailTruncated: Schema.Boolean.annotate({
+    description: "Whether the runner printed more than tail carries, leaving tail a fragment that must not be written"
+  }),
+  tailDroppedBytes: Schema.Number.annotate({ description: "UTF-8 bytes omitted from the start of tail" }),
   invalidProbe: Schema.optional(Probe.InvalidProbe)
 })
 
@@ -220,6 +227,8 @@ const execute = (
       failed: report.failed,
       parsed: report.parsed,
       tail: tail.text,
+      tailTruncated: tail.truncated,
+      tailDroppedBytes: tail.droppedBytes,
       ...(probe === undefined ? {} : { invalidProbe: probe })
     }
   })
