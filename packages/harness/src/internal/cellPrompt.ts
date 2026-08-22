@@ -38,6 +38,31 @@
  * The environment facts a host can compute (change 9) stay in full: they cost
  * the agent nothing to read and removed a whole class of archaeology.
  *
+ * Two rules stand above that revert, and each of them is here because a
+ * measurement asked for it by name.
+ *
+ * Rule 9 is change 2(f) — the minimal-edit rule — in r91's own wording, put
+ * back alone. `rerun-r92.md` records the one verdict the reverted doctrine was
+ * worth: `astropy__astropy-14369` resolved under r91 in 5 frames and failed
+ * under both r90 and r92 in 8, and r92's patch for it is byte-identical to
+ * r90's while r91's differed. That instance is this rule's built-in control —
+ * it is the only row in the 45 whose verdict the rule alone has ever moved — so
+ * the next wave prices one rule instead of four. The rule is 319 characters,
+ * 81 estimated tokens.
+ *
+ * Rule 10 is the same-shape sweep, and it is not part of change 2 at all.
+ * `django__django-13212` fixed 14 of 14 sites in the file it was looking at and
+ * 0 in the gold patch's second file; codex fails the same instance the same
+ * way, so it is not a difference between harnesses but a shape neither one
+ * sweeps for. One line, stated generally — a call shape or a symbol, any
+ * repository, any language — because an instruction naming a benchmark's
+ * language would be tuning rather than teaching. It is 203 characters, 52
+ * estimated tokens.
+ *
+ * Together the two move the contract from 9,193 characters / 2,352 estimated
+ * tokens to 9,715 / 2,483: **+522 characters, +131 estimated tokens**, and the
+ * unit test's ceiling moves with them and by exactly that much.
+ *
  * Each rule below carries the failure it was written against; do not soften one
  * without the trace that says the failure stopped happening, and do not add one
  * without a trace that says teaching — rather than a tool — is the gap.
@@ -124,6 +149,8 @@ The block is the body of an async function. Rules:
 6. The \`state\` you return is the next cell's \`ctx.state\`. Treat it as working memory: store what you learn — file excerpts you plan to edit, check output, decisions — and read it back instead of re-running calls. Every frame opens with a manifest of it — each key's type, size and the frame that wrote it, so you can tell a reading taken before your edit from one taken after — plus the whole JSON while it is small, plus in full whatever keys your last transition named in \`render\`. Every call this run has settled is listed for you as well, with what it asked, what came back, and a \`recall N\` marker while its bytes are still held. Read those instead of re-asking. Nothing is ever cut silently: where bytes are dropped the line says how many and how to get them back. A command becomes evidence only once you have SEEN it fail on the unmodified tree FOR THE RIGHT REASON, which is the bug itself. A command that fails because it names a test, file, module, environment, or program that does not exist reproduces nothing: it fails identically on a broken tree and on a fixed one, so it can never show you that you have won. Results carry \`invalidProbe\` when the flow can tell, but the reading is yours — repair such a probe, by listing the real names first, before you rely on it. Only a check that failed for the right reason is stored as \`verification: { flow, input, outcome }\`, and you then reuse its exact \`flow\` and \`input\` after edits rather than deriving or broadening another command.
 7. Act, then verify: read broadly in ONE cell, store findings in \`state\`, then commit to an edit. A run may be stopped for spending too many consecutive frames that write nothing, and when that budget is close the harness says so and requires either an edit or a \`justification\` on your next transition. An edit answers with the hunk it applied, raw and correctly indented: read it in the same cell, because a bad edit costs one glance there and a whole investigation anywhere else. Then put each edited file through whatever language-aware checker \`ctx.flows\` and this image actually offer (a compiler, ruff, eslint/tsc — through the shell flow); undefined-name findings are advisory — fix them before any broad suite, and where none exists record that and continue rather than guessing with regex.
 8. Prove it before you claim it, in as few frames as you can. ONE cell may run the baseline check, read its output, make the edit, and re-run the identical check — a cell can make many calls, and that is the point of writing code instead of emitting one tool call per turn. A baseline you have watched fail is what buys that: hold one and this same cell may complete, so reach for it first. It is not a precondition for writing, though — when the command will not bootstrap, edit on the diagnosis you have and establish the proof afterwards rather than spending the run on the probe. After editing, reuse that identical command and store it in \`state.verification\`. Complete only once you have SEEN that identical command pass in this run, and name it in \`output\`. A broad suite that was already green proves no bug changed, and a probe that could not find what it named proves nothing at all.
+9. Fix what the reproduction implicates, and stop; the rules beside it are not yours to restructure. When the change adds behaviour across an enumerable set of sites, your probe covers every site the edit touches, and one lookup of the changed symbol's consumers belongs in the cell that locates, not in a later frame.
+10. When your fix changes a call shape or a symbol, search the whole repository for that shape rather than the file you edited, and treat every hit as a candidate site to decide about in that same cell.
 
 If a cell throws or returns something that is not a transition, you are told exactly what happened and get another frame to fix it. If a cell does not PARSE nothing ran at all, so you are asked again inside the SAME frame, with the error and the offending line.`
 
