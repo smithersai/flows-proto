@@ -73,6 +73,20 @@ export interface ExecOptions {
   readonly cwd?: string | undefined
   readonly env?: Record<string, string> | undefined
   readonly timeoutMs?: number | undefined
+  /**
+   * The program's arguments. Present means an argv, absent means a command
+   * line for the platform shell. An argv is how a payload reaches a program
+   * without being quoted into a string: nothing between here and `execve`
+   * re-parses it.
+   */
+  readonly args?: ReadonlyArray<string> | undefined
+  /**
+   * Text written to the program's standard input, as data. A script delivered
+   * this way is never quoted, escaped, or heredoc-terminated, which is the
+   * whole point: quoting corruption cost the measured SWE-bench program twelve
+   * probe failures and one instance's most expensive frame.
+   */
+  readonly stdin?: string | undefined
 }
 
 const unbounded = (
@@ -81,12 +95,18 @@ const unbounded = (
 ): Effect.Effect<ExecResult, ExecError, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function*() {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const settings: ChildProcess.CommandOptions = {
+      ...(options.args === undefined ? { shell: true } : {}),
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: options.env }),
+      ...(options.stdin === undefined
+        ? {}
+        : { stdin: Stream.make(new TextEncoder().encode(options.stdin)) })
+    }
     const handle = yield* spawner.spawn(
-      ChildProcess.make(command, {
-        shell: true,
-        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-        ...(options.env === undefined ? {} : { env: options.env })
-      })
+      options.args === undefined
+        ? ChildProcess.make(command, settings)
+        : ChildProcess.make(command, [...options.args], settings)
     )
     // stdout, stderr, and the exit code have to be consumed concurrently: a
     // command that fills a pipe blocks until the pipe is drained, so waiting

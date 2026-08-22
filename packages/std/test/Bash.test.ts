@@ -1,11 +1,64 @@
 import * as ChildProcessSpawner from "@smthrs/kernel/ChildProcessSpawner"
-import { Cause, Effect, Exit, Layer, Option, Path } from "effect"
+import { Cause, Effect, Exit, Layer, Option, Path, Sink, Stream } from "effect"
+import type * as ChildProcess from "effect/unstable/process/ChildProcess"
+import { ExitCode, makeHandle, ProcessId } from "effect/unstable/process/ChildProcessSpawner"
 import { describe, expect, it } from "vitest"
 import * as Bash from "../src/Bash.ts"
+import * as Container from "../src/Container.ts"
 import { MAX_SHELL_OUTPUT_BYTES } from "../src/internal/Text.ts"
 import { layer } from "./TestLayers.ts"
 
 const execute = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect)
+
+/** One spawned invocation, exactly as the host received it. */
+interface Spawned {
+  readonly file: string
+  readonly args: ReadonlyArray<string>
+  readonly stdin: string | undefined
+  readonly shell: boolean
+  readonly cwd: string | undefined
+}
+
+/**
+ * Records what was spawned instead of running it. The scripted host in
+ * `TestLayers` cannot supply standard input — `just-bash` has no pipe — so a
+ * script-carrying call is observed here at the spawner boundary, which is
+ * exactly where the payload stops being text and becomes data.
+ */
+const recorder = (spawns: Array<Spawned>) =>
+  Layer.mergeAll(
+    Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(ChildProcessSpawner.makeNoop({
+      spawn: (command) =>
+        Effect.gen(function*() {
+          const standard = command as ChildProcess.StandardCommand
+          const stdin = standard.options.stdin
+          const text = stdin !== undefined && typeof stdin !== "string" && Stream.isStream(stdin)
+            ? yield* Stream.mkString(Stream.decodeText(stdin))
+            : undefined
+          spawns.push({
+            file: standard.command,
+            args: [...standard.args],
+            stdin: text,
+            shell: standard.options.shell === true,
+            cwd: standard.options.cwd
+          })
+          return makeHandle({
+            pid: ProcessId(1),
+            exitCode: Effect.succeed(ExitCode(0)),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            stdin: Sink.drain,
+            stdout: Stream.empty,
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+            unref: Effect.succeed(Effect.void)
+          })
+        })
+    })),
+    Path.layer
+  )
 
 describe("Bash", () => {
   it("returns non-zero exit codes as successful results", async () => {
@@ -249,6 +302,130 @@ describe("Bash", () => {
         })
       }
     }
+  })
+
+  it("hands a script to its interpreter as data, never as a quoted line", async () => {
+    const spawns: Array<Spawned> = []
+    const script = "import sys\nprint('single ' + \"double\" + `back` + '''triple''')\n"
+    await execute(Effect.provide(
+      Bash.run({
+        mode: "unhermetic",
+        interpreter: "python3",
+        script,
+        args: ["--flag", "a b"],
+        cwd: "/work"
+      }),
+      recorder(spawns)
+    ))
+    expect(spawns).toEqual([{
+      file: "python3",
+      args: ["-", "--flag", "a b"],
+      stdin: script,
+      shell: false,
+      cwd: "/work"
+    }])
+  })
+
+  it("defaults a script to the shell and passes stdin for a command", async () => {
+    const spawns: Array<Spawned> = []
+    await execute(Effect.provide(
+      Bash.run({ mode: "unhermetic", script: "echo hello" }),
+      recorder(spawns)
+    ))
+    await execute(Effect.provide(
+      Bash.run({ mode: "unhermetic", command: "cat", stdin: "payload" }),
+      recorder(spawns)
+    ))
+    expect(spawns[0]).toMatchObject({ file: "bash", args: ["-s"], stdin: "echo hello", shell: false })
+    expect(spawns[1]).toMatchObject({ file: "cat", args: [], stdin: "payload", shell: true })
+  })
+
+  it("builds the container argv through the injected transport, with no quoting of its own", async () => {
+    const spawns: Array<Spawned> = []
+    const transport = Layer.succeed(Container.Container)(Container.makeCommand())
+    await execute(Effect.provide(
+      Bash.run({
+        mode: "unhermetic",
+        container: "swebench-1",
+        cwd: "/testbed",
+        env: { PYTHONHASHSEED: "0" },
+        interpreter: "python",
+        script: "print('it ran')"
+      }),
+      Layer.merge(recorder(spawns), transport)
+    ))
+    await execute(Effect.provide(
+      Bash.run({ mode: "unhermetic", container: "swebench-1", cwd: "/testbed", command: "pytest -q tests/test_x.py" }),
+      Layer.merge(recorder(spawns), transport)
+    ))
+    expect(spawns[0]).toEqual({
+      file: "docker",
+      args: ["exec", "-i", "-w", "/testbed", "-e", "PYTHONHASHSEED=0", "swebench-1", "python", "-"],
+      stdin: "print('it ran')",
+      shell: false,
+      // The container owns the working directory, so the host spawn does not.
+      cwd: undefined
+    })
+    expect(spawns[1]).toMatchObject({
+      file: "docker",
+      args: ["exec", "-w", "/testbed", "swebench-1", "bash", "-lc", "pytest -q tests/test_x.py"],
+      stdin: undefined
+    })
+  })
+
+  it("refuses a container when the host binds no transport", async () => {
+    const spawns: Array<Spawned> = []
+    const exit = await execute(Effect.provide(
+      Effect.exit(Bash.run({ mode: "unhermetic", container: "absent", command: "true" })),
+      recorder(spawns)
+    ))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const failure = Cause.findErrorOption(exit.cause)
+      expect(Option.isSome(failure) && failure.value.code).toBe("provider_unavailable")
+      expect(Option.isSome(failure) && failure.value.message).toContain("no container transport")
+    }
+    expect(spawns).toEqual([])
+  })
+
+  it("refuses the input shapes that cannot mean one thing", async () => {
+    const spawns: Array<Spawned> = []
+    const refuse = async (input: Parameters<typeof Bash.run>[0]) => {
+      const exit = await execute(Effect.provide(Effect.exit(Bash.run(input)), recorder(spawns)))
+      const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
+      return Option.getOrUndefined(failure)?.message ?? ""
+    }
+    expect(await refuse({ mode: "unhermetic", command: "true", script: "true" })).toContain("never both")
+    expect(await refuse({ mode: "unhermetic" })).toContain("Give either command")
+    expect(await refuse({ mode: "unhermetic", script: "true", stdin: "x" })).toContain("already arrives")
+    expect(await refuse({ mode: "unhermetic", command: "true", args: ["x"] })).toContain("args belong to a script")
+    expect(await refuse({ mode: "unhermetic", command: "true", interpreter: "python" })).toContain("runs a script")
+    expect(await refuse({ mode: "hermetic", command: "true", container: "c", reads: [], writes: [] }))
+      .toContain("mode:unhermetic")
+    expect(await refuse({ mode: "hermetic", script: "x = 1", interpreter: "python", reads: [], writes: [] }))
+      .toContain("not a shell")
+    expect(spawns).toEqual([])
+  })
+
+  it("pre-checks a hermetic shell script's paths exactly as it pre-checks a command", async () => {
+    const spawns: Array<Spawned> = []
+    const exit = await execute(Effect.provide(
+      Effect.exit(Bash.run({
+        mode: "hermetic",
+        script: "cat /outside/secret.txt\n",
+        reads: ["/work/**"],
+        writes: []
+      })),
+      recorder(spawns)
+    ))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(Option.getOrUndefined(Cause.findErrorOption(exit.cause))).toMatchObject({
+        code: "outside_declared_reads",
+        path: "/outside/secret.txt"
+      })
+    }
+    expect(spawns).toEqual([])
   })
 
   it("makes the hermetic and unhermetic tiers explicit", () => {
