@@ -285,7 +285,9 @@ const apply = CoreFlow.make({
  * nothing — which this one does not, so the declaration is the whole basis.
  * The check answers by what the run has already done rather than by how it was
  * called, so the scenario's sequence is what decides the statuses: failing
- * while nothing has been written, passing once something has.
+ * while nothing has been written, passing once something has. The one exception
+ * is `only: "green"`, which passes whatever the run has done — a check with no
+ * failing side, which is what a vacuous proof is made of.
  *
  * `irreversible` is the honest tier for the write. It is what a shell command
  * that edits a file gets, it keeps two invocations of one declaration distinct
@@ -304,7 +306,12 @@ export const checkSource = (recorder: Recorder): FlowBinding.Source =>
         Effect.sync(() => {
           const written = recorder.flowCalls.includes("apply")
           recorder.flowCalls.push(input.only === undefined ? "check" : `check:${input.only}`)
-          return { exitCode: written ? 0 : 1 }
+          // `only: "green"` names a check nothing in this tree can make fail —
+          // the shape a task with no reproducible bug has, and the shape a run
+          // stores as its proof when it has stopped looking for one. It is what
+          // the vacuous-verification scenario needs and what the sufficiency
+          // scenario must never accidentally get.
+          return { exitCode: input.only === "green" || written ? 0 : 1 }
         })
     }),
     FlowBinding.make({

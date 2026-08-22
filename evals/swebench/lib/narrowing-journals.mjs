@@ -27,6 +27,14 @@
  *   `NarrowedCheck.findOnly` was designed against: its pytest instance ran a
  *   filtered reading of the right file, ran nothing else, and completed, which
  *   is the shape broad-then-narrow cannot see.
+ * - `packages/harness/test/fixtures/vacuousJournals.json` — the r92 full-bench
+ *   wave, and the evidence `VacuousVerification` was designed against:
+ *   `django__django-14351` stored one verification script as its proof after
+ *   having watched that same script exit 0 on the tree it was handed.
+ *
+ * The r92 fixture is the one file here that also carries what a transition
+ * stored under `state.verification`, because that is the only thing the newest
+ * signal reads which is not already a call.
  *
  * A change to any of the three detectors that starts demanding something of a
  * run those waves resolved has to explain itself against these files rather than
@@ -124,10 +132,25 @@ const distil = (path) => {
         frame.digest = payload.digest
         frame.mutated = payload.mutated
         break
-      case "control.agent.transition-applied":
+      case "control.agent.transition-applied": {
         frame.transition = payload.transition._tag
         frame.transitionSeq = row.seq
+        // The `{ flow, input }` the cell stored as its proof, which is the one
+        // thing `VacuousVerification` reads out of a transition's durable
+        // state. Nothing else in the cell's state is distilled: it is the
+        // agent's own memory and can hold anything, including file bodies.
+        const stored = payload.transition.state
+        const declared = stored !== null && typeof stored === "object" && !Array.isArray(stored)
+          ? stored.verification
+          : undefined
+        if (
+          declared !== null && typeof declared === "object" && !Array.isArray(declared)
+          && typeof declared.flow === "string" && declared.input !== undefined
+        ) {
+          frame.verification = { flow: declared.flow, input: declared.input }
+        }
         break
+      }
       default:
         break
     }

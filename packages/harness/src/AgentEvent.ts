@@ -506,6 +506,39 @@ export class SufficiencyObserved extends Schema.TaggedClass<SufficiencyObserved>
 }) {}
 
 /**
+ * The controller telling a run that its stored proof was already green.
+ *
+ * The second control in this package that is not a brake, and the narrower of
+ * the two: a cell stored `state.verification` naming a call this run had
+ * already watched pass over the tree it was handed, before any frame changed a
+ * byte. Written when the observation is issued, at most once per distinct
+ * verification input, and delivered on the `invalidProbe` channel because it is
+ * the same class of fact — a result that reads identically on a broken tree and
+ * on a fixed one.
+ *
+ * `check` quotes the stored input as the run wrote it, and `signature` is the
+ * controller's own identity for that call, so a reader can reconcile the
+ * observation against the run's own `cell-call-settled` rows without replaying
+ * anything. Nothing is refused and no cap is spent, so there is no cap field.
+ *
+ * @category events
+ * @since 0.1.0
+ */
+export class VacuousVerificationObserved extends Schema.TaggedClass<VacuousVerificationObserved>(
+  "flows/harness/AgentEvent/VacuousVerificationObserved"
+)("vacuous-verification-observed", {
+  eventType: Schema.Literal("flows.harness.vacuous-verification-observed.v1"),
+  /** The flow the stored check named. */
+  flow: Schema.String,
+  /** The stored check's input as the run wrote it, clipped. */
+  check: Schema.String,
+  /** The controller's identity for that call. */
+  signature: Schema.String,
+  /** The frame the observation was attached to. */
+  nextFrame: Schema.Int
+}) {}
+
+/**
  * What one frame did to the workspace, and how the controller knows.
  *
  * Emitted once per frame that ran a cell. It is the frame's own answer to the
@@ -690,6 +723,7 @@ export const AgentEvent = Schema.Union([
   UnmovedDemanded,
   UnresolvedDemanded,
   SufficiencyObserved,
+  VacuousVerificationObserved,
   Suspended,
   CompactionSettled,
   SteeringDrained,

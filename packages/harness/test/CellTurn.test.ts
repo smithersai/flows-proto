@@ -2450,6 +2450,195 @@ describe("CellTurn sufficiency", () => {
   })
 })
 
+describe("CellTurn vacuous verification", () => {
+  const shell = descriptor("bash", { capabilities: ["proc:spawn:*"], tier: "irreversible" })
+  const editor = descriptor("edit", { capabilities: ["fs:write:**"], writes: ["**"], tier: "compensable" })
+
+  /** A frame that runs one command and stores it as the proof it will use. */
+  const storing = (command: string) =>
+    `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
+     return {
+       intent: "continue",
+       state: { verification: { flow: "bash", input: { mode: "unhermetic", command: ${JSON.stringify(command)} } } },
+       context: [{ role: "user", text: "stored the proof" }]
+     }`
+
+  /** A frame that runs one command and stores nothing about it. */
+  const checking = (command: string) =>
+    `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
+     return { intent: "continue", state: {}, context: [{ role: "user", text: "checked" }] }`
+
+  const exits = (exitCode: number): ScriptedEngine.CallStep => ({ _tag: "Success", value: { exitCode } })
+
+  const running = (
+    cells: ReadonlyArray<string>,
+    calls: ReadonlyArray<ScriptedEngine.CallStep>,
+    overrides: { readonly unmovedCap?: number } = {}
+  ) =>
+    run({
+      state: CellTurn.make({
+        session: "session-1",
+        seat: "anthropic:test-model",
+        modelParams: ModelRequest.GenerationParams.make(),
+        layers: ["layer-a"],
+        capabilityEnvelope: ["fs:write:**", "proc:spawn:*"].map((declared) => {
+          const parsed = declared.split(":")
+          return new Capability.CapabilityPattern({
+            action: `${parsed[0]}:${parsed[1]}` as Capability.PatternAction,
+            resource: parsed.slice(2).join(":")
+          })
+        }),
+        placement: Option.none(),
+        contextWindow: window,
+        maxFrames: cells.length,
+        repeatCap: 0,
+        narrowingCap: 0,
+        unresolvedCap: 0,
+        unmovedCap: overrides.unmovedCap ?? 0
+      }),
+      flows: [shell, editor],
+      script: cells.map(emits),
+      calls,
+      tree: "a.py=base"
+    })
+
+  it("tells the next frame its stored proof was already green", async () => {
+    const { events, model } = await running(
+      [storing("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [exits(0)]
+    )
+
+    const observed = of(events, "vacuous-verification-observed")
+    expect(observed).toHaveLength(1)
+    expect(observed[0]).toMatchObject({ flow: "bash", nextFrame: 1 })
+    expect(observed[0]?.check).toContain("check a.py")
+
+    const answering = JSON.stringify(model.recorder.requests[1]?.messages)
+    expect(answering).toContain("Vacuous verification")
+    expect(answering).toContain("cannot show your change did anything")
+
+    // A fact, not a gate: the frame that stored it continued exactly as its
+    // transition asked, and no completion was handed back.
+    expect(of(events, "turn-closed").map((event) => event.outcome)).toEqual(["continue", "resolved"])
+    expect(of(events, "unmoved-demanded")).toEqual([])
+  })
+
+  it("says nothing about a proof the run watched fail on the tree it was handed", async () => {
+    const { events, model } = await running(
+      [storing("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [exits(1)]
+    )
+
+    expect(of(events, "vacuous-verification-observed")).toEqual([])
+    expect(JSON.stringify(model.recorder.requests[1]?.messages)).not.toContain("Vacuous verification")
+  })
+
+  it("says nothing about a pass taken after the run had already changed something", async () => {
+    const { events } = await running(
+      [
+        `await ctx.call("edit", { path: "a.py", text: "fix" })
+         return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`,
+        storing("check a.py"),
+        `return { intent: "complete", state: {}, output: "done" }`
+      ],
+      [{ _tag: "Success", value: null, tree: "a.py=fixed" }, exits(0)]
+    )
+
+    // The tree moved before the check ran, so the pass says nothing about the
+    // tree the run was handed and there is no empty proof to name.
+    expect(of(events, "vacuous-verification-observed")).toEqual([])
+  })
+
+  it("says nothing when the stored proof is not the call that passed", async () => {
+    const { events } = await running(
+      [
+        `await ctx.call("bash", { mode: "unhermetic", command: "check a.py" })
+         return {
+           intent: "continue",
+           state: { verification: { flow: "bash", input: { mode: "unhermetic", command: "check a.py -k one" } } },
+           context: [{ role: "user", text: "stored something else" }]
+         }`,
+        `return { intent: "complete", state: {}, output: "done" }`
+      ],
+      [exits(0)]
+    )
+
+    expect(of(events, "vacuous-verification-observed")).toEqual([])
+  })
+
+  it("writes the fact once, however many frames carry the same verification", async () => {
+    const { events, model } = await running(
+      [storing("check a.py"), storing("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [exits(0), exits(0)]
+    )
+
+    expect(of(events, "vacuous-verification-observed")).toHaveLength(1)
+    expect(JSON.stringify(model.recorder.requests[1]?.messages)).toContain("Vacuous verification")
+    expect(JSON.stringify(model.recorder.requests[2]?.messages)).not.toContain("Vacuous verification")
+  })
+
+  it("names a second, different vacuous proof the run moves on to", async () => {
+    const { events } = await running(
+      [
+        storing("check a.py"),
+        checking("check b.py"),
+        storing("check b.py"),
+        `return { intent: "complete", state: {}, output: "done" }`
+      ],
+      [exits(0), exits(0), exits(0)]
+    )
+
+    expect(of(events, "vacuous-verification-observed").map((event) => event.check.includes("check b.py")))
+      .toEqual([false, true])
+  })
+
+  it("rides an existing bounce when the empty proof is stored by the frame that completes", async () => {
+    // The `django__django-14351` shape: the run stores its empty proof on the
+    // transition that completes, so there is no frame of its own to tell. It
+    // says so on the frame another control was already handing back, without
+    // taking a bounce or a cap of its own.
+    const { events, model } = await running(
+      [
+        `await ctx.call("bash", { mode: "unhermetic", command: "check a.py" })
+         return {
+           intent: "complete",
+           state: { verification: { flow: "bash", input: { mode: "unhermetic", command: "check a.py" } } },
+           output: "done"
+         }`,
+        `return { intent: "complete", state: {}, output: "done anyway" }`
+      ],
+      [exits(0)],
+      { unmovedCap: 1 }
+    )
+
+    expect(of(events, "vacuous-verification-observed")).toHaveLength(1)
+    expect(of(events, "unmoved-demanded")).toHaveLength(1)
+    const answering = JSON.stringify(model.recorder.requests[1]?.messages)
+    expect(answering).toContain("Unmoved workspace")
+    expect(answering).toContain("Vacuous verification")
+  })
+
+  it("journals the fact on a completion nothing hands back, and tells nobody", async () => {
+    const { events, model } = await running(
+      [
+        `await ctx.call("bash", { mode: "unhermetic", command: "check a.py" })
+         return {
+           intent: "complete",
+           state: { verification: { flow: "bash", input: { mode: "unhermetic", command: "check a.py" } } },
+           output: "done"
+         }`
+      ],
+      [exits(0)]
+    )
+
+    // Nothing is refused and nothing is added: the run resolved on the frame it
+    // wrote, and the record is the only reader there is.
+    expect(of(events, "vacuous-verification-observed")).toHaveLength(1)
+    expect(of(events, "turn-closed").map((event) => event.outcome)).toEqual(["resolved"])
+    expect(model.recorder.requests).toHaveLength(1)
+  })
+})
+
 describe("CellTurn call latency", () => {
   it("journals the wall-clock duration of each sealed model call from the injected clock", async () => {
     const { events } = await run({
