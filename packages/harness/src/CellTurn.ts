@@ -39,7 +39,6 @@ import * as Sufficiency from "./Sufficiency.ts"
 import * as TruncatedOutput from "./TruncatedOutput.ts"
 import * as UnmovedTree from "./UnmovedTree.ts"
 import * as UnresolvedFailure from "./UnresolvedFailure.ts"
-import * as VacuousVerification from "./VacuousVerification.ts"
 
 const NonNegativeSafeInt = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
@@ -243,7 +242,6 @@ const eventType = {
   unmovedDemanded: "flows.harness.unmoved-demanded.v1",
   unresolvedDemanded: "flows.harness.unresolved-demanded.v1",
   sufficiencyObserved: "flows.harness.sufficiency-observed.v1",
-  vacuousVerificationObserved: "flows.harness.vacuous-verification-observed.v1",
   modelDelta: "flows.harness.model-delta.v1",
   modelSettled: "flows.harness.model-settled.v1",
   mutationObserved: "flows.harness.mutation-observed.v1",
@@ -517,31 +515,6 @@ export class State extends Schema.Class<State>("flows/harness/CellTurn/State")({
     Schema.withDecodingDefaultKey(Effect.succeed(false))
   ),
   /**
-   * Checks that passed over the tree this run was handed, before any frame of
-   * it changed anything.
-   *
-   * Separate from {@link State.checks} because that ledger holds one entry per
-   * signature carrying its *latest* run, and the whole question here is what a
-   * call did on the *first* tree: the moment a pristine pass is re-run after an
-   * edit, `checks` has forgotten where it started. It stops growing at the
-   * run's first mutating frame, which is what bounds it. See
-   * `VacuousVerification`.
-   */
-  pristineChecks: VacuousVerification.Ledger,
-  /**
-   * Verification inputs this run has already been told were vacuous.
-   *
-   * Once per distinct input, for the same reason {@link State.sufficiencyStated}
-   * is once per run: it is a statement about the record, and repeating it every
-   * frame a cell carries the same `verification` key forward would turn one
-   * sentence into a standing complaint. A run that is shown it and stores the
-   * same check again has decided.
-   */
-  vacuousStated: Schema.Array(Schema.String).pipe(
-    Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<string>>([])),
-    Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<string>>([]))
-  ),
-  /**
    * Durable-state keys the next frame is shown in full instead of by roster.
    *
    * Named by the transition that closed the previous frame and replaced by
@@ -787,8 +760,6 @@ export const make = (options: {
     failures: [],
     mutations: 0,
     sufficiencyStated: false,
-    pristineChecks: [],
-    vacuousStated: [],
     renderKeys: [],
     recallOrdinals: [],
     stateStamps: [],
@@ -1961,23 +1932,6 @@ const frame = (
     // still a failure this run watched.
     const mutations = state.mutations + (mutated ? 1 : 0)
     const failures = Sufficiency.remember(state.failures, { frame: frameChecks, epoch: state.mutations })
-    // The other half of the same ordering: what this frame watched *pass*
-    // while the run had still changed nothing. `Sufficiency` needs a failure
-    // before a change; `VacuousVerification` needs a pass before one, which is
-    // the reading that makes a stored proof empty.
-    //
-    // The failing half is read straight back out of the ledger just folded,
-    // because the two questions share a subject: a call this run has already
-    // watched fail over the untouched tree has the red the contract asks for,
-    // and no green reading of it taken before an edit makes that untrue. Those
-    // signatures are refused rather than remembered, so the observation can
-    // never contradict the run's own record. See `VacuousVerification`
-    // `remember`.
-    const pristineChecks = VacuousVerification.remember(state.pristineChecks, {
-      frame: frameChecks,
-      epoch: state.mutations,
-      failed: failures.filter((entry) => entry.epoch === 0).map((entry) => entry.signature)
-    })
 
     // The tree the run was handed, fixed the first time a frame measured one
     // and never restamped. See `State.openingDigest`.
@@ -2062,7 +2016,6 @@ const frame = (
         checks,
         callLedger,
         failures,
-        pristineChecks,
         mutations,
         openingDigest,
         ...(mutated ? { readOnlyGrace: 0, pendingReadOnlyDemand: undefined } : {})
@@ -2137,7 +2090,6 @@ const frame = (
             checks,
             callLedger,
             failures,
-            pristineChecks,
             mutations,
             openingDigest,
             ...(mutated ? { readOnlyGrace: 0 } : {})
@@ -2201,41 +2153,13 @@ const frame = (
       return yield* readOnlyCapFailure(cap, readOnlyFrames)
     }
 
-    // The stored proof, read against what this run has already watched pass on
-    // the tree it was handed. It is judged here — above the completion branch —
-    // because the instance it was written for stores its empty proof on the
-    // frame that completes: `django__django-14351` ran one verification script
-    // at frame 5 with nothing changed and exit 0, ran the identical script
-    // again at frame 14 after its edit, got exit 0, and completed citing the
-    // pair. Neither reading is wrong and the pair says nothing.
-    //
-    // It is a fact and not a gate. Nothing is bounced, no cap is spent, and
-    // the sentence is delivered wherever a frame already exists to read it:
-    // the `invalidProbe` channel on a frame that continues, and the demand's
-    // own note on a completion some other control was handing back anyway. A
-    // completion that resolves has no next frame and is told nothing — the
-    // event is still journaled, because a wave counting this class reads the
-    // journal and not the transcript. See `VacuousVerification`.
-    const declared = VacuousVerification.stored(transition.state)
-    const vacuous = declared === undefined ? undefined : VacuousVerification.find({
-      ledger: pristineChecks,
-      signature: signatureOf(declared.flow, declared.input),
-      stated: state.vacuousStated
-    })
-    if (vacuous !== undefined) {
-      yield* emit(
-        new AgentEvent.VacuousVerificationObserved({
-          eventType: eventType.vacuousVerificationObserved,
-          flow: vacuous.flow,
-          check: vacuous.label,
-          signature: vacuous.signature,
-          nextFrame: state.frame + 1
-        })
-      )
-    }
-    const restated = vacuous === undefined
-      ? {}
-      : { vacuousStated: [...state.vacuousStated, vacuous.signature] }
+    // `VacuousVerification` was read here, between the read-only cap and the
+    // completion branch, and it is not read anywhere now. The module, its
+    // tests and `AgentEvent.VacuousVerificationObserved` are kept; the arm is
+    // off. `fullbench/reports/rerun-r93.md` §1 is the reason and the module's
+    // own docblock carries it. Re-wiring is one `stored`/`find` pair here plus
+    // the two `State` fields it needs, and it is a controlled arm of its own
+    // wave when it happens — not a change that rides along with another.
 
     if (transition._tag === "complete") {
       // The completion's own evidence, judged once per demand. A run gets
@@ -2382,18 +2306,7 @@ const frame = (
             // was already holding, not a projected context: a completion names
             // no context for a next frame, and a run answering this one needs
             // the frame it just wrote.
-            contextWindow: observedOn(
-              contextWindow,
-              answer.message,
-              // A frame the run is getting back anyway carries whatever else
-              // this frame has to say. The vacuous-verification sentence asks
-              // for nothing, so it rides the note rather than taking a bounce
-              // of its own; the demand still says what the answer has to be.
-              vacuous === undefined
-                ? demanded.note
-                : `${demanded.note}\n\n${VacuousVerification.observation(vacuous)}`,
-              liveCellEcho
-            ),
+            contextWindow: observedOn(contextWindow, answer.message, demanded.note, liveCellEcho),
             agentState: transition.state,
             stateStamps: StateManifest.stamp(state.stateStamps, transition.state, state.frame),
             truncatedOutputs: TruncatedOutput.retain(ledger),
@@ -2405,10 +2318,8 @@ const frame = (
             checks,
             callLedger,
             failures,
-            pristineChecks,
             mutations,
             openingDigest,
-            ...restated,
             ...demanded.spent,
             // The answer the demand is taking away, kept so it cannot be lost.
             // A frame was reserved for the run to answer in, but nothing makes
@@ -2543,10 +2454,7 @@ const frame = (
     const repeated = repeatDemanded
       ? [ModelRequest.Message.user(repeatDemand(repeatFrames, state.repeatCap))]
       : []
-    const alerts = [
-      ...(probeNotice === undefined ? [] : [ModelRequest.Message.user(probeNotice)]),
-      ...(vacuous === undefined ? [] : [ModelRequest.Message.user(VacuousVerification.observation(vacuous))])
-    ]
+    const alerts = probeNotice === undefined ? [] : [ModelRequest.Message.user(probeNotice)]
     // What the boundary parse noticed and did not refuse. Delivered on the
     // frame that continues, because a cell whose tail never ran still settled
     // a transition and the model has no other way to learn that the work it
@@ -2610,10 +2518,8 @@ const frame = (
         checks,
         callLedger,
         failures,
-        pristineChecks,
         mutations,
         ...(sufficient === undefined ? {} : { sufficiencyStated: true }),
-        ...restated,
         openingDigest,
         pendingReadOnlyDemand: demanded && !justified ? { streak: readOnlyFrames, cap } : undefined
       })

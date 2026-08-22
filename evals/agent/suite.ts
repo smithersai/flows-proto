@@ -269,35 +269,13 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     expected: answered("completed on the pair I was shown", 4, ["check:one", "apply", "check"])
   },
 
-  "vacuous-verification-signal-reaches-the-next-frame": {
-    summary:
-      "A run that stores as its proof a check it had already watched pass on the untouched tree is told so, once, and the run continues.",
-    run: () => {
-      const recorder = Subject.makeRecorder()
-      return Subject.runAgent({
-        recorder,
-        // The completing cell is keyed on the sentence itself, so the case
-        // proves the fact reached the model rather than that a run ended:
-        // without it the second frame would store the same empty proof again
-        // and the run would spend its budget instead of answering.
-        respond: (prompt) =>
-          prompt.includes("Vacuous verification")
-            ? `return { intent: "complete", state: {}, output: "the proof I stored was already green" }`
-            : `await ctx.call("check", { command: "verify a/b.py", only: "green" })
-               return {
-                 intent: "continue",
-                 state: { verification: { flow: "check", input: { command: "verify a/b.py", only: "green" } } },
-                 context: [{ role: "user", text: "stored the proof" }]
-               }`,
-        maxFrames: 8,
-        flows: [Subject.checkSource(recorder)]
-      })
-    },
-    // Two frames: store the empty proof, then read the fact and answer. Nothing
-    // is bounced and no cap is spent — the frame that stored it continued
-    // exactly as its transition asked.
-    expected: answered("the proof I stored was already green", 2, ["check:green"])
-  },
+  // `vacuous-verification-signal-reaches-the-next-frame` was here, and it is
+  // gone with the arm it graded. `VacuousVerification` is unwired from
+  // `CellTurn` on the r93 verdict — see that module's docblock — and a suite
+  // that grades a signal no run receives grades nothing. The module keeps its
+  // own unit suite, and `CellTurn.test.ts` pins that the shapes which used to
+  // fire it are now told nothing. When the control gets its own measured wave,
+  // the case comes back with it.
 
   "park-without-a-human-is-answered": {
     summary:
