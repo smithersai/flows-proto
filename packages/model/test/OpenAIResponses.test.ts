@@ -365,7 +365,9 @@ describe("OpenAIResponses", () => {
   })
 
   it("classifies streamed failures from the event, the response, or neither", () => {
-    expect(replayDataError(["{\"type\":\"error\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}}"]))
+    expect(
+      replayDataError(["{\"type\":\"error\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}}"])
+    )
       .toMatchObject({ code: "rate_limited", providerCode: "rate_limit_exceeded", message: "slow down" })
 
     expect(replayDataError(["{\"type\":\"error\",\"error\":{\"type\":\"server_error\"}}"])).toMatchObject({
@@ -375,7 +377,9 @@ describe("OpenAIResponses", () => {
     })
 
     expect(
-      replayDataError(["{\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"c\",\"message\":\"failed\"}}}"])
+      replayDataError([
+        "{\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"c\",\"message\":\"failed\"}}}"
+      ])
     ).toMatchObject({ code: "unknown", providerCode: "c", message: "failed" })
 
     expect(replayDataError(["{\"type\":\"error\"}"])).toMatchObject({

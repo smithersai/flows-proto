@@ -114,9 +114,7 @@ describe("ModelRequest", () => {
     }
 
     expect(Request.GenerationParams.make({ maxTokens: 8 }).reasoningEffort).toBeUndefined()
-    expect(() =>
-      Schema.decodeUnknownSync(Request.GenerationParams)({ reasoningEffort: "extreme" })
-    ).toThrow()
+    expect(() => Schema.decodeUnknownSync(Request.GenerationParams)({ reasoningEffort: "extreme" })).toThrow()
 
     // Zero and empty are declared values, not absent ones.
     const boundary = Request.GenerationParams.make({

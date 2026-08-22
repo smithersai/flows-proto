@@ -509,11 +509,13 @@ describe("Route.stream", () => {
 
     const events = await collect(
       routeOf({ protocol: terminal, framing: Framing.sse }),
-      executorOf(() => sseResponse([
-        "{\"text\":\"one\"}",
-        "{\"text\":\"two\",\"stop\":true}",
-        "{\"text\":\"three\"}"
-      ]))
+      executorOf(() =>
+        sseResponse([
+          "{\"text\":\"one\"}",
+          "{\"text\":\"two\",\"stop\":true}",
+          "{\"text\":\"three\"}"
+        ])
+      )
     )
 
     expect(events).toEqual([
