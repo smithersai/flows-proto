@@ -329,4 +329,7 @@ const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _t
 }
 
 rmSync(temporary, { recursive: true, force: true })
-console.log("check-repl-evidence.mjs: ok")
+console.log(
+  "check-repl-evidence: a carried name is told from a redeclared one and from a name inside data,"
+    + " a re-read is told from a rule-7 re-check, and filing is read off the transition."
+)
