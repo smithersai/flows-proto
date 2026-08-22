@@ -204,10 +204,26 @@ describe("cellPrompt", () => {
 
   it("teaches canonical regression evidence and language-aware post-edit diagnostics", () => {
     const contract = contractText()
-    expect(contract).toContain("Before the first write")
+    expect(contract).toContain("Prove it before you claim it")
     expect(contract).toContain("state.verification")
     expect(contract).toContain("language-aware checker")
     expect(contract).toContain("undefined-name")
+  })
+
+  it("makes the pre-edit baseline conditional on what it buys, never a licence to write", () => {
+    // r91 shipped rule 8's unconditional form — "before the first write, run
+    // the one targeted command that reproduces the report" — and five of the
+    // 45 instances then spent a whole 1,200 s budget issuing zero mutation
+    // calls, holding a correct diagnosis they were not allowed to act on. All
+    // five were resolved by the r90 baseline. `PROGRAM.md` §5.5 had already
+    // adopted the conditional version: a failing baseline is kept whenever it
+    // gates a same-cell complete and dropped otherwise. This is that version.
+    const contract = contractText()
+    expect(contract).toContain("A baseline you have watched fail is what buys that")
+    expect(contract).toContain("hold one and this same cell may complete")
+    expect(contract).toContain("edit on the diagnosis you have and establish the proof afterwards")
+    // The unconditional demand is the thing that must not come back.
+    expect(contract).not.toContain("Before the first write")
   })
 
   it("names only checkers a run can actually reach, never a `diagnostics` flow nothing binds", () => {
@@ -240,85 +256,34 @@ describe("cellPrompt", () => {
     // something absent reads the same before and after a correct fix.
     expect(contract).toContain("does not exist reproduces nothing")
     expect(contract).toContain("invalidProbe")
-    expect(contract).toContain("before you edit anything")
+    expect(contract).toContain("before you rely on it")
   })
 
-  it("teaches what to do when no probe can flip, instead of inventing one that can", () => {
-    // django-13821 raised a SQLite floor the container already satisfied, so no
-    // command could fail before the edit and pass after it. Under a mandatory
-    // fail-to-pass baseline the run invented a probe that could flip — an
-    // attribute nothing in that Django reads — and then had to keep the inert
-    // attribute and revert the real gate to satisfy it. That is the escape this
-    // sentence gives, and it is worth a verdict.
+  it("keeps the doctrine at the text the r90 wave measured, and adds none of r91's", () => {
+    // The r91 re-run priced the four rules change #2 added — probes and
+    // oracles, revisable premises, minimal edits, completion on recorded
+    // evidence — against the r90 contract on the same 45 instances. Resolved
+    // fell 35 to 30, cost rose 59 %, and the doctrine's own instances are the
+    // ones that got dearer. It is reverted, so the tool half of the same
+    // program can be measured on its own. Re-adding any of these needs a trace
+    // that says teaching, and not a tool, was the gap.
     const contract = contractText()
-    expect(contract).toContain("When no command can fail before your change and pass after it")
-    expect(contract).toContain("do not invent one that can flip")
-    expect(contract).toContain("never add code to the tree to make a probe pass")
-  })
-
-  it("teaches that an oracle asserts the issue's observable, never a guessed aggregate", () => {
-    // matplotlib-22865 froze `len(bounds) + 1 == 11` in frame 1, guessed from
-    // no printed output. The correct fix landed in frame 2 and failed that
-    // number 33 times, at $2.42, until the run hit the frame cap without
-    // completing. An expected value is read out of output, never invented.
-    const contract = contractText()
-    expect(contract).toContain("Assert the observable the issue names")
-    expect(contract).toContain("take every expected value from output you have actually printed and read")
-    expect(contract).toContain("an aggregate you guessed")
-    expect(contract).toContain("is a wrong oracle")
-  })
-
-  it("teaches that a recorded probe is a revisable premise, not a completion demand", () => {
-    // django-13821 held the resolving gate change, then reverted it because the
-    // recorded probe asserted an attribute that never existed. The probe is the
-    // thing that gives when evidence contradicts it; the tree is not.
-    const contract = contractText()
-    expect(contract).toContain("A recorded probe is a premise you may revise, not a promise you must keep")
-    expect(contract).toContain("re-derive the oracle")
-    expect(contract).toContain("Never edit the tree to satisfy a probe you no longer believe")
-  })
-
-  it("teaches that an in-tree test asserting replaced behavior is stale evidence", () => {
-    // sympy-19495 walked a correct patch back to appease an assertion that
-    // encodes the reported bug; codex ruled the same test stale and resolved.
-    // The archaeology that settles it is one call.
-    const contract = contractText()
-    expect(contract).toContain("asserting the behaviour the issue explicitly replaces is stale evidence")
-    expect(contract).toContain("leave that test unmodified")
-    expect(contract).toContain("`git log -S`")
-  })
-
-  it("teaches baselining against the unmodified tree before self-attribution", () => {
-    // sphinx-8721 spent $1.10 over fourteen frames on a failure that predated
-    // its edit. Failure-set equality against the base answers that in one call.
-    const contract = contractText()
-    expect(contract).toContain("run the identical command against the unmodified base tree")
-    expect(contract).toContain("equal failure sets mean the failure predates you")
-  })
-
-  it("teaches minimal edits and the consumers-of-the-changed-symbol lookup", () => {
-    const contract = contractText()
-    expect(contract).toContain("Fix what the reproduction implicates, and stop")
-    expect(contract).toContain("your probe covers every site the edit touches")
-    expect(contract).toContain("one lookup of the changed symbol's consumers")
-  })
-
-  it("teaches completion on recorded evidence rather than replay ceremony", () => {
-    // django-16899 spent $1.35 replaying an outcome the run already held.
-    // Sufficiency states the failing-before/passing-after pair once; the
-    // contract points at that record instead of asking for it again.
-    const contract = contractText()
-    expect(contract).toContain("Complete on evidence already in hand")
-    expect(contract).toContain("failed before your change and passed after it")
-    expect(contract).toContain("Replaying a settled outcome over an unchanged tree proves nothing")
-    expect(contract).toContain("a completion you have not watched pass is a wrong answer")
-  })
-
-  it("teaches that narrowing or broadening the recorded check is not evidence", () => {
-    const contract = contractText()
-    expect(contract).toContain("reuse that exact `flow` and `input`")
-    expect(contract).toContain("`-k` filter")
-    expect(contract).toContain("is detected and is not evidence")
+    for (
+      const added of [
+        "Assert the observable the issue names",
+        "A recorded probe is a premise you may revise",
+        "asserting the behaviour the issue explicitly replaces is stale evidence",
+        "run the identical command against the unmodified base tree",
+        "Fix what the reproduction implicates, and stop",
+        "Complete on evidence already in hand",
+        "is detected and is not evidence"
+      ]
+    ) {
+      expect(contract).not.toContain(added)
+    }
+    // What r90 said about the recorded check stands, in r90's own words.
+    expect(contract).toContain("reuse its exact `flow` and `input` after edits")
+    expect(contract).toContain("rather than deriving or broadening another command")
   })
 
   it("teaches that a file is restored with git, never through captured stdout", () => {
@@ -330,51 +295,49 @@ describe("cellPrompt", () => {
     expect(contract).toContain("a write of bytes a call returned truncated is refused")
   })
 
-  it("prices the frame: calls are free, output is the bill, a read-only first frame is a wasted turn", () => {
-    // The measured constant across 45 graded instances: output tokens are
-    // 60-80% of every bill, and the mean run spent 10 frames where 1-2 were
-    // enough. The contract states the economics rather than leaving the model
-    // to infer them from a frame budget.
+  it("drops r91's frame-economics teaching pack with the rest of change #10", () => {
+    // The pack told the model what a frame costs and how to write one. Output
+    // per frame rose 44 % and mean frames per instance rose 10.0 to 11.7 under
+    // it, against a predicted ceiling of 4, and 85 cells were re-asked in-frame
+    // for a parse error the longer cells caused. The worked example is the
+    // teaching; the prose about it is not.
     const contract = contractText()
-    expect(contract).toContain("Inside a cell the calls are free")
-    expect(contract).toContain("billed for the cell you write and the context you carry")
-    expect(contract).toContain("a first frame that only searches, or only reads, spends a turn and buys nothing")
+    for (
+      const added of [
+        "Inside a cell the calls are free",
+        "billed for the cell you write and the context you carry",
+        "Guards are one-line bails naming what was missing",
+        "a cell that scripts the next three frames pays output tokens"
+      ]
+    ) {
+      expect(contract).not.toContain(added)
+    }
   })
 
-  it("teaches one-line guard bails and forbids pre-scripting later frames", () => {
-    const contract = contractText()
-    expect(contract).toContain("Guards are one-line bails naming what was missing")
-    expect(contract).toContain("they never restate the task")
-    expect(contract).toContain("a cell that scripts the next three frames pays output tokens")
-  })
-
-  it("shows the transactional round rather than describing it", () => {
-    // Rule 7 has described the fused cell in prose since the contract existed,
-    // and models imitate the example, not the prose: graded waves split
-    // locate, read, edit and check across four frames each. The example is the
-    // whole round, and every step of it is here.
+  it("shows the whole round rather than describing it", () => {
+    // Models imitate the example, not the prose: graded waves split locate,
+    // read, edit and check across four frames each. The example is the whole
+    // round in one cell — r90's shape, carrying the mechanics the lanes shipped
+    // since (fail-soft envelopes, raw read content, the applied hunk).
     const contract = contractText()
     // Locate, then a read whose window is arithmetic on the search's own hit.
     expect(contract).toContain(`await ctx.call("grep"`)
     expect(contract).toContain("offset: Math.max(1, hit.line - 20)")
-    // A one-line guard on what the read actually returned.
-    expect(contract).toContain(`if (!region.content.includes("def widen")) return {`)
-    // The probe read for its reason, not its exit code alone.
-    expect(contract).toContain("const before = await ctx.call(probe.flow, probe.input)")
-    expect(contract).toContain(`!before.stdout.includes("UnitsError")`)
+    // A one-line guard on the search's own failure envelope, so the fail-soft
+    // rule is shown and not only stated.
+    expect(contract).toContain("const hit = found.ok === false ? undefined : found.matches[0]")
+    expect(contract).toContain("const before = await ctx.call(check.flow, check.input)")
     // The anchor is a literal line a call returned, never in-cell surgery over
     // bytes the model has not seen.
     expect(contract).toContain("const anchor = hit.text")
     expect(contract).toContain(`const applied = await ctx.call("edit", { path: hit.file, oldString: anchor`)
-    // A one-line bail on the edit's own failure envelope, so the fail-soft
-    // rule is shown and not only stated.
     expect(contract).toContain("if (applied.ok === false) return {")
-    // Two independent readings in the one frame — the replayed probe says the
+    // Two independent readings in the one frame — the replayed check says the
     // behaviour moved, the returned hunk says what moved — then the exit.
-    expect(contract).toContain("const after = await ctx.call(probe.flow, probe.input)")
-    expect(contract).toContain(`applied.hunk.includes("return widen(value)")`)
-    expect(contract).toContain(`intent: "complete", state: { verification: probe }`)
-    expect(contract).toContain("One frame: locate, read, probe, edit, verify, answer.")
+    expect(contract).toContain("const after = await ctx.call(check.flow, check.input)")
+    expect(contract).toContain("the applied hunk is:")
+    expect(contract).toContain(`intent: "complete", state: { verification: check }`)
+    expect(contract).toContain("One frame: search, read, reproduce, edit, re-check, answer.")
   })
 
   it("states the epoch fact with no environment supplied at all", () => {
@@ -436,29 +399,23 @@ describe("cellPrompt", () => {
     // The teaching is a prefix segment, so a run pays it once at full price and
     // then at cache rates — but it is rendered into every frame's request, and
     // teaching that grows without anyone looking is how a contract becomes the
-    // largest thing in the window. Measured with `Tokens.estimate`: the
-    // contract went from 8,197 bytes / 2,105 tokens to 10,204 / 2,610 when the
-    // verification doctrine, the frame economics and the transactional example
-    // were rewritten, and the environment section adds 774 bytes / 198 tokens
-    // bare, 1,018 / 260 with a locale and two absent tools. That is +703 taught
-    // tokens per frame, about $0.32 across a 45-instance graded run once the
-    // uncached first frame and the cached rest are both counted — bought
-    // against a measured $32.4 waste gap. These are the ceilings that make the
-    // next such addition deliberate.
-    // Change 1 (addressable context) and change 8 (fail-soft calls) then added
-    // ~140 more: the recall directive, the state manifest, the never-silently-
-    // clipped rule, the failure envelope, and the in-frame re-ask. Every one of
-    // them replaces a frame the r90 wave actually spent, so the ceiling moved
-    // to 2,850 rather than the teaching being trimmed to fit.
+    // largest thing in the window, so the ceiling here is the thing that makes
+    // the next addition deliberate.
     //
-    // Then +44 for rule 7 naming the hunk an `edit` answers with. That spend
-    // bought a deletion as well: the worked example used to call a
-    // `diagnostics` flow no composition binds, which under change 8 resolves
-    // `{ ok: false, code: "unknown_flow" }` and then throws on the next
-    // property read — a whole frame spent on a name that does not exist.
-    // Reading the returned hunk is the check that replaces it, and
-    // sphinx-7233 lost its verdict for want of exactly that glance.
-    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2900)
+    // The history it records is one round trip. Measured with
+    // `Tokens.estimate`, the r90 contract — the text that resolved 35/45 — is
+    // 8,197 characters. The optimal-trace program grew it to 11,312 across
+    // changes 2, 9 and 10, and the r91 re-run of the same 45 instances lost
+    // five verdicts and $22. The doctrine half is now back at r90's text, and
+    // what remains above it is the lane mechanics measured to pay: the failure
+    // envelope and its `.ok` test, `render`/`recall` and the state manifest,
+    // raw read content, the hunk an `edit` answers with, and the in-frame
+    // re-ask for a cell that does not parse. Those are ~970 characters, and
+    // every one of them replaces a frame a graded wave actually spent.
+    //
+    // The ceiling is therefore r90's own budget plus that mechanics delta, and
+    // not one token of the doctrine that was priced and rejected.
+    expect(Tokens.estimate(contractText())).toBeLessThanOrEqual(2_400)
     expect(Tokens.estimate(sectionOf("cell-environment", {}, { locale: "C.UTF-8", absentTools: ["rg", "ruff"] })))
       .toBeLessThanOrEqual(300)
   })

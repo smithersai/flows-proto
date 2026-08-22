@@ -717,7 +717,7 @@ export const recordModelStep = (
     )
   )
   const budget = budgetMillis === undefined || budgetMillis <= 0 ? undefined : budgetMillis
-  const attemptOnce = budget === undefined
+  const collected = budget === undefined
     // Disarmed. The call is bounded by nothing but the caller's own process,
     // which is what every model call was before this budget existed.
     ? Stream.runCollect(model.stream(request))
@@ -745,6 +745,29 @@ export const recordModelStep = (
         })
       )
     )
+  // A response body that ends without a settlement is a dead socket, and until
+  // now it was the one way a socket could end a run outright. `Stream.runCollect`
+  // *succeeds* on a truncated body — the events it did receive are returned,
+  // `settledMessage` folds them into an `aborted` assistant message, and the
+  // controller then raises `model_failed` because no `settle` is among them.
+  // That failure is a `HarnessError`, not a `ModelError`, so no retry
+  // classification ever saw it: one dropped HTTP/2 session, no backoff, run
+  // over. Two r91 instances were lost to that class and re-run as
+  // infrastructure crashes.
+  //
+  // Classifying it as `transport` puts it on the ladder every other socket
+  // failure already rides. It cannot be confused with an interruption: an
+  // interrupted fiber never reaches here with a value at all, and a settled
+  // stream always carries its settlement.
+  const attemptOnce = Effect.flatMap(collected, (events) =>
+    Array.from(events).some((event) => event.type === "settle")
+      ? Effect.succeed(events)
+      : Effect.fail(
+        new ModelError.ModelError({
+          code: "transport",
+          message: "The model response stream ended without a settlement"
+        })
+      ))
   return attemptOnce.pipe(
     Effect.retry(schedule),
     Effect.map((events) => ({ events: [...retries, ...events] })),

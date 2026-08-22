@@ -441,6 +441,77 @@ describe("FlowEngineLike.make", () => {
     expect(attempts).toBe(3)
   })
 
+  it("retries a body that dies after the headers, and keeps the frame the socket would have ended", async () => {
+    // The r91 wave lost two instances outright to one dropped HTTP/2 session on
+    // `POST /v1/responses`. This is the half of that class no classification
+    // ever saw: a response whose body stops arriving mid-stream *succeeds* at
+    // `Stream.runCollect` — the deltas that did arrive are returned, and only
+    // the settlement is missing. Nothing failed, so nothing was retried, and
+    // the controller then raised `model_failed` and ended the run.
+    //
+    // The scripted abort is the shape a real one takes: some text, then the end
+    // of the stream, with no settle event behind it.
+    let attempts = 0
+    const model = Model.make({
+      stream: () =>
+        Stream.suspend(() => {
+          attempts++
+          const partial = [
+            ModelEvent.ModelEvent.TextStart({ type: "text-start", id: "0" }),
+            ModelEvent.ModelEvent.TextDelta({ type: "text-delta", id: "0", text: "const found = await" })
+          ]
+          return attempts === 1
+            ? Stream.fromIterable(partial)
+            : Stream.fromIterable([...partial, ModelEvent.ModelEvent.Settle({ type: "settle", stopReason: "stop" })])
+        })
+    })
+    const outcome = await drive(Effect.gen(function*() {
+      const engine = yield* FlowEngineLike.make({
+        model,
+        route: staticRoute(),
+        children: countingChildren([]),
+        modelRetryPolicy: Schedule.recurs(2)
+      })
+      return Array.from(yield* Stream.runCollect(engine.sealStep(step("hello"))))
+    }))
+
+    // The abort is journaled as the transport failure it is, and the frame the
+    // socket would have ended settles on the attempt after it.
+    expect(completed(outcome)).toMatchObject([
+      { type: "retry", attempt: 1, code: "transport" },
+      { type: "text-start" },
+      { type: "text-delta" },
+      { type: "settle" }
+    ])
+    expect(attempts).toBe(2)
+  })
+
+  it("surfaces an unsettled stream as a transport failure once the ladder is spent", async () => {
+    // Exhaustion is still exhaustion — but it arrives as a typed `transport`
+    // error the caller can branch on, rather than as the harness's own
+    // "ended without a recorded settlement", which is terminal for the run.
+    let attempts = 0
+    const outcome = await drive(Effect.gen(function*() {
+      const engine = yield* FlowEngineLike.make({
+        model: Model.make({
+          stream: () =>
+            Stream.suspend(() => {
+              attempts++
+              return Stream.fromIterable([ModelEvent.ModelEvent.TextStart({ type: "text-start", id: "0" })])
+            })
+        }),
+        route: staticRoute(),
+        modelRetryPolicy: Schedule.recurs(2)
+      })
+      return yield* Stream.runCollect(engine.sealStep(step("aborted")))
+    }))
+    expect(failure(outcome)).toMatchObject({
+      code: "transport",
+      message: "The model response stream ended without a settlement"
+    })
+    expect(attempts).toBe(3)
+  })
+
   it("surfaces an authentication failure without retrying or replacing it", async () => {
     let attempts = 0
     const authentication = new ModelError({ code: "authentication", message: "invalid API key" })
@@ -1182,6 +1253,41 @@ describe("FlowEngineLike.defaultModelRetryPolicy", () => {
     expect(retriesOf(recorded)).toHaveLength(FlowEngineLike.defaultModelRetryTimes)
     // Exhaustion returns the provider's own typed error, never a wrapper.
     expect(FlowEngineLike.normalizeRecordedModelStep(recorded).error).toStrictEqual(error)
+  })
+
+  it("puts a scripted stream abort on the same ladder, at the same delays", async () => {
+    // The delays are the assertion, so the abort is driven on the injected
+    // clock beside the failures it now shares a classification with. A body
+    // that stops arriving is a transport failure whether the socket said so or
+    // simply stopped, and 32 seconds of jittered cover is what a dropped
+    // HTTP/2 session needs to outlast.
+    const observed: Observed = { attempts: 0, gaps: [] }
+    let previous: number | undefined
+    const aborting = Model.make({
+      stream: () =>
+        Stream.fromEffect(
+          Effect.gen(function*() {
+            const now = yield* Clock.currentTimeMillis
+            observed.attempts++
+            if (previous !== undefined) observed.gaps.push(now - previous)
+            previous = now
+            // Text arrives; the settlement never does.
+            return ModelEvent.ModelEvent.TextDelta({ type: "text-delta", id: "0", text: "partial" })
+          })
+        )
+    })
+    const recorded = await exhaust(aborting)
+
+    const retries = retriesOf(recorded)
+    expect(retries.map((retry) => retry.attempt)).toEqual([1, 2, 3, 4, 5])
+    expect(new Set(retries.map((retry) => retry.code))).toEqual(new Set(["transport"]))
+    expect(observed.attempts).toBe(FlowEngineLike.defaultModelRetryTimes + 1)
+    expect(observed.gaps.map((gap) => Math.round(gap))).toEqual(retries.map((retry) => retry.delayMillis))
+    expect(observed.gaps.reduce((total, gap) => total + gap, 0)).toBeGreaterThan(24_000)
+    expect(FlowEngineLike.normalizeRecordedModelStep(recorded).error).toMatchObject({
+      code: "transport",
+      message: "The model response stream ended without a settlement"
+    })
   })
 
   it("spends no delay and no attempt on a terminal failure", async () => {

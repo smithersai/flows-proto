@@ -161,6 +161,11 @@ const stream = <Body, Frame, Event, State>(
         const decodeEvent = Schema.decodeUnknownEffect(route.protocol.stream.event)
         const events = route.framing.frame(
           response.stream.pipe(
+            // The code is the contract and the transport's own text is not:
+            // `HttpClientError`'s message ends in the method and URL, which a
+            // provider authorizing by query parameter would make a credential.
+            // `transport` is what the retry ladder classifies on, and a body
+            // that dies after the headers is on that ladder from here.
             Stream.mapError(() => new ModelError({ code: "transport", message: "Model response stream failed" }))
           )
         ).pipe(

@@ -1,7 +1,7 @@
 /**
  * Writes the codex-baseline prompt for one instance.
  *
- *   node lib/write-prompt-codex.mjs <dataset.json> <instance_id> <container> <test-command>
+ *   node lib/write-prompt-codex.mjs <dataset.json> <instance_id> <container> <test-command> [interpreter]
  *
  * Deliberately byte-close to write-flow.mjs: same issue text, same environment
  * explanation, same test command, same rules and budget framing. The only
@@ -20,10 +20,16 @@
  * codex numbers from those waves are not comparable on `django__django-16612`
  * or `sphinx-doc__sphinx-11445`. `fixtures/check-prompts.mjs` pins the symmetry
  * so it cannot drift back.
+ *
+ * **Neither is the interpreter.** How this image runs the project's Python is
+ * read off the container by `lib/interpreter.sh`, and it is environment
+ * teaching of the same kind for the same reason: an agent that knows which
+ * Python owns the repository's dependencies and one that does not are not the
+ * same measurement.
  */
 import { readFileSync } from "node:fs"
 
-const [, , datasetPath, instanceId, container, testCommand] = process.argv
+const [, , datasetPath, instanceId, container, testCommand, interpreter] = process.argv
 if (testCommand === undefined || testCommand.trim() === "") {
   console.error("write-prompt-codex.mjs: no test command given; see lib/test-command.py")
   process.exit(1)
@@ -34,6 +40,13 @@ if (instance === undefined) {
   console.error(`unknown instance ${instanceId}`)
   process.exit(1)
 }
+
+// Byte-identical to the bullet lib/write-flow.mjs renders; see the note there.
+const interpreterBullet = interpreter === undefined || interpreter.trim() === "" ? "" : `
+- This image runs the project's Python as \`${interpreter.trim()}\`. The
+  repository's dependencies are installed against that interpreter; a bare
+  \`python\` or \`python3\` resolves to a different one, and importing the
+  project with it fails.`
 
 const body = `You are working in a checkout of ${instance.repo} at commit ${instance.base_commit}.
 The working directory is the repository root.
@@ -54,7 +67,7 @@ immediately, and vice versa.
 
   GNU grep, GNU sed, and the project's dependencies are all available there.
   \`sed -i\` on the host is BSD sed and will not behave like GNU sed; run it
-  through docker exec, or avoid it.
+  through docker exec, or avoid it.${interpreterBullet}
 - This repository runs its tests with \`${testCommand}\`, which takes the test
   paths to run as trailing arguments. It is the runner this project actually
   uses: other runners are not necessarily installed here.
