@@ -140,15 +140,6 @@ export const slice = (
 }
 
 /**
- * Prefixes every line with its 1-based source line number.
- *
- * @category rendering
- * @since 0.1.0
- */
-export const numberLines = (text: string, options: { readonly start: number }): string =>
-  text.split("\n").map((line, index) => `${options.start + index}\t${line}`).join("\n")
-
-/**
  * Renders the disclosure appended whenever output was capped.
  *
  * @category rendering

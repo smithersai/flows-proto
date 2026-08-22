@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `StandardFlows.tests`, which binds `@smthrs/std`'s `test` flow to a
+  host's `TestRunner` declaration. A tool no production composition offers is a
+  tool that does not exist, which is the same reason all seven filesystem flows
+  are bound rather than two.
+
 ### Changed
 
 - Renamed the package from `@smthrs/engine-harness` to `@smthrs/agent`. The
