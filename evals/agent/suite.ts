@@ -319,6 +319,78 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     expected: failed("/harness/HarnessError", 2)
   },
 
+  "repl-realm-carries-a-binding-across-frames": {
+    summary:
+      "In repl mode a cell's top-level name is still bound in the next cell, and the run finishes by calling ctx.done rather than by returning a transition.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // The second cell derives its whole call input from a name the first
+        // cell bound and never filed anywhere. A loop that rebuilt the realm
+        // between frames would throw on `subject` instead of calling `probe`
+        // with it, so the case cannot pass by ending some other way.
+        respond: (_prompt, index) =>
+          index === 0
+            ? `const subject = "carried"\nawait ctx.call("probe", { note: "first" })`
+            : `await ctx.call("probe", { note: subject })\nctx.done("carried " + subject)`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.probeSource(recorder)]
+      })
+    },
+    expected: answered("carried carried", 2, ["probe:first", "probe:carried"])
+  },
+
+  "repl-print-reaches-the-next-frame": {
+    summary:
+      "What a repl cell prints opens the next frame, so console.log is the whole of the context channel and nothing has to be projected.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // Keyed on the printed bytes themselves: a loop that stopped
+        // delivering the print buffer would show the second cell a prompt
+        // without them, and the run would spend its budget instead of
+        // answering.
+        respond: (prompt) =>
+          prompt.includes("beacon:printed")
+            ? `ctx.done("read my own print")`
+            : `console.log("beacon:printed")`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.probeSource(recorder)]
+      })
+    },
+    expected: answered("read my own print", 2)
+  },
+
+  "repl-read-only-cap-takes-ctx-justify": {
+    summary:
+      "The read-only cap is armed in repl mode too, and ctx.justify is the answer that buys quiet frames where a justification field used to.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // The note the cell records says whether the demand had arrived, so
+        // the case proves the intervention reached the model on this surface
+        // as well, and that the call it names is the way out.
+        respond: (prompt) =>
+          prompt.includes("Read-only discipline")
+            ? `await ctx.call("probe", { note: "demanded" })\nctx.justify("the failing assertion is still unread")`
+            : `await ctx.call("probe", { note: "reading" })`,
+        maxFrames: 20,
+        readOnlyCap: 2,
+        cellMode: "repl",
+        flows: [Subject.probeSource(recorder)]
+      })
+    },
+    // Same shape as the filing case: the demand arrives at the cap, the
+    // justification buys quiet frames without resetting the counter, and the
+    // run still stops at twice the cap rather than reporting work it never did.
+    expected: failed("/harness/HarnessError", 4, ["probe:reading", "probe:demanded"])
+  },
+
   "max-frames-stops-the-run": {
     summary: "A run that never completes stops at its frame budget and reports a typed harness failure.",
     run: () => {

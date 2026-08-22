@@ -42,7 +42,7 @@ import { Agent, AgentAction, type FlowEngineLike, Seat, SeatResolver } from "../
 import { Flow as CoreFlow } from "../../packages/core/src/index.ts"
 import { FlowEngine } from "../../packages/engine/src/index.ts"
 import { Action, Flow, FlowRuntime, Interpreter } from "../../packages/flow/src/index.ts"
-import type { AgentEvent } from "../../packages/harness/src/index.ts"
+import type { AgentEvent, Cell } from "../../packages/harness/src/index.ts"
 import { FlowBinding } from "../../packages/harness/src/index.ts"
 import { Model, ModelEvent, type ModelRequest, type Route } from "../../packages/model/src/index.ts"
 import { Node } from "../../packages/plan/src/index.ts"
@@ -445,6 +445,15 @@ export interface AgentOptions {
   readonly readOnlyCap?: number | undefined
   /** Host executable flows the cell may call. */
   readonly flows?: ReadonlyArray<FlowBinding.Source> | undefined
+  /**
+   * Which authoring surface the run is armed for; omitted takes `filing`.
+   *
+   * The arm is a host decision, so it is declared here the way every other host
+   * decision is. A `repl` scenario runs the same production loop against the
+   * same scripted provider; what changes is that the run holds one QuickJS
+   * realm for its whole life.
+   */
+  readonly cellMode?: Cell.Mode | undefined
 }
 
 /**
@@ -475,7 +484,8 @@ export const runAgent = (options: AgentOptions): Effect.Effect<Observation> =>
         capabilityEnvelope: [],
         maxFrames: options.maxFrames,
         ...(options.flows === undefined ? {} : { flows: options.flows }),
-        ...(options.readOnlyCap === undefined ? {} : { readOnlyCap: options.readOnlyCap })
+        ...(options.readOnlyCap === undefined ? {} : { readOnlyCap: options.readOnlyCap }),
+        ...(options.cellMode === undefined ? {} : { cellMode: options.cellMode })
       }).pipe(
         Stream.runForEach((event) => Effect.sync(() => collected.push(event))),
         Effect.provide(Agent.layerDefaults)
