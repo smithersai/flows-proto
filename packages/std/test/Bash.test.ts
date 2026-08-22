@@ -340,6 +340,30 @@ describe("Bash", () => {
     expect(spawns[1]).toMatchObject({ file: "cat", args: [], stdin: "payload", shell: true })
   })
 
+  it("keeps the login shell inside the container, where the profile it reads lives", async () => {
+    // The wrapper exists because an image activates the project's interpreter
+    // from its own profile. A hermetic run is refused a container outright, and
+    // a local spawn already has the host's environment, so neither may acquire
+    // a login shell as a side effect of the container path: `-l` there reads
+    // the developer's own profile into a run that declared its envelope.
+    const spawns: Array<Spawned> = []
+    await execute(Effect.provide(
+      Bash.run({ mode: "hermetic", script: "echo hello", reads: [], writes: [] }),
+      recorder(spawns)
+    ))
+    await execute(Effect.provide(
+      Bash.run({ mode: "hermetic", command: "echo hello", reads: [], writes: [] }),
+      recorder(spawns)
+    ))
+    expect(spawns[0]).toMatchObject({ file: "bash", args: ["-s"], stdin: "echo hello" })
+    expect(spawns[1]).toMatchObject({ file: "echo hello", shell: true })
+    for (const spawn of spawns) {
+      expect(spawn.args ?? []).not.toContain("-l")
+      expect(spawn.args ?? []).not.toContain("-lc")
+      expect(spawn.args ?? []).not.toContain(`exec "$@"`)
+    }
+  })
+
   it("builds the container argv through the injected transport, with no quoting of its own", async () => {
     const spawns: Array<Spawned> = []
     const transport = Layer.succeed(Container.Container)(Container.makeCommand())

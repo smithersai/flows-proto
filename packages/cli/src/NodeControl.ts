@@ -24,6 +24,7 @@ import * as NodeDatabase from "@smthrs/database/node/NodeDatabase"
 import * as StepBoundary from "@smthrs/engine-store/StepBoundary"
 import * as WorkspaceSandbox from "@smthrs/engine-store/WorkspaceSandbox"
 import * as NodeFlowsRuntime from "@smthrs/flows/NodeRuntime"
+import type * as FlowBinding from "@smthrs/harness/FlowBinding"
 import type * as Sandbox from "@smthrs/harness/Sandbox"
 import * as NodeJj from "@smthrs/jj/node/NodeJj"
 import { Migrations, SqlJournal } from "@smthrs/journal"
@@ -534,6 +535,37 @@ export const testRunner = (
 }
 
 /**
+ * The `test` flow's binding source, or none when this host declares no runner.
+ *
+ * Named rather than spread inline because the r91 wave's whole finding about
+ * this flow is that the *composition* was the untried link: the flow, its
+ * declaration and its handler were all tested, and no test asked whether any
+ * host offered them. This is that question, in the one place it can be asked
+ * without booting a run.
+ *
+ * The runner's container is added to the same context, so the suite reaches the
+ * image through the transport `bash` already uses.
+ *
+ * @category constructors
+ * @since 0.1.0
+ * @slop
+ */
+export const testFlows = (
+  services: Context.Context<KernelChildProcessSpawner.ChildProcessSpawner | Path.Path>,
+  container: Container.Container,
+  runner: TestRunner.Runner | undefined
+): ReadonlyArray<FlowBinding.Source> =>
+  runner === undefined ? [] : [
+    StandardFlows.tests(
+      Context.add(
+        Context.add(services, TestRunner.TestRunner, TestRunner.make(runner)),
+        Container.Container,
+        container
+      )
+    )
+  ]
+
+/**
  * Provides the production run executor: the `@smthrs/agent` composition root
  * over the durable control stores, the local flow registry, and the standard
  * host capabilities — filesystem and shell through the kernel's guarded
@@ -594,15 +626,7 @@ export const layerExecutor = (
           StandardFlows.filesystem(filesystemServices, nativeSearch),
           StandardFlows.shell(shellServices, container),
           StandardFlows.memory(memoryServices),
-          ...(runner === undefined ? [] : [
-            StandardFlows.tests(
-              Context.add(
-                Context.add(shellServices, TestRunner.TestRunner, TestRunner.make(runner)),
-                Container.Container,
-                container
-              )
-            )
-          ])
+          ...testFlows(shellServices, container, runner)
         ],
         limits: cellLimits
       })

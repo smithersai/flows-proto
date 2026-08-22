@@ -114,7 +114,13 @@ docker run -d --platform linux/amd64 --name "$CONTAINER" \
   echo "[$RUN_ID] CONTAINER START FAILED"; exit 1; }
 
 # Keep the harness scaffolding out of the model patch.
-printf 'flows/\n.flows/\n.jj/\nagent-run.log\n' >> "$WORK/.git/info/exclude"
+#
+# `.flows-test-base` is the `test` flow's baseline worktree. The flow removes it
+# however the call ends, but a run killed at its wall-clock budget is killed
+# between those two points often enough to matter, and a leftover second
+# checkout of the whole repository is exactly what the prompt promises the agent
+# `git status` will not show it.
+printf 'flows/\n.flows/\n.jj/\nagent-run.log\n.flows-test-base/\n' >> "$WORK/.git/info/exclude"
 
 # The repository's own test runner, from the pinned evaluator's spec map. The
 # rig used to prescribe `python -m pytest` for every repo; Django ships no

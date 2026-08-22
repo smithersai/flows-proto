@@ -210,7 +210,7 @@ describe("cellPrompt", () => {
     expect(contract).toContain("undefined-name")
   })
 
-  it("makes the pre-edit baseline conditional on what it buys, never a licence to write", () => {
+  it("makes the pre-edit baseline conditional on what it buys, never a precondition for writing", () => {
     // r91 shipped rule 8's unconditional form — "before the first write, run
     // the one targeted command that reproduces the report" — and five of the
     // 45 instances then spent a whole 1,200 s budget issuing zero mutation
@@ -224,6 +224,51 @@ describe("cellPrompt", () => {
     expect(contract).toContain("edit on the diagnosis you have and establish the proof afterwards")
     // The unconditional demand is the thing that must not come back.
     expect(contract).not.toContain("Before the first write")
+    // And the relaxation says so in the words that mean it. "Not a licence to
+    // write" reads as "holding a baseline does not entitle you to write", which
+    // is a tighter rule than the one being replaced, not a looser one.
+    expect(contract).toContain("It is not a precondition for writing")
+    expect(contract).not.toContain("licence")
+  })
+
+  it("states one exception, and not the one that cannot be completed", () => {
+    // Rule 8 still ends at r90's demand — complete only once you have SEEN the
+    // identical command pass. An exception for "nothing in this tree can fail
+    // before your change and pass after it" names a case in which no such
+    // command exists, so a run that reads itself into that case can edit and
+    // then never complete: the budget-exhaustion spiral again, one sentence
+    // further down. The escape r91 paired it with (name the observable in
+    // `output` instead) is change #2 doctrine and was reverted with the rest.
+    const contract = contractText()
+    expect(contract).toContain("when the command will not bootstrap, edit on the diagnosis you have")
+    expect(contract).not.toContain("nothing in this tree can fail before your change and pass after it")
+    expect(contract).toContain("Complete only once you have SEEN that identical command pass")
+  })
+
+  it("keeps r90's own words wherever no shipped mechanic replaced them", () => {
+    // The revert is only surgical if the retained lines are the mechanics. Two
+    // r91 trims carried no mechanic at all and are back at r90's text: the park
+    // refusal does still say what budget is left (`CellTurn.parkRefusal` counts
+    // the frames into its message), and rule 1's heredoc sentence was reworded
+    // for nothing.
+    const contract = contractText()
+    expect(contract).toContain("those refuse it, tell you what budget is left, and hand the question back to you")
+    expect(contract).toContain("not about the strings you pass")
+    expect(contract).toContain("such as a Python heredoc reading")
+  })
+
+  it("carries prior state forward in the worked example, because state is replaced and not merged", () => {
+    // `Cell` records `state: returned.state ?? null` — a transition replaces
+    // working memory wholesale. r90's example spread `...ctx.state` into every
+    // `continue`; r91's rewrite dropped the spread with no mechanic behind it,
+    // which teaches a cell to discard what rule 6 has just called its working
+    // memory. Models imitate the example, not the prose.
+    const contract = contractText()
+    // Only the worked example's own transitions: rule 4 names the shape
+    // `{ intent: "continue", state, render, context }` without a literal.
+    const continues = contract.split("\n").filter((line) => line.includes(`intent: "continue", state: {`))
+    expect(continues).toHaveLength(3)
+    for (const line of continues) expect(line).toContain("state: { ...ctx.state,")
   })
 
   it("names only checkers a run can actually reach, never a `diagnostics` flow nothing binds", () => {
@@ -410,7 +455,7 @@ describe("cellPrompt", () => {
     // what remains above it is the lane mechanics measured to pay: the failure
     // envelope and its `.ok` test, `render`/`recall` and the state manifest,
     // raw read content, the hunk an `edit` answers with, and the in-frame
-    // re-ask for a cell that does not parse. Those are ~970 characters, and
+    // re-ask for a cell that does not parse. Those are ~1,000 characters, and
     // every one of them replaces a frame a graded wave actually spent.
     //
     // The ceiling is therefore r90's own budget plus that mechanics delta, and
