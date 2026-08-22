@@ -24,6 +24,13 @@
 # docker and is not run here. The codex backfill splits the same way:
 # `./codex-backfill-dryrun.sh` is its process half.
 #
+# The codex arm's lanes are checked here too, because a lane is a claim about
+# how a number may be quoted: each one reads its own ledger, no two share an
+# archive, an index or an evaluator run id, and the table in the script is the
+# table in the README. So is the report that reads the two lanes against each
+# other — an `eval error` is never counted as a verdict the seal changed, and
+# the seal's own evidence is counted off the transcripts rather than assumed.
+#
 # The analysis bundle is checked here in full, and the check that matters most is
 # what it refuses to print: the gold patch, the graded test file, the
 # FAIL_TO_PASS and PASS_TO_PASS identifiers and the maintainer hints are each a
@@ -157,6 +164,12 @@ node "$S/fixtures/check-run-45.mjs"
 echo "== the two-arm scoreboard"
 node "$S/fixtures/check-compare-arms.mjs"
 
+echo "== the codex backfill's lanes"
+node "$S/fixtures/check-codex-lanes.mjs"
+
+echo "== the two-codex-lane scoreboard"
+node "$S/fixtures/check-compare-codex-lanes.mjs"
+
 echo "== the program evidence a re-run report reads off its journals"
 node "$S/fixtures/check-program-evidence.mjs"
 
@@ -165,6 +178,9 @@ node "$S/fixtures/check-surgery-evidence.mjs"
 
 echo "== the round-3 evidence a third re-run reads off its journals"
 node "$S/fixtures/check-round3-evidence.mjs"
+
+echo "== the realm evidence the REPL A/B reads off its journals"
+node "$S/fixtures/check-repl-evidence.mjs"
 
 echo "== every wave in one table"
 node "$S/fixtures/check-n-way.mjs"

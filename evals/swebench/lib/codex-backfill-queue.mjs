@@ -59,7 +59,17 @@ export const population = (manifestPath) => {
 }
 
 /**
- * The codex ledger's finished instances: the rows that carry a verdict.
+ * The codex ledger's finished instances: the rows that carry a verdict, folded
+ * per instance so the latest verdict travels with the measurements the attempt
+ * that produced the patch recorded.
+ *
+ * The fold is why this is not `set(row.id, row)`. `regrade.sh` appends a row
+ * that carries the new verdict and the reason for it and nothing else — it ran
+ * no agent, so it has no wall clock and no token count to report. Replacing the
+ * earlier row with it would drop `wallSeconds` and `tokens` for every regraded
+ * instance, and a lane's totals would then be missing the instances a re-grade
+ * touched: 7 of the 45 in `codex-manifest.jsonl` on 2026-08-22. Merging keeps
+ * the verdict from the last row and the measurements from the run.
  *
  * @category conversions
  * @since 0.1.0
@@ -70,7 +80,7 @@ export const attempted = (codexManifestPath) => {
   for (const row of rows) {
     if (row.kind !== "instance" || typeof row.id !== "string") continue
     if (typeof row.verdict !== "string" || row.verdict === "") continue
-    finished.set(row.id, row)
+    finished.set(row.id, { ...(finished.get(row.id) ?? {}), ...row })
   }
   return finished
 }

@@ -3,9 +3,14 @@
 #
 #   ./codex-backfill.sh                 every instance still owed one, in order
 #   ./codex-backfill.sh --one <id>      exactly one instance (how a pipeline calls it)
+#   ./codex-backfill.sh --jobs 2        run that many instances at once
+#   ./codex-backfill.sh --lane sealed   the same population under the sealed condition
 #   ./codex-backfill.sh --list          what is left, and stop
 #   ./codex-backfill.sh --status        counts, and stop
 #   ./codex-backfill.sh --table         every instance, our verdict and codex's
+#
+# Every mode takes `--lane`, and it has to: `--status` on the wrong lane reads
+# the wrong ledger.
 #
 # The full benchmark measures the flows harness on all 500 instances. It says
 # nothing on its own: a resolved rate is a number about a benchmark until there
@@ -56,24 +61,75 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"
 FB="${FB_DIR:-$S/fullbench}"
-FBC="$FB/codex"
 
-EVAL_RUN_ID="${SWB_CODEX_BACKFILL_RUN_ID:-fullbench-codex}"
-INDEX="${SWB_CODEX_BACKFILL_INDEX:-r90c}"
+# ---------------------------------------------------------------------------
+# Lanes
+#
+# A lane is one measurement of the population under one condition. It moves four
+# things at once — the archive, the ledger, the run index and the evaluator run
+# id — plus the network condition the runs are given, because a lane that moved
+# only some of them would grade one condition's patches into another condition's
+# run id and no artifact would say so. `run-45.sh` names its lanes the same way
+# and for the same reason.
+#
+# | lane | archive | ledger | index | evaluator run id | network |
+# | --- | --- | --- | --- | --- | --- |
+# | `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` |
+# | `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` |
+#
+# The lanes are a table rather than a name template: every one of them is a
+# claim about how a number may be quoted, and inventing `--lane whatever` on the
+# command line would produce an archive nothing in the rig knows how to read.
+# `run-instance-codex.sh` documents what each network condition denies.
+# ---------------------------------------------------------------------------
+LANE="${SWB_CODEX_LANE:-net}"
+PREVIOUS=""
+for ARGUMENT in "$@"; do
+  if [ "$PREVIOUS" = "--lane" ]; then LANE="$ARGUMENT"; fi
+  PREVIOUS="$ARGUMENT"
+done
+case "$LANE" in
+  net)
+    FBC="$FB/codex"
+    CODEX_MANIFEST="$FB/codex-manifest.jsonl"
+    LANE_INDEX="r90c"; LANE_RUN_ID="fullbench-codex"; LANE_NETWORK="on" ;;
+  sealed)
+    FBC="$FB/codex-sealed"
+    CODEX_MANIFEST="$FB/codex-sealed-manifest.jsonl"
+    LANE_INDEX="r90s"; LANE_RUN_ID="fullbench-codex-sealed"; LANE_NETWORK="sealed" ;;
+  *)
+    echo "codex-backfill.sh: unknown lane '$LANE' — the lanes are net and sealed"; exit 2 ;;
+esac
+
+EVAL_RUN_ID="${SWB_CODEX_BACKFILL_RUN_ID:-$LANE_RUN_ID}"
+INDEX="${SWB_CODEX_BACKFILL_INDEX:-$LANE_INDEX}"
+# The condition every run in this lane is given, and the one thing about a lane
+# that a child process has to be told rather than derive.
+SWB_CODEX_NETWORK="${SWB_CODEX_NETWORK:-$LANE_NETWORK}"
+export SWB_CODEX_NETWORK
 MODEL="${SWB_CODEX_MODEL:-gpt-5.6-sol}"
 MODEL_NAME="${SWB_MODEL_NAME:-codex-cli}"
 # The same per-instance budget the flows side was given by the full benchmark.
 # A baseline run under a different clock is not a baseline.
 BUDGET="${SWB_CODEX_BACKFILL_BUDGET:-1200}"
 SLOTS="${SWB_CODEX_BACKFILL_SLOTS:-2}"
+# How many instances a bare run works on at once. Each one is a separate process
+# — `--one` is the unit, and it is what claims an instance and takes a slot — so
+# a job never shares a pid, a claim or a trap with another. The two-slot
+# semaphore still bounds the docker work whatever this says.
+JOBS="${SWB_CODEX_BACKFILL_JOBS:-1}"
+JOBS_POLL="${SWB_CODEX_BACKFILL_JOBS_POLL:-5}"
 SLOT_TIMEOUT="${SWB_CODEX_BACKFILL_SLOT_TIMEOUT:-21600}"
 SLOT_POLL="${SWB_CODEX_BACKFILL_SLOT_POLL:-15}"
 MIN_FREE_MIB="${SWB_CODEX_BACKFILL_MIN_FREE_MIB:-8192}"
 DISK_WAIT_MAX="${SWB_CODEX_BACKFILL_DISK_WAIT_MAX:-3600}"
 DISK_INTERVAL="${SWB_CODEX_BACKFILL_DISK_INTERVAL:-60}"
 EVAL_LOG_ROOT="${SWB_EVAL_LOG_ROOT:-$S/logs/run_evaluation}"
+# The flows ledger is the population for every lane: the instances our own side
+# graded, whatever condition the codex side is run under.
 MANIFEST="$FB/manifest.jsonl"
-CODEX_MANIFEST="$FB/codex-manifest.jsonl"
+# The slots are shared across lanes on purpose. Two lanes running at once would
+# otherwise put four instances of docker work on one daemon and one disk gate.
 SLOT_ROOT="$FB/.codex-slots"
 WAITS="$FBC/waits.jsonl"
 
@@ -89,7 +145,7 @@ fi
 
 for PAIR in "SLOTS:$SLOTS" "SLOT_TIMEOUT:$SLOT_TIMEOUT" "SLOT_POLL:$SLOT_POLL" \
   "MIN_FREE_MIB:$MIN_FREE_MIB" "DISK_WAIT_MAX:$DISK_WAIT_MAX" "DISK_INTERVAL:$DISK_INTERVAL" \
-  "BUDGET:$BUDGET"; do
+  "BUDGET:$BUDGET" "JOBS:$JOBS" "JOBS_POLL:$JOBS_POLL"; do
   NAME="${PAIR%%:*}"; VALUE="${PAIR#*:}"
   case "$VALUE" in
     ''|*[!0-9]*|0) echo "codex-backfill.sh: $NAME must be a positive integer, got '$VALUE'"; exit 2 ;;
@@ -472,12 +528,19 @@ ONE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --one) MODE=one; ONE="${2:-}"; shift 2 || shift ;;
+    # Read before the defaults were computed; accepted again here so an unknown
+    # argument is still refused.
+    --lane) shift 2 || shift ;;
+    --jobs) JOBS="${2:-}"; shift 2 || shift ;;
     --list) MODE=list; shift ;;
     --status) MODE=status; shift ;;
     --table) MODE=table; shift ;;
     *) echo "codex-backfill.sh: unknown argument '$1'"; exit 2 ;;
   esac
 done
+case "$JOBS" in
+  ''|*[!0-9]*|0) echo "codex-backfill.sh: --jobs must be a positive integer, got '$JOBS'"; exit 2 ;;
+esac
 
 case "$MODE" in
   list)
@@ -509,11 +572,45 @@ case "$MODE" in
     fi
     require_auth
     COUNT="$(printf '%s\n' "$REMAINING" | wc -l | tr -d ' ')"
-    log backfill "$COUNT instances to back fill, $SLOTS docker slots, budget ${BUDGET}s each"
+    log backfill "lane $LANE ($SWB_CODEX_NETWORK network, index $INDEX, run id $EVAL_RUN_ID)"
+    log backfill "$COUNT instances to back fill, $JOBS at a time, $SLOTS docker slots, budget ${BUDGET}s each"
     FAILURES=0
-    for ID in $REMAINING; do
-      run_one "$ID" || FAILURES=$((FAILURES + 1))
-    done
+    if [ "$JOBS" = "1" ]; then
+      for ID in $REMAINING; do
+        run_one "$ID" || FAILURES=$((FAILURES + 1))
+      done
+    else
+      # Every job is a separate `--one` process, which is the unit that claims an
+      # instance, takes a slot and owns its traps. A background *subshell* would
+      # share this shell's pid, and `lib/lock.sh` records the owner's pid: two
+      # subshells would look to each other like one live owner and either could
+      # release the other's claim.
+      #
+      # The marker file is written by this shell before the job starts rather
+      # than by the job itself, so the count is right the instant the job is
+      # scheduled and the loop cannot launch the whole queue while the first
+      # child is still starting up.
+      SPAWN="$(mktemp -d "${TMPDIR:-/tmp}/codex-backfill-jobs.XXXXXX")" || {
+        echo "codex-backfill.sh: could not make a scratch directory for --jobs"; exit 1; }
+      for ID in $REMAINING; do
+        while [ "$(ls "$SPAWN"/*.running 2>/dev/null | wc -l | tr -d ' ')" -ge "$JOBS" ]; do
+          sleep "$JOBS_POLL"
+        done
+        : > "$SPAWN/$ID.running"
+        (
+          "$0" --lane "$LANE" --one "$ID"
+          printf '%s\n' "$?" > "$SPAWN/$ID.exit"
+          rm -f "$SPAWN/$ID.running"
+        ) &
+      done
+      wait
+      for ID in $REMAINING; do
+        if [ "$(cat "$SPAWN/$ID.exit" 2>/dev/null || printf 'missing')" != "0" ]; then
+          FAILURES=$((FAILURES + 1))
+        fi
+      done
+      rm -rf -- "$SPAWN"
+    fi
     log backfill "done: $FAILURES of $COUNT instances did not reach a verdict"
     if [ "$FAILURES" -gt 0 ]; then exit 1; fi
     exit 0 ;;
