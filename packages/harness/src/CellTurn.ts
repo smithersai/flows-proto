@@ -39,6 +39,7 @@ import * as Sufficiency from "./Sufficiency.ts"
 import * as TruncatedOutput from "./TruncatedOutput.ts"
 import * as UnmovedTree from "./UnmovedTree.ts"
 import * as UnresolvedFailure from "./UnresolvedFailure.ts"
+import * as VariablesPanel from "./VariablesPanel.ts"
 
 const NonNegativeSafeInt = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
@@ -230,6 +231,7 @@ const eventType = {
   disciplineArmed: "flows.harness.discipline-armed.v1",
   cellCallSettled: "flows.harness.cell-call-settled.v1",
   cellCallStarted: "flows.harness.cell-call-started.v1",
+  cellPrinted: "flows.harness.cell-printed.v1",
   cellProduced: "flows.harness.cell-produced.v1",
   cellRejectedInFrame: "flows.harness.cell-rejected-in-frame.v1",
   cellSettled: "flows.harness.cell-settled.v1",
@@ -269,6 +271,26 @@ export class State extends Schema.Class<State>("flows/harness/CellTurn/State")({
   session: Schema.String,
   frame: NonNegativeSafeInt,
   maxFrames: MaxFrames,
+  /**
+   * Which authoring surface this run is armed for. See `Cell.Mode`.
+   *
+   * `filing` is the default and decodes from every journal written before the
+   * arm existed, so an existing run's state reconstructs as the mode it ran
+   * under rather than as whatever is current.
+   */
+  mode: Cell.Mode.pipe(
+    Schema.withConstructorDefault(Effect.succeed<Cell.Mode>(Cell.defaultMode)),
+    Schema.withDecodingDefaultKey(Effect.succeed<Cell.Mode>(Cell.defaultMode))
+  ),
+  /**
+   * Every name the realm holds, with the frame that last bound it.
+   *
+   * The REPL mode's answer to {@link State.stateStamps}: freshness is a
+   * property of the run, the frame that reads a name is rarely the frame that
+   * bound it, and "how old is this" cannot be recovered from the realm. Empty
+   * in filing mode, where there is no realm to read. See `VariablesPanel`.
+   */
+  panel: VariablesPanel.Ledger,
   seat: Schema.String,
   modelParams: ModelRequest.GenerationParams,
   layers: Schema.Array(Schema.String),
@@ -727,11 +749,19 @@ export const make = (options: {
    * the frame ends. Omitted takes {@link defaultRevalidations}; zero disarms it.
    */
   readonly revalidations?: number | undefined
+  /**
+   * Which authoring surface this run is armed for. Omitted takes
+   * `Cell.defaultMode`, which is `filing`; `repl` needs a sandbox binding that
+   * offers a persistent realm and is refused on one that does not.
+   */
+  readonly mode?: Cell.Mode | undefined
 }): State =>
   new State({
     session: options.session,
     frame: options.frame ?? 0,
     maxFrames: options.maxFrames ?? defaultMaxFrames,
+    mode: options.mode ?? Cell.defaultMode,
+    panel: [],
     seat: options.seat,
     modelParams: options.modelParams,
     layers: options.layers,
@@ -783,11 +813,12 @@ export const make = (options: {
  */
 export const teach = (
   contextWindow: ContextWindow.ContextWindow,
-  flows: ReadonlyArray<Descriptor.FlowDescriptor>
+  flows: ReadonlyArray<Descriptor.FlowDescriptor>,
+  mode: Cell.Mode = Cell.defaultMode
 ): ContextWindow.ContextWindow => {
   const projections: Record<string, Cell.FlowProjection> = {}
   for (const descriptor of flows) projections[descriptor.name] = Cell.project(descriptor)
-  const taught = cellPrompt.make(projections).map((section) =>
+  const taught = cellPrompt.make(projections, {}, mode).map((section) =>
     ContextWindow.makeSegment({
       kind: "system",
       zone: "prefix",
@@ -865,6 +896,18 @@ const keyMaterialFrom = (
  * input against model time that is 76% to 93% of wall clock.
  */
 const stateSection = (state: State): string => {
+  if (state.mode === "repl") {
+    // The panel takes the slot the manifest holds in filing mode, and it is
+    // stamped by the frame that ran — which is the frame before the one this
+    // prompt is opening. The recall half of the ledger is gone with the stored
+    // bytes it named: a REPL run's results are under the names its cells gave
+    // them.
+    const settled = CallLedger.render(state.callLedger, false)
+    return [
+      VariablesPanel.render({ ledger: state.panel, frame: state.frame - 1 }),
+      ...(settled === undefined ? [] : [settled])
+    ].join("\n\n")
+  }
   const ledger = CallLedger.render(state.callLedger)
   const recalled = CallLedger.recall(state.callLedger, state.recallOrdinals)
   return [
@@ -958,10 +1001,10 @@ const deadCellEcho = 1024
  * is how a frame's output becomes the next frame's input at full price. It is
  * kept whole while it is small, and stated as an excerpt once it is not.
  */
-const observedOn = (
+const appended = (
   contextWindow: ContextWindow.ContextWindow,
   assistant: ModelRequest.AssistantMessage,
-  observation: string,
+  messages: ReadonlyArray<ModelRequest.Message>,
   echo: number
 ): ContextWindow.ContextWindow =>
   ContextWindow.make({
@@ -971,12 +1014,19 @@ const observedOn = (
       ContextWindow.makeSegment({
         kind: "transcript",
         zone: "tail",
-        content: [bounded(assistant, echo), ModelRequest.Message.user(observation)]
+        content: [bounded(assistant, echo), ...messages]
       })
     ],
     activeTools: contextWindow.activeTools,
     replaced: contextWindow.replaced
   })
+
+const observedOn = (
+  contextWindow: ContextWindow.ContextWindow,
+  assistant: ModelRequest.AssistantMessage,
+  observation: string,
+  echo: number
+): ContextWindow.ContextWindow => appended(contextWindow, assistant, [ModelRequest.Message.user(observation)], echo)
 
 /**
  * The assistant's own reply, shortened from the middle when it is too long to
@@ -1016,6 +1066,45 @@ const statePathMiss = (message: string, agentState: Schema.Json): string | undef
       keys.join(", ")
     }. The manifest in the frame block gives each one's type, size and age.`
 }
+
+/**
+ * States what the realm holds, when a REPL cell threw reading a property.
+ *
+ * The REPL answer to {@link statePathMiss}, and a better one to the same
+ * question: the names are the run's memory, so naming them is naming what the
+ * cell could have read.
+ */
+const bindingPathMiss = (
+  message: string,
+  bindings: ReadonlyArray<VariablesPanel.Binding>
+): string | undefined => {
+  const property = missedProperty(message)
+  if (property === undefined) return undefined
+  return bindings.length === 0
+    ? `If \`${property}\` was meant to come from a name an earlier cell bound: your realm holds no names yet.`
+    : `If \`${property}\` was meant to come from a name an earlier cell bound, these are the names your realm holds: ${
+      elide.head(
+        bindings.map((binding) => binding.name).join(", "),
+        CallLedger.width * 4,
+        "the panel in the frame block lists them all"
+      )
+    }. The panel gives each one's type and size.`
+}
+
+/**
+ * What the next model turn is told about the frame's print buffer.
+ *
+ * The whole of the REPL mode's context channel, delivered once and appended
+ * rather than rebuilt: a run's window is `[cell₁, prints₁], [cell₂, prints₂], …`
+ * plus whatever the harness has to say, so the tail is byte-identical to the
+ * previous frame's tail plus one pair. That is exactly what a provider's prefix
+ * cache is for, and it is what the filing mode's per-frame rebuild of the
+ * transcript could never be.
+ */
+const printsObservation = (prints: string): string =>
+  prints === ""
+    ? "Your cell printed nothing, so this turn opens with nothing new to read. Everything it bound is still in the realm; print what you need to look at."
+    : `What your cell printed:\n${prints}`
 
 const revalidationNote = (rejection: Cell.Rejected): string =>
   `${rejection.message}\n\nThis reply is not a frame. Nothing ran, nothing changed, and no call was made, so you are being asked again inside the same frame instead of losing it: everything above this line is already in the provider's cache, and only what you write next is paid for. Emit the corrected cell and nothing else.`
@@ -1553,6 +1642,7 @@ const frame = (
   input: Input,
   engine: EngineLike.EngineLike,
   sandbox: Sandbox.Sandbox,
+  realm: Sandbox.Realm | undefined,
   steering: Steering.Source,
   emit: (event: AgentEvent.AgentEvent) => Effect.Effect<void>
 ): Effect.Effect<Step, HarnessError | Sandbox.SandboxError | Model.ModelFailure> =>
@@ -1625,7 +1715,7 @@ const frame = (
       else {
         // The parse the realm used to do, done here instead: a cell that cannot
         // run is refused before the frame commits to it.
-        const validation = CellValidation.validate(extracted.success.source)
+        const validation = CellValidation.validate(extracted.success.source, state.mode)
         rejection = validation.rejected
         if (rejection === undefined) {
           produced = {
@@ -1657,6 +1747,15 @@ const frame = (
     }
     const answer = settled
 
+    /**
+     * What this frame's cell printed, once it has run.
+     *
+     * Empty until the realm answers, and empty for the whole of a filing frame:
+     * there is no print channel there, and a cell that never reached the
+     * sandbox printed nothing in either mode.
+     */
+    let printed = ""
+
     /** Records an unusable frame and asks for another, budget permitting. */
     const observe = (
       note: string,
@@ -1668,7 +1767,14 @@ const frame = (
         _tag: "Continue",
         state: advance(state, {
           frame: state.frame + 1,
-          contextWindow: observedOn(contextWindow, answer.message, note, echo),
+          // A frame's prints lead whatever the harness has to say about it, so
+          // a cell that printed and then threw is read in the order it ran.
+          contextWindow: observedOn(
+            contextWindow,
+            answer.message,
+            printed === "" ? note : `${printed}\n\n${note}`,
+            echo
+          ),
           truncatedOutputs: TruncatedOutput.retain(ledger),
           ...changes
         })
@@ -1821,13 +1927,34 @@ const frame = (
     // the first opens on the measurement its predecessor closed with, so this
     // walks the workspace only when the run has none yet.
     const opened = state.workspace ?? (yield* witness(engine, state, cell.digest, "open"))
-    const outcome = yield* sandbox.evaluate({
-      cell,
-      flows: projections,
-      call: observing,
-      state: state.agentState,
-      limits: input.limits
-    })
+    // One realm per run in REPL mode, one per evaluation in filing mode. The
+    // realm is the caller's scoped resource, so the loop hands it the cell and
+    // the call handler and nothing else changes about how a frame runs.
+    let bindings: ReadonlyArray<VariablesPanel.Binding> = []
+    let outcome: Cell.Outcome
+    if (realm === undefined) {
+      outcome = yield* sandbox.evaluate({
+        cell,
+        flows: projections,
+        call: observing,
+        state: state.agentState,
+        limits: input.limits
+      })
+    } else {
+      const evaluated = yield* realm.evaluate({ cell, frame: state.frame, call: observing })
+      outcome = evaluated.outcome
+      bindings = evaluated.bindings
+      printed = printsObservation(evaluated.prints)
+      yield* emit(
+        new AgentEvent.CellPrinted({
+          eventType: eventType.cellPrinted,
+          cell: cell.digest,
+          text: evaluated.prints
+        })
+      )
+    }
+    // The panel the next frame opens with, stamped by the frame that ran.
+    const panel = realm === undefined ? state.panel : VariablesPanel.stamp(state.panel, bindings, state.frame)
     const closed = yield* witness(engine, state, cell.digest, "close")
     yield* emit(
       new AgentEvent.CellSettled({ eventType: eventType.cellSettled, cell: cell.digest, outcome })
@@ -1837,7 +1964,7 @@ const frame = (
     // exit that continues the run carries it, a raise included: a call that
     // settled before the throw is work the run paid for, and the ledger is the
     // only place the next model turn can read it.
-    const callLedger = CallLedger.remember(state.callLedger, observedCalls)
+    const callLedger = CallLedger.remember(state.callLedger, observedCalls, state.mode === "filing")
 
     // The frame's own record of what it did to the world, computed once and
     // carried out through every exit.
@@ -2002,7 +2129,11 @@ const frame = (
       // `ctx.state` makes. The keys are already computed for the manifest, so
       // naming them costs nothing and closes the loop the model would otherwise
       // spend a frame on. See `StateManifest`.
-      const missed = outcome._tag === "raised" ? statePathMiss(outcome.message, state.agentState) : undefined
+      const missed = outcome._tag !== "raised"
+        ? undefined
+        : state.mode === "repl"
+        ? bindingPathMiss(outcome.message, bindings)
+        : statePathMiss(outcome.message, state.agentState)
       const note = outcome._tag === "raised"
         ? `The cell threw ${outcome.name}: ${outcome.message}. Emit a corrected cell.${
           missed === undefined ? "" : `\n${missed}`
@@ -2018,6 +2149,7 @@ const frame = (
         failures,
         mutations,
         openingDigest,
+        panel,
         ...(mutated ? { readOnlyGrace: 0, pendingReadOnlyDemand: undefined } : {})
       })
       yield* emit(
@@ -2092,6 +2224,7 @@ const frame = (
             failures,
             mutations,
             openingDigest,
+            panel,
             ...(mutated ? { readOnlyGrace: 0 } : {})
           }
         )
@@ -2320,6 +2453,7 @@ const frame = (
             failures,
             mutations,
             openingDigest,
+            panel,
             ...demanded.spent,
             // The answer the demand is taking away, kept so it cannot be lost.
             // A frame was reserved for the run to answer in, but nothing makes
@@ -2481,14 +2615,28 @@ const frame = (
       )
     }
     const held = sufficient === undefined ? [] : [ModelRequest.Message.user(Sufficiency.observation(sufficient))]
-    const context = projected(contextWindow, transition.context, [
+    const trailing = [
       ...drained.inserts,
       ...parsed,
       ...alerts,
       ...demand,
       ...repeated,
       ...held
-    ])
+    ]
+    // Filing mode replaces the transcript with what the cell projected; REPL
+    // mode appends the pair the frame produced. The append is what keeps the
+    // provider's prefix cache covering everything below the last frame — a
+    // replaced transcript breaks the prefix on every turn, and one graded wave
+    // recorded zero cached input tokens on an instance where an earlier wave
+    // had 5,142.
+    const context = state.mode === "filing"
+      ? projected(contextWindow, transition.context, trailing)
+      : appended(
+        contextWindow,
+        answer.message,
+        [ModelRequest.Message.user(printed), ...trailing],
+        liveCellEcho
+      )
     return {
       _tag: "Continue",
       state: advance(state, {
@@ -2519,6 +2667,7 @@ const frame = (
         callLedger,
         failures,
         mutations,
+        panel,
         ...(sufficient === undefined ? {} : { sufficiencyStated: true }),
         openingDigest,
         pendingReadOnlyDemand: demanded && !justified ? { streak: readOnlyFrames, cap } : undefined
@@ -2573,12 +2722,40 @@ export const run = (
             unmovedCap: current.unmovedCap,
             unresolvedCap: current.unresolvedCap,
             revalidations: current.revalidations,
+            cellMode: current.mode,
             ...limits
           })
         )
       }
+      // The run's realm, in REPL mode: an `acquireRelease` on this loop's scope
+      // rather than on one evaluation, so teardown is still scope closure and
+      // cancellation is still fiber interruption. A resumed run rebuilds it by
+      // re-executing its own cells from the top — every `ctx.call` replays from
+      // its recorded boundary, so the realm that comes out is the realm that was
+      // lost, without anything having been serialized.
+      //
+      // Opened after the arming is journaled, so a run whose realm cannot be
+      // built still has its armed decision on the record. That is what the
+      // `discipline-armed` event is for: a failure that leaves no record of
+      // which arm was asked for is a failure a grader cannot read.
+      const realm = input.state.mode === "filing" ? undefined : yield* Effect.suspend(() => {
+        const projections: Record<string, Cell.FlowProjection> = {}
+        for (const descriptor of input.flows) projections[descriptor.name] = Cell.project(descriptor)
+        return sandbox.openRealm === undefined
+          ? Effect.fail(Sandbox.realmUnsupported)
+          : sandbox.openRealm({ flows: projections, limits: input.limits })
+      }).pipe(
+        Effect.mapError((cause) =>
+          new HarnessError({
+            code: "engine_failed",
+            message: "The run's persistent realm could not be opened",
+            cause
+          })
+        )
+      )
+
       for (;;) {
-        const step = yield* frame({ ...input, state: current }, engine, sandbox, steering, emit).pipe(
+        const step = yield* frame({ ...input, state: current }, engine, sandbox, realm, steering, emit).pipe(
           Effect.catch((error) => {
             const request = permissionRequired(error)
             if (request === undefined) {
@@ -2640,7 +2817,7 @@ export const run = (
     // run. An interruption is forwarded rather than swallowed: a durable park
     // arrives as one, and turning it into a clean end would report a suspended
     // run as a finished one.
-    return Effect.onExit(loop, (exit) =>
+    return Effect.onExit(Effect.scoped(loop), (exit) =>
       Effect.asVoid(
         exit._tag === "Success" ? Queue.end(queue) : Queue.failCause(queue, exit.cause)
       ))

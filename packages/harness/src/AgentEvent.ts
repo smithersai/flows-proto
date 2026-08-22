@@ -91,6 +91,20 @@ export class DisciplineArmed extends Schema.TaggedClass<DisciplineArmed>(
    * rather than answered; zero disarms.
    */
   unresolvedCap: Schema.Number,
+  /**
+   * Which authoring surface this run was armed for.
+   *
+   * Journaled beside every other armed budget because it is the one thing a
+   * grader cannot infer from a run's own behaviour: a REPL run that never
+   * declares a name and a filing run that never files one look alike in the
+   * events, and an A/B whose arm has to be guessed is not an A/B. Decoded as
+   * `filing` when absent, so every journal written before the arm existed still
+   * decodes as the arm it ran under.
+   */
+  cellMode: Cell.Mode.pipe(
+    Schema.withConstructorDefault(Effect.succeed<Cell.Mode>("filing")),
+    Schema.withDecodingDefaultKey(Effect.succeed<Cell.Mode>("filing"))
+  ),
   /** Maximum calls per cell, when this binding can enforce one. */
   calls: Schema.optional(Schema.Number),
   /** Maximum sandbox heap, when this binding can enforce one. */
@@ -273,6 +287,28 @@ export class CellCallSettled extends Schema.TaggedClass<CellCallSettled>(
   flowName: Schema.String,
   identity: Cell.CallIdentity,
   result: Cell.CallResult
+}) {}
+
+/**
+ * What one REPL cell printed, as the next model turn will read it.
+ *
+ * The print buffer is the whole of the context channel in REPL mode, so it is
+ * journaled rather than derived: a transcript projection rebuilds a resumed
+ * run's window from the journal without re-running anything, exactly as it does
+ * for the context a filing cell projected. Bounded before it is emitted, so the
+ * journal carries what the model saw and nothing larger.
+ *
+ * @category events
+ * @since 0.1.0
+ */
+export class CellPrinted extends Schema.TaggedClass<CellPrinted>(
+  "flows/harness/AgentEvent/CellPrinted"
+)("cell-printed", {
+  eventType: Schema.Literal("flows.harness.cell-printed.v1"),
+  /** The digest of the cell whose prints these are. */
+  cell: Schema.String,
+  /** The frame's whole print buffer, already bounded; empty when it printed nothing. */
+  text: Schema.String
 }) {}
 
 /**
@@ -718,6 +754,7 @@ export const AgentEvent = Schema.Union([
   CellRejectedInFrame,
   CellCallStarted,
   CellCallSettled,
+  CellPrinted,
   CellSettled,
   TransitionApplied,
   MutationObserved,

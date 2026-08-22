@@ -255,7 +255,7 @@ export interface Settlement {
  * @since 0.1.0
  * @slop
  */
-export const entry = (ordinal: number, call: Settlement): Entry => {
+export const entry = (ordinal: number, call: Settlement, retainResult = true): Entry => {
   // A failure's whole content is its message, so that is what recall stores for
   // it: an anchor near-miss reads identically whether the flow returned it as a
   // value or as prose, and a cell that wants the exact text of one should not
@@ -272,7 +272,7 @@ export const entry = (ordinal: number, call: Settlement): Entry => {
     ok: call.ok,
     digest: call.ok ? digest(call.value) : clip(call.message ?? "failed", width),
     bytes: whole.length,
-    retained: whole.length <= recallEntryBytes ? whole : undefined
+    retained: retainResult && whole.length <= recallEntryBytes ? whole : undefined
   })
 }
 
@@ -298,13 +298,20 @@ export const settled = (ledger: Ledger): number => ledger.length === 0 ? 0 : led
  * the numbers the journal would give the same calls after older lines have aged
  * out of the bound.
  *
+ * `retainResults` is what the REPL mode turns off. There the payload of a call
+ * is already bound to a name in the realm, so 32 KiB of stored result bytes in
+ * durable controller state buys nothing that the variable does not already give
+ * — and a line that cannot be recalled must not be printed as one that can. The
+ * index half of the ledger, which is what the golf report credits with deleting
+ * a frame class, is unchanged.
+ *
  * @category combinators
  * @since 0.1.0
  * @slop
  */
-export const remember = (known: Ledger, made: ReadonlyArray<Settlement>): Ledger => {
+export const remember = (known: Ledger, made: ReadonlyArray<Settlement>, retainResults = true): Ledger => {
   const before = settled(known)
-  const all = [...known, ...made.map((call, index) => entry(before + index + 1, call))]
+  const all = [...known, ...made.map((call, index) => entry(before + index + 1, call, retainResults))]
   return retain(all.length <= bound ? all : all.slice(all.length - bound))
 }
 
@@ -348,7 +355,7 @@ export const retain = (ledger: Ledger): Ledger => {
  * @since 0.1.0
  * @slop
  */
-export const render = (ledger: Ledger): string | undefined => {
+export const render = (ledger: Ledger, recallable = true): string | undefined => {
   if (ledger.length === 0) return undefined
   const total = settled(ledger)
   const elided = total - ledger.length
@@ -360,9 +367,14 @@ export const render = (ledger: Ledger): string | undefined => {
       line.retained === undefined ? "" : `, recall ${line.ordinal}`
     })`
   )
-  return `${heading}\n${
-    lines.join("\n")
-  }\nA line marked \`recall N\` still holds its whole result: put N in the \`recall\` array of your next transition and the harness prints it in the next prompt. That is free; issuing the call again is not.`
+  // The recall trailer is teaching about a mechanic, so it is printed only
+  // where the mechanic exists. A REPL run holds its results under the names its
+  // own cells gave them, and telling it to ask for bytes nobody kept would cost
+  // it a frame finding that out.
+  const trailer = recallable
+    ? "\nA line marked `recall N` still holds its whole result: put N in the `recall` array of your next transition and the harness prints it in the next prompt. That is free; issuing the call again is not."
+    : "\nThese are an index, not the results: what each call returned is still under the name your cell bound it to. Read the name; do not issue the call again."
+  return `${heading}\n${lines.join("\n")}${trailer}`
 }
 
 /**

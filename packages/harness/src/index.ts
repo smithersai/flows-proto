@@ -154,3 +154,9 @@ export * as Sufficiency from "./Sufficiency.ts"
  * @since 0.1.0
  */
 export * as VacuousVerification from "./VacuousVerification.ts"
+
+/**
+ * @category models
+ * @since 0.1.0
+ */
+export * as VariablesPanel from "./VariablesPanel.ts"
