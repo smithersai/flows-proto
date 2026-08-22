@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, FileSystem, Option } from "effect"
+import { Cause, Effect, Exit, FileSystem, Layer, Option } from "effect"
 import { describe, expect, it } from "vitest"
 import * as Edit from "../src/Edit.ts"
 import { layer } from "./TestLayers.ts"
@@ -154,6 +154,49 @@ describe("Edit anchoring", () => {
     if (Exit.isFailure(exit)) {
       expect(Option.getOrUndefined(Cause.findErrorOption(exit.cause))?.code).toBe("not_found")
     }
+  })
+
+  it("puts back permission bits the host's write moved", async () => {
+    // Five graded SWE-bench patches shipped spurious 100644 -> 100755 sections
+    // around their real edits. A patch is content; mode is not this library's
+    // to change.
+    const chmods: Array<{ readonly path: string; readonly mode: number }> = []
+    let mode = 0o100644
+    const info = (value: number): FileSystem.File.Info => ({
+      type: "File",
+      mtime: Option.none(),
+      atime: Option.none(),
+      birthtime: Option.none(),
+      dev: 0,
+      ino: Option.none(),
+      mode: value,
+      nlink: Option.none(),
+      uid: Option.none(),
+      gid: Option.none(),
+      rdev: Option.none(),
+      size: FileSystem.Size(0),
+      blksize: Option.none(),
+      blocks: Option.none()
+    })
+    const host = Layer.succeed(FileSystem.FileSystem)(FileSystem.makeNoop({
+      stat: () => Effect.succeed(info(mode)),
+      readFileString: () => Effect.succeed("value = 1\n"),
+      writeFileString: () =>
+        Effect.sync(() => {
+          // A host that writes by replacing the file loses its bits.
+          mode = 0o100755
+        }),
+      chmod: (path, value) =>
+        Effect.sync(() => {
+          chmods.push({ path, mode: value })
+          mode = 0o100000 | value
+        })
+    }))
+    await execute(Effect.provide(
+      Edit.run({ path: "/a.py", oldString: "value = 1", newString: "value = 2" }),
+      host
+    ))
+    expect(chmods).toEqual([{ path: "/a.py", mode: 0o644 }])
   })
 
   it("declares compensable hermetic effects and narrows each invocation", () => {
