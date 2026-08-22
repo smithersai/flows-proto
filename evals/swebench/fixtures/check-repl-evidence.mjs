@@ -180,6 +180,31 @@ const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _t
   assert.equal(run.carriedReferences, 0)
   assert.equal(run.rebindings, 1)
   assert.equal(run.silentFrames, 1, "a cell that printed nothing is counted")
+  assert.equal(run.elidedFrames, 0, "neither buffer was cut")
+}
+
+// ---------------------------------------------------------------------------
+// A frame whose prints were cut says so in its own buffer, and is counted.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("elided", [
+    armed("repl"),
+    opened(),
+    produced("const a = 1\n"),
+    printed("head\n… 12 further print statements were not kept: this frame printed more than the harness holds."),
+    continued(),
+    opened(),
+    produced("const b = 2\n"),
+    printed("head\n[… cut …] print less next time, or read the value back from the name it is still bound to\ntail"),
+    continued(),
+    opened(),
+    produced("const c = 3\n"),
+    printed("all of it"),
+    continued()
+  ])
+  const run = readRun(path)
+  assert.equal(run.elidedFrames, 2, "both sentences the sandbox writes are read")
+  assert.equal(run.printedFrames, 3)
 }
 
 // ---------------------------------------------------------------------------
