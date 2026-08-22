@@ -1,13 +1,28 @@
 /**
  * Bash flow declaration and portable handler.
  *
+ * Two ways in, and the difference is where the payload is parsed. `command` is
+ * a line for the platform shell, exactly as before. `script` is program text
+ * delivered to an interpreter on standard input, as data: nothing quotes it,
+ * escapes it, or terminates it with a heredoc marker, so the class of failure
+ * that produced `docker exec c bash -lc '…python - <<EOF…'` cannot occur. Its
+ * `args` reach the script as arguments rather than as interpolated text.
+ *
+ * `container` names a container the host knows how to reach, and the argv is
+ * built by the injected {@link Container} transport rather than typed by the
+ * caller. A host that binds no transport refuses such a call by saying so; the
+ * requirement is optional here precisely so a host without containers is not
+ * forced to declare one.
+ *
  * @since 0.1.0
  */
 import * as Flow from "@smthrs/core/Flow"
 import type * as ChildProcessSpawner from "@smthrs/kernel/ChildProcessSpawner"
 import * as Path from "@smthrs/kernel/Path"
 import * as Effect from "effect/Effect"
+import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
+import * as Container from "./Container.ts"
 import { capability, envelope } from "./internal/Declaration.ts"
 import * as Exec from "./internal/Exec.ts"
 import { withinEnvelope } from "./internal/Paths.ts"
@@ -34,9 +49,29 @@ export const name = "bash"
  * @since 0.1.0
  */
 export const description =
-  "Run a shell command. mode:hermetic checks explicit path tokens against declared reads/writes but does not sandbox the process. mode:unhermetic skips that check. stdout/stderr retain overflow tails."
+  "Run a shell command, or an interpreter over a script passed as data instead of quoted into a line. container routes it through the host's container transport. mode:hermetic pre-checks path tokens."
 
-const Command = Schema.String.annotate({ description: "Shell command string to execute" })
+const Command = Schema.optional(Schema.String.annotate({
+  description: "Shell command line to execute; give this or script, never both"
+}))
+const Script = Schema.optional(Schema.String.annotate({
+  description: "Program text delivered to the interpreter on stdin as data, so it needs no quoting or heredoc"
+}))
+const Interpreter = Schema.optional(Schema.String.annotate({
+  description:
+    "Program that reads script on stdin; defaults to bash. python, python3, sh, zsh, node, ruby and perl are known"
+}))
+const Args = Schema.optional(
+  Schema.Array(Schema.String).annotate({
+    description: "Arguments passed to the script as data, never interpolated into it"
+  })
+)
+const Stdin = Schema.optional(Schema.String.annotate({
+  description: "Text written to the command's standard input; use script instead when the text is the program"
+}))
+const ContainerName = Schema.optional(Schema.String.annotate({
+  description: "Run inside this container through the host's container transport; requires mode:unhermetic"
+}))
 const Cwd = Schema.optional(Schema.String.annotate({ description: "Working directory for the command" }))
 const Env = Schema.optional(
   Schema.Record(Schema.String, Schema.String).annotate({ description: "Environment variables for the command" })
@@ -62,6 +97,11 @@ export const Input = Schema.Union([
       description: "Lexically pre-check explicit path tokens against declared reads and writes; does not sandbox"
     }),
     command: Command,
+    script: Script,
+    interpreter: Interpreter,
+    args: Args,
+    stdin: Stdin,
+    container: ContainerName,
     reads: Schema.Array(Schema.String).annotate({ description: "Paths or path globs the command may read" }),
     writes: Schema.Array(Schema.String).annotate({ description: "Paths or path globs the command may write" }),
     cwd: Cwd,
@@ -73,6 +113,11 @@ export const Input = Schema.Union([
       description: "Run without a declared filesystem envelope as an irreversible effect"
     }),
     command: Command,
+    script: Script,
+    interpreter: Interpreter,
+    args: Args,
+    stdin: Stdin,
+    container: ContainerName,
     cwd: Cwd,
     env: Env,
     timeoutMs: TimeoutMs
@@ -288,6 +333,7 @@ const isDeclared = (
 
 const outsideEnvelope = (
   input: Extract<Input, { readonly mode: "hermetic" }>,
+  text: string,
   path: Path.Path
 ): StdError.StdError | undefined => {
   const base = path.resolve(".")
@@ -312,7 +358,7 @@ const outsideEnvelope = (
   // This lexical scan is intentionally only a fail-closed pre-check for
   // explicit path tokens. It cannot prove confinement; a kernel/host sandbox
   // must eventually enforce and report the complete read and write sets.
-  for (const reference of commandReferences(path, input.command)) {
+  for (const reference of commandReferences(path, text)) {
     const resolved = path.isAbsolute(reference.value)
       ? path.normalize(reference.value)
       : path.resolve(cwd, reference.value)
@@ -328,6 +374,117 @@ const outsideEnvelope = (
   }
   return undefined
 }
+
+/**
+ * How each known interpreter is told to read its program from standard input.
+ *
+ * A login shell is used only inside a container, because a container's
+ * environment is what its profile makes it — that is exactly why the rig had to
+ * teach `bash -lc` — while a local spawn already inherits the host's.
+ */
+const stdinArguments = (interpreter: string, login: boolean): ReadonlyArray<string> => {
+  switch (interpreter) {
+    case "bash":
+    case "zsh":
+      return login ? ["-l", "-s"] : ["-s"]
+    case "sh":
+    case "dash":
+      return ["-s"]
+    case "python":
+    case "python3":
+      return ["-"]
+    default:
+      // node, ruby, perl and their kin read a program from standard input when
+      // they are given no file to run.
+      return []
+  }
+}
+
+/** Whether a script is shell text the lexical pre-check can actually read. */
+const shells = new Set(["bash", "zsh", "sh", "dash"])
+
+/** What one invocation runs, before any container transport rewrites it. */
+interface Plan {
+  readonly file: string
+  readonly args: ReadonlyArray<string> | undefined
+  readonly stdin: string | undefined
+  readonly quoted: string
+}
+
+const invalid = (message: string): StdError.StdError => new StdError.StdError({ code: "invalid_input", message })
+
+/** The invocation an input names, or the failure explaining why it names none. */
+const plan = (input: Input): Plan | StdError.StdError => {
+  const interpreter = input.interpreter ?? "bash"
+  if (input.command !== undefined && input.script !== undefined) {
+    return invalid("Give command or script, never both: a script is program text, a command is a shell line")
+  }
+  if (input.command === undefined && input.script === undefined) {
+    return invalid("Give either command (a shell line) or script (program text run by interpreter)")
+  }
+  if (input.script !== undefined && input.stdin !== undefined) {
+    return invalid("A script already arrives on standard input, so it cannot also carry stdin")
+  }
+  if (input.command !== undefined && input.args !== undefined) {
+    return invalid("args belong to a script; a command carries its own arguments in the line")
+  }
+  if (input.command !== undefined && input.interpreter !== undefined) {
+    return invalid("interpreter runs a script; a command runs in the platform shell")
+  }
+  if (input.mode === "hermetic" && input.container !== undefined) {
+    return invalid(
+      "A container has its own filesystem, so declared reads and writes cannot describe it. Use mode:unhermetic for a containerised command"
+    )
+  }
+  if (input.mode === "hermetic" && input.script !== undefined && !shells.has(interpreter)) {
+    return invalid(
+      `The hermetic pre-check reads shell text, and ${interpreter} is not a shell. Run this script with mode:unhermetic, or express it as shell`
+    )
+  }
+  if (input.command !== undefined) {
+    return { file: input.command, args: undefined, stdin: input.stdin, quoted: input.command }
+  }
+  const args = [...stdinArguments(interpreter, input.container !== undefined), ...(input.args ?? [])]
+  return {
+    file: interpreter,
+    args,
+    stdin: input.script,
+    quoted: [interpreter, ...args].join(" ")
+  }
+}
+
+/** The plan as the host will spawn it, once the container transport has had it. */
+const routed = (
+  plan: Plan,
+  input: Input,
+  transport: Option.Option<Container.Container>
+): Effect.Effect<Plan, StdError.StdError> => {
+  if (input.container === undefined) return Effect.succeed(plan)
+  if (Option.isNone(transport)) return Effect.fail(Container.unavailable(input.container))
+  return Effect.map(
+    transport.value.exec(request(plan, input)),
+    (routing): Plan => ({
+      file: routing.file,
+      args: routing.args,
+      stdin: plan.stdin,
+      quoted: [routing.file, ...routing.args].join(" ")
+    })
+  )
+}
+
+/**
+ * One containerised request. A command line becomes a single argument to a
+ * login shell inside the container, which is the one place quoting still
+ * happens and the one place it is ours rather than the caller's.
+ */
+const request = (plan: Plan, input: Input): Container.Request => ({
+  container: input.container ?? "",
+  file: plan.args === undefined ? "bash" : plan.file,
+  args: plan.args === undefined ? ["-lc", plan.file] : plan.args,
+  ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+  ...(input.env === undefined ? {} : { env: input.env }),
+  stdin: plan.stdin !== undefined
+})
 
 const hostError = (command: string, error: unknown): StdError.StdError => {
   const code = typeof error === "object" && error !== null && "code" in error
@@ -355,16 +512,24 @@ export const run = Effect.fn("Bash.run")(function*(
   input: Input
 ): Effect.fn.Return<Output, StdError.StdError, ChildProcessSpawner.ChildProcessSpawner | Path.Path> {
   const path = yield* Path.Path
+  const intent = plan(input)
+  if (intent instanceof StdError.StdError) return yield* Effect.fail(intent)
   if (input.mode === "hermetic") {
-    const violation = outsideEnvelope(input, path)
+    const violation = outsideEnvelope(input, input.command ?? input.script ?? "", path)
     if (violation !== undefined) return yield* Effect.fail(violation)
   }
+  // A container owns the working directory and the environment of what runs in
+  // it, so those travel in the transport's argv rather than in the host spawn.
+  const contained = input.container !== undefined
+  const spawned = yield* routed(intent, input, yield* Effect.serviceOption(Container.Container))
 
-  const result = yield* Exec.exec(input.command, {
-    ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-    ...(input.env === undefined ? {} : { env: input.env }),
-    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs })
-  }).pipe(Effect.mapError((error) => hostError(input.command, error)))
+  const result = yield* Exec.exec(spawned.file, {
+    ...(input.cwd === undefined || contained ? {} : { cwd: input.cwd }),
+    ...(input.env === undefined || contained ? {} : { env: input.env }),
+    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    ...(spawned.args === undefined ? {} : { args: spawned.args }),
+    ...(spawned.stdin === undefined ? {} : { stdin: spawned.stdin })
+  }).pipe(Effect.mapError((error) => hostError(spawned.quoted, error)))
   const stdout = truncateBytes(result.stdout, MAX_SHELL_OUTPUT_BYTES, { keep: "tail" })
   const stderr = truncateBytes(result.stderr, MAX_SHELL_OUTPUT_BYTES, { keep: "tail" })
   // Classified against the text this call returns rather than the text it

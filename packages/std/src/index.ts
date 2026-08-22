@@ -55,6 +55,9 @@ export * as NativeSearch from "./NativeSearch.ts"
  */
 export * as Bash from "./Bash.ts"
 
+/** @category services @since 0.1.0 */
+export * as Container from "./Container.ts"
+
 /**
  * @category classification
  * @since 0.1.0
