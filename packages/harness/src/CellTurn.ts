@@ -1965,9 +1965,18 @@ const frame = (
     // while the run had still changed nothing. `Sufficiency` needs a failure
     // before a change; `VacuousVerification` needs a pass before one, which is
     // the reading that makes a stored proof empty.
+    //
+    // The failing half is read straight back out of the ledger just folded,
+    // because the two questions share a subject: a call this run has already
+    // watched fail over the untouched tree has the red the contract asks for,
+    // and no green reading of it taken before an edit makes that untrue. Those
+    // signatures are refused rather than remembered, so the observation can
+    // never contradict the run's own record. See `VacuousVerification`
+    // `remember`.
     const pristineChecks = VacuousVerification.remember(state.pristineChecks, {
       frame: frameChecks,
-      epoch: state.mutations
+      epoch: state.mutations,
+      failed: failures.filter((entry) => entry.epoch === 0).map((entry) => entry.signature)
     })
 
     // The tree the run was handed, fixed the first time a frame measured one
