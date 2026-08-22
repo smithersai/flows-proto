@@ -13,9 +13,13 @@
  *    disclosure section, and that sentence has to name something outside the
  *    agent — a grading container, a public service, a dataset defect. "The
  *    harness does badly here" is never a cause.
- * 3. **Both denominators are printed, always.** Every rate this rig states
- *    carries the scored count *and* the raw count, in the same sentence. A
- *    scoreboard that quietly says 43 is a scoreboard nobody can check.
+ * 3. **Both denominators are printed, always.** Every rate this rig states over
+ *    a population an entry here can reach — `compare-runs.mjs`,
+ *    `three-way.mjs`, `compare-arms.mjs` and `fullbench-report.mjs` — carries
+ *    the scored count *and* the raw count, in the same sentence. A scoreboard
+ *    that quietly says 43 is a scoreboard nobody can check. A population that
+ *    excludes nothing reads exactly as it did before this file existed, so
+ *    every reader can obey the rule unconditionally.
  *
  * ## The `psf/requests` pair
  *

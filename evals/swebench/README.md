@@ -1622,10 +1622,11 @@ enforces all three:
    container, a public service, a dataset defect. A cause mentioning a harness,
    a prompt or a model fails the check.
 3. **Both denominators are printed, always.** Every rate in `compare-runs.mjs`,
-   `three-way.mjs` and `compare-arms.mjs` states the scored count and the raw
-   count in the same sentence: on the 45-instance population that reads
-   **43 scored of 45 run**, never 43 alone. Excluded instances keep their
-   per-instance rows and are marked there.
+   `three-way.mjs`, `compare-arms.mjs` and `fullbench-report.mjs` states the
+   scored count and the raw count in the same sentence: on the 45-instance
+   population that reads **43 scored of 45 run**, never 43 alone. Excluded
+   instances keep their per-instance rows and are marked there. A population
+   that excludes nothing reads exactly as it did before the list existed.
 
 The repair that ends the exclusion is an https listener the graded container
 trusts, at which point both rows are measurements again and both arms can be
