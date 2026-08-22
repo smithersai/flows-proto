@@ -54,7 +54,13 @@ export const bound = 64
  */
 export class Binding extends Schema.Class<Binding>("flows/harness/VariablesPanel/Binding")({
   name: Schema.String,
-  /** The name's JavaScript type, or `unset` for a name a throw left unassigned. */
+  /**
+   * The name's JavaScript type, `unset` for a name a throw left unassigned, or
+   * `unreadable` for one whose value the probe could not even read — a throwing
+   * accessor, a proxy that refuses its own keys. The two are named apart because
+   * they say different things: one name holds nothing, the other holds something
+   * that will not be looked at.
+   */
   type: Schema.String,
   /** One cheap measure of the value, already rendered; empty when there is none. */
   size: Schema.String

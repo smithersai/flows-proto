@@ -38,16 +38,46 @@ import * as VariablesPanel from "./VariablesPanel.ts"
  * unwrapped boundary and hand it unencoded values.
  */
 /**
+ * Every intrinsic the host's own realm-side code reads, bound before a cell runs.
+ *
+ * A global script may rebind `Object`, and under a per-cell realm that cost the
+ * cell that did it and nothing else. Under a realm that outlives the cell it
+ * costs the run: `encode` reaches `Object.keys` at call time, so one top-level
+ * `const Object = {}` in frame 3 makes every `ctx.call` and every
+ * `console.log` from frame 4 on die on `TypeError: not a function`, with no
+ * name in the failure to connect it to the declaration that caused it. The same
+ * holds for `JSON`, `Array`, `Number`, `String`, `TypeError` and `Promise`.
+ *
+ * Binding them here makes a cell that shadows an intrinsic cost exactly what a
+ * REPL should charge for it — its own later code — and nothing the harness runs
+ * on the cell's behalf. Nothing is refused, because nothing needs to be.
+ */
+const preludeIntrinsics = `  var keysOf = Object.keys
+  var freezeValue = Object.freeze
+  var prototypeOf = Object.getPrototypeOf
+  var objectPrototype = Object.prototype
+  var define = Object.defineProperty
+  var isArray = Array.isArray
+  var stringify = JSON.stringify
+  var parse = JSON.parse
+  var finite = Number.isFinite
+  var render = String
+  var Fault = TypeError
+  var Deferred = Promise
+  var argumentsOf = Array.prototype.slice`
+
+/**
  * The realm-side helpers both preludes install.
  *
  * `encode` carries the label of what it is encoding so one validator serves
  * `ctx.call`, `ctx.done`, `ctx.park` and `ctx.justify` without any of them
  * having to describe its own refusal.
  */
-const preludeHelpers = `  var freeze = function (value) {
+const preludeHelpers = `${preludeIntrinsics}
+  var freeze = function (value) {
     if (value !== null && typeof value === "object") {
-      Object.keys(value).forEach(function (key) { freeze(value[key]) })
-      Object.freeze(value)
+      keysOf(value).forEach(function (key) { freeze(value[key]) })
+      freezeValue(value)
     }
     return value
   }
@@ -55,24 +85,24 @@ const preludeHelpers = `  var freeze = function (value) {
     var seen = []
     var visit = function (value) {
       if (value === null || typeof value === "string" || typeof value === "boolean") return
-      if (typeof value === "number" && Number.isFinite(value)) return
-      if (typeof value !== "object") throw new TypeError(label + " must be JSON-serializable")
-      if (seen.indexOf(value) >= 0) throw new TypeError(label + " must be JSON-serializable")
-      var prototype = Object.getPrototypeOf(value)
-      if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
-        throw new TypeError(label + " must be JSON-serializable")
+      if (typeof value === "number" && finite(value)) return
+      if (typeof value !== "object") throw new Fault(label + " must be JSON-serializable")
+      if (seen.indexOf(value) >= 0) throw new Fault(label + " must be JSON-serializable")
+      var prototype = prototypeOf(value)
+      if (!isArray(value) && prototype !== objectPrototype && prototype !== null) {
+        throw new Fault(label + " must be JSON-serializable")
       }
       seen.push(value)
-      Object.keys(value).forEach(function (key) { visit(value[key]) })
+      keysOf(value).forEach(function (key) { visit(value[key]) })
       seen.pop()
     }
     visit(input)
-    return JSON.stringify(input)
+    return stringify(input)
   }`
 
 /** The `ctx.call` member, identical in both modes. */
 const preludeCall = `    call: function (flow, input) {
-      if (typeof flow !== "string") return Promise.reject(new TypeError("ctx.call expects a flow name as its first argument"))
+      if (typeof flow !== "string") return Deferred.reject(new Fault("ctx.call expects a flow name as its first argument"))
       return bridge(flow, encode("ctx.call input", input === undefined ? null : input)).then(function (settled) {
         // A failed call RESOLVES with the failure envelope; only teardown
         // throws. See Cell.callFailure for why.
@@ -89,10 +119,10 @@ ${preludeHelpers}
   delete globalThis.__call
   delete globalThis.Date
   delete Math.random
-  globalThis.ctx = Object.freeze({
+  globalThis.ctx = freezeValue({
 ${preludeCall}
     flows: freeze(${catalog}),
-    state: freeze(JSON.parse(${state}))
+    state: freeze(parse(${state}))
   })
 })()`
 
@@ -105,7 +135,23 @@ ${preludeCall}
  *
  * `console.log` renders each argument on the host side — a string as itself,
  * anything else as canonical JSON — so a structured value reaches the next model
- * turn as the value it is rather than as `[object Object]`.
+ * turn as the value it is rather than as `[object Object]`. A value JSON cannot
+ * walk at all, a cycle above all, is the one case where that promise cannot be
+ * kept, so it is named instead: the kind, the reason, and the fact that the
+ * value is still bound. `String(value)` there would print the exact bytes this
+ * channel exists to abolish.
+ *
+ * Both are installed as non-writable, non-configurable own properties, which the
+ * per-cell prelude never needed to do. There, a cell that declared `ctx` shadowed
+ * the name inside its own async wrapper and the next cell was handed a fresh
+ * realm. Here the wrapper is gone and `CellValidation.normalize` rewrites a
+ * top-level `const` to `var`, so the same declaration would assign over the run's
+ * only host binding and every later cell would die on
+ * `TypeError: not a function` — with `ctx` inside the panel's baseline, so
+ * nothing would even name what went missing. A `var` declaration over a
+ * non-writable global is a silent no-op in sloppy mode, which is a failure the
+ * run survives. `CellValidation` refuses the declaration in-frame as well, so
+ * the model is told rather than left to wonder.
  */
 const replPrelude = (catalog: string): string =>
   `(function () {
@@ -118,6 +164,11 @@ ${preludeHelpers}
   delete globalThis.__intent
   delete globalThis.Date
   delete Math.random
+  var unprintable = function (value, error) {
+    var kind = isArray(value) ? "array" : typeof value
+    var why = error !== null && typeof error === "object" && error.message ? error.message : render(error)
+    return "[unprintable " + kind + ": " + why + " — the value is still bound, so print the part of it you need]"
+  }
   var show = function (values) {
     var parts = []
     for (var index = 0; index < values.length; index++) {
@@ -125,15 +176,24 @@ ${preludeHelpers}
       if (typeof value === "string") parts.push({ text: value })
       else if (value === undefined) parts.push({ text: "undefined" })
       else {
-        try { parts.push({ json: JSON.parse(JSON.stringify(value)) }) }
-        catch (error) { parts.push({ text: String(value) }) }
+        var encoded = null
+        var refused = false
+        try { encoded = stringify(value) } catch (error) { refused = true; parts.push({ text: unprintable(value, error) }) }
+        // JSON answers \`undefined\` rather than throwing for a value it has no
+        // notation for at all — a function, a symbol — and those read best as
+        // themselves. It throws only for a value it cannot walk, and that is
+        // the one case where naming the reason beats printing "[object Object]".
+        if (!refused) parts.push(encoded === undefined ? { text: render(value) } : { json: parse(encoded) })
       }
     }
-    print(JSON.stringify(parts))
+    print(stringify(parts))
   }
-  var line = function () { show(Array.prototype.slice.call(arguments)) }
-  globalThis.console = Object.freeze({ log: line, info: line, warn: line, error: line })
-  globalThis.ctx = Object.freeze({
+  var line = function () { show(argumentsOf.call(arguments)) }
+  var host = function (name, value) {
+    define(globalThis, name, { value: value, writable: false, enumerable: true, configurable: false })
+  }
+  host("console", freezeValue({ log: line, info: line, warn: line, error: line }))
+  host("ctx", freezeValue({
 ${preludeCall}
     flows: freeze(${catalog}),
     done: function (output) { intent("done", encode("ctx.done output", output === undefined ? null : output)) },
@@ -141,7 +201,7 @@ ${preludeCall}
       intent("park", encode("ctx.park message", { reason: reason === undefined ? null : reason, message: message === undefined ? "" : message }))
     },
     justify: function (text) { intent("justify", encode("ctx.justify text", text === undefined ? "" : text)) }
-  })
+  }))
 })()`
 
 const wrap = (text: string): string =>
@@ -593,40 +653,145 @@ const replOutcome = (recorded: Recorded | undefined, justification: string | und
 }
 
 /**
- * The in-realm probe that reads the variables panel off the realm.
+ * How many values one probe walks before it stops counting.
  *
- * One expression statement over intrinsics, so it declares nothing and adds no
- * name of its own to the set it reports. Every value is measured cheaply — a
- * string's length, an array's length, an object's key count, a function's arity,
- * a number or boolean by value — because a panel that serialized every global
- * would cost the heap every frame, and the whole point of a realm is that the
- * value is still there under the name the panel prints.
+ * The walk exists to find the string bytes a realm is holding, and strings are
+ * few and large where they matter — a file a cell read, a suite's output. The
+ * bound is what keeps a realm holding a million small objects from paying for a
+ * traversal of all of them, and it doubles as the cycle guard: a graph that
+ * points at itself spends the budget instead of the stack.
+ */
+const weighNodes = 200_000
+
+/**
+ * How deep one probe descends before it stops counting.
+ *
+ * A cell can bind a linked list, and the walk runs inside the realm on the
+ * realm's own stack.
+ */
+const weighDepth = 32
+
+/**
+ * Builds the in-realm probe that reads the variables panel and the realm's weight.
+ *
+ * The source is evaluated **once**, when the realm opens, and answers the
+ * function every later frame calls. That is the whole reason it is a factory:
+ * the intrinsics the walk needs are read here, before any cell has run, and held
+ * in the closure, so a cell that binds `Object` at its top level loses its own
+ * reflection and not the panel that would have named the binding for it. Called
+ * fresh each frame instead, the probe would read whatever `Object` a cell had
+ * left behind, and the frame after the shadowing would report an empty realm.
+ *
+ * The returned function declares nothing on the global object and adds no name
+ * of its own to the set it reports, because the host holds it as a handle rather
+ * than as a global. Every value's *panel* line is measured cheaply — a string's
+ * length, an array's length, an object's key count, a function's arity, a number
+ * or boolean by value — because a panel that serialized every global would cost
+ * the heap every frame, and the whole point of a realm is that the value is
+ * still there under the name the panel prints.
+ *
+ * `bytes` is a second, separate reading and it exists because QuickJS's own
+ * ceiling cannot supply it. Measured on the shipped variant: `str_count` and
+ * `str_size` stay at zero for every construction a cell can reach — `repeat`,
+ * `join`, and a string handed in by the host bridge alike — so
+ * `runtime.setMemoryLimit` refuses one allocation larger than the whole ceiling
+ * and never sees accumulation. A realm under a 128 MiB ceiling held 400 MiB of
+ * live strings across forty frames and raised nothing while the host's resident
+ * set grew by 385 MB. Under a per-cell realm that hole was bounded by one cell;
+ * under a per-run realm it compounds for the life of the run, so the run budget
+ * is measured here instead. See {@link openRealm}.
  */
 const panelProbe = (baseline: string): string =>
-  `(function (skip) {
-  var names = Object.getOwnPropertyNames(globalThis)
-  var out = []
-  for (var index = 0; index < names.length; index++) {
-    var name = names[index]
-    if (skip.indexOf(name) >= 0) continue
-    try {
-      var value = globalThis[name]
-      var kind = typeof value
-      if (value === null) out.push({ name: name, type: "null", size: "" })
-      else if (kind === "undefined") out.push({ name: name, type: "unset", size: "" })
-      else if (kind === "string") out.push({ name: name, type: "string", size: value.length + " chars" })
-      else if (kind === "function") out.push({ name: name, type: "function", size: "arity " + value.length })
-      else if (Array.isArray(value)) out.push({ name: name, type: "array", size: value.length + " items" })
-      else if (kind === "object") out.push({ name: name, type: "object", size: Object.keys(value).length + " keys" })
-      else out.push({ name: name, type: kind, size: String(value) })
-    } catch (error) {
-      out.push({ name: name, type: "unset", size: "" })
+  `(function (ownNames, keysOf, isArray, stringify, render, skip) {
+  return function () {
+    var names = ownNames(globalThis)
+    var out = []
+    var total = 0
+    var budget = ${weighNodes}
+    var weigh = function (value, depth) {
+      if (budget <= 0 || depth > ${weighDepth}) return 0
+      budget = budget - 1
+      if (typeof value === "string") return value.length
+      if (value === null || typeof value !== "object") return 8
+      var sum = 8
+      if (isArray(value)) {
+        for (var item = 0; item < value.length; item++) sum = sum + weigh(value[item], depth + 1)
+        return sum
+      }
+      var keys = keysOf(value)
+      for (var key = 0; key < keys.length; key++) {
+        sum = sum + keys[key].length + weigh(value[keys[key]], depth + 1)
+      }
+      return sum
     }
+    for (var index = 0; index < names.length; index++) {
+      var name = names[index]
+      if (skip.indexOf(name) >= 0) continue
+      try {
+        var value = globalThis[name]
+        var kind = typeof value
+        var bytes = weigh(value, 0)
+        total = total + bytes
+        if (value === null) out.push({ name: name, type: "null", size: "", bytes: bytes })
+        else if (kind === "undefined") out.push({ name: name, type: "unset", size: "", bytes: bytes })
+        else if (kind === "string") out.push({ name: name, type: "string", size: value.length + " chars", bytes: bytes })
+        else if (kind === "function") out.push({ name: name, type: "function", size: "arity " + value.length, bytes: bytes })
+        else if (isArray(value)) out.push({ name: name, type: "array", size: value.length + " items", bytes: bytes })
+        else if (kind === "object") out.push({ name: name, type: "object", size: keysOf(value).length + " keys", bytes: bytes })
+        else out.push({ name: name, type: kind, size: render(value), bytes: bytes })
+      } catch (error) {
+        // A name whose value cannot even be read — a throwing accessor, a proxy
+        // that refuses its own keys. Named for what it is rather than folded into
+        // \`unset\`, which means something else: a name a throw left unassigned.
+        out.push({ name: name, type: "unreadable", size: "", bytes: 0 })
+      }
+    }
+    return stringify({ names: out, bytes: total })
   }
-  return JSON.stringify(out)
-})(JSON.parse(${baseline}))`
+})(Object.getOwnPropertyNames, Object.keys, Array.isArray, JSON.stringify, String, JSON.parse(${baseline}))`
 
-const decodeBindings = Schema.decodeUnknownSync(Schema.Array(VariablesPanel.Binding))
+/** One name as the probe reports it, before the panel drops the weight. */
+const Weighed = Schema.Struct({
+  name: Schema.String,
+  type: Schema.String,
+  size: Schema.String,
+  bytes: Schema.Number
+})
+
+const decodeProbe = Schema.decodeUnknownSync(
+  Schema.Struct({ names: Schema.Array(Weighed), bytes: Schema.Number })
+)
+
+/**
+ * States the run's memory ceiling in the terms the realm can act on.
+ *
+ * Written for the model, because the model is who reads it: the total, the
+ * ceiling, and the three names to reassign. A `var`-created global is
+ * non-configurable, so `delete` cannot remove one and assignment is the whole of
+ * the recovery — which is also why the refusal has to be spent where it lands.
+ * Freeing is done by a cell, and a cell that is refused cannot free anything, so
+ * a ceiling that stayed shut would ask for the one act it had just made
+ * impossible. See {@link openRealm}.
+ */
+const overBudget = (
+  held: number,
+  ceiling: number,
+  weighed: ReadonlyArray<typeof Weighed.Type>
+): Cell.Rejected => {
+  const heaviest = [...weighed]
+    .sort((left, right) => right.bytes - left.bytes)
+    .slice(0, 3)
+    .map((entry) => `${entry.name} (${entry.bytes})`)
+  return new Cell.Rejected({
+    code: "limit_exceeded",
+    message: `The names this realm holds weigh ${held} bytes, over this run's ceiling of ${ceiling}. ` +
+      `Nothing ran this frame, and your next cell does run: spend it freeing the largest by assigning over them — ${
+        heaviest.join(", ")
+      } — ` +
+      "because a name a cell bound can be reassigned but never deleted. Every other name is still bound, " +
+      "and a realm still over the ceiling after that cell is refused again."
+  })
+}
 
 /**
  * Opens one QuickJS realm that lives for a whole run.
@@ -649,9 +814,28 @@ const decodeBindings = Schema.decodeUnknownSync(Schema.Array(VariablesPanel.Bind
  * The per-frame budgets survive the move unchanged, because they are counters
  * the interrupt handler reads rather than properties of the runtime: `timeMs`
  * and `steps` reset at each frame's start and the compute clock keeps refunding
- * host-call duration. `memoryBytes` becomes what it honestly is once a realm
- * outlives a cell — a run budget — and exhausting it is an ordinary in-cell
- * throw the realm survives.
+ * host-call duration.
+ *
+ * `memoryBytes` becomes a **run** budget, and it is enforced in two places
+ * because one of them cannot see half the heap. `runtime.setMemoryLimit` covers
+ * the object graph and refuses any single allocation larger than the whole
+ * ceiling; it does not count string data at all on the shipped variant, so
+ * accumulation across frames escapes it entirely. The panel probe supplies that
+ * half: it weighs what the realm's own names hold and a frame that opens over
+ * the ceiling is refused before it runs, with the heaviest names stated, so the
+ * next cell frees by assignment and the realm survives.
+ *
+ * The refusal is spent where it lands, and that is the load-bearing half of it.
+ * Freeing is done by a cell, so a ceiling that stayed shut once it had fired
+ * would refuse the freeing cell too, and the run would spend every remaining
+ * frame being told to do the one thing it was being prevented from doing. So
+ * the reading is cleared with the refusal: the next frame runs, the probe weighs
+ * the realm again at its close, and a realm still over the ceiling is refused
+ * again. The bound is therefore a pair of frames — a cell may allocate past the
+ * ceiling and is told at the next frame, and a run that never frees alternates
+ * between refusal and cell rather than growing every frame — which is what "the
+ * names a run accumulates" can honestly mean when the harness never drops a
+ * value behind the model's back.
  */
 const openRealm = (
   module: QuickJSWASMModule,
@@ -664,6 +848,8 @@ const openRealm = (
     const timeMs = limits.timeMs ?? Sandbox.defaultLimits.timeMs
     /* v8 ignore next -- `withDefaults` fills `totalMs` alongside `timeMs`, so this coalesce only discharges the same optional type */
     const totalMs = limits.totalMs ?? Sandbox.defaultLimits.totalMs
+    /* v8 ignore next -- `withDefaults` fills `memoryBytes` whenever the `memoryBytes` capability is declared, and this binding declares it, so the coalesce only discharges the optional type */
+    const memoryBytes = limits.memoryBytes ?? Sandbox.defaultLimits.memoryBytes
     const stepBudget = limits.steps
 
     let clockBase = clock.now()
@@ -672,6 +858,8 @@ const openRealm = (
     let pending: Array<Sandbox.PendingCall> = []
     let ordinal = 0
     let lines: Array<string> = []
+    let retained = 0
+    let unread = 0
     let recorded: Recorded | undefined
     let justification: string | undefined
 
@@ -765,7 +953,25 @@ const openRealm = (
       return deferred.handle
     })
     install("__print", (partsHandle) => {
-      lines.push(printed(context.getString(partsHandle)))
+      // What the model reads is bounded at frame close; what the host holds
+      // while the cell is still running is bounded here, and it has to be a
+      // different number because the two are answers to different questions.
+      // A cell that prints in a loop hands over one payload per statement, and
+      // every one of them is copied out of the WASM heap, parsed and decoded
+      // before anything can decide it is surplus. Measured on this variant, a
+      // print loop inside the default step budget took the host's resident set
+      // from 288 MB to 746 MB, and two hundred prints of one 3 MiB string took
+      // it to 1.4 GB — while the model, both times, was shown 16 KiB. Past the
+      // retention ceiling the payload is not read at all: the handle belongs to
+      // the caller, so ignoring it costs nothing, and the count of what was
+      // ignored is stated at frame close rather than dropped in silence.
+      if (retained >= Sandbox.printRetainedBytes) {
+        unread = unread + 1
+        return context.undefined
+      }
+      const line = printed(context.getString(partsHandle))
+      retained = retained + line.length + 1
+      lines.push(line)
       return context.undefined
     })
     install("__intent", (kindHandle, payloadHandle) => {
@@ -800,39 +1006,78 @@ const openRealm = (
     )
     const baseline = context.getString(snapshot)
     snapshot.dispose()
-    const probe = panelProbe(JSON.stringify(baseline))
+
+    // Built once, called every frame. The handle lives on this scope beside the
+    // context that made it, which is what keeps the probe's intrinsics the ones
+    // a fresh realm had rather than the ones a cell left behind.
+    const probe = context.unwrapResult(context.evalCode(panelProbe(JSON.stringify(baseline))))
+    yield* Effect.addFinalizer(() => Effect.sync(() => probe.dispose()))
 
     let bindings: ReadonlyArray<VariablesPanel.Binding> = []
+    let weighed: ReadonlyArray<typeof Weighed.Type> = []
+    let held = 0
 
     const evaluate = (
       evaluation: Sandbox.RealmEvaluation
     ): Effect.Effect<Sandbox.RealmFrame, Sandbox.SandboxError | HarnessError> =>
       Effect.gen(function*() {
-        // Whatever the frame produced, the prints are delivered with it and the
-        // panel is read after it, so the answer is assembled in one place.
-        const frameOf = (outcome: Cell.Outcome): Sandbox.RealmFrame => ({
-          outcome,
-          prints: lines.length === 0 ? "" : elide.middle(
-            lines.join("\n"),
-            Sandbox.printFrameBytes,
-            "print less next time, or read the value back from the name it is still bound to"
-          ),
-          bindings
-        })
-
-        const compiled = Sandbox.compile(evaluation.cell, "repl")
-        if (compiled instanceof Cell.Rejected) return frameOf(compiled)
-
-        // Per-frame budgets. They are counters, not properties of the runtime,
-        // so a realm that outlives one cell still charges each cell its own.
+        // Per-frame budgets and per-frame buffers, reset before anything can
+        // settle the frame. They are counters, not properties of the runtime, so
+        // a realm that outlives one cell still charges each cell its own — and
+        // resetting them first is what keeps a frame that ends before its cell
+        // runs from being handed the previous frame's print buffer.
         clockBase = clock.now()
         steps = 0
         exhausted = undefined
         pending = []
         ordinal = 0
         lines = []
+        retained = 0
+        unread = 0
         recorded = undefined
         justification = undefined
+
+        // Whatever the frame produced, the prints are delivered with it and the
+        // panel is read after it, so the answer is assembled in one place. A
+        // frame that printed past the retention ceiling says so as its last
+        // line, because a buffer that simply stopped would read as a cell that
+        // simply stopped printing.
+        const frameOf = (outcome: Cell.Outcome): Sandbox.RealmFrame => {
+          const written = unread === 0
+            ? lines
+            : [
+              ...lines,
+              `… ${unread} further print statements were not kept: this frame printed more than the harness holds.`
+            ]
+          return {
+            outcome,
+            prints: written.length === 0 ? "" : elide.middle(
+              written.join("\n"),
+              Sandbox.printFrameBytes,
+              "print less next time, or read the value back from the name it is still bound to"
+            ),
+            bindings
+          }
+        }
+
+        // The run's memory budget, judged against what the realm's own names
+        // weigh rather than against a heap counter that cannot see them. A
+        // frame that opens over the ceiling runs nothing, so nothing is lost
+        // and the recovery is one assignment — and the reading is cleared with
+        // the refusal, because the cell that frees is a cell and has to run.
+        // Left standing, the ceiling would refuse that cell too, and every one
+        // after it, so the run would spend the rest of its frames being told to
+        // do the one thing it was being prevented from doing. Cleared, the next
+        // frame runs, the probe weighs the realm again at its close, and a realm
+        // still over the ceiling is refused again.
+        if (held > memoryBytes) {
+          const refusal = overBudget(held, memoryBytes, weighed)
+          held = 0
+          return frameOf(refusal)
+        }
+
+        const compiled = Sandbox.compile(evaluation.cell, "repl")
+        if (compiled instanceof Cell.Rejected) return frameOf(compiled)
 
         const started = context.evalCode(compiled, `cell-${evaluation.frame}.js`, 128)
         if (started.error !== undefined) {
@@ -921,15 +1166,19 @@ const openRealm = (
 
         // The panel, read from the realm the cell just ran in. It shares the
         // frame's remaining budget, so a cell that spent all of its own leaves
-        // the previous reading standing rather than an empty one — and so does
-        // a cell that reassigned the reflection the probe reads through. The
-        // panel is never wrong about what it says; it can only stop saying
-        // anything new, which is the honest answer for a realm whose own
-        // intrinsics a cell has replaced.
-        const read = context.evalCode(probe)
+        // the previous reading standing rather than an empty one. What a cell
+        // cannot do is take the reading away: the probe holds its own
+        // intrinsics from before any cell ran, so a realm whose `Object` a cell
+        // has rebound is still weighed and still named.
+        const read = context.callFunction(probe, context.undefined)
         if (read.error === undefined) {
-          bindings = decodeBindings(JSON.parse(context.getString(read.value)))
+          const measured = decodeProbe(JSON.parse(context.getString(read.value)))
           read.value.dispose()
+          weighed = measured.names
+          held = measured.bytes
+          bindings = measured.names.map((entry) =>
+            new VariablesPanel.Binding({ name: entry.name, type: entry.type, size: entry.size })
+          )
         } else {
           read.error.dispose()
         }

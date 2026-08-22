@@ -227,6 +227,24 @@ export const printStatementBytes = 4096
  */
 export const printFrameBytes = 16 * 1024
 
+/**
+ * How much of one frame's print buffer the host keeps while the cell still runs.
+ *
+ * {@link printFrameBytes} bounds what the model is shown; this bounds what the
+ * host holds to show it from, and the two are different numbers because they
+ * answer different questions. A cell printing in a loop hands the host one
+ * payload per statement, and every payload is copied out of the sandbox's heap
+ * and decoded before anything can judge it surplus, so the frame budget alone
+ * bounds the answer while leaving the work unbounded. Sixteen times the frame
+ * budget is far past any honest use and still a fixed ceiling: past it the
+ * payload is not read at all, and the count of what went unread is stated in the
+ * buffer rather than dropped in silence.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const printRetainedBytes = 256 * 1024
+
 const invalidLimit = (name: keyof Limits, requirement: string): SandboxError =>
   new SandboxError({
     code: "unsupported",
@@ -414,10 +432,11 @@ export interface Realm {
 export interface RealmOptions {
   readonly flows: Readonly<Record<string, Cell.FlowProjection>>
   /**
-   * The ceilings the realm enforces. `memoryBytes` becomes what it honestly is
-   * once a realm outlives a cell — a **run** budget — and every other ceiling
-   * stays per-frame, because they are counters the interrupt handler reads
-   * rather than properties of the runtime.
+   * The ceilings the realm enforces. `memoryBytes` becomes a **run** budget once
+   * a realm outlives a cell, judged at each frame's start against what the
+   * realm's own names weigh; a frame that opens over it runs nothing and is told
+   * which names to free. Every other ceiling stays per-frame, because they are
+   * counters the interrupt handler reads rather than properties of the runtime.
    */
   readonly limits?: Limits | undefined
 }
