@@ -19,6 +19,10 @@
  * after its own first top-level `return`, which never run. That is a notice and
  * not a rejection: the program is legal, the model simply did not know.
  *
+ * In REPL mode the same parse does one more thing: it normalizes the top-level
+ * statement list so a persistent realm behaves like a notebook rather than like
+ * a script that may only be run once. See {@link normalize}.
+ *
  * Nothing here executes anything, and nothing here is a gate. The only outcomes
  * are a rejection the model is asked to fix in this frame, or a sentence added
  * to the next one.
@@ -166,13 +170,116 @@ const unreachable = (source: ts.SourceFile, text: string): string | undefined =>
 }
 
 /**
+ * One replacement of a byte range of a cell's compiled text.
+ *
+ * @private
+ */
+interface Splice {
+  readonly start: number
+  readonly end: number
+  readonly text: string
+}
+
+/**
+ * Finds a `return` the realm would refuse, wherever the cell put it.
+ *
+ * A REPL cell is a global async script, and `return` is a syntax error at the
+ * top level of one — measured on the shipped QuickJS variant, which answers
+ * `SyntaxError: return not in a function` and runs nothing at all. Function
+ * bodies are skipped, because a `return` inside one is ordinary JavaScript.
+ *
+ * @private
+ */
+const topLevelReturn = (source: ts.SourceFile): ts.ReturnStatement | undefined => {
+  let found: ts.ReturnStatement | undefined
+  const visit = (node: ts.Node): void => {
+    if (found !== undefined) return
+    if (ts.isReturnStatement(node)) found = node
+    else if (!ts.isFunctionLike(node) && !ts.isClassLike(node)) ts.forEachChild(node, visit)
+  }
+  ts.forEachChild(source, visit)
+  return found
+}
+
+/**
+ * Rewrites a cell's top-level declarations so a persistent realm can re-run it.
+ *
+ * Raw persistence is not enough. Consecutive global evals in one QuickJS context
+ * do share top-level `const`/`let` — they live in the realm's global lexical
+ * scope, exactly like consecutive `<script>` tags — but that leaves a REPL three
+ * measured edges: a later cell that reuses a name dies on
+ * `SyntaxError: redeclaration of 'x'` with nothing run at all, a cell that
+ * throws leaves every name below the throw permanently in TDZ — unreadable and
+ * un-redeclarable for the rest of the run — and lexical names are invisible to
+ * reflection, so no panel can enumerate them.
+ *
+ * All three are closed by one mechanical rewrite of the top-level statement list
+ * only:
+ *
+ * - a top-level `const`/`let` variable statement becomes the same statement
+ *   with the keyword `var`; destructuring patterns, initializers and multiple
+ *   declarators are untouched, because only the keyword token moves;
+ * - `let x;` with no initializer becomes `var x = undefined;`, so re-declaring
+ *   a name really does clear it;
+ * - a top-level `class K { … }` becomes `var K = class K { … };`;
+ * - a top-level `function f() {}` is untouched, being already a redeclarable
+ *   global;
+ * - everything nested — function bodies, blocks, loop heads, class bodies — is
+ *   untouched, so an inner `const` is still an inner `const` and a
+ *   `for (const x of …)` head still scopes to its loop.
+ *
+ * The price is stated plainly: a top-level `const` is no longer read-only. That
+ * is the same price every notebook pays. What it buys is that rebinding a name
+ * is ordinary, a throw leaves no poison, and every live name is an own property
+ * of `globalThis` — which is what makes the variables panel reflective instead
+ * of parsed.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const normalize = (compiled: string): string => {
+  const source = ts.createSourceFile("cell.js", compiled, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS)
+  const splices: Array<Splice> = []
+  for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement)) {
+      const flags = ts.getCombinedNodeFlags(statement.declarationList)
+      const isConst = (flags & ts.NodeFlags.Const) !== 0
+      if (!isConst && (flags & ts.NodeFlags.Let) === 0) continue
+      const keyword = statement.declarationList.getStart(source)
+      splices.push({ start: keyword, end: keyword + (isConst ? "const".length : "let".length), text: "var" })
+      for (const declaration of statement.declarationList.declarations) {
+        if (declaration.initializer === undefined) {
+          splices.push({ start: declaration.end, end: declaration.end, text: " = undefined" })
+        }
+      }
+      continue
+    }
+    /* v8 ignore next -- a nameless top-level class is only spellable as `export default class {}`, and module syntax is refused before this runs; the guard discharges the optional type on `ClassDeclaration.name` */
+    if (!ts.isClassDeclaration(statement) || statement.name === undefined) continue
+    const start = statement.getStart(source)
+    splices.push({ start, end: start, text: `var ${statement.name.text} = ` })
+    splices.push({ start: statement.end, end: statement.end, text: ";" })
+  }
+  if (splices.length === 0) return compiled
+  let text = compiled
+  for (const splice of [...splices].sort((left, right) => right.start - left.start)) {
+    text = text.slice(0, splice.start) + splice.text + text.slice(splice.end)
+  }
+  return text
+}
+
+/**
  * Parses one cell and reports everything the parse can decide.
+ *
+ * `mode` selects the surface the cell was written against. `repl` refuses a
+ * `return` the realm cannot compile and normalizes the top-level declarations
+ * the realm has to be able to re-run; `filing` — the default — changes nothing.
  *
  * @category conversions
  * @since 0.1.0
  * @slop
  */
-export const validate = (cell: Cell.Source): Validation => {
+export const validate = (cell: Cell.Source, mode: Cell.Mode = Cell.defaultMode): Validation => {
   const isTypeScript = cell.language === "typescript"
   const parsed = ts.createSourceFile(
     isTypeScript ? "cell.ts" : "cell.js",
@@ -229,11 +336,26 @@ export const validate = (cell: Cell.Source): Validation => {
       })
     )
   }
-  return {
-    rejected: undefined,
-    // The JavaScript a cell wrote is run as written. Only TypeScript is handed
-    // to the emitter, and only to have its type-only syntax erased.
-    compiled: isTypeScript ? transpiled.outputText : cell.text,
-    notice: unreachable(parsed, cell.text)
+  // The JavaScript a cell wrote is run as written. Only TypeScript is handed
+  // to the emitter, and only to have its type-only syntax erased.
+  const compiled = isTypeScript ? transpiled.outputText : cell.text
+  if (mode === "filing") {
+    return { rejected: undefined, compiled, notice: unreachable(parsed, cell.text) }
   }
+  const returned = topLevelReturn(parsed)
+  if (returned !== undefined) {
+    const at = parsed.getLineAndCharacterOfPosition(returned.getStart(parsed))
+    return refuse(
+      new Cell.Rejected({
+        code: "compile_failed",
+        message:
+          `A cell is a script, not a function body, so the \`return\` on line ${
+            at.line + 1
+          } would not compile and nothing would run. ` +
+          "Finish by calling instead: ctx.done(output) ends the run, ctx.park(reason, message) waits durably, and a cell that calls neither simply ends its turn."
+      })
+    )
+  }
+  // A REPL cell's tail always runs, so there is no dead-code notice to give.
+  return { rejected: undefined, compiled: normalize(compiled), notice: undefined }
 }

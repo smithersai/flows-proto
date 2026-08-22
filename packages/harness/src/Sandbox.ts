@@ -16,10 +16,11 @@
  *
  * @since 0.1.0
  */
-import { Context, Effect, Exit, Layer, Schema } from "effect"
+import { Context, Effect, Exit, Layer, Schema, type Scope } from "effect"
 import * as Cell from "./Cell.ts"
 import * as CellValidation from "./CellValidation.ts"
 import type { HarnessError } from "./HarnessError.ts"
+import type * as VariablesPanel from "./VariablesPanel.ts"
 
 /**
  * Stable failures raised by a sandbox binding itself, as opposed to failures
@@ -200,6 +201,32 @@ export const defaultLimits = Object.freeze({
  */
 export const minimumMemoryBytes = 1024 * 1024
 
+/**
+ * How much of one `console.log` statement reaches the next model turn.
+ *
+ * Head-elided, and the recall it names is the variable itself: the value is
+ * still bound in the realm, so the way to see more of it is to print a narrower
+ * slice rather than to fetch it again. This is the whole reason the REPL mode
+ * can afford a small print budget where the filing mode needed a large `recall`
+ * one — nothing here is the only copy.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const printStatementBytes = 4096
+
+/**
+ * How much of one frame's whole print buffer reaches the next model turn.
+ *
+ * Middle-elided with the dropped byte count stated, because the head and the
+ * tail of a log are where it identifies itself. Sized against the `recall`
+ * budget it replaces, and delivered once rather than re-rendered every frame.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const printFrameBytes = 16 * 1024
+
 const invalidLimit = (name: keyof Limits, requirement: string): SandboxError =>
   new SandboxError({
     code: "unsupported",
@@ -286,6 +313,116 @@ export interface Evaluation {
 }
 
 /**
+ * What a REPL cell asked the controller to do.
+ *
+ * `return` is a syntax error at the top level of a global script — measured, on
+ * the variant this harness ships — so a REPL cell states its intent by calling
+ * `ctx.done` or `ctx.park` instead of returning a transition. Both record and
+ * let the script run on; the last call wins.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Intent =
+  | { readonly _tag: "Done"; readonly output: string }
+  | {
+    readonly _tag: "Park"
+    readonly reason: "waiting-input" | "waiting-event" | "waiting-quota"
+    readonly message: string
+  }
+
+/**
+ * Builds the durable transition one REPL cell settled.
+ *
+ * The recorded {@link Cell.Transition} shape is unchanged, so one journal
+ * decodes both modes and every projection over it reads both. REPL mode simply
+ * never populates `state`, `context`, `render` or `recall`: the realm is the
+ * memory and the print buffer is the projection.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const replTransition = (
+  intent: Intent | undefined,
+  justification: string | undefined
+): Cell.Transition => {
+  if (intent === undefined) {
+    return new Cell.Continue({
+      state: null,
+      context: [],
+      render: undefined,
+      recall: undefined,
+      justification
+    })
+  }
+  return intent._tag === "Done"
+    ? new Cell.Complete({ state: null, output: intent.output, reason: undefined })
+    : new Cell.Park({ state: null, reason: intent.reason, message: intent.message })
+}
+
+/**
+ * One cell evaluated inside a realm that outlives it.
+ *
+ * `frame` names the evaluation for the realm's own stack traces, so a throw
+ * reported in frame 7 says which cell threw.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface RealmEvaluation {
+  readonly cell: Cell.Source
+  readonly frame: number
+  readonly call: Handler
+  readonly limits?: Limits | undefined
+}
+
+/**
+ * Everything one REPL frame produced.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface RealmFrame {
+  readonly outcome: Cell.Outcome
+  /** What the cell printed, already bounded; empty when it printed nothing. */
+  readonly prints: string
+  /** Every name the realm holds after the cell ran. */
+  readonly bindings: ReadonlyArray<VariablesPanel.Binding>
+}
+
+/**
+ * A JavaScript realm that persists across the cells of one run.
+ *
+ * Teardown is scope closure, so a realm is acquired by the loop that uses it and
+ * cancellation is still fiber interruption.
+ *
+ * @category services
+ * @since 0.1.0
+ */
+export interface Realm {
+  readonly evaluate: (
+    evaluation: RealmEvaluation
+  ) => Effect.Effect<RealmFrame, SandboxError | HarnessError>
+}
+
+/**
+ * What a realm is opened with, which is everything that is fixed for the run.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface RealmOptions {
+  readonly flows: Readonly<Record<string, Cell.FlowProjection>>
+  /**
+   * The ceilings the realm enforces. `memoryBytes` becomes what it honestly is
+   * once a realm outlives a cell — a **run** budget — and every other ceiling
+   * stays per-frame, because they are counters the interrupt handler reads
+   * rather than properties of the runtime.
+   */
+  readonly limits?: Limits | undefined
+}
+
+/**
  * The deterministic script sandbox.
  *
  * @category services
@@ -297,6 +434,15 @@ export interface Sandbox {
   readonly evaluate: (
     evaluation: Evaluation
   ) => Effect.Effect<Cell.Outcome, SandboxError | HarnessError>
+  /**
+   * Opens a realm that persists across cells, for a run armed in REPL mode.
+   *
+   * Absent on a binding that has no persistent realm to offer, which is what a
+   * host asking for REPL mode against such a binding is told.
+   */
+  readonly openRealm?: (
+    options: RealmOptions
+  ) => Effect.Effect<Realm, SandboxError, Scope.Scope>
 }
 
 /**
@@ -315,8 +461,9 @@ export const Sandbox: Context.Service<Sandbox, Sandbox> = Context.Service("/harn
  * @since 0.1.0
  * @slop
  */
-export const make = (implementation: Sandbox): Sandbox =>
-  Sandbox.of({
+export const make = (implementation: Sandbox): Sandbox => {
+  const openRealm = implementation.openRealm
+  return Sandbox.of({
     ...implementation,
     evaluate: (evaluation) => {
       const invalid = validateLimits(evaluation.limits)
@@ -325,8 +472,18 @@ export const make = (implementation: Sandbox): Sandbox =>
         ...evaluation,
         limits: withDefaults(implementation.capabilities, evaluation.limits)
       })
-    }
+    },
+    ...(openRealm === undefined ? {} : {
+      openRealm: (options: RealmOptions) => {
+        const invalid = validateLimits(options.limits)
+        return invalid !== undefined ? Effect.fail(invalid) : openRealm({
+          ...options,
+          limits: withDefaults(implementation.capabilities, options.limits)
+        })
+      }
+    })
   })
+}
 
 /**
  * Provides a sandbox implementation.
@@ -379,6 +536,21 @@ export const unsupportedLimit = (limit: string): SandboxError =>
     code: "unsupported",
     message: `This sandbox cannot enforce the ${limit} limit; remove it or select a binding that can`
   })
+
+/**
+ * Refuses REPL mode on a binding that has no persistent realm.
+ *
+ * Stated rather than silently downgraded: a run armed for one surface and
+ * served another would be a benchmark arm measuring the wrong thing.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const realmUnsupported: SandboxError = new SandboxError({
+  code: "unsupported",
+  message:
+    "This sandbox has no persistent realm, so it cannot run a cell loop in repl mode; select the QuickJS binding or arm filing mode"
+})
 
 /**
  * A queued call awaiting resolution by the driver.
@@ -597,8 +769,8 @@ const denied = (name: string): never => {
  * @since 0.1.0
  * @slop
  */
-export const compile = (cell: Cell.Source): string | Cell.Rejected => {
-  const validation = CellValidation.validate(cell)
+export const compile = (cell: Cell.Source, mode: Cell.Mode = Cell.defaultMode): string | Cell.Rejected => {
+  const validation = CellValidation.validate(cell, mode)
   /* v8 ignore next -- `validate` returns exactly one of the two, so the coalesce never reaches its fallback; it only discharges the optional types the interface declares */
   return validation.rejected ?? validation.compiled ?? cell.text
 }

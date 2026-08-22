@@ -57,6 +57,40 @@ export const Language = Schema.Literals(["javascript", "typescript"])
 export type Language = typeof Language.Type
 
 /**
+ * How a run's cells relate to one another.
+ *
+ * `filing` is the shipped default: every cell is the body of its own async
+ * function, its names vanish when it returns, and what carries forward is the
+ * JSON it filed in `state` plus the context it projected.
+ *
+ * `repl` gives the run one realm for its whole life. A cell is a global async
+ * script, so its top-level declarations are still bound in the next cell, and
+ * `console.log` is how a cell talks to the next model turn. It is an arm, not a
+ * replacement, and it is adopted only on the numbers; see
+ * `docs/specs/Concepts/Repl Realm.md`.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export const Mode = Schema.Literals(["filing", "repl"])
+
+/**
+ * How a run's cells relate to one another.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Mode = typeof Mode.Type
+
+/**
+ * The mode a run takes when its host declares none.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const defaultMode: Mode = "filing"
+
+/**
  * One unit of agent-authored source and its stable content digest.
  *
  * The digest is part of every call identity produced inside the cell, so

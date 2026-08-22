@@ -50,7 +50,7 @@
 import * as Digest from "@smthrs/core/Digest"
 import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import { Option } from "effect"
-import type * as Cell from "../Cell.ts"
+import * as Cell from "../Cell.ts"
 
 /**
  * One rendered prompt section, with the digest that identifies its
@@ -127,6 +127,73 @@ The block is the body of an async function. Rules:
 
 If a cell throws or returns something that is not a transition, you are told exactly what happened and get another frame to fix it. If a cell does not PARSE nothing ran at all, so you are asked again inside the SAME frame, with the error and the offending line.`
 
+/**
+ * The contract a run armed in REPL mode is taught.
+ *
+ * It is the filing contract with the bookkeeping removed and the realm stated,
+ * and the difference is exactly the difference in the surface: there is no
+ * returned object to describe, no `state` to file, no manifest to read, and no
+ * `render`/`recall` to name, because the variable is the memory and the print is
+ * the summary. What is added is three sentences and the `ctx.done`/`ctx.park`
+ * line.
+ *
+ * Every rule with a trace behind it is carried across byte-similar, and that is
+ * deliberate: the r91 rerun grew the filing contract from 8,197 to 11,312
+ * characters and dropped resolved from 35/45 to 30/45 at 59 % more cost, which
+ * says teaching changes are expensive and must be measured one at a time. An
+ * arm that changed the realm *and* re-cut the doctrine could not attribute its
+ * own result. Cutting further is its own arm, with its own wave.
+ *
+ * The second worked example is the golf report's own prescription — its
+ * class-(a) finding is that the contract's only worked example is a three-line
+ * toy, and models imitate the example.
+ *
+ * Governing design: `docs/specs/Concepts/Repl Realm.md`.
+ */
+const replContract = `You advance this task one cell at a time, in a JavaScript REPL that stays alive for the whole run.
+
+Every reply MUST contain a fenced block tagged \`cell\`, and nothing in it but JavaScript. Several \`cell\` blocks in one reply are concatenated in order and run as ONE program.
+
+The realm persists. Everything a cell declares at the top level — \`const\`, \`let\`, \`var\`, \`function\`, \`class\` — is still bound, with the value it had, in every later cell of this run. Declaring a name again rebinds it. Nothing has to be filed and nothing has to be carried forward: you write ordinary code, across turns.
+
+\`console.log\` is how you talk to your next turn. What a cell prints comes back to you at the top of the next one; what it does not print is still in the variable you put it in, to read or compute with whenever you want it.
+
+Here is a whole task in two cells. Names are illustrative — call what \`ctx.flows\` lists — but copy the shape.
+
+\`\`\`cell
+const found = await ctx.call("grep", { pattern: "return value", root: "src/units", limit: 5 })
+const hit = found.ok === false ? undefined : found.matches[0]   // a failed call resolves, it does not throw
+const region = await ctx.call("read", { path: hit.file, offset: Math.max(1, hit.line - 20), limit: 40 })
+const verification = { flow: "bash", input: { command: "run-tests tests/test_widen.py::test_keeps_unit" } }
+const before = await ctx.call(verification.flow, verification.input)  // must fail, and for the right reason
+console.log(region.content, before.stdout, before.exitCode)     // the bytes I will choose the edit from
+\`\`\`
+
+\`\`\`cell
+const anchor = hit.text                                         // a line a call returned, never typed from memory
+const applied = await ctx.call("edit", { path: hit.file, oldString: anchor, newString: anchor.replace("return value", "return widen(value)") })
+console.log(applied.ok === false ? applied.error.message : applied.hunk)
+const after = await ctx.call(verification.flow, verification.input)   // the identical command, replayed
+if (before.exitCode !== 0 && after.exitCode === 0) ctx.done(verification.input.command + " failed before the edit and exits 0 after it; the applied hunk is:\\n" + applied.hunk)
+else console.log(after.stdout)
+\`\`\`
+
+Two frames: search, read, reproduce, print — then edit, re-check, answer. The same work at one call per frame costs six model turns and learns nothing extra.
+
+Rules:
+
+1. Your bindings are \`ctx\`, \`console\`, and everything your earlier cells defined. \`ctx.call(name, input)\` runs a flow and resolves with its result; \`ctx.flows\` is the catalog of flows you may call. There is nothing else — no imports, no require, no fetch, no filesystem, no process, no Date, no Math.random. Referencing anything else throws. This is about the JavaScript you write, not the strings you pass: a command or pattern that mentions another language's import, such as a Python heredoc reading \`from pathlib import Path\`, is data and is fine.
+2. Everything effectful is a flow. Reading a file, running a command, remembering something, asking a question, delegating to a subagent: all of them are \`ctx.call\`.
+3. Calls are ordinary awaits, so derive later inputs from earlier results inside one cell instead of spending a frame per call. A failed call does not throw: it resolves with \`{ ok: false, error: { code, message, hint } }\`, so the branch you already wrote still runs — test \`.ok === false\` where you are unsure. A successful call resolves with the flow's own result, unwrapped. If a cell throws, every name it had already assigned keeps its value and the next cell carries on from there. Long calls are fine: a suite that runs for minutes spends the flow's budget, never your cell's. Captured output is capped, so a result flagged truncated is a fragment: to restore a file from git run git checkout or git restore on the path, and never route file content through captured stdout — a write of bytes a call returned truncated is refused.
+4. Print what you must read; keep what you must compute with. Every turn opens with what your last cell printed, the names your realm holds, and one line for each call this run has settled. Prints are bounded and arrive once; a variable is whole and stays. Print the excerpt you will choose an edit from and the output of the check you are judging; do not print a file to save it, because it is already saved under the name you gave it. Structures print as JSON, so there is no \`String()\` to do and no \`[object Object]\` to get wrong.
+5. Finish by calling. \`ctx.done(output)\` ends the run and \`output\` is the answer. \`ctx.park(reason, message)\` waits durably for a human, with \`reason\` one of "waiting-input", "waiting-event", "waiting-quota"; a run with nobody listening refuses it and hands the question back. A cell that calls neither ends its turn, and you get another. Nothing re-checks a completion: name in \`output\` the exact command that proves it and what that command printed on the run you actually made. A completion you have not watched pass is a wrong answer, not a shortcut.
+6. A resumed run re-executes your cells from the top to rebuild the realm; calls that already settled return their recorded results instead of running twice.
+7. A command becomes evidence only once you have SEEN it fail on the unmodified tree FOR THE RIGHT REASON, which is the bug itself. A command that fails because it names a test, file, module, environment, or program that does not exist reproduces nothing: it fails identically on a broken tree and on a fixed one. Results carry \`invalidProbe\` when the flow can tell, but the reading is yours — repair such a probe, by listing the real names first, before you rely on it. Hold the check that failed for the right reason in a variable called \`verification\`, as \`{ flow, input }\`, and reuse that exact pair after edits rather than deriving or broadening another command.
+8. Act, then verify: read broadly in ONE cell, then commit to an edit. A run may be stopped for spending too many consecutive frames that write nothing, and when that budget is close the harness says so and asks for either an edit or \`ctx.justify("<the evidence you are still missing, the exact call that will get it, and what that makes the next frames do differently>")\`. An edit answers with the hunk it applied, raw and correctly indented: print it in the same cell, because a bad edit costs one glance there and a whole investigation anywhere else. Then put each edited file through whatever language-aware checker \`ctx.flows\` and this image actually offer (a compiler, ruff, eslint/tsc — through the shell flow); undefined-name findings are advisory — fix them before any broad suite, and where none exists record that and continue rather than guessing with regex.
+9. Prove it before you claim it, in as few frames as you can. ONE cell may run the baseline check, print its output, make the edit, and re-run the identical check — a cell can make many calls, and that is the point of writing code instead of emitting one tool call per turn. A baseline you have watched fail is what buys that: hold one and this same cell may call \`ctx.done\`, so reach for it first. It is not a precondition for writing — when the command will not bootstrap, edit on the diagnosis you have and establish the proof afterwards. Complete only once you have SEEN that identical command pass in this run, and name it in \`output\`. A broad suite that was already green proves no bug changed, and a probe that could not find what it named proves nothing at all.
+
+If a cell throws you are told what happened and you get another turn. If a cell does not PARSE nothing ran at all, so you are asked again inside the SAME frame, with the error and the offending line.`
+
 const historyFact =
   `the checkout ends at the commit you were given, so the change this task asks for is not in local history and no branch, tag, stash or reflog here holds a later fix. Mining \`git log --all\`, \`git log -S\` or \`git fsck\` for one costs a frame and returns nothing: this harness keeps its own attempt and durability snapshots in a repository of its own, so everything those commands can reach is real project history and all of it predates your task. Reading history backwards is still cheap: \`git blame\` or \`git log -S\` on a line says what an assertion was written for, and when the task names a last-known-good release, \`git log <tag>..HEAD -- <paths>\` is the shortest route to the regression.`
 
@@ -192,12 +259,14 @@ const catalogText = (flows: Readonly<Record<string, Cell.FlowProjection>>): stri
  */
 export const make = (
   flows: Readonly<Record<string, Cell.FlowProjection>>,
-  environment: Environment = {}
+  environment: Environment = {},
+  mode: Cell.Mode = Cell.defaultMode
 ): ReadonlyArray<Section> => {
   const facts = environmentText(environment)
   const catalog = catalogText(flows)
+  const taught = mode === "repl" ? replContract : contract
   return [
-    { id: "cell-contract", text: contract, digest: digest("cell-contract", contract) },
+    { id: "cell-contract", text: taught, digest: digest("cell-contract", taught) },
     { id: "cell-environment", text: facts, digest: digest("cell-environment", facts) },
     { id: "cell-catalog", text: catalog, digest: digest("cell-catalog", catalog) }
   ]
