@@ -1577,6 +1577,75 @@ different finding — the in-container `docker exec … curl` fetches the
 environment seal cannot reach. **A verdict from a run that fetched the upstream
 fix is not a sealed verdict**, whatever its effort.
 
+**The lane finished on 2026-08-23: all 45 instances carry a real grading, none
+failed, and none needed a re-grade.** Scored over the 43 the exclusions leave,
+flows `r90` resolves 33, codex `r90c` (network, medium) 38, codex `r90s`
+(sealed, medium) 36, and codex `r90sh` (sealed, high) 38; raw over 45 that is
+35, 40, 38 and 38.
+
+**Effort is worth two instances to sealed codex, in one direction.** Against
+`r90s` the high-effort lane gains `django__django-12273` and
+`astropy__astropy-14369` and loses nothing, so the confound flattered flows by
+two on the sealed comparison and by nothing in the other direction. The
+four-cell table against `r90sh` is both 32, flows-only 1
+(`django__django-15732`), codex-only 6, neither 4 — the standing superset goal
+fails by six, where against the medium sealed column it failed by four.
+
+Effort also costs: 6584 seconds of agent wall clock against `r90s`'s 4494 (+47
+%) and 1,982,783 footer tokens against 1,710,616 (+16 %), for those two
+instances.
+
+**Both excluded rows moved, which is what an exclusion is for.**
+`psf__requests-1766` and `psf__requests-2317` resolve under `r90s` and do not
+under `r90sh`. Their verdicts turn on the httpbin the family is graded against
+(`lib/httpbin.sh`), not on a harness, which is why `lib/excluded.mjs` keeps them
+out of every rate — and why `r90sh` reads 38 scored and 38 raw while `r90s`
+reads 36 and 38.
+
+**What the traces say, and where the seal did not hold.** The web-search tool is
+off for the whole lane: **zero `web search:` lines across all 45 transcripts**,
+counted by `compare-codex-lanes.mjs` rather than by hand. Twenty-four of the 45
+runs issued 62 host egress commands between them and 16 carried the dead proxy's
+own diagnostic; three transcripts read in full show none of the rest succeeded
+either — `django__django-15732`'s verbose attempt names the seal outright
+(`Uses proxy env variable https_proxy == 'http://127.0.0.1:1'`, connection
+refused, zero bytes), `matplotlib__matplotlib-22865`'s two pipelines exit 127
+and 1 with nothing fetched, and `psf__requests-1766`'s two matches are the word
+`curl` quoted out of the repository's own docstring.
+
+**Eight of the 45 got out through the in-container hole, against two at medium.**
+Every one of them resolved, and every one fetched upstream hindsight — the merged
+pull request, the issue thread, the file as it stands on `main`, or a later
+release off PyPI:
+
+| instance | what it fetched | `r90sh` verdict |
+| --- | --- | --- |
+| `astropy__astropy-8707` | `api.github.com/…/pulls/8707/files` — the merged fix | resolved |
+| `pytest-dev__pytest-6197` | `api.github.com/…/issues/6197` — the issue thread | resolved |
+| `django__django-16901` | `raw.githubusercontent.com/…/main/…/sql/where.py` | resolved |
+| `django__django-11815` | `api.github.com/search/issues?q=repo:django/django…` | resolved |
+| `sphinx-doc__sphinx-7590` | `pip download Sphinx` — a later release | resolved |
+| `sympy__sympy-19495` | `api.github.com/…/issues/19495` | resolved |
+| `astropy__astropy-14369` | `raw.githubusercontent.com/…/main/…/format/cds.py` | resolved |
+| `django__django-13128` | `api.github.com/…/commits/2d67222472…` | resolved |
+
+Read strictly — every breached verdict void, the rule the sealed lane applied to
+its two — the lane resolves **30 of the 35 scored instances that did not breach**,
+and the codex-only set shrinks from six to three: `pydata__xarray-7233`,
+`django__django-12273` and `django__django-13821`. Three of the six the superset
+goal fails on are runs that read the answer.
+
+**The hole is now the dominant uncertainty in this comparison, and raising the
+effort is what made it so.** Two breaches in 45 was a footnote; eight in 45,
+every one resolved, is not. Closing it means a testbed the container cannot leave
+— `--network none`, or a proxy inside the container as well — and that changes
+what the *flows* arm was measured under too, so it is a change to make for both
+arms at once and to re-run both, never a patch applied between two lanes of one
+comparison. For what it is worth to that decision: no flows journal in
+`fullbench/journals/` mentions `curl`, `wget`, `api.github.com` or
+`raw.githubusercontent.com` on any of the 45, though the flows agent's `bash`
+flow reaches the same container by the same route.
+
 ### The analysis bundle
 
 ```sh
