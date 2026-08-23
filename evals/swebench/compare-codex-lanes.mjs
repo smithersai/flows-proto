@@ -2,7 +2,12 @@
  * The codex arm twice over one population: with the network, and sealed.
  *
  *   node compare-codex-lanes.mjs [--net f] [--sealed f] [--manifest f] \
- *     [--logs dir] [--out dir] [--json]
+ *     [--logs dir] [--out dir] [--label text] [--json]
+ *
+ * The sealed column is whichever sealed lane the flags point at — `r90s` by
+ * default, `r90sh` when the flags name the sealed-high lane — and `--label`
+ * names it in the report, because a column rendered under another lane's
+ * heading is a number quoted under conditions it was not measured under.
  *
  * `compare-arms.mjs` answers "does flows resolve a superset of what codex
  * resolves", which is a question about two harnesses. This answers a different
@@ -147,7 +152,7 @@ const readLog = (logsDirectory, id) => {
  * @category conversions
  * @since 0.1.0
  */
-export const compareLanes = ({ manifestPath, netPath, sealedPath, logsDirectory }) => {
+export const compareLanes = ({ label = "`r90s` (sealed)", manifestPath, netPath, sealedPath, logsDirectory }) => {
   const flows = population(manifestPath)
   const net = attempted(netPath)
   const sealed = attempted(sealedPath)
@@ -174,6 +179,12 @@ export const compareLanes = ({ manifestPath, netPath, sealedPath, logsDirectory 
   const denominator = denominators(rows.map((row) => row.id))
 
   return {
+    // Which sealed lane this is. The script reads whichever ledger and
+    // transcripts it is pointed at, so the report has to name the lane it
+    // scored: an `r90sh` column rendered under the `r90s` heading is a number
+    // quoted under another lane's conditions, which is the defect the lanes
+    // exist to prevent.
+    label,
     rows,
     excluded: denominator.excluded,
     totals: {
@@ -227,6 +238,10 @@ const verdictCell = (state) => (state.graded ? state.verdict : `_${state.verdict
  */
 export const render = (result) => {
   const { excluded, movement, notComparable, rows, seal, totals } = result
+  const label = result.label ?? "`r90s` (sealed)"
+  // The narrow column header is the lane's index alone; the label's first
+  // backticked token is it, so one flag names both.
+  const column = label.match(/`[^`]+`/u)?.[0] ?? label
   const lines = []
   lines.push("# The codex arm, with the network and sealed")
   lines.push("")
@@ -239,7 +254,7 @@ export const render = (result) => {
   lines.push("| --- | --- | --- |")
   lines.push(`| flows \`r90\` | ${totals.flowsResolvedScored} of ${totals.scored} | ${totals.flowsResolvedRaw} of ${totals.raw} |`)
   lines.push(`| codex \`r90c\` (network) | ${totals.netResolvedScored} of ${totals.scored} | ${totals.netResolvedRaw} of ${totals.raw} |`)
-  lines.push(`| codex \`r90s\` (sealed) | ${totals.sealedResolvedScored} of ${totals.scored} | ${totals.sealedResolvedRaw} of ${totals.raw} |`)
+  lines.push(`| codex ${label} | ${totals.sealedResolvedScored} of ${totals.scored} | ${totals.sealedResolvedRaw} of ${totals.raw} |`)
   lines.push("")
   lines.push("## What the seal moved")
   lines.push("")
@@ -296,7 +311,7 @@ export const render = (result) => {
   lines.push("")
   lines.push("## Per instance")
   lines.push("")
-  lines.push("| instance | flows `r90` | codex `r90c` | codex `r90s` | sealed wall (s) |")
+  lines.push(`| instance | flows \`r90\` | codex \`r90c\` | codex ${column} | sealed wall (s) |`)
   lines.push("| --- | --- | --- | --- | --- |")
   for (const row of rows) {
     const mark = row.excluded ? " ⟂" : ""
@@ -331,6 +346,7 @@ const main = () => {
     }
   }
   const result = compareLanes({
+    label: flag("--label", "`r90s` (sealed)"),
     manifestPath,
     netPath,
     sealedPath,

@@ -2,12 +2,12 @@
  * The codex backfill's lanes: one condition, four artifacts, one table.
  *
  * A lane names a whole measurement — the archive, the ledger, the run index, the
- * evaluator run id, and the network condition its runs are given. Moving only
- * some of them would grade one condition's patches into another condition's run
- * id with nothing on disk saying so, which is the same defect `run-45.sh`'s lane
- * exists to prevent on the flows side.
+ * evaluator run id, and the conditions its runs are given. Moving only some of
+ * them would grade one condition's patches into another condition's run id with
+ * nothing on disk saying so, which is the same defect `run-45.sh`'s lane exists
+ * to prevent on the flows side.
  *
- * Four things are pinned here, all offline:
+ * Five things are pinned here, all offline:
  *
  * - **a lane reads its own ledger.** The same population, two lanes, two
  *   different remainders: an instance paid for in one lane is still owed in the
@@ -17,9 +17,15 @@
  * - **the table in the script is the table in the README.** A lane added to one
  *   and not the other is a lane an operator cannot find, or a documented lane
  *   that does not exist.
- * - **no two lanes share a value.** Two lanes with one index, one ledger, one
- *   archive or one evaluator run id would produce artifacts that cannot be told
- *   apart after the fact.
+ * - **no two lanes share an artifact.** Two lanes with one index, one ledger,
+ *   one archive or one evaluator run id would produce artifacts that cannot be
+ *   told apart after the fact.
+ * - **no two lanes share a set of conditions, and every lane pins all of
+ *   them.** `sealed` and `sealed-high` share a network condition and differ in
+ *   effort, which is the whole point of the second one; two lanes with the same
+ *   pair would be one measurement under two names. A lane that left a condition
+ *   to the runner's default would move when the default moves — which is exactly
+ *   what happened to effort on 2026-08-23 — so both are written down per lane.
  *
  * The process half — claims, slots, pulls, grading, deletion — is
  * `./codex-backfill-dryrun.sh`, which needs docker.
@@ -94,27 +100,34 @@ const script = readFileSync(join(root, "codex-backfill.sh"), "utf8")
 const readme = readFileSync(join(root, "README.md"), "utf8")
 
 const declared = [...script.matchAll(
-  /^ {2}(?<lane>[a-z-]+)\)\n\s*FBC="\$FB\/(?<archive>[A-Za-z0-9_.-]+)"\n\s*CODEX_MANIFEST="\$FB\/(?<ledger>[A-Za-z0-9_.-]+)"\n\s*LANE_INDEX="(?<index>[A-Za-z0-9]+)"; LANE_RUN_ID="(?<runId>[A-Za-z0-9-]+)"; LANE_NETWORK="(?<network>[a-z]+)" ;;$/gmu
+  /^ {2}(?<lane>[a-z-]+)\)\n\s*FBC="\$FB\/(?<archive>[A-Za-z0-9_.-]+)"\n\s*CODEX_MANIFEST="\$FB\/(?<ledger>[A-Za-z0-9_.-]+)"\n\s*LANE_INDEX="(?<index>[A-Za-z0-9]+)"; LANE_RUN_ID="(?<runId>[A-Za-z0-9-]+)"; LANE_NETWORK="(?<network>[a-z]+)"; LANE_EFFORT="(?<effort>[a-z]+)" ;;$/gmu
 )].map((match) => match.groups)
 
 assert.ok(declared.length >= 2, `the script declares at least two lanes, read ${declared.length}`)
 assert.deepEqual(
   declared.map((lane) => lane.lane).sort(),
-  ["net", "sealed"],
-  "the lanes are net and sealed"
+  ["net", "sealed", "sealed-high"],
+  "the lanes are net, sealed and sealed-high"
 )
 
-for (const key of ["archive", "ledger", "index", "runId", "network"]) {
+// The artifacts a lane writes have to be tellable apart after the fact.
+for (const key of ["archive", "ledger", "index", "runId"]) {
   const values = declared.map((lane) => lane[key])
   assert.equal(new Set(values).size, values.length, `two lanes share a ${key}`)
 }
+
+// The conditions may overlap one at a time — `sealed` and `sealed-high` share a
+// network — but never as a whole, or two lanes would be one measurement under
+// two names.
+const conditions = declared.map((lane) => `${lane.network}/${lane.effort}`)
+assert.equal(new Set(conditions).size, conditions.length, "two lanes measure the same pair of conditions")
 
 for (const lane of declared) {
   const row = readme
     .split("\n")
     .find((line) => line.startsWith(`| \`${lane.lane}\``) && line.includes(lane.index))
   assert.ok(row !== undefined, `README documents the ${lane.lane} lane's index ${lane.index}`)
-  for (const value of [lane.ledger, lane.runId, lane.network]) {
+  for (const value of [lane.ledger, lane.runId, lane.network, lane.effort]) {
     assert.ok(row.includes(value), `the README row for ${lane.lane} names ${value}`)
   }
   assert.ok(
@@ -151,8 +164,43 @@ assert.ok(
   "the condition a run was given is stamped into its timings"
 )
 
+// Effort is the second condition, and the one that was wrong: the codex arm was
+// pinned to a literal `medium` while every flows wave ran at the `high` its own
+// default gives, so the two older lanes measure medium codex against high flows.
+// The runner takes it from the environment now, defaults to high, and every lane
+// pins its own — which is what lets the older lanes keep reproducing.
+assert.ok(
+  runner.includes('EFFORT="${SWB_CODEX_EFFORT:-high}"'),
+  "run-instance-codex.sh takes its effort from SWB_CODEX_EFFORT and defaults to high"
+)
+assert.ok(
+  runner.includes('-c model_reasoning_effort="$EFFORT"'),
+  "the effort a run was given is the one passed to codex"
+)
+assert.ok(
+  !runner.split("\n").some((line) =>
+    !line.trimStart().startsWith("#") && line.includes('model_reasoning_effort="medium"')
+  ),
+  "the medium pin is gone from the runner; a lane that wants medium pins it itself"
+)
+assert.ok(
+  runner.includes('"$EFFORT"') && runner.includes('"effort": "%s"'),
+  "the effort a run was given is stamped into its timings"
+)
+for (const effort of declared.map((lane) => lane.effort)) {
+  assert.match(
+    runner,
+    new RegExp(`^\\s{2}[a-z|]*\\b${effort}\\b[a-z|]*\\)`, "mu"),
+    `run-instance-codex.sh accepts the '${effort}' effort`
+  )
+}
+assert.ok(
+  script.includes("export SWB_CODEX_NETWORK SWB_CODEX_EFFORT"),
+  "the backfill hands both conditions to the runner rather than letting it default"
+)
+
 rmSync(temporary, { recursive: true, force: true })
 console.log(
-  "check-codex-lanes: a lane reads its own ledger, an unknown lane is refused, no two lanes share a value,"
-    + " and the script's table is the README's."
+  "check-codex-lanes: a lane reads its own ledger, an unknown lane is refused, no two lanes share an artifact"
+    + " or a pair of conditions, every lane pins its effort, and the script's table is the README's."
 )

@@ -1366,26 +1366,39 @@ split, and the bundle says so instead of printing one.
 | `SWB_CODEX_BACKFILL_INDEX` | the lane's | the run index every artifact carries |
 | `SWB_CODEX_BACKFILL_MIN_FREE_MIB` | 8192 | the disk gate |
 | `SWB_CODEX_BACKFILL_SLOT_TIMEOUT` | 21600 | how long an invocation waits for a slot |
-| `SWB_CODEX_LANE` | `net` | the lane, and with it the four rows below it |
+| `SWB_CODEX_LANE` | `net` | the lane, and with it the five rows below it |
 | `SWB_CODEX_NETWORK` | the lane's | `on`, `sealed` or `off`; see the sealed lane |
+| `SWB_CODEX_EFFORT` | the lane's | `minimal`, `low`, `medium`, `high` or `xhigh`; see [Reasoning effort](#reasoning-effort) |
 | `SWB_CODEX_MODEL` | `gpt-5.6-sol` | the model, which must be the one the flows side ran |
 
 ### Lanes, and the sealed one
 
 A lane is one measurement of the population under one condition, and it moves
 four things at once — the archive, the ledger, the run index and the evaluator
-run id — plus the network condition its runs are given. Moving only some of them
-would grade one condition's patches into another condition's run id with nothing
-on disk saying so.
+run id — plus the conditions its runs are given. Moving only some of them would
+grade one condition's patches into another condition's run id with nothing on
+disk saying so.
 
-| lane | archive | ledger | index | evaluator run id | network |
-| --- | --- | --- | --- | --- | --- |
-| `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` |
-| `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` |
+| lane | archive | ledger | index | evaluator run id | network | effort |
+| --- | --- | --- | --- | --- | --- | --- |
+| `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` | `medium` |
+| `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` | `medium` |
+| `sealed-high` | `fullbench/codex-sealed-high/` | `codex-sealed-high-manifest.jsonl` | `r90sh` | `fullbench-codex-sealed-high` | `sealed` | `high` |
+
+**Every lane pins its own effort.** The two `medium` lanes ran while
+`run-instance-codex.sh` had that value written into it as a literal; the default
+is `high` now, so a lane that took the default would re-run at a condition its
+recorded rows were never measured under. Two lanes may therefore share a network
+condition — `sealed` and `sealed-high` do — while no two share an archive, a
+ledger, an index or an evaluator run id, and no two share the *pair* of
+conditions. Each run's conditions are also written into its own ledger row and
+its own timings, so a row says what it was measured under without anyone reading
+the lane table back.
 
 ```sh
 ./codex-backfill.sh --lane sealed --status        # counts, spends nothing
 ./codex-backfill.sh --lane sealed --jobs 2        # the whole lane, two at a time
+./codex-backfill.sh --lane sealed-high --jobs 2   # the same seal at high effort
 ```
 
 Every mode takes `--lane`, and it has to: `--status` on the wrong lane reads the
@@ -1526,6 +1539,35 @@ exited 0 with a 7212-byte patch, so `HARNESS=codex SWB_CODEX_LANE=sealed
 ./regrade.sh` re-graded that patch rather than paying for a second attempt; it
 resolves to `unresolved`, and the ledger carries both the reason and the verdict
 it supersedes.
+
+### The sealed-high lane
+
+`r90s` answers "what does codex resolve without the network". It does not answer
+"what does codex resolve under the conditions flows was measured under", because
+it ran at medium reasoning effort and every flows wave ran at high — see
+[Reasoning effort](#reasoning-effort) for the confound and the ruling that
+retires it. `sealed-high` is `r90s` with that one variable moved: same 45
+instances, same seal, same model, same 1200-second budget, same grading rig,
+`model_reasoning_effort=high`.
+
+```sh
+./codex-backfill.sh --lane sealed-high --status
+./codex-backfill.sh --lane sealed-high --jobs 2
+node compare-codex-lanes.mjs \
+  --sealed fullbench/codex-sealed-high-manifest.jsonl \
+  --logs fullbench/codex-sealed-high/logs \
+  --out fullbench/codex-sealed-high \
+  --label 'r90sh (sealed, high effort)'
+```
+
+`compare-codex-lanes.mjs` takes the lane it reads as flags, so the same script
+scores this lane against `net` and reads its seal back off its own transcripts.
+Everything the sealed lane owes its reader, this lane owes too, and for the same
+reasons: the web-search line count across all 45 transcripts, the egress
+attempts and the refusals they produced, and — separately, because it is a
+different finding — the in-container `docker exec … curl` fetches the
+environment seal cannot reach. **A verdict from a run that fetched the upstream
+fix is not a sealed verdict**, whatever its effort.
 
 ### The analysis bundle
 
