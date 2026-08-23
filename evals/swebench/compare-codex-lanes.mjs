@@ -92,9 +92,32 @@ export const egress = (text) => {
     commands,
     attempts: commands.length,
     refusals: refusals.length + proxied.length,
-    breaches: breaches(text)
+    breaches: breaches(text),
+    webSearches: webSearches(text)
   }
 }
+
+/**
+ * The second surface of the seal: codex's own web-search tool.
+ *
+ * The proxy variables reach the commands codex spawns. They do not reach the
+ * tool the model calls itself, so `web_search=disabled` is what turns it off and
+ * the transcript is what proves it did. `codex exec` prints one `web search:`
+ * line per query, and the first r90s attempt is why this is counted rather than
+ * assumed: it set `tools.web_search=false`, a key codex-cli 0.149.0 ignores, and
+ * 126 of these lines went unnoticed across 15 of its 45 runs — several opening
+ * the instance's own upstream issue, which is precisely the hindsight a sealed
+ * lane exists to remove.
+ *
+ * A run with a search line is in the same class as a breach and not in the same
+ * class as a refused `curl`: it read the network. Its verdict is not a sealed
+ * verdict.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const webSearches = (text) =>
+  (text.match(/^web search:.*$/gmu) ?? []).map((line) => line.slice(0, 160))
 
 /**
  * The egress the seal does not reach: a fetch run **inside** the testbed
@@ -223,6 +246,16 @@ export const compareLanes = ({ label = "`r90s` (sealed)", manifestPath, netPath,
         breaches: row.egress.breaches.length,
         commands: row.egress.breaches.slice(0, 6)
       })),
+      // The other surface of the seal, counted the same way and for the same
+      // reason: the lane-wide total is the claim, and any instance behind a
+      // non-zero total is named.
+      webSearchLines: rows.reduce((total, row) => total + (row.egress?.webSearches.length ?? 0), 0),
+      instancesWithWebSearches: rows.filter((row) => (row.egress?.webSearches.length ?? 0) > 0).map((row) => ({
+        id: row.id,
+        sealed: row.sealed.verdict,
+        searches: row.egress.webSearches.length,
+        queries: row.egress.webSearches.slice(0, 6)
+      })),
       transcriptsRead: rows.filter((row) => row.egress !== undefined).length
     }
   }
@@ -283,6 +316,30 @@ export const render = (result) => {
     lines.push("| --- | --- | --- | --- |")
     for (const row of seal.instancesWithAttempts) {
       lines.push(`| \`${row.id}\` | ${row.attempts} | ${row.refusals} | ${row.breaches} |`)
+    }
+  }
+  lines.push("")
+  lines.push("")
+  lines.push("### The web-search tool")
+  lines.push("")
+  if (seal.webSearchLines === 0) {
+    lines.push(
+      `**0 \`web search:\` lines across ${seal.transcriptsRead} transcripts.** The tool is codex's own rather than a`
+        + " child command's, so no amount of proxying reaches it and only `web_search=disabled` turns it off. Zero is"
+        + " the evidence that it did."
+    )
+  } else {
+    lines.push(
+      `**${seal.webSearchLines} \`web search:\` lines across ${seal.instancesWithWebSearches.length} of`
+        + ` ${seal.transcriptsRead} transcripts.** The web-search tool was live for these runs, which reads the network`
+        + " through a surface the proxy seal does not touch. **A verdict on this list is not a sealed verdict**, and a"
+        + " lane with a non-zero total here is the `codex-sealed-websearch` failure again."
+    )
+    lines.push("")
+    lines.push("| instance | sealed verdict | searches | first query |")
+    lines.push("| --- | --- | --- | --- |")
+    for (const row of seal.instancesWithWebSearches) {
+      lines.push(`| \`${row.id}\` | ${row.sealed} | ${row.searches} | \`${row.queries[0]?.replaceAll("|", "\\|")}\` |`)
     }
   }
   lines.push("")

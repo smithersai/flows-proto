@@ -15,7 +15,13 @@
  * - **a claimed seal is read back off the traces.** A run that never reached for
  *   the network and a run that reached and was refused are different findings,
  *   so the transcripts are counted rather than assumed, and an instance that
- *   attempted egress is named whatever its verdict.
+ *   attempted egress is named whatever its verdict. Both surfaces are counted:
+ *   the child commands' proxy, and codex's own web-search tool, which no proxy
+ *   reaches and which the first r90s attempt left live without noticing.
+ * - **the lane the report scores is the lane it names.** The same script reads
+ *   whichever sealed lane its flags point at, so an `r90sh` column under the
+ *   `r90s` heading would be a number quoted under conditions it was never
+ *   measured under.
  *
  * The report is also asserted to be a pure function of its inputs: the same
  * ledgers twice produce the same bytes.
@@ -72,6 +78,16 @@ try {
   // `docker exec` on its own is how both arms run the project's tests, so it is
   // a breach only when it carries a fetch.
   assert.equal(egress("/bin/zsh -lc \"docker exec box bash -lc 'pytest -q'\" in /tmp/w").breaches.length, 0)
+
+  // The seal's second surface. The tool is codex's own, so no proxy reaches it
+  // and only the transcript says whether it ran. The first r90s attempt is why
+  // this is counted rather than assumed: it set a key this build ignores and
+  // searched the web 126 times without anything noticing.
+  assert.equal(egress("nothing here").webSearches.length, 0)
+  assert.equal(egress("web search: django ticket 12345\nweb search:\n").webSearches.length, 2)
+  // Prose that merely mentions the phrase is not a call: the line has to be the
+  // tool's own, from the start of the line.
+  assert.equal(egress("I could web search: but the tool is off\n").webSearches.length, 0)
 
   const manifest = join(temporary, "manifest.jsonl")
   const net = join(temporary, "codex-manifest.jsonl")
@@ -142,7 +158,13 @@ try {
   assert.deepEqual(result.seal.instancesWithBreaches.map((row) => row.id), ["c__c-3"])
   assert.equal(result.seal.instancesWithBreaches[0].sealed, "resolved", "a breach carries the verdict it casts doubt on")
 
+  // The web-search surface: zero over these traces, which is the claim a sealed
+  // lane makes, and it is read off the transcripts rather than remembered.
+  assert.equal(result.seal.webSearchLines, 0)
+  assert.deepEqual(result.seal.instancesWithWebSearches, [])
+
   const markdown = render(result)
+  assert.match(markdown, /\*\*0 `web search:` lines across 3 transcripts\.\*\*/u, "the seal's second surface is counted")
   assert.match(markdown, /4 scored of 5 run/u, "both denominators are stated before any rate")
   assert.match(markdown, /lost with the seal\*\* \(1\): b__b-2/u)
   assert.match(markdown, /gained with the seal\*\* \(1\): c__c-3/u)
@@ -158,9 +180,38 @@ try {
     logsDirectory: logs
   })), "the same ledgers twice produce the same bytes")
 
+  // A lane whose search tool was live says so, names the runs, and says what it
+  // costs their verdicts — the same treatment a breach gets, because it is the
+  // same finding: the run read the network.
+  const searchedLogs = join(temporary, "logs-searched")
+  mkdirSync(searchedLogs, { recursive: true })
+  writeFileSync(join(searchedLogs, "a__a-1.run.log"), "web search: xarray groupby bug upstream issue\nweb search:\n")
+  const searched = compareLanes({
+    manifestPath: manifest,
+    netPath: net,
+    sealedPath: sealed,
+    logsDirectory: searchedLogs
+  })
+  assert.equal(searched.seal.webSearchLines, 2)
+  assert.deepEqual(searched.seal.instancesWithWebSearches.map((row) => row.id), ["a__a-1"])
+  const searchedMarkdown = render(searched)
+  assert.match(searchedMarkdown, /\*\*2 `web search:` lines across 1 of 1 transcripts\.\*\*/u)
+  assert.match(
+    searchedMarkdown,
+    /A verdict on this list is not a sealed verdict\*\*, and a lane with a non-zero total/u,
+    "a live search tool voids the verdicts it touched, stated rather than inferred"
+  )
+
+  // The lane the report scores is the lane it names.
+  assert.match(markdown, /\| codex `r90s` \(sealed\) \|/u, "the default label is the sealed lane")
+  const labelled = render({ ...result, label: "`r90sh` (sealed, high effort)" })
+  assert.match(labelled, /\| codex `r90sh` \(sealed, high effort\) \|/u)
+  assert.match(labelled, /\| instance \| flows `r90` \| codex `r90c` \| codex `r90sh` \| sealed wall \(s\) \|/u)
+
   console.log(
     "check-compare-codex-lanes: an eval error is never a loss, an exclusion is in no movement set and in both"
-      + " denominators, the seal's evidence is counted off the traces, and the report is deterministic."
+      + " denominators, both surfaces of the seal are counted off the traces, the report names the lane it scored,"
+      + " and it is deterministic."
   )
 } finally {
   rmSync(temporary, { recursive: true, force: true })
