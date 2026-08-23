@@ -215,6 +215,37 @@ for Django, `tox` for Sphinx, `pytest -rA` elsewhere.
 > sentence. Both sides derive the command from `lib/test-command.py` now, and the
 > next codex wave is the first one the head-to-head number holds for.
 
+## Reasoning effort
+
+**Reasoning effort is a benchmark condition and both arms state theirs.**
+`SWB_CODEX_EFFORT` pins the codex side and defaults to **`high`**;
+`run-instance-codex.sh` passes it as `-c model_reasoning_effort=<value>`, writes
+it into `timings-codex/<id>.json`, and codex echoes it into the first lines of
+its own transcript (`reasoning effort: <value>`), so a run's effort is readable
+off the artifact and never inferred. The accepted values are `minimal`, `low`,
+`medium`, `high` and `xhigh`; anything else is refused before the image is
+pulled.
+
+The flows arm has no equivalent knob in the rig because it has no equivalent
+choice: `effortFor` in `packages/agent/src/AgentSession.ts` returns the flow's
+`effort:` frontmatter, then the host's option, then `high`, and
+`lib/write-flow.mjs` writes no `effort:` line. Every flows wave has therefore run
+at high.
+
+> **Disclosure — every codex number before 2026-08-23 is effort-confounded.**
+> The codex side was pinned to the literal `medium` from 2026-08-19, under a
+> comment claiming medium matched what our harness got as an API default. Our
+> harness never took an API default; it defaulted to high, and it did so before
+> wave 1. All 45 transcripts in `fullbench/codex/logs/` and all 45 in
+> `fullbench/codex-sealed/logs/` carry `reasoning effort: medium`, so the `r90c`
+> and `r90s` columns measure medium-effort codex against high-effort flows.
+> Effort is not a harness property, so the difference lands in the score as if it
+> were one, in an unknown direction and by an unknown amount. **No flows-vs-codex
+> claim may be quoted off `r90c` or `r90s` without this paragraph.** Will ruled
+> on 2026-08-23 that the codex arm re-runs at high; `codex-backfill.sh --lane
+> sealed-high` is that re-run, and the two older lanes keep their pinned `medium`
+> so they still reproduce.
+
 ## Patch capture
 
 **The captured patch holds what the agent changed and nothing else.** Both run

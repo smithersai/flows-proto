@@ -2,7 +2,9 @@
 # Runs the OpenAI Codex CLI harness on one SWE-bench Verified instance, under
 # the same conditions run-instance.sh gives the flows harness: same
 # image-derived checkout, same live container for tests, same repository test
-# command, same prompt content, same wall-clock budget.
+# command, same prompt content, same wall-clock budget, and — since 2026-08-23 —
+# the same reasoning effort, which defaults to `high` because that is what the
+# flows arm has always run at. See SWB_CODEX_EFFORT below.
 #
 #   run-instance-codex.sh <instance_id> [timeout-seconds] [model] [run-index]
 #
@@ -182,16 +184,41 @@ case "$NETWORK" in
     echo "[$RUN_ID] SWB_CODEX_NETWORK must be on, sealed or off, got '$NETWORK'"; exit 2 ;;
 esac
 
-echo "[$RUN_ID] codex start ($MODEL, ${BUDGET}s)"
+# Reasoning effort is a benchmark condition, like the network, and it is pinned
+# here rather than inherited: the isolated CODEX_HOME holds an API-key login and
+# no user config, so nothing in the host's config.toml reaches these runs.
+#
+# It was pinned to the literal `medium` from 2026-08-19 to 2026-08-23, under a
+# comment saying medium "matches what our harness got as the API default". That
+# premise was false. The flows arm has never taken an API default: `effortFor`
+# in `packages/agent/src/AgentSession.ts` returns `high` whenever a flow
+# declares no `effort:` frontmatter, `lib/write-flow.mjs` declares none, and
+# both have been that way since before wave 1. So every flows wave ran at high
+# while every codex lane ran at medium — 45 of 45 transcripts in both
+# `fullbench/codex/logs/` and `fullbench/codex-sealed/logs/` carry
+# `reasoning effort: medium` — and effort was a variable neither arm's number
+# controlled for. Will ruled on 2026-08-23 that the prior results are
+# effort-confounded and that the codex arm re-runs at the effort the arm it is
+# compared against uses, so the default here is `high`.
+#
+# A lane that reproduces an older measurement pins its own value instead;
+# `codex-backfill.sh` pins one per lane for exactly that reason. The value is
+# recorded in the run's timings, and codex echoes it in its own run-log header
+# (`reasoning effort: <value>`), so a transcript proves what it ran at.
+EFFORT="${SWB_CODEX_EFFORT:-high}"
+case "$EFFORT" in
+  minimal|low|medium|high|xhigh) ;;
+  *)
+    echo "[$RUN_ID] SWB_CODEX_EFFORT must be minimal, low, medium, high or xhigh, got '$EFFORT'"; exit 2 ;;
+esac
+
+echo "[$RUN_ID] codex start ($MODEL, effort $EFFORT, ${BUDGET}s)"
 START=$(date +%s)
-# Isolated CODEX_HOME: API-key auth (the same key the flows runs billed), no
-# user config — so reasoning effort is pinned here, not inherited from the
-# host's config.toml. Medium matches what our harness got as the API default.
 export CODEX_HOME="$S/.codex-home"
 timeout "$BUDGET" codex exec \
   -C "$WORK" \
   -m "$MODEL" \
-  -c model_reasoning_effort="medium" \
+  -c model_reasoning_effort="$EFFORT" \
   "${CODEX_ARGS[@]}" \
   --skip-git-repo-check \
   --ephemeral \
@@ -203,8 +230,8 @@ CODE=$?
 END=$(date +%s)
 echo "[$RUN_ID] codex done in $((END-START))s (exit $CODE)"
 
-printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "model": "%s",\n  "budgetSeconds": %s,\n  "network": "%s",\n  "exitCode": %s,\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s\n}\n' \
-  "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$MODEL" "$BUDGET" "$NETWORK" "$CODE" "$((START*1000))" "$((END*1000))" "$((END-START))" \
+printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "model": "%s",\n  "budgetSeconds": %s,\n  "network": "%s",\n  "effort": "%s",\n  "exitCode": %s,\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s\n}\n' \
+  "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$MODEL" "$BUDGET" "$NETWORK" "$EFFORT" "$CODE" "$((START*1000))" "$((END*1000))" "$((END-START))" \
   > "$TIMINGS"
 
 "$S/lib/capture-patch.sh" "$WORK" "$PATCH" \
