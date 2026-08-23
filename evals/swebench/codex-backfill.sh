@@ -5,6 +5,7 @@
 #   ./codex-backfill.sh --one <id>      exactly one instance (how a pipeline calls it)
 #   ./codex-backfill.sh --jobs 2        run that many instances at once
 #   ./codex-backfill.sh --lane sealed   the same population under the sealed condition
+#   ./codex-backfill.sh --lane sealed-high   the sealed condition at high reasoning effort
 #   ./codex-backfill.sh --list          what is left, and stop
 #   ./codex-backfill.sh --status        counts, and stop
 #   ./codex-backfill.sh --table         every instance, our verdict and codex's
@@ -67,20 +68,30 @@ FB="${FB_DIR:-$S/fullbench}"
 #
 # A lane is one measurement of the population under one condition. It moves four
 # things at once — the archive, the ledger, the run index and the evaluator run
-# id — plus the network condition the runs are given, because a lane that moved
-# only some of them would grade one condition's patches into another condition's
-# run id and no artifact would say so. `run-45.sh` names its lanes the same way
-# and for the same reason.
+# id — plus the conditions the runs are given, because a lane that moved only
+# some of them would grade one condition's patches into another condition's run
+# id and no artifact would say so. `run-45.sh` names its lanes the same way and
+# for the same reason.
 #
-# | lane | archive | ledger | index | evaluator run id | network |
-# | --- | --- | --- | --- | --- | --- |
-# | `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` |
-# | `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` |
+# | lane | archive | ledger | index | evaluator run id | network | effort |
+# | --- | --- | --- | --- | --- | --- | --- |
+# | `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` | `medium` |
+# | `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` | `medium` |
+# | `sealed-high` | `fullbench/codex-sealed-high/` | `codex-sealed-high-manifest.jsonl` | `r90sh` | `fullbench-codex-sealed-high` | `sealed` | `high` |
 #
 # The lanes are a table rather than a name template: every one of them is a
 # claim about how a number may be quoted, and inventing `--lane whatever` on the
 # command line would produce an archive nothing in the rig knows how to read.
 # `run-instance-codex.sh` documents what each network condition denies.
+#
+# **Effort is pinned per lane, not taken from the default.** The two `medium`
+# lanes above ran before 2026-08-23, when `run-instance-codex.sh` had that value
+# written into it as a literal; the default is `high` now, so a lane that did not
+# pin its own value would silently re-run at a condition its recorded rows were
+# never measured under. `sealed-high` is the same population and the same seal as
+# `sealed` with the effort moved to `high`, which is what the flows arm has
+# always run at — the whole point of the lane, and the reason two lanes may share
+# a network condition while no two share an artifact.
 # ---------------------------------------------------------------------------
 LANE="${SWB_CODEX_LANE:-net}"
 PREVIOUS=""
@@ -92,21 +103,26 @@ case "$LANE" in
   net)
     FBC="$FB/codex"
     CODEX_MANIFEST="$FB/codex-manifest.jsonl"
-    LANE_INDEX="r90c"; LANE_RUN_ID="fullbench-codex"; LANE_NETWORK="on" ;;
+    LANE_INDEX="r90c"; LANE_RUN_ID="fullbench-codex"; LANE_NETWORK="on"; LANE_EFFORT="medium" ;;
   sealed)
     FBC="$FB/codex-sealed"
     CODEX_MANIFEST="$FB/codex-sealed-manifest.jsonl"
-    LANE_INDEX="r90s"; LANE_RUN_ID="fullbench-codex-sealed"; LANE_NETWORK="sealed" ;;
+    LANE_INDEX="r90s"; LANE_RUN_ID="fullbench-codex-sealed"; LANE_NETWORK="sealed"; LANE_EFFORT="medium" ;;
+  sealed-high)
+    FBC="$FB/codex-sealed-high"
+    CODEX_MANIFEST="$FB/codex-sealed-high-manifest.jsonl"
+    LANE_INDEX="r90sh"; LANE_RUN_ID="fullbench-codex-sealed-high"; LANE_NETWORK="sealed"; LANE_EFFORT="high" ;;
   *)
-    echo "codex-backfill.sh: unknown lane '$LANE' — the lanes are net and sealed"; exit 2 ;;
+    echo "codex-backfill.sh: unknown lane '$LANE' — the lanes are net, sealed and sealed-high"; exit 2 ;;
 esac
 
 EVAL_RUN_ID="${SWB_CODEX_BACKFILL_RUN_ID:-$LANE_RUN_ID}"
 INDEX="${SWB_CODEX_BACKFILL_INDEX:-$LANE_INDEX}"
-# The condition every run in this lane is given, and the one thing about a lane
+# The conditions every run in this lane is given, and the two things about a lane
 # that a child process has to be told rather than derive.
 SWB_CODEX_NETWORK="${SWB_CODEX_NETWORK:-$LANE_NETWORK}"
-export SWB_CODEX_NETWORK
+SWB_CODEX_EFFORT="${SWB_CODEX_EFFORT:-$LANE_EFFORT}"
+export SWB_CODEX_NETWORK SWB_CODEX_EFFORT
 MODEL="${SWB_CODEX_MODEL:-gpt-5.6-sol}"
 MODEL_NAME="${SWB_MODEL_NAME:-codex-cli}"
 # The same per-instance budget the flows side was given by the full benchmark.
@@ -361,6 +377,7 @@ run_one() {
   STARTED_AT="$(now_ms)"
   append "$CODEX_MANIFEST" "$(row --kind instance --id "$ID" --state started --at "$STARTED_AT" \
     --run-id "$EVAL_RUN_ID" --index "$INDEX" --model "$MODEL" --budgetSeconds "$BUDGET" \
+    --network "$SWB_CODEX_NETWORK" --effort "$SWB_CODEX_EFFORT" \
     --flows-verdict "$FLOWS_VERDICT" --flows-eval-error "$FLOWS_EVAL_ERROR" --pid $$)"
 
   # Purge whatever a dead attempt at this instance left behind, in the shared
@@ -509,6 +526,7 @@ run_one() {
     --gradedAt "$GRADED_AT" --exit "$RUN_STATUS" --pull "$PULLED" \
     --image "$IMAGE" --image-state "$REMOVED" --run-id "$EVAL_RUN_ID" --index "$INDEX" \
     --model "$MODEL" --budgetSeconds "$BUDGET" \
+    --network "$SWB_CODEX_NETWORK" --effort "$SWB_CODEX_EFFORT" \
     --flows-verdict "$FLOWS_VERDICT" --flows-eval-error "$FLOWS_EVAL_ERROR" \
     --freeMiB "$("$S/lib/disk-free.sh")" $OPTIONAL)"
   FLAG=""
@@ -572,7 +590,7 @@ case "$MODE" in
     fi
     require_auth
     COUNT="$(printf '%s\n' "$REMAINING" | wc -l | tr -d ' ')"
-    log backfill "lane $LANE ($SWB_CODEX_NETWORK network, index $INDEX, run id $EVAL_RUN_ID)"
+    log backfill "lane $LANE ($SWB_CODEX_NETWORK network, $SWB_CODEX_EFFORT effort, index $INDEX, run id $EVAL_RUN_ID)"
     log backfill "$COUNT instances to back fill, $JOBS at a time, $SLOTS docker slots, budget ${BUDGET}s each"
     FAILURES=0
     if [ "$JOBS" = "1" ]; then
