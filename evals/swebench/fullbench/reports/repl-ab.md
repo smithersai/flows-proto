@@ -117,16 +117,26 @@ wall clock of the run as a whole, which depends on concurrency.
   running sequentially is that the arms are two hours apart rather than
   simultaneous; the cost of interleaving would have been a wall-clock column
   neither arm's number was its own.
-- **Three commits landed while the REPL lane was in flight, and the pinned
-  subject did not move.** All three are under `evals/swebench`: the realm
-  evidence reader `lib/repl-evidence.mjs`, its fixture
-  `fixtures/check-repl-evidence.mjs`, and the `verify.sh` line that runs it.
-  None of them is loaded by the per-instance pipeline. `lib/subject.mjs --check`
-  exits 0 at the same stamp,
+- **Four commits landed while the REPL lane was in flight, and the pinned
+  subject did not move.** Every one of them touches **only `evals/swebench`** —
+  `git show --name-only` on each returns nothing outside it — so none is in the
+  subject and none is loaded by the per-instance pipeline:
+
+  | commit | at | what |
+  | --- | --- | --- |
+  | `a97a097ee` | 22:40Z | a sibling session's: the codex arm's sealed lane, its two fixtures and its `verify.sh` lines |
+  | `7b097b133` | 22:43Z | `lib/repl-evidence.mjs`, `fixtures/check-repl-evidence.mjs`, the `verify.sh` line that runs it |
+  | `cd426be06` | 22:59Z | the wording of that check's own output line |
+  | `68f22eff1` | 23:06Z | the elided-print counter in the same reader |
+
+  `lib/subject.mjs --check` exits 0 at the same stamp,
   `sha256:543705ce812f911a76573c2edadd5c9e4d25d3a07d7c97949a0d57b5dc6310bf`,
-  before and after, and every `flows.sh` invocation in both lanes checked itself
-  against it. The r95 header therefore records `head: 68f22eff1` where the
-  r95repl header records `a9ce6f250`: two commits apart, one subject.
+  before the first of them and after the last, and every `flows.sh` invocation
+  in both lanes checked itself against that stamp or refused to run. The r95
+  header therefore records `head: 68f22eff1` where the r95repl header records
+  `a9ce6f250`: four commits apart, one subject. This is a weaker disclosure than
+  r94's, which had an empty `git log` across its whole span; it is stated in
+  full rather than rounded to "nothing changed".
 - **The r94 journals carry no arm field.** `cellMode` was added to
   `discipline-armed` by the commit that added the arm, so `lib/repl-evidence.mjs`
   reads r94's mode as `unknown`. r94 ran the filing surface — its contract digest
