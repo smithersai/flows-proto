@@ -1485,6 +1485,14 @@ its traces have to support, and a run that never reached for the network and one
 that reached and was refused are different findings a reader is entitled to tell
 apart.
 
+**Both surfaces of the seal are counted, not one.** The proxy reaches the
+commands codex spawns; it does not reach codex's own web-search tool, so the
+report counts `web search:` lines across the lane's transcripts and prints the
+total with its denominator. Zero is the claim a sealed lane makes. A non-zero
+total names the runs behind it and says outright that their verdicts are not
+sealed verdicts — the `codex-sealed-websearch` failure was 126 such lines going
+unnoticed, and it is now a number the report cannot omit.
+
 **The sealed lane finished on 2026-08-22: all 45 instances carry a real
 grading.** Scored over the 43 the exclusions leave, flows `r90` resolves 33,
 codex `r90c` (network) 38, and codex `r90s` (sealed) 36; raw over 45 that is
