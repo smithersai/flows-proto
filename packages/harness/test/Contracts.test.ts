@@ -375,6 +375,21 @@ describe("EngineLike", () => {
     })
   })
 
+  it("reports a stub as pinning nothing rather than as failing to pin", async () => {
+    // The same shape `observe` takes, and for the same reason: a host with no
+    // workspace has nothing to pin, and the controller turns "nothing pinned"
+    // into a catchable refusal the cell can route around. Failing here would
+    // turn a host that simply has no tree into a failed run.
+    const pinned = await Effect.runPromise(
+      EngineLike.makeNoop().capture({
+        id: "cp-0-0",
+        identity: { session: "session-1", frame: 0, boundary: "cell-digest" }
+      })
+    )
+
+    expect(Option.isNone(pinned)).toBe(true)
+  })
+
   it("reports a refused suspend as suspended rather than as an engine failure", async () => {
     const exit = await Effect.runPromiseExit(
       EngineLike.makeNoop().suspend(new EngineLike.SuspendReason({ code: "waiting-input", message: "test" }))

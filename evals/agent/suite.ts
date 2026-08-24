@@ -429,6 +429,86 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     expected: answered("the baseline was already green", 2, ["check:green", "apply"])
   },
 
+  "checkpoint-mint-is-refused-catchably-without-a-store": {
+    summary:
+      "ctx.checkpoint() reaches the boundary through the real loop, and a composition that pins no trees answers it as an ordinary catchable failure the cell reads a code off.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // The output is built from the refusal's own code, so the case cannot
+        // pass by ending some other way: a surface that threw would never reach
+        // the completion, and one that resolved with a handle would name it.
+        respond: () =>
+          `const answer = await ctx.checkpoint()
+           ctx.done(answer.ok === false ? "refused " + answer.error.code : "pinned " + answer.checkpoint)`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.probeSource(recorder)]
+      })
+    },
+    expected: answered("refused checkpoint_unavailable", 1)
+  },
+
+  "checkpoint-at-base-is-never-silently-ignored": {
+    summary:
+      "A call that names ctx.base on a host that pins no trees is refused rather than run, because a reading of the live tree presented as a reading of the pinned one is a proof of nothing.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // The empty flow ledger is the assertion that matters: the check must
+        // not have run. A loop that dropped the at would record a `check` and
+        // answer with an exit code instead.
+        respond: () =>
+          `const before = await ctx.call("check", { command: "verify a/b.py" }, { at: ctx.base })
+           ctx.done(before.ok === false ? "refused " + before.error.code : "ran " + before.exitCode)`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.checkSource(recorder)]
+      })
+    },
+    expected: answered("refused checkpoint_unavailable", 1)
+  },
+
+  "checkpoint-refuses-a-write-at-a-pinned-tree": {
+    summary:
+      "A flow that declares a write is refused at a checkpoint before it reaches the engine: a checkpoint is a read-only view of a tree that has already been, and nothing runs.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        respond: () =>
+          `const applied = await ctx.call("apply", { path: "a/b.py" }, { at: ctx.base })
+           ctx.done(applied.ok === false ? "refused " + applied.error.code : "wrote")`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.checkSource(recorder)]
+      })
+    },
+    // No `apply` in the ledger: the refusal is the controller's, ahead of the
+    // engine, so the write never happened on any tree.
+    expected: answered("refused checkpoint_readonly", 1)
+  },
+
+  "checkpoint-is-offered-in-filing-mode-too": {
+    summary:
+      "Pinning a tree is not a property of how cells relate to each other, so the filing arm has the same surface and the same refusal.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        respond: () =>
+          `const answer = await ctx.checkpoint()
+           const base = JSON.stringify(ctx.base)
+           return { intent: "complete", state: {}, output: base + " " + (answer.ok === false ? answer.error.code : "pinned") }`,
+        maxFrames: 4,
+        flows: [Subject.probeSource(recorder)]
+      })
+    },
+    expected: answered(`{"checkpoint":"base"} checkpoint_unavailable`, 1)
+  },
+
   "repl-completion-stops-the-calls-after-it": {
     summary:
       "ctx.done takes effect where it is called: the flow calls a cell would have made after it never reach the boundary, and they fail soft rather than throwing.",

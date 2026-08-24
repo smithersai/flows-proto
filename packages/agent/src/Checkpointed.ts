@@ -11,8 +11,12 @@
  *
  * It is a {@link FlowEngineLike.CallRunner} decorator rather than an option on
  * the runner, for the reason {@link FlowEngineLike.sandboxed} is one: it
- * composes with whatever else the host has wrapped its calls in, and a host
- * that pins nothing simply does not wrap.
+ * composes with whatever else the host has wrapped its calls in.
+ *
+ * A composition that pins nothing is still wrapped, by {@link unpinned}. A call
+ * carrying an `at` must never simply run there: it would read the live tree
+ * while the cell believed it was reading a pinned one, and a fails-before proof
+ * built on that reading would be a proof of nothing.
  *
  * The live tree is never touched. That is not a property of the flows being
  * careful — it is a property of where they run: the call is pointed at a
@@ -112,8 +116,32 @@ export const checkpointed = (
 })
 
 /**
+ * Refuses any call that names a tree, for a composition that pins none.
+ *
+ * A call carrying an `at` on a host with no store must never simply run: it
+ * would read the live tree while the cell believed it was reading a pinned one,
+ * and a fails-before proof built on that reading would be a proof of nothing.
+ * Silence is the one answer this seam may not give.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const unpinned = (
+  runner: FlowEngineLike.CallRunner
+): FlowEngineLike.CallRunner => ({
+  ...(runner.authorize === undefined ? {} : { authorize: runner.authorize }),
+  run: (call) =>
+    call.at === undefined ? runner.run(call) : Effect.succeed(
+      refused(
+        "checkpoint_unavailable",
+        `This host pins no trees, so there is no ${call.at} to run ${call.flowName} against and nothing ran. Drop at and take the reading on the live tree.`
+      )
+    )
+})
+
+/**
  * Wraps a runner with checkpoint materialization when the composition has a
- * store, and leaves it alone when it does not.
+ * store, and with the refusal above when it does not.
  *
  * @category constructors
  * @since 0.1.0
@@ -124,7 +152,7 @@ export const decorate = (
   Effect.map(
     Effect.serviceOption(Checkpoints.Checkpoints),
     Option.match({
-      onNone: () => runner,
+      onNone: () => unpinned(runner),
       onSome: (store) => checkpointed(store, runner)
     })
   )

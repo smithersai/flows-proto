@@ -804,6 +804,12 @@ export const make = (options: {
    * offers a persistent realm and is refused on one that does not.
    */
   readonly mode?: Cell.Mode | undefined
+  /**
+   * Caps how many trees this run may pin with `ctx.checkpoint()`. Omitted takes
+   * {@link defaultMaxCheckpoints}; zero disarms minting and leaves `ctx.base`,
+   * which nobody mints, working.
+   */
+  readonly checkpointCap?: number | undefined
 }): State =>
   new State({
     session: options.session,
@@ -845,7 +851,9 @@ export const make = (options: {
     revalidations: options.revalidations ?? defaultRevalidations,
     approvalChannel: options.approvalChannel ?? false,
     workspace: undefined,
-    truncatedOutputs: []
+    truncatedOutputs: [],
+    checkpointCap: options.checkpointCap ?? defaultMaxCheckpoints,
+    checkpointIds: []
   })
 
 /**

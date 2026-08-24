@@ -20,6 +20,8 @@ import * as ModelRequest from "@smthrs/model/ModelRequest"
 import * as Route from "@smthrs/model/Route"
 import { Node } from "@smthrs/plan"
 import * as PersistedPlan from "@smthrs/plan/Plan"
+import * as Checkpoints from "@smthrs/std/Checkpoints"
+import * as StdError from "@smthrs/std/StdError"
 import {
   Cause,
   Clock,
@@ -333,6 +335,58 @@ describe("FlowEngineLike.make", () => {
     // "nobody looked" — the first drives the read-only cap and the second
     // leaves it on declared writes.
     expect(completed(outcome)).toEqual({ equipped: Option.some(measurement), bare: Option.none() })
+  })
+
+  it("pins through the composition's store, and reports it unpinnable without one", async () => {
+    const outcome = await drive(Effect.gen(function*() {
+      const equipped = yield* FlowEngineLike.make({
+        model: countingModel([]),
+        route: staticRoute()
+      }).pipe(
+        Effect.provideService(
+          Checkpoints.Checkpoints,
+          Checkpoints.make({
+            capture: (id) => Effect.succeed(new Checkpoints.Snapshot({ id, ref: `refs/flows/checkpoints/${id}` })),
+            materialize: (_id, use) => use({ id: "x", host: "/h", guest: "/g" })
+          })
+        )
+      )
+      const bare = yield* FlowEngineLike.make({ model: countingModel([]), route: staticRoute() })
+      const request = { id: "cp-0-0", identity: { session: "s", frame: 0, boundary: "cell" } } as const
+      return { equipped: yield* equipped.capture(request), bare: yield* bare.capture(request) }
+    }))
+
+    // The same shape `observe` takes, and for the same reason: a composition
+    // either equips its runs with somewhere to pin a tree or it does not, and
+    // "nowhere to pin" is a catchable refusal the cell routes around rather
+    // than a failed run.
+    expect(completed(outcome)).toEqual({
+      equipped: Option.some(new EngineLike.Snapshot({ id: "cp-0-0", ref: "refs/flows/checkpoints/cp-0-0" })),
+      bare: Option.none()
+    })
+  })
+
+  it("reports a store that failed as nothing pinned, and says why in the log", async () => {
+    const outcome = await drive(Effect.gen(function*() {
+      const engine = yield* FlowEngineLike.make({
+        model: countingModel([]),
+        route: staticRoute()
+      }).pipe(
+        Effect.provideService(
+          Checkpoints.Checkpoints,
+          Checkpoints.make({
+            capture: () => Effect.fail(new StdError.StdError({ code: "command_failed", message: "git could not run" })),
+            materialize: () => Effect.fail(new StdError.StdError({ code: "not_found", message: "no such ref" }))
+          })
+        )
+      )
+      return yield* engine.capture({ id: "cp-0-0", identity: { session: "s", frame: 0, boundary: "cell" } })
+    }))
+
+    // The cell is told nothing was pinned, which is what happened and what it
+    // can act on. The reason is not thrown away — it is logged, so a run whose
+    // checkpoints never work says why rather than only stopping.
+    expect(completed(outcome)).toEqual(Option.none())
   })
 
   it("derives a different sealed key when the prepared wire request changes", async () => {

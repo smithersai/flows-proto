@@ -36,7 +36,7 @@ Two flags:
 
 ## What it measures
 
-Seventeen cases. Each one is a whole agent run: the real cell loop, the real QuickJS
+Twenty-one cases. Each one is a whole agent run: the real cell loop, the real QuickJS
 sandbox, the real registry-backed call bridge, and the real structured-output
 boundary, executing over `FlowEngine.layerMemory` — the engine's in-process
 volatile runtime, not the durable SQLite one a deployed host uses. Three things
@@ -63,6 +63,10 @@ loop and its seams, not durability and not a real catalog.
 | `repl-guard-that-does-not-fire-carries-on` | The identical cell against an already-green baseline does not complete: the guard is the whole difference.        |
 | `repl-completion-stops-the-calls-after-it` | `ctx.done` takes effect where it is called, and the calls after it fail soft as `run_completed` without running.  |
 | `repl-read-only-cap-takes-ctx-justify` | The read-only cap is armed in repl mode too, and `ctx.justify` is the answer that buys quiet frames.                   |
+| `checkpoint-mint-is-refused-catchably-without-a-store` | `ctx.checkpoint()` reaches the boundary through the real loop, and a host that pins no trees answers it catchably.   |
+| `checkpoint-at-base-is-never-silently-ignored` | A call naming `ctx.base` on a host that pins nothing is refused rather than run against the live tree.        |
+| `checkpoint-refuses-a-write-at-a-pinned-tree` | A flow that declares a write is refused at a checkpoint before it reaches the engine, and nothing runs.        |
+| `checkpoint-is-offered-in-filing-mode-too` | `ctx.checkpoint` and `ctx.base` are on both arms, because pinning a tree is not a property of cell memory.       |
 | `max-frames-stops-the-run`             | A run that never completes stops at its frame budget and reports `/harness/HarnessError`.                              |
 | `seat-unresolved-is-typed`             | A host with no model for the declared seat refuses before any model call, as `@smthrs/agent/Seat/SeatUnresolved`.      |
 

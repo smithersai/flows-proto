@@ -450,6 +450,27 @@ describe("cell call identity", () => {
     expect(executed).toEqual(["fs/list#0:0"])
   })
 
+  it("refuses to alias a sealed reading of a pinned tree with the same reading of the live one", async () => {
+    const executed: Array<string> = []
+    const outcome = await drive(Effect.gen(function*() {
+      const port = yield* FlowEngineLike.make({ model: cellModel([]), route, calls: counting(executed) })
+      const pinned = yield* port.call(new Cell.Call({ ...cellCall({ path: "." }), at: "base" }))
+      // Same sealed declaration, same arguments, same everything a content
+      // address sees — except the tree. "The same command against the tree this
+      // run opened on" is not the same question as "the same command against
+      // the tree as it stands", and the second is exactly the reading a
+      // fails-before proof depends on. Aliasing them would serve the baseline's
+      // answer to the check that decides the run.
+      const live = yield* port.call(
+        reissued(cellCall({ path: "." }), { frame: 0, cell: "cell-digest", ordinal: 1 })
+      )
+      return [pinned.value, live.value]
+    }))
+
+    expect(outcome).toMatchObject({ _tag: "completed", value: [1, 2] })
+    expect(executed).toEqual(["fs/list#0:0", "fs/list#0:1"])
+  })
+
   it("refuses to alias two irreversible calls that differ only in where they were issued", async () => {
     const executed: Array<string> = []
     const outcome = await drive(Effect.gen(function*() {

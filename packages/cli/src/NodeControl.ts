@@ -534,28 +534,6 @@ export const cellMode = (
  * @since 0.1.0
  * @slop
  */
-/**
- * Where this host pins the trees a run checkpoints, and where a container sees
- * them.
- *
- * The same two paths the test runner reads, for the same reason: a checkpoint
- * is materialized as a directory under the repository, and a container reaches
- * that directory through the mount it already has. `FLOWS_TEST_CWD` is the
- * container's name for the repository when there is one, and the workspace root
- * is the host's — so a host that declares neither still pins, and pins on one
- * path under both names.
- *
- * @category constructors
- * @since 0.1.0
- */
-export const checkpointStore = (
-  environment: Readonly<Record<string, string | undefined>>,
-  root: string
-): Checkpoints.GitOptions => {
-  const cwd = environment["FLOWS_TEST_CWD"]?.trim()
-  return { root, ...(cwd === undefined || cwd === "" ? {} : { cwd }) }
-}
-
 export const testRunner = (
   environment: Readonly<Record<string, string | undefined>>,
   root: string
@@ -575,6 +553,28 @@ export const testRunner = (
     ...(container === undefined || container === "" ? {} : { container }),
     ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMs: timeout } : {})
   }
+}
+
+/**
+ * Where this host pins the trees a run checkpoints, and where a container sees
+ * them.
+ *
+ * The same two paths {@link testRunner} reads, for the same reason: a
+ * checkpoint is materialized as a directory under the repository, and a
+ * container reaches that directory through the mount it already has.
+ * `FLOWS_TEST_CWD` is the container's name for the repository when there is
+ * one, and the workspace root is the host's — so a host that declares neither
+ * still pins, and pins on one path under both names.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const checkpointStore = (
+  environment: Readonly<Record<string, string | undefined>>,
+  root: string
+): Checkpoints.GitOptions => {
+  const cwd = environment["FLOWS_TEST_CWD"]?.trim()
+  return { root, ...(cwd === undefined || cwd === "" ? {} : { cwd }) }
 }
 
 /**
