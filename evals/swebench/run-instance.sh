@@ -115,12 +115,16 @@ docker run -d --platform linux/amd64 --name "$CONTAINER" \
 
 # Keep the harness scaffolding out of the model patch.
 #
-# `.flows-test-base` is the `test` flow's baseline worktree. The flow removes it
-# however the call ends, but a run killed at its wall-clock budget is killed
-# between those two points often enough to matter, and a leftover second
-# checkout of the whole repository is exactly what the prompt promises the agent
-# `git status` will not show it.
-printf 'flows/\n.flows/\n.jj/\nagent-run.log\n.flows-test-base/\n' >> "$WORK/.git/info/exclude"
+# `.flows-test-base` is the `test` flow's baseline worktree, and
+# `.flows-checkpoints` is where `ctx.checkpoint()` and `ctx.base` are
+# materialized. Both are detached worktrees checked out INSIDE the workspace,
+# and both are inside it for the same reason: /testbed is a bind mount of this
+# directory, so a scratch checkout anywhere else on the host is not present in
+# the container at all. Each is removed however its call ends, but a run killed
+# at its wall-clock budget is killed between those two points often enough to
+# matter, and a leftover second checkout of the whole repository is exactly what
+# the prompt promises the agent `git status` will not show it.
+printf 'flows/\n.flows/\n.jj/\nagent-run.log\n.flows-test-base/\n.flows-checkpoints/\n' >> "$WORK/.git/info/exclude"
 
 # The repository's own test runner, from the pinned evaluator's spec map. The
 # rig used to prescribe `python -m pytest` for every repo; Django ships no
@@ -173,7 +177,7 @@ node "$S/lib/write-flow.mjs" "$DATASET" "$INSTANCE" "$SEAT" "$CONTAINER" "$TEST_
 # action snapshot.
 rm -rf -- "$VCS"
 git init --bare --quiet "$VCS"
-printf 'flows/\n.flows/\nagent-run.log\n' > "$VCS/flows-excludes"
+printf 'flows/\n.flows/\nagent-run.log\n.flows-test-base/\n.flows-checkpoints/\n' > "$VCS/flows-excludes"
 git -C "$VCS" config core.excludesFile "$VCS/flows-excludes"
 ( cd "$WORK" && jj git init --git-repo="$VCS" >/dev/null 2>&1 )
 
@@ -223,7 +227,8 @@ fi
 # The model patch: the working tree against the capture base recorded before the
 # agent started, with the harness scaffolding and build noise excluded.
 "$S/lib/capture-patch.sh" "$WORK" "$PATCH" \
-  ':(exclude)flows' ':(exclude).flows' ':(exclude).jj' ':(exclude)agent-run.log' >/dev/null
+  ':(exclude)flows' ':(exclude).flows' ':(exclude).jj' ':(exclude)agent-run.log' \
+  ':(exclude).flows-test-base' ':(exclude).flows-checkpoints' >/dev/null
 
 echo "[$RUN_ID] patch bytes: $(wc -c < "$PATCH" | tr -d ' ')"
 echo "[$RUN_ID] untracked files left out of the patch: $(wc -l < "$PATCH.untracked" | tr -d ' ')"

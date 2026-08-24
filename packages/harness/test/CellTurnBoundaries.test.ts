@@ -256,6 +256,9 @@ const stubEngine = (
     // A stub host has no workspace to measure, so the loop falls back to
     // declared writes — which is what these cases are written against.
     observe: Effect.succeed(Option.none()),
+    // These cases predate checkpoints and pin nothing, which the controller
+    // reads as a catchable refusal rather than as a failure.
+    capture: () => Effect.succeed(Option.none()),
     suspend: (reason) => {
       suspended.push(reason)
       return Effect.fail(new HarnessError({ code: "suspended", message: reason.message, cause: reason }))

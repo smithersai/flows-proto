@@ -340,6 +340,24 @@ describe("trace", () => {
         { eventType: "control.agent.cell-settled", payload: { outcome } }
       ],
       [
+        "checkpoint-minted",
+        // The store's own name for the tree travels with the id, because the
+        // frame that reads against a checkpoint is usually not the frame that
+        // pinned it: a journal holding only the reading could not say which
+        // tree it was a reading of, and a fails-before proof is that claim.
+        new AgentEvent.CheckpointMinted({
+          eventType: "flows.harness.checkpoint-minted.v1",
+          id: "cp-3-1",
+          ref: "refs/flows/checkpoints/cp-3-1",
+          cell: cell.digest,
+          ordinal: 1
+        }),
+        {
+          eventType: "control.agent.checkpoint-minted",
+          payload: { id: "cp-3-1", ref: "refs/flows/checkpoints/cp-3-1", cell: cell.digest, ordinal: 1 }
+        }
+      ],
+      [
         "transition-applied",
         new AgentEvent.TransitionApplied({
           eventType: "flows.harness.transition-applied.v1",

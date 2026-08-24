@@ -61,6 +61,8 @@ export interface Recorder {
   readonly splice: Array<Plan.Batch>
   readonly calls: Array<Cell.Call>
   readonly records: Array<EngineLike.RecordBoundary<unknown>>
+  /** Every checkpoint the run asked this host to pin, with the tree it held. */
+  readonly captures: Array<{ readonly id: string; readonly tree: string | undefined }>
   readonly suspend: Array<EngineLike.SuspendReason>
   readonly startedCallIds: Array<string>
   readonly abortedCallIds: Array<string>
@@ -101,7 +103,15 @@ export const make = (
   spliceScript: ReadonlyArray<SpliceStep> = [],
   callScript: ReadonlyArray<CallStep> = [],
   tree?: string,
-  treeComplete = true
+  treeComplete = true,
+  /**
+   * Whether this host has anywhere to pin a tree.
+   *
+   * `false` is the honest answer for a composition that bound no store, which
+   * the controller turns into a catchable `checkpoint_unavailable`. Defaults to
+   * a host that pins, because that is what a production composition does.
+   */
+  pins = true
 ): Fixture => {
   const workspace: { value: string | undefined; complete: boolean } = { value: tree, complete: treeComplete }
   const recorder: Recorder = {
@@ -109,6 +119,7 @@ export const make = (
     splice: [],
     calls: [],
     records: [],
+    captures: [],
     suspend: [],
     startedCallIds: [],
     abortedCallIds: []
@@ -185,6 +196,13 @@ export const make = (
       recorder.records.push(boundary)
       return boundary.execute
     },
+    capture: (request) =>
+      Effect.sync(() => {
+        recorder.captures.push({ id: request.id, tree: workspace.value })
+        return pins
+          ? Option.some(new EngineLike.Snapshot({ id: request.id, ref: `test/${request.id}` }))
+          : Option.none()
+      }),
     observe: Effect.suspend(() =>
       Effect.succeed(
         workspace.value === undefined

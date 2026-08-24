@@ -139,6 +139,7 @@ const durableEngine = (model: ScriptedModel.Fixture, kept: Journal): EngineLike.
         return Effect.tap(boundary.execute, (value) => Effect.sync(() => kept.records.set(key, value)))
       }),
     observe: Effect.succeed(Option.none()),
+    capture: () => Effect.succeed(Option.none()),
     suspend: (reason) => Effect.fail(new HarnessError({ code: "suspended", message: reason.message, cause: reason }))
   })
 
@@ -433,6 +434,7 @@ describe("CellTurn repl completion, behind the check that decides it", () => {
         }),
       record: (boundary) => boundary.execute,
       observe: Effect.succeed(Option.none()),
+      capture: () => Effect.succeed(Option.none()),
       suspend: (reason) => Effect.fail(new HarnessError({ code: "suspended", message: reason.message, cause: reason }))
     })
   }

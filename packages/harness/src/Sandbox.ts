@@ -969,7 +969,8 @@ const makeContext = (
       // is deliberately usable that way — the pin lands where the cell wrote it,
       // not where the cell awaits it. Both spellings are therefore accepted, and
       // the boundary judges whatever the promise settles with.
-      const settled = typeof (at as { readonly then?: unknown }).then === "function"
+      const settled = at !== null && typeof at === "object" &&
+          typeof (at as { readonly then?: unknown }).then === "function"
         ? Promise.resolve(at as PromiseLike<unknown>)
         : Promise.resolve(at)
       return settled.then((resolved) => {
