@@ -96,8 +96,40 @@ export const intoResult = <A, E, R>(
   })
 
 /**
+ * The action regions open on the current fiber's dynamic call stack.
+ *
+ * `actionState.count` says how many regions are open on an instance; it does
+ * not say which of them the current region is nested inside. That difference is
+ * the whole of {@link wrapActionResult}'s liveness: a region that suspends
+ * waits for the *other* open regions to settle, and an enclosing region can
+ * never settle before the region inside it returns. Carrying the enclosing
+ * instances in the context is what lets a suspension tell a sibling — which
+ * will settle — from an ancestor, which is waiting on the very fiber that is
+ * waiting on it.
+ *
+ * It is a context reference rather than a fiber-local counter because the chain
+ * crosses fibers: {@link intoResult} forks the body, and an engine gives every
+ * action dispatch a fiber of its own. Context propagates to forked children;
+ * a per-fiber counter would restart at each fork and read every ancestor as a
+ * sibling again.
+ */
+const EnclosingActions = Context.Reference<ReadonlyArray<FlowInstance["Service"]>>(
+  "@smthrs/flow/Flow/EnclosingActions",
+  { defaultValue: () => [] }
+)
+
+/**
  * Wraps an action-like effect so flow suspension waits for currently
  * running actions to finish or suspend.
+ *
+ * The wait is for *siblings*. An action that suspends holds work its siblings
+ * have not journaled yet, so the flow must not park out from under them; an
+ * enclosing region holds no such work, because everything it is doing is this
+ * region. Waiting for one is a deadlock, and it was a real one: a harness cell
+ * call is an action, the `wait` flow it dispatches awaits a `DurableClock`
+ * under the run's own instance, and the round that should have parked instead
+ * blocked forever inside an uninterruptible finalizer — not cancellable, not
+ * resumable, and invisible in the journal past the `clock-scheduled` record.
  *
  * @category results
  * @since 4.0.0
@@ -109,41 +141,56 @@ export const wrapActionResult = <A, E, R>(
 ): Effect.Effect<A, E, R | FlowInstance> =>
   Effect.contextWith((context: Context.Context<FlowInstance>) => {
     const instance = Context.get(context, FlowInstance)
+    const enclosing = Context.getUnsafe(context, EnclosingActions)
+    // How many of the regions counted on this instance are this one's own
+    // ancestors, and so how many of them will still be open once every sibling
+    // has settled.
+    let ancestors = 0
+    for (const open of enclosing) if (open === instance) ancestors++
     const state = instance.actionState
     if (state.count === 0) state.latch.closeUnsafe()
     state.count++
-    return Effect.onExit(effect, (exit) => {
-      state.count--
-      const isSuspended = Exit.isSuccess(exit) && isSuspend(exit.value)
-      if (
-        Exit.isSuccess(exit) &&
-        isResult(exit.value) &&
-        exit.value._tag === "Suspended" &&
-        exit.value.cause
-      ) {
-        instance.cause = instance.cause
-          ? Cause.combine(instance.cause, exit.value.cause)
-          : exit.value.cause
+    return Effect.onExit(
+      Effect.provideService(effect, EnclosingActions, [...enclosing, instance]),
+      (exit) => {
+        state.count--
+        const isSuspended = Exit.isSuccess(exit) && isSuspend(exit.value)
+        if (
+          Exit.isSuccess(exit) &&
+          isResult(exit.value) &&
+          exit.value._tag === "Suspended" &&
+          exit.value.cause
+        ) {
+          instance.cause = instance.cause
+            ? Cause.combine(instance.cause, exit.value.cause)
+            : exit.value.cause
+        }
+        if (state.count === 0) return state.latch.open
+        // Every decrement can satisfy a waiter whose threshold is not zero, so
+        // the waiters are released to re-test their own. `release` wakes them
+        // without opening the latch, so the ones still short of their threshold
+        // park again on the next turn of the loop.
+        return isSuspended
+          ? Effect.andThen(state.latch.release, waitForSiblings(instance, ancestors))
+          : Effect.asVoid(state.latch.release)
       }
-      return state.count === 0
-        ? state.latch.open
-        : isSuspended
-        ? waitForZero(instance)
-        : Effect.void
-    })
+    )
   })
 
 // Untraced because this latch loop is a flow scheduler hot path.
-const waitForZero = Effect.fnUntraced(function*(instance: FlowInstance["Service"]) {
+const waitForSiblings = Effect.fnUntraced(function*(
+  instance: FlowInstance["Service"],
+  ancestors: number
+) {
   const state = instance.actionState
   while (true) {
-    if (state.count > 0) {
+    if (state.count > ancestors) {
       yield* state.latch.await
       yield* Effect.yieldNow
       continue
     }
     yield* Effect.yieldNow
-    if (state.count === 0) return
+    if (state.count <= ancestors) return
   }
 })
 
