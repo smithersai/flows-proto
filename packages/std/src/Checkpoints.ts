@@ -23,7 +23,9 @@
  * ## The git binding, and the container constraint it is shaped by
  *
  * {@link layerGit} records a checkpoint with `git stash create`, then names the
- * commit it prints with `update-ref`. `stash create` is the one git command
+ * commit it prints in this repository's own git config rather than with a ref —
+ * see {@link configSection} for why a ref would hand the agent its own edit back
+ * as history. `stash create` is the one git command
  * that records the working tree and changes nothing else: it does not write the
  * repository's index, does not move the worktree, and does not touch the stash
  * ref. That matters more than it sounds. The agent runs `git` in this same
@@ -98,12 +100,27 @@ export const baseId = "base"
 export const scratchDirectory = ".flows-checkpoints"
 
 /**
- * The ref namespace {@link layerGit} writes minted checkpoints under.
+ * The git-config section {@link layerGit} records minted checkpoints under.
+ *
+ * Config and **not a ref**, and that is the whole of the decision. A ref is
+ * history: `git log --all` lists it, `git show` prints it, and `git log --all
+ * -S` searches it — so a checkpoint named by a ref would hand an agent a commit
+ * containing its own edit and let it read that back as if it were upstream
+ * work. That exact class cost the measured program real money before the rig
+ * moved jj's store out of the workspace (`evals/swebench/run-instance.sh`:
+ * django-13346 applied two of its own snapshots as a fake fix), and a ref here
+ * would reintroduce it one wave later.
+ *
+ * The commit object itself is unreferenced. It stays alive for the life of the
+ * run — nothing in a run prunes — and `git worktree add --detach <sha>` checks
+ * one out perfectly well, which is measured in `CheckpointsFixture.test.ts`. So
+ * the tree is reachable by id and invisible to every command that reads
+ * history.
  *
  * @category constants
  * @since 0.1.0
  */
-export const refPrefix = "refs/flows/checkpoints"
+export const configSection = "flows-checkpoint"
 
 /**
  * One tree this run has pinned.
@@ -234,8 +251,12 @@ export interface GitOptions {
 const failed = (message: string, code: StdError.Code = "command_failed"): StdError.StdError =>
   new StdError.StdError({ code, message })
 
-/** A checkpoint id, restricted to what can safely become a ref and a directory. */
-const namable = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+/**
+ * A checkpoint id, restricted to what can safely become a git-config key and a
+ * directory name. No dots: a dot would split the config key into another
+ * subsection.
+ */
+const namable = /^[A-Za-z0-9][A-Za-z0-9-]*$/
 
 const trimmed = (path: string): string => path.replace(/\/+$/, "")
 
@@ -298,9 +319,32 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
     Effect.provideService(effect, ChildProcessSpawner, spawner)
   const root = trimmed(options.root)
   const guestRoot = options.cwd === undefined ? root : trimmed(options.cwd)
-  const refOf = (id: string) => `${refPrefix}/${id}`
+  const keyOf = (id: string) => `${configSection}.${id}`
   const baseRefs = options.baseRef === undefined ? [TestRunner.captureBase, "HEAD"] : [options.baseRef]
-  const refsFor = (id: string) => id === baseId ? baseRefs : [refOf(id)]
+
+  /**
+   * The commit one id names.
+   *
+   * `base` is the one id nobody mints, so it is resolved from refs — the same
+   * precedence `TestRun` uses. Every other id was recorded by {@link capture}
+   * into this repository's config, which is where a checkpoint is named
+   * *without* becoming history. See {@link configSection}.
+   */
+  const commitOf = (id: string) =>
+    Effect.gen(function*() {
+      if (id === baseId) return (yield* resolved(root, baseRefs)).commit
+      const found = yield* git(root, ["config", "--local", "--get", keyOf(id)])
+      const commit = found.stdout.trim()
+      if (found.exitCode !== 0 || commit === "") {
+        return yield* Effect.fail(
+          failed(
+            `No checkpoint is stored under ${id} in ${root}. Take the reading on the live tree instead.`,
+            "not_found"
+          )
+        )
+      }
+      return commit
+    })
 
   const capture = (id: string) =>
     spawn(Effect.gen(function*() {
@@ -319,11 +363,11 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
       const commit = recorded.stdout.trim() === ""
         ? (yield* resolved(root, ["HEAD"])).commit
         : recorded.stdout.trim()
-      const named = yield* git(root, ["update-ref", refOf(id), commit])
+      const named = yield* git(root, ["config", "--local", keyOf(id), commit])
       if (named.exitCode !== 0) {
         return yield* Effect.fail(failed(`Could not name the checkpoint: ${named.stderr.trim()}`))
       }
-      return new Snapshot({ id, ref: refOf(id) })
+      return new Snapshot({ id, ref: commit })
     }))
 
   const materialize = <A, E, R>(
@@ -336,13 +380,13 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
           failed(`A checkpoint id must match ${namable.source}; ${id} does not.`, "invalid_input")
         )
       }
-      const found = yield* spawn(resolved(root, refsFor(id)))
+      const commit = yield* spawn(commitOf(id))
       const host = `${root}/${scratchDirectory}/${id}`
       // The worktree is removed however the call ends: a run killed at its
       // wall-clock budget would otherwise leave a second checkout of the whole
       // repository inside the tree whose diff is the run's answer.
       return yield* Effect.acquireUseRelease(
-        spawn(git(root, ["worktree", "add", "--detach", "--force", host, found.commit])).pipe(
+        spawn(git(root, ["worktree", "add", "--detach", "--force", host, commit])).pipe(
           Effect.flatMap((added) =>
             added.exitCode === 0
               ? Effect.void

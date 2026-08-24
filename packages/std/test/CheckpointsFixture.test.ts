@@ -84,7 +84,7 @@ describe("Checkpoints over a real repository", () => {
     const [pinned, base] = await Effect.runPromise(Effect.gen(function*() {
       const checkpoints = yield* store(root)
       const snapshot = yield* checkpoints.capture("cp-0-1")
-      expect(snapshot.ref).toBe(`${Checkpoints.refPrefix}/cp-0-1`)
+      expect(snapshot.ref).toMatch(/^[0-9a-f]{40}$/)
       const held = yield* checkpoints.materialize(
         "cp-0-1",
         (found) => Effect.sync(() => readFileSync(join(found.host, "mod.py"), "utf8"))
@@ -126,6 +126,32 @@ describe("Checkpoints over a real repository", () => {
 
     expect(git(root, ["status", "--porcelain"])).toBe(before)
     expect(git(root, ["stash", "list"])).toBe("")
+  }, 60_000)
+
+  it("never puts a checkpoint into anything that reads as history", async () => {
+    // The defect this avoids is measured. Before the rig moved jj's store out
+    // of the workspace, `git log --all` handed agents their own attempt commits
+    // as if they were upstream work, and django-13346 applied two of them as a
+    // fake fix. A checkpoint holds the agent's own edit, so naming one with a
+    // ref would reintroduce that one wave later.
+    const root = repository()
+    writeFileSync(join(root, "mod.py"), "value = 'the agent fix'\n")
+    const historyBefore = git(root, ["log", "--all", "--oneline"])
+
+    const snapshot = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(root)
+      return yield* checkpoints.capture("cp-0-0")
+    }))
+
+    // The commit exists and holds the edit…
+    expect(git(root, ["show", `${snapshot.ref}:mod.py`])).toBe("value = 'the agent fix'\n")
+    // …and no command that reads history can reach it.
+    expect(git(root, ["log", "--all", "--oneline"])).toBe(historyBefore)
+    expect(git(root, ["for-each-ref", "--format=%(refname)"])).not.toContain("checkpoint")
+    expect(git(root, ["stash", "list"])).toBe("")
+    // It is named where a name is not history.
+    expect(git(root, ["config", "--local", "--get", `${Checkpoints.configSection}.cp-0-0`]).trim())
+      .toBe(snapshot.ref)
   }, 60_000)
 
   it("removes the checkout however the call ends", async () => {
