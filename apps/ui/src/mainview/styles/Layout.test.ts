@@ -48,6 +48,22 @@ describe("hidden message actions are not a touch trap", () => {
 	});
 });
 
+describe("the pre-hydration server shell is styled, not bare markup", () => {
+	/*
+	 * SessionShell.tsx renders before the client bundle hydrates, and its
+	 * classes appear in no client component — so a missing rule here is
+	 * invisible to every component test and shows only as ~800ms of unstyled
+	 * text on a cold web load.
+	 */
+	test("base.css styles the server-session-shell and its message bubble", () => {
+		expect(base).toMatch(/\.server-session-shell\s*\{/);
+		const bubble = /\.server-session-shell p\s*\{[^}]*\}/.exec(base)?.[0] ?? "";
+		expect(bubble).toContain("background: var(--bubble-incoming);");
+		const link = /\.server-session-shell a\s*\{[^}]*\}/.exec(base)?.[0] ?? "";
+		expect(link).toContain("border-radius: 999px;");
+	});
+});
+
 describe("the devtools panel fits the 320px minimum shell", () => {
 	test("the panel stacks under the chat column at the panes' 900px breakpoint", () => {
 		expect(chat).toContain("@media (max-width: 900px)");
