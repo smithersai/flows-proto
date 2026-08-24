@@ -120,11 +120,6 @@ export * as CallLedger from "./CallLedger.ts"
 export * as NarrowedCheck from "./NarrowedCheck.ts"
 
 /**
- * @category models
- * @since 0.1.0
- */
-
-/**
  * @category conversions
  * @since 0.1.0
  */

@@ -11,9 +11,11 @@
  * Both waiting vocabularies land on one strand: `DurableClock.sleep`,
  * `DurableQueue.take` and `WaitFor` — the wait an approval or a signal parks on
  * — all await a `DurableDeferred`, which is the only place a flow suspension is
- * raised. These cases take the strand under both wake sources, the timer and
- * the delivered completion, so a fix that only closed the clock path would fail
- * here.
+ * raised. These cases take the strand under all three wake sources — the timer,
+ * the delivered signal, and the approval an operator answers — so a fix that
+ * only closed the clock path would fail here. The approval case also proves the
+ * waiting declaration reaches the row: a park a reason sweep cannot find is a
+ * park nobody can answer.
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Action, DurableClock, DurableDeferred, Flow, FlowRuntime } from "@smthrs/flow"
@@ -162,6 +164,72 @@ describe("a durable wait taken inside an action, under the run's own instance", 
 
       expect(result.suspendedRow.status).toBe("suspended")
       expect(Option.getOrThrow(result.parked).reason).toBe("event")
+      expect(result.completedRow.status).toBe("completed")
+      expect(Option.isNone(result.afterResume)).toBe(true)
+    }))
+
+  it.effect("parks a nested approval under the reason and token the wait declared", () =>
+    Effect.gen(function*() {
+      // The third wake source, and the one an operator sweeps for. `WaitFor`'s
+      // implementation is exactly this — `annotateWaiting({ reason })` and then
+      // a `DurableDeferred.await` — so a nested `WaitFor.action.call` is this
+      // shape with the declaration written on the run's own instance. Without
+      // the enclosing-region exemption the round never ends, so the row is
+      // never parked and `waitingRuns({ reason: "approval" })` never sees it:
+      // an approval that no sweep can find is an approval nobody can answer.
+      const ApprovalFlow = Flow.make("Parking/NestedApproval", {
+        payload: {},
+        success: Schema.String,
+        body: opaqueHandlerBody
+      })
+      const gate = DurableDeferred.make("nested-approval-gate", { success: Schema.String })
+      const handler = () =>
+        Effect.gen(function*() {
+          const services = yield* Effect.context<FlowRuntime.FlowInstance>()
+          return yield* Action.make({
+            name: "nested/approve",
+            success: Schema.String,
+            tier: "irreversible",
+            idempotencyKey: "nested-approve-key",
+            execute: Effect.provide(
+              Effect.gen(function*() {
+                yield* FlowRuntime.annotateWaiting({ reason: "approval", token: "nested-request-7" })
+                return yield* DurableDeferred.await(gate)
+              }),
+              services
+            )
+          })
+        })
+      const state = DurableEngineState.makeMemory()
+
+      const result = yield* withEngine(state, (makeEngine, store) =>
+        Effect.gen(function*() {
+          const engine = (yield* makeEngine) as FlowRuntime.FlowRuntime["Service"]
+          yield* engine.register(ApprovalFlow as never, handler as never)
+          yield* engine.execute(ApprovalFlow as never, {
+            executionId: "parking-approval",
+            payload: {},
+            discard: true
+          })
+          const suspendedRow = yield* store.get("parking-approval")
+          const parked = yield* state.waiting("parking-approval")
+          const sweep = yield* state.waitingRuns({ reason: "approval" })
+
+          yield* engine.deferredDone(gate as never, {
+            flowName: ApprovalFlow._tag,
+            executionId: "parking-approval",
+            deferredName: gate.name,
+            exit: Exit.succeed("granted")
+          })
+          const completedRow = yield* store.get("parking-approval")
+          const afterResume = yield* state.waiting("parking-approval")
+          return { suspendedRow, parked, sweep, completedRow, afterResume }
+        }))
+
+      expect(result.suspendedRow.status).toBe("suspended")
+      expect(Option.getOrThrow(result.parked).reason).toBe("approval")
+      expect(Option.getOrThrow(result.parked).token).toBe("nested-request-7")
+      expect(result.sweep.map((row) => row.runId)).toEqual(["parking-approval"])
       expect(result.completedRow.status).toBe("completed")
       expect(Option.isNone(result.afterResume)).toBe(true)
     }))

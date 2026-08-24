@@ -333,16 +333,34 @@ describe("Forensics.eventLine", () => {
         "park (?) "
       ],
       [
-        "a continuing transition",
+        "a continuing transition from a wave that filed",
         "control.agent.transition-applied",
         { transition: { _tag: "continue", context: [1], state: { a: 1 } } },
-        "continue · context 3B · state 7B"
+        "continue · filed state 7B · context 3B"
       ],
       [
-        "a continuing transition with no context or state",
+        "a continuing transition from the realm, which files nothing",
+        "control.agent.transition-applied",
+        { transition: { _tag: "continue", justification: "still reading" } },
+        "continue · still reading"
+      ],
+      [
+        "a continuing transition with nothing on it at all",
         "control.agent.transition-applied",
         { transition: {} },
-        "continue · context 2B · state 4B"
+        "continue"
+      ],
+      [
+        "a printed cell",
+        "control.agent.cell-printed",
+        { cell: "d4", text: "42" },
+        "print   42"
+      ],
+      [
+        "a printed cell that printed nothing",
+        "control.agent.cell-printed",
+        { cell: "d4" },
+        "print   "
       ],
       ["a settled cell", "control.agent.cell-settled", { outcome: { _tag: "settled" } }, "cell settled"],
       [

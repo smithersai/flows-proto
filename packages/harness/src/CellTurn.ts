@@ -1085,12 +1085,23 @@ const clip = (text: string, width: number): string => elide.head(text, width, "c
 /**
  * How much of one call's result the salvage list quotes back after a crash.
  *
- * A summary, not the result: the whole of it is in the call ledger under its
- * ordinal, and the line says so. Before that, a clipped summary was the only
- * copy the next frame would ever see, and the next cell re-issued the call to
- * get the rest.
+ * A summary, not the result: the whole of it is still in the realm under the
+ * name the cell bound it to, and the line says so. Before that, a clipped
+ * summary was the only copy the next frame would ever see, and the next cell
+ * re-issued the call to get the rest.
  */
 const salvageSummary = 400
+
+/**
+ * What the salvage line says a clipped result can be read from.
+ *
+ * The realm outlives the frame that raised, so a name a cell bound before it
+ * threw is still bound. This used to name the transition's `recall` list, which
+ * left with the filing surface: a sentence that offers a move the contract no
+ * longer has costs a model turn to discover it does nothing. It is worded like
+ * {@link CallLedger.render}'s own trailer because it is the same fact.
+ */
+const salvageRecall = "the whole result is still under the name your cell bound it to"
 
 /**
  * States, unambiguously, that a call this frame failed about itself.
@@ -1965,7 +1976,7 @@ const frame = (
             observedCalls.push({
               flow: invocation.flow,
               ok: result.outcome === "success",
-              summary: elide.head(rendered, salvageSummary, `recall ${ordinal} for the whole result`),
+              summary: elide.head(rendered, salvageSummary, salvageRecall),
               ordinal,
               mutates: performed.has(invocation.ordinal) && descriptor !== undefined &&
                 mutating(descriptor, invocation.input),
@@ -2192,7 +2203,7 @@ const frame = (
       // unbounded name here is an unbounded line in the notice.
       const salvage = observedCalls.length === 0
         ? ""
-        : `\nCalls this cell already completed (their results are durable; use them instead of redoing the work, and name an ordinal in \`recall\` to have the whole result printed in your next prompt):\n${
+        : `\nCalls this cell already completed (their results are durable, and each one is still under the name your cell bound it to — read the name instead of redoing the work):\n${
           observedCalls.map((call) =>
             `- ${call.ordinal}. ${clip(call.flow, CallLedger.width)} -> ${call.ok ? "ok" : "FAILED"}: ${call.summary}`
           )
@@ -2201,9 +2212,9 @@ const frame = (
       const alert = probeNotice === undefined ? "" : `\n\n${probeNotice}`
       // A property read through an absent path is the one throw the harness can
       // diagnose without guessing, and it is the throw a cell reaching into
-      // `ctx.state` makes. The keys are already computed for the manifest, so
-      // naming them costs nothing and closes the loop the model would otherwise
-      // spend a frame on. See `VariablesPanel`.
+      // a realm binding makes. The names are already computed for the variables
+      // panel, so naming them costs nothing and closes the loop the model would
+      // otherwise spend a frame on. See `VariablesPanel`.
       const missed = outcome._tag === "raised" ? bindingPathMiss(outcome.message, bindings) : undefined
       const note = outcome._tag === "raised"
         ? `The cell threw ${outcome.name}: ${outcome.message}. Emit a corrected cell.${

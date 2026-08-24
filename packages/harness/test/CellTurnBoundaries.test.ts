@@ -566,6 +566,12 @@ describe("CellTurn call classification", () => {
     // The whole payload is durable behind the call boundary; the transcript
     // carries a bounded summary of it, not the payload.
     expect(salvage).not.toContain("w".repeat(1_000))
+    // A raised frame is the other place the run used to offer `recall`, and it
+    // is the one the call ledger's own prohibition did not reach. The realm
+    // outlives the throw, so the clipped line names the binding rather than a
+    // transition field the contract no longer has.
+    expect(salvage).not.toMatch(/\brecall\b/i)
+    expect(salvage).toContain("still under the name your cell bound it to")
   })
 
   it("names a failed call in the salvage note even when the host gave no message", async () => {
