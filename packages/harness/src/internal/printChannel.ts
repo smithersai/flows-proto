@@ -84,7 +84,9 @@ const cell = (value: Schema.Json): string =>
  * column some rows do not have is a table that says a row held `null` when it
  * held nothing at all. Cells are the string itself where that is unambiguous —
  * no newline, no column separator — and canonical JSON everywhere else, so a
- * row can always be read back to the value it came from.
+ * row reads back to the value it came from except where a string spells a JSON
+ * literal: a cell reading `null` was either the value or the word, and this is a
+ * log rather than a wire format, so it is not paid for in quoting every cell.
  *
  * @since 0.1.0
  * @private
@@ -178,10 +180,57 @@ export const shares = (sizes: ReadonlyArray<number>, budget: number): ReadonlyAr
   return allotted
 }
 
+/** The line a frame writes about the statements it dropped whole. */
+const droppedNotice = (count: number): string =>
+  `… ${count} print statements elided from the middle of this frame; the values are still bound in the realm.`
+
+/** The line a frame writes about the statements the host never copied out. */
+const unreadNotice = (count: number): string =>
+  `… ${count} further print statements were not kept: this frame printed more than the harness holds.`
+
 /**
- * How many statements one frame's budget can floor.
+ * What keeping one statement costs the budget: its floor, its notice, its newline.
+ *
+ * A statement at or under {@link Sandbox.printStatementFloor} costs only itself
+ * and no notice, because {@link buffer} shows it whole and a whole statement has
+ * nothing to say about what it lost. One over the floor is promised the floor,
+ * and the notice that shortening it prints is charged with it.
  */
-const capacity = Math.max(1, Math.floor(Sandbox.printFrameBytes / Sandbox.printStatementFloor))
+const price = (statement: Statement): number =>
+  Math.min(statement.bytes, Sandbox.printStatementFloor) +
+  (statement.bytes > Sandbox.printStatementFloor ? elide.noticeCost(statement.bytes, recall) : 0) + 1
+
+/**
+ * How many of *these* statements a budget can keep at the floor, head first.
+ *
+ * A count of the statements in hand rather than a constant, because what a
+ * statement costs is what it is. Taken as `printFrameBytes / printStatementFloor`
+ * it was 32 whatever a frame printed, so a frame of two hundred eight-byte lines
+ * dropped a hundred and sixty-eight of them while fifteen of its sixteen
+ * kilobytes went unspent — the failure the shared budget exists to end,
+ * reintroduced one level up. Two hundred lines that cost nine bytes each cost
+ * eighteen hundred, and the budget keeps every one of them.
+ *
+ * The walk takes the head, then the tail, then the head again, which is the
+ * order {@link buffer} assembles them in, so a budget that affords an odd number
+ * spends the odd one on the earlier statement.
+ *
+ * @since 0.1.0
+ * @private
+ * @slop
+ */
+export const capacity = (statements: ReadonlyArray<Statement>, budget: number): number => {
+  let left = budget
+  let kept = 0
+  while (kept < statements.length) {
+    const statement = kept % 2 === 0 ? statements[kept / 2]! : statements[statements.length - 1 - (kept - 1) / 2]!
+    const cost = price(statement)
+    if (cost > left) break
+    left = left - cost
+    kept = kept + 1
+  }
+  return kept
+}
 
 /**
  * Assembles what a frame printed, bounded by {@link Sandbox.printFrameBytes}.
@@ -191,41 +240,52 @@ const capacity = Math.max(1, Math.floor(Sandbox.printFrameBytes / Sandbox.printS
  * rather than dropped, because a buffer that simply stopped reads as a cell that
  * simply stopped printing.
  *
+ * The bound holds by construction rather than by a second pass over the result,
+ * because a second pass would cut a notice in half and that is the one thing a
+ * bound may not do. {@link capacity} charges every kept statement the floor it is
+ * promised, the notice it would print and its newline; what survives that walk is
+ * therefore affordable, and the apportionment below spends only what the walk
+ * left. A statement at or under the floor is shown whole and reserves no notice
+ * at all — reserving one apiece is what left a frame of short lines nothing to
+ * spend on the lines themselves.
+ *
  * @since 0.1.0
  * @private
  * @slop
  */
 export const buffer = (statements: ReadonlyArray<Statement>, unread: number): string => {
   if (statements.length === 0 && unread === 0) return ""
+  // The count-lines come out of the budget before the statements are counted,
+  // and the drop line only where there is a drop — so it is priced by asking
+  // twice, rather than by charging every frame for a line most never print.
+  const overhead = unread === 0 ? 0 : unreadNotice(unread).length + 1
+  const roomy = capacity(statements, Sandbox.printFrameBytes - overhead)
+  const affordable = roomy === statements.length
+    ? roomy
+    : capacity(statements, Sandbox.printFrameBytes - overhead - droppedNotice(statements.length).length - 1)
   // More statements than the budget can floor: whole statements go from the
   // middle, counted, rather than every one of them being cut to a notice.
-  const head = Math.ceil(capacity / 2)
-  const kept = statements.length <= capacity
+  const head = Math.ceil(affordable / 2)
+  const kept = statements.length === affordable
     ? statements
-    : [...statements.slice(0, head), ...statements.slice(statements.length - Math.floor(capacity / 2))]
+    : [...statements.slice(0, head), ...statements.slice(statements.length - Math.floor(affordable / 2))]
   const dropped = statements.length - kept.length
   const notices = [
-    ...(dropped === 0
-      ? []
-      : [
-        `… ${dropped} print statements elided from the middle of this frame; the values are still bound in the realm.`
-      ]),
-    ...(unread === 0
-      ? []
-      : [`… ${unread} further print statements were not kept: this frame printed more than the harness holds.`])
+    ...(dropped === 0 ? [] : [droppedNotice(dropped)]),
+    ...(unread === 0 ? [] : [unreadNotice(unread)])
   ]
-  // What the budget cannot spend on values: the elision notices, the lines that
-  // count what went missing, and the newline between every pair. Reserved before
-  // anything is apportioned, so the assembled buffer is bounded by the frame
-  // budget outright and nothing has to shorten it a second time — a second pass
-  // would cut a notice in half, which is the one thing a bound may not do.
-  const reserve = kept.reduce((sum, statement) => sum + elide.noticeCost(statement.bytes, recall), 0) +
+  // What the budget cannot spend on values: the count-lines, the newline between
+  // every pair, and one elision notice for each statement the floor does not
+  // cover whole.
+  const sizes = kept.map((statement) => statement.bytes)
+  const reserve = kept.reduce(
+    (sum, statement) =>
+      sum + (statement.bytes > Sandbox.printStatementFloor ? elide.noticeCost(statement.bytes, recall) : 0),
+    0
+  ) +
     notices.reduce((sum, line) => sum + line.length, 0) +
     Math.max(0, kept.length + notices.length - 1)
-  const allotted = shares(
-    kept.map((statement) => statement.bytes),
-    Math.max(0, Sandbox.printFrameBytes - reserve)
-  )
+  const allotted = shares(sizes, Math.max(0, Sandbox.printFrameBytes - reserve))
   const lines = kept.map((statement, index) =>
     elide.middleFrom(statement.text, statement.bytes, allotted[index]!, recall)
   )

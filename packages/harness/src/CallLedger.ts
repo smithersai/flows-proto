@@ -19,9 +19,9 @@
  *
  * A call that *writes* gets two things more, because a repeated write is a
  * different failure from a repeated read. The line says so and says how many
- * bytes the call carried, and a write whose flow and input a earlier write
+ * bytes the call carried, and a write whose flow and input an earlier write
  * already settled names that earlier one. The r95repl lane is why:
- * `sympy__sympy-13878` applied one 4,965-byte patch five times across five
+ * `sympy__sympy-13878` applied one 4,789-byte patch five times across five
  * frames, reverting the file between each, and nothing in the run's own record
  * of itself said that the second application was the first one again. It spent
  * 649 seconds and $1.20, the slowest instance in an arm whose median was 121 s.
@@ -175,9 +175,13 @@ export class Entry extends Schema.Class<Entry>("flows/harness/CallLedger/Entry")
    * the workspace. The harness has no per-call delta to report: its one honest
    * measurement is `EngineLike.observe`, which covers a whole frame and counts
    * paths rather than bytes. Stating the payload says what the call was, which
-   * is what makes two applications of one 4,965-byte patch legible as the same
+   * is what makes two applications of one 4,789-byte patch legible as the same
    * act; claiming a delta would say what the tree did, which this number does
    * not know.
+   *
+   * The number is the payload and not the call: `sympy__sympy-13878` sent a
+   * 4,789-byte patch inside a 4,965-byte input, and it is the patch this reports,
+   * because the patch is the part two calls have in common.
    */
   payloadBytes: NonNegativeSafeInt.pipe(
     Schema.withConstructorDefault(Effect.succeed(0)),
@@ -247,11 +251,14 @@ export const subject = (input: Schema.Json): string => clip(target(input) ?? Can
  * The first term of a value that names a target, or nothing.
  *
  * Split out of {@link subject} because a write's target is not always in its
- * input. A patch names its files inside its own text and its input is one opaque
- * blob, so the only place the path appears in a form anything can read is the
- * result — `modified: ["sympy/stats/crv_types.py"]`. A line that named a
- * 4,965-byte patch by its first hundred bytes said nothing a reader could match
- * against the next one.
+ * input. Usually it is, even inside a blob: the lexer reads a patch's own text,
+ * so `sympy__sympy-13878`'s five applications each named
+ * `sympy/stats/crv_types.py` off the `*** Update File:` line. The split is for
+ * the write whose input names nothing a lexer can find — a patch that only adds
+ * a file, an input that carries bytes and a handle — where the result is the one
+ * place a path appears at all: `modified: ["sympy/stats/crv_types.py"]`. A line
+ * that named such a write by its payload's first hundred bytes said nothing a
+ * reader could match against the next one.
  *
  * @category conversions
  * @since 0.1.0

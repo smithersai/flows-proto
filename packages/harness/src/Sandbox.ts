@@ -241,9 +241,12 @@ export const printFrameBytes = 16 * 1024
  * is the same shape the frame bound already had, applied a statement at a time
  * so nothing is cut mid-line.
  *
- * It is the floor on how many statements are *kept*, applied before the elision
- * notices are reserved, so the share a kept statement finally receives is
- * somewhat under it.
+ * It bounds how many statements are *kept*, but it is not a division of the
+ * budget: how many a frame can carry is priced off the statements it actually
+ * printed, so a statement at or under this size is shown whole and costs only
+ * itself. Two hundred eight-byte lines cost eighteen hundred bytes and all two
+ * hundred survive; sixty statements of four times this size do not, and whole
+ * ones go from the middle rather than every one of them being cut to a notice.
  *
  * @category constants
  * @since 0.1.0
