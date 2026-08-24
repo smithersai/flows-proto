@@ -58,6 +58,9 @@ export * as Bash from "./Bash.ts"
 /** @category services @since 0.1.0 */
 export * as Container from "./Container.ts"
 
+/** @category services @since 0.1.0 */
+export * as Checkpoints from "./Checkpoints.ts"
+
 /**
  * @category flows
  * @since 0.1.0

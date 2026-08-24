@@ -728,6 +728,9 @@ describe("the REPL contract's worked example", () => {
     const blocks = [...contract.matchAll(/```cell\n([\s\S]*?)```/g)].map((match) => match[1]!)
     expect(blocks).toHaveLength(2)
 
+    // Two trees, which is the whole point of the example: the edit lands on the
+    // live one and the baseline is taken against `ctx.base`, so the probe still
+    // reports a failure from the tree the run opened on while the edit stands.
     let edited = false
     const stubbed: Sandbox.Handler = (invocation) =>
       Effect.sync(() => {
@@ -737,8 +740,10 @@ describe("the REPL contract's worked example", () => {
               return { ok: true, matches: [{ file: "src/units/widen.ts", line: 42, text: "  return value" }] }
             case "read":
               return { content: "line one\n  return value\nline three" }
-            case "bash":
-              return { stdout: edited ? "1 passed" : "1 failed", exitCode: edited ? 0 : 1 }
+            case "bash": {
+              const fixed = invocation.at === undefined && edited
+              return { stdout: fixed ? "1 passed" : "1 failed", exitCode: fixed ? 0 : 1 }
+            }
             case "edit":
               edited = true
               return { ok: true, hunk: "-  return value\n+  return widen(value)" }
@@ -765,9 +770,14 @@ describe("the REPL contract's worked example", () => {
     expect(frames[0]!.bindings.map((binding) => binding.name)).toEqual(["found", "hit", "region"])
     expect(frames[0]!.prints).toContain("return value")
 
-    // The fix-and-prove cell is the guard shape end to end: probe fails, edit
-    // lands, the identical probe passes, and the completion is behind a check of
-    // the two exit codes rather than in front of them.
+    // The fix-and-prove cell is the guard shape end to end: the edit lands, the
+    // baseline probe reports a failure from `ctx.base`, the identical probe
+    // passes on the live tree, and the completion is behind a check of the two
+    // exit codes rather than in front of them. No call reverts anything: the
+    // one and only `edit` in the whole example is the one that stands.
+    const fix = blocks[1]!
+    expect([...fix.matchAll(/ctx\.call\("edit"/g)]).toHaveLength(1)
+    expect(fix).not.toMatch(/git (checkout|restore|stash|reset)/)
     const finished = frames[1]!.outcome
     expect(finished._tag === "settled" && finished.transition._tag).toBe("complete")
     expect(finished._tag === "settled" && finished.transition._tag === "complete" && finished.transition.output)

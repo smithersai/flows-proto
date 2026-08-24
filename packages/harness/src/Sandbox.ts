@@ -77,7 +77,70 @@ export interface Invocation {
   readonly ordinal: number
   readonly flow: string
   readonly input: Schema.Json
+  /**
+   * Whatever the cell passed as the call's `at` option, undecoded.
+   *
+   * It arrives as the raw JSON the cell wrote rather than as an id because the
+   * boundary, not the realm, decides whether it is a checkpoint: a cell that
+   * passes a string, a failure envelope, or last frame's result gets an
+   * ordinary catchable `invalid_input` naming what `at` takes, instead of a
+   * throw from inside the sandbox that would lose the calls the cell had
+   * already paid for.
+   */
+  readonly at?: Schema.Json | undefined
 }
+
+/**
+ * One request to pin the workspace, issued from inside a running cell.
+ *
+ * It carries only its ordinal because that is the whole of its identity: the
+ * cell source and the frame are the boundary's, and the ordinal is what makes
+ * the pin land where the cell wrote it. See {@link Minter}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface Mint {
+  readonly ordinal: number
+}
+
+/**
+ * Pins the workspace on behalf of a running cell.
+ *
+ * A mint travels the same queue as a flow call and is settled by the same drive
+ * loop, in issue order, one at a time. That ordering is the whole contract:
+ * `ctx.checkpoint()` promises the tree as it stands *at the line it is written
+ * on*, and the only way a cell can move the tree is by issuing a call, so a
+ * queue that settles in issue order pins exactly the tree the cell was looking
+ * at. A mint that runs on its own schedule — a side channel, a host callback,
+ * anything the queue does not order — would pin whichever tree happened to be
+ * there when it got round to it.
+ *
+ * The result is a {@link Cell.CallResult} like any other, so a host with no
+ * store, a run past its checkpoint bound, and a store that failed are all
+ * catchable refusals rather than teardown.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Minter = (mint: Mint) => Effect.Effect<Cell.CallResult, HarnessError>
+
+/**
+ * The refusal a binding answers `ctx.checkpoint()` with when the caller wired
+ * no minter.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const mintUnavailable: Minter = () =>
+  Effect.succeed(
+    new Cell.CallResult({
+      outcome: "failure",
+      value: null,
+      code: "checkpoint_unavailable",
+      message: "This run pins no checkpoints."
+    })
+  )
 
 /**
  * Resolves one invocation on behalf of a running cell.
@@ -360,6 +423,16 @@ export interface Evaluation {
    * had to re-parse out of its own context.
    */
   readonly state?: Schema.Json | undefined
+  /**
+   * Settles a `ctx.checkpoint()` issued by this cell.
+   *
+   * Optional, and absent means the caller pins no trees — which the cell is
+   * told, catchably, at the line it asked. It is a separate collaborator from
+   * `call` because a checkpoint is not a flow: it is neither in the catalog nor
+   * subject to the capability envelope, and the run's own bound on how many
+   * trees it may pin is the controller's, not any flow's.
+   */
+  readonly mint?: Minter | undefined
   readonly limits?: Limits | undefined
 }
 
@@ -424,6 +497,8 @@ export interface RealmEvaluation {
   readonly cell: Cell.Source
   readonly frame: number
   readonly call: Handler
+  /** Settles a `ctx.checkpoint()`; see {@link Evaluation.mint}. */
+  readonly mint?: Minter | undefined
   readonly limits?: Limits | undefined
 }
 
@@ -613,6 +688,17 @@ interface Pending {
   readonly ordinal: number
   readonly flow: string
   readonly input: Schema.Json
+  /** Undecoded `at` option; see {@link Invocation.at}. */
+  readonly at?: Schema.Json | undefined
+  /**
+   * Whether this entry is a flow call or a request to pin the tree.
+   *
+   * Both ride one queue because both have to be ordered against each other: a
+   * mint that overtook an edit, or an edit that overtook a mint, would pin the
+   * wrong tree. Absent means `call`, so every binding that queues an ordinary
+   * call is unchanged.
+   */
+  readonly kind?: "call" | "checkpoint" | undefined
   readonly settle: (result: Cell.CallResult) => void
   readonly abort: (message: string) => void
 }
@@ -670,6 +756,7 @@ interface Pump {
 const drive = (
   pump: Pump,
   handler: Handler,
+  minter: Minter,
   limits: Limits | undefined
 ): Effect.Effect<Cell.Outcome, SandboxError | HarnessError> =>
   Effect.gen(function*() {
@@ -686,11 +773,17 @@ const drive = (
         }
         calls = calls + 1
         const callMs = limits?.callMs ?? defaultLimits.callMs
-        const result = yield* handler({
-          ordinal: next.ordinal,
-          flow: next.flow,
-          input: next.input
-        }).pipe(
+        // A mint is settled here rather than on a channel of its own so that it
+        // is ordered against the calls around it. See `Minter`.
+        const settling = next.kind === "checkpoint"
+          ? minter({ ordinal: next.ordinal })
+          : handler({
+            ordinal: next.ordinal,
+            flow: next.flow,
+            input: next.input,
+            ...(next.at === undefined ? {} : { at: next.at })
+          })
+        const result = yield* settling.pipe(
           // The per-call ceiling, ahead of the interrupt cleanup below: a call
           // that overruns is answered, not abandoned, so the cell sees a
           // catchable failure and the frame keeps its remaining budget.
@@ -844,7 +937,8 @@ const deepFreeze = (value: unknown): unknown => {
 
 const makeContext = (
   flows: Readonly<Record<string, Cell.FlowProjection>>,
-  enqueue: (flow: string, input: Schema.Json) => Promise<unknown>,
+  enqueue: (flow: string, input: Schema.Json, at: Schema.Json | undefined) => Promise<unknown>,
+  mint: () => Promise<unknown>,
   state: Schema.Json | undefined
 ): Readonly<Record<string, unknown>> => {
   const catalog: Record<string, unknown> = {}
@@ -856,16 +950,40 @@ const makeContext = (
       tier: projection.tier
     })
   }
+  const dispatch = (flow: string, input: unknown, at: Schema.Json | undefined): Promise<unknown> => {
+    const decoded = Schema.decodeUnknownResult(Schema.Json)(input ?? null)
+    return decoded._tag === "Failure"
+      ? Promise.reject(new TypeError("ctx.call input must be JSON-serializable"))
+      : enqueue(flow, decoded.success, at)
+  }
   return Object.freeze({
-    call: (flow: unknown, input: unknown): Promise<unknown> => {
+    call: (flow: unknown, input: unknown, options?: unknown): Promise<unknown> => {
       if (typeof flow !== "string") {
         return Promise.reject(new TypeError("ctx.call expects a flow name as its first argument"))
       }
-      const decoded = Schema.decodeUnknownResult(Schema.Json)(input ?? null)
-      return decoded._tag === "Failure"
-        ? Promise.reject(new TypeError("ctx.call input must be JSON-serializable"))
-        : enqueue(flow, decoded.success)
+      const at = options === null || typeof options !== "object"
+        ? undefined
+        : (options as { readonly at?: unknown }).at
+      if (at === undefined) return dispatch(flow, input, undefined)
+      // A handle a cell holds without awaiting is a promise, and `ctx.checkpoint()`
+      // is deliberately usable that way — the pin lands where the cell wrote it,
+      // not where the cell awaits it. Both spellings are therefore accepted, and
+      // the boundary judges whatever the promise settles with.
+      const settled = typeof (at as { readonly then?: unknown }).then === "function"
+        ? Promise.resolve(at as PromiseLike<unknown>)
+        : Promise.resolve(at)
+      return settled.then((resolved) => {
+        const decodedAt = Schema.decodeUnknownResult(Schema.Json)(resolved ?? null)
+        return dispatch(
+          flow,
+          input,
+          /* v8 ignore next -- `at` reaches here as whatever the cell wrote, and a value JSON cannot hold is passed on as `null` so the boundary answers it as `invalid_input`; the failure arm exists to discharge the Result type */
+          decodedAt._tag === "Failure" ? null : decodedAt.success
+        )
+      })
     },
+    checkpoint: (): Promise<unknown> => mint(),
+    base: Object.freeze(Cell.checkpoint(Cell.baseCheckpoint)),
     flows: Object.freeze(catalog),
     // The previous frame's returned state, cloned so a cell can never reach
     // the harness's copy, frozen so the binding reads as memory, not a slot.
@@ -944,13 +1062,20 @@ export const makeRestricted = (): Sandbox =>
         let aborted: string | undefined
         let settled: Cell.Outcome | undefined
 
-        const enqueue = (flow: string, input: Schema.Json): Promise<unknown> => {
+        const queue = (
+          kind: "call" | "checkpoint",
+          flow: string,
+          input: Schema.Json,
+          at: Schema.Json | undefined
+        ): Promise<unknown> => {
           if (aborted !== undefined) return Promise.reject(new Error(aborted))
           return new Promise<unknown>((resolve, reject) => {
             pending.push({
               ordinal: ordinal++,
               flow,
               input,
+              kind,
+              ...(at === undefined ? {} : { at }),
               // A failed call resolves; it does not throw. See
               // {@link Cell.callFailure}. An *abort* still rejects: that is
               // teardown, not a result, and a cell must unwind rather than
@@ -961,8 +1086,14 @@ export const makeRestricted = (): Sandbox =>
             latch.wake()
           })
         }
+        const enqueue = (flow: string, input: Schema.Json, at: Schema.Json | undefined): Promise<unknown> =>
+          queue("call", flow, input, at)
+        // The pin is queued where the cell wrote the call, so a checkpoint the
+        // cell never awaits still names the tree at that line. `checkpoint` is
+        // the flow name only so an overrun reads as one; nothing resolves it.
+        const mint = (): Promise<unknown> => queue("checkpoint", "checkpoint", null, undefined)
 
-        const context = makeContext(evaluation.flows, enqueue, evaluation.state)
+        const context = makeContext(evaluation.flows, enqueue, mint, evaluation.state)
         const scope = new Proxy({}, {
           has: () => true,
           get: (_target, property) => {
@@ -1035,6 +1166,7 @@ export const makeRestricted = (): Sandbox =>
             }
           },
           evaluation.call,
+          evaluation.mint ?? mintUnavailable,
           evaluation.limits
         )
       })
@@ -1097,6 +1229,8 @@ export const driveCell = (options: {
   readonly wait: Effect.Effect<void>
   readonly abort: (message: string) => void
   readonly handler: Handler
+  /** Settles a `ctx.checkpoint()`; omitted means the run pins none. */
+  readonly mint?: Minter | undefined
   readonly limits?: Limits | undefined
 }): Effect.Effect<Cell.Outcome, SandboxError | HarnessError> =>
   drive(
@@ -1108,6 +1242,7 @@ export const driveCell = (options: {
       abort: options.abort
     },
     options.handler,
+    options.mint ?? mintUnavailable,
     options.limits
   )
 

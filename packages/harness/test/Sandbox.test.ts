@@ -408,14 +408,18 @@ for (const [name, binding] of bindings) {
       expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "both" })
     })
 
-    it("exposes the catalog, the state, and nothing else on the frozen context", async () => {
+    it("exposes the catalog, the state, the checkpoint pair, and nothing else on the frozen context", async () => {
       const outcome = await evaluate(
         binding,
         `return { intent: "complete", output: Object.keys(ctx).sort().join(",") + "|" + Object.keys(ctx.flows).join(",") }`
       )
       expect((outcome as Cell.Settled).transition).toMatchObject({
         _tag: "complete",
-        output: "call,flows,state|fs/list"
+        // `base` and `checkpoint` are here in the filing mode as well as the
+        // repl one, and deliberately: nothing about pinning a tree is a
+        // property of how cells relate to each other, and the filing arm has
+        // the same revert-to-reprove failure the repl arm has.
+        output: "base,call,checkpoint,flows,state|fs/list"
       })
     })
 

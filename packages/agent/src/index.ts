@@ -75,6 +75,12 @@ export * as WorkspaceObservation from "./WorkspaceObservation.ts"
  * @category constructors
  * @since 0.1.0
  */
+export * as Checkpointed from "./Checkpointed.ts"
+
+/**
+ * @category constructors
+ * @since 0.1.0
+ */
 export * as InMemoryWorkspaceSandbox from "./InMemoryWorkspaceSandbox.ts"
 
 /**

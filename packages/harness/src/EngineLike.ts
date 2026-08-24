@@ -166,6 +166,50 @@ export class Observation extends Schema.Class<Observation>("flows/harness/Engine
 }) {}
 
 /**
+ * One pinned tree the run can come back to.
+ *
+ * A checkpoint is a **value**, not a place the run goes: minting one changes
+ * nothing about the workspace, and running a call against one leaves the live
+ * tree exactly as it stands. That is the whole point. Before this existed, the
+ * only way to answer "did this command fail before my change" was to undo the
+ * change, and `sympy__sympy-13878` shows what that costs — one byte-identical
+ * 4,789-character patch applied five times, four of those applications preceded
+ * by `git checkout -- sympy/stats/crv_types.py`, because a clean proof required
+ * reverting the very work it was meant to prove.
+ *
+ * `ref` is the host's own name for what it pinned — a commit id, a snapshot
+ * key, whatever the store speaks. The controller never interprets it, exactly
+ * as it never interprets {@link Observation.digest}; it is carried so the
+ * journal says which tree a checkpointed call ran against and a grader can
+ * reconcile the reading against the store by hand.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export class Snapshot extends Schema.Class<Snapshot>("flows/harness/EngineLike/Snapshot")({
+  /** The id the cell holds, and the id a later call names in `at`. */
+  id: Schema.String,
+  /** What the host recorded, in the host's own vocabulary. */
+  ref: Schema.String
+}) {}
+
+/**
+ * A request to pin the workspace as it stands right now.
+ *
+ * `identity` travels with it so a store can namespace what it writes by the run
+ * that wrote it: two runs over one workspace mint `id` values from the same
+ * frame-and-ordinal counter, and a store that keyed on the id alone would hand
+ * the second run the first run's tree.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface CaptureRequest {
+  readonly id: string
+  readonly identity: BoundaryIdentity
+}
+
+/**
  * The engine operations required by harness translation.
  *
  * @category services
@@ -243,6 +287,25 @@ export interface EngineLike {
    * {@link EngineLike.record} rather than calling this on a replayed frame.
    */
   readonly observe: Effect.Effect<Option.Option<Observation>, HarnessError>
+  /**
+   * Pins the workspace as it stands right now, under the id the caller gives.
+   *
+   * This is the sibling of {@link EngineLike.observe} and it is deliberately a
+   * different operation: `observe` answers "is this the tree I left", which
+   * needs only a digest, while this has to be able to hand the tree back later.
+   * The pin happens where the call happens — a cell that mints between two
+   * edits gets the tree between those two edits — which is what makes
+   * `ctx.checkpoint()` mean anything at the line it is written on.
+   *
+   * `Option.none()` is the honest answer for a host with no store to pin into,
+   * exactly as it is for `observe`. It is not an error: the controller answers
+   * the cell with a catchable `checkpoint_unavailable` and the run carries on
+   * taking its readings from the live tree.
+   *
+   * The result is nondeterministic, so the controller journals it through
+   * {@link EngineLike.record} rather than calling this on a replayed frame.
+   */
+  readonly capture: (request: CaptureRequest) => Effect.Effect<Option.Option<Snapshot>, HarnessError>
   readonly suspend: (reason: SuspendReason) => Effect.Effect<never, HarnessError>
 }
 
@@ -301,6 +364,10 @@ export const makeNoop = (overrides: Partial<EngineLike> = {}): EngineLike =>
     // already knows how to read. Failing here instead would turn a host that
     // simply has no tree into a failed run.
     observe: Effect.succeed(Option.none()),
+    // Unpinnable for the same reason, and reported the same way: a stub engine
+    // has no store to pin a tree into, and the controller reads the absence as
+    // a catchable refusal the cell can route around.
+    capture: () => Effect.succeed(Option.none()),
     suspend: Effect.fn("EngineLike.suspend")(() => Effect.fail(unavailable("suspend", "suspended"))),
     ...overrides
   })

@@ -309,6 +309,15 @@ export const trace = (
           declaredWrites: event.declaredWrites
         }
       }
+    case "checkpoint-minted":
+      // The store's own name for the tree travels with the id, because the
+      // frame that reads against a checkpoint is usually not the frame that
+      // pinned it: a journal holding only the reading could not say which tree
+      // it was a reading of, and a fails-before proof is exactly that claim.
+      return {
+        eventType: "control.agent.checkpoint-minted",
+        payload: { id: event.id, ref: event.ref, cell: event.cell, ordinal: event.ordinal }
+      }
     case "read-only-demanded":
       return {
         eventType: "control.agent.read-only-demanded",

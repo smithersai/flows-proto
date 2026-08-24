@@ -212,6 +212,31 @@ export const defaultUnresolvedDemands = 1
  */
 export const defaultRevalidations = 1
 
+/**
+ * Default number of trees one run may pin with `ctx.checkpoint()`.
+ *
+ * Eight, read off the two REPL waves. A checkpoint is worth minting before a
+ * change, so the most a run could honestly want is one per frame that changed
+ * the tree, and across the 90 runs of `rerun-r95repl` and `rerun-r96repl` that
+ * number is 1 in 66 runs, 2 in 18, 3 in 3, 4 in one and 5 in one. Eight is the
+ * worst case those waves produced plus headroom, and it is a bound rather than
+ * a budget the model is meant to spend: the dominant use needs none of it at
+ * all, because {@link Cell.baseCheckpoint} is already there.
+ *
+ * It is a bound because a checkpoint costs the host a stored tree and a
+ * materialization it must clean up. A run that mints one per frame for a
+ * hundred frames is not doing anything a run needs to do, and the ninth mint is
+ * answered as an ordinary catchable refusal naming the handles it already
+ * holds rather than by ending the run.
+ *
+ * Zero disarms minting entirely, and leaves `ctx.base` — which nobody mints —
+ * working.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const defaultMaxCheckpoints = 8
+
 const MaxFrames = NonNegativeSafeInt.pipe(
   Schema.withConstructorDefault(Effect.succeed(defaultMaxFrames)),
   Schema.withDecodingDefaultKey(Effect.succeed(defaultMaxFrames))
@@ -247,6 +272,7 @@ const eventType = {
   modelDelta: "flows.harness.model-delta.v1",
   modelSettled: "flows.harness.model-settled.v1",
   mutationObserved: "flows.harness.mutation-observed.v1",
+  checkpointMinted: "flows.harness.checkpoint-minted.v1",
   permissionRequired: "flows.harness.permission-required.v1",
   resolved: "flows.harness.resolved.v1",
   steeringDrained: "flows.harness.steering-drained.v1",
@@ -469,6 +495,29 @@ export class State extends Schema.Class<State>("flows/harness/CellTurn/State")({
   unresolvedDemands: NonNegativeSafeInt.pipe(
     Schema.withConstructorDefault(Effect.succeed(0)),
     Schema.withDecodingDefaultKey(Effect.succeed(0))
+  ),
+  /**
+   * Trees this run may pin with `ctx.checkpoint()`. Zero disarms minting.
+   *
+   * See {@link defaultMaxCheckpoints}. `ctx.base` is not minted and is
+   * unaffected by this.
+   */
+  checkpointCap: NonNegativeSafeInt.pipe(
+    Schema.withConstructorDefault(Effect.succeed(defaultMaxCheckpoints)),
+    Schema.withDecodingDefaultKey(Effect.succeed(defaultMaxCheckpoints))
+  ),
+  /**
+   * Ids of the trees this run has already pinned, oldest first.
+   *
+   * Run state rather than a per-frame count because a checkpoint outlives the
+   * frame that minted it: the whole use is a frame taking a reading against a
+   * tree some earlier frame pinned, so the bound has to be the run's. The ids
+   * rather than a tally, because the one thing worth saying to a run that has
+   * reached the bound is which handles it is already holding.
+   */
+  checkpointIds: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<string>>([])),
+    Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<string>>([]))
   ),
   /**
    * Content address of the workspace this run opened on.
@@ -1239,7 +1288,8 @@ const retainedSignatures = 64
  * the journal after the fact; this is the loop's own view of it, available
  * while the run can still act on it.
  */
-const signatureOf = (flow: string, input: Schema.Json): string => Digest.digest(CanonicalJson.stringify([flow, input]))
+const signatureOf = (flow: string, input: Schema.Json, at?: string | undefined): string =>
+  Digest.digest(CanonicalJson.stringify(at === undefined ? [flow, input] : [flow, input, at]))
 
 /**
  * Folds one frame's signatures into the run's ledger, newest last and bounded.
@@ -1382,6 +1432,90 @@ const witness = (
     execute: engine.observe
   })
 
+/**
+ * The schema one pinned tree is journaled under.
+ *
+ * `Option` for the reason {@link RecordedObservation} is: "this host pins
+ * nothing" is a recorded answer, and a replayed frame that inferred it from an
+ * absent record would pin a tree that has since moved.
+ */
+const RecordedSnapshot = Schema.Option(EngineLike.Snapshot)
+
+/**
+ * Pins the workspace once, through a journaled boundary.
+ *
+ * The same treatment {@link witness} gives a measurement, for the same reason:
+ * a pin is a read of the world, so a resumed frame must be handed the tree its
+ * original attempt pinned rather than pin whatever is there now. The boundary
+ * is keyed on the cell digest and the ordinal, which is exactly the pair that
+ * re-derives when the cell is re-executed.
+ */
+const pin = (
+  engine: EngineLike.EngineLike,
+  state: State,
+  cell: string,
+  ordinal: number,
+  id: string
+): Effect.Effect<Option.Option<EngineLike.Snapshot>, HarnessError> =>
+  engine.record({
+    name: "checkpoint",
+    identity: { session: state.session, frame: state.frame, boundary: `${cell}:${ordinal}` },
+    success: RecordedSnapshot,
+    execute: engine.capture({ id, identity: { session: state.session, frame: state.frame, boundary: cell } })
+  })
+
+/**
+ * Settles one `ctx.checkpoint()` from inside a running cell.
+ *
+ * The id is `cp-<frame>-<ordinal>`, which is derived from the two things that
+ * re-derive identically when a cell is re-executed, so a resumed run addresses
+ * the same trees its original attempt did — and short enough for a model to
+ * read back in a print. `minted` is this frame's own tally; the run's is
+ * `State.checkpoints`, folded in when the frame closes.
+ */
+const minter = (
+  state: State,
+  cell: Cell.Source,
+  engine: EngineLike.EngineLike,
+  minted: Array<string>,
+  emit: (event: AgentEvent.AgentEvent) => Effect.Effect<void>
+): Sandbox.Minter =>
+(mint) =>
+  Effect.gen(function*() {
+    const held = state.checkpointIds.length + minted.length
+    if (held >= state.checkpointCap) {
+      return new Cell.CallResult({
+        outcome: "failure",
+        value: null,
+        code: "checkpoint_exhausted",
+        message: `This run has pinned its ${state.checkpointCap} checkpoints and nothing was pinned here. ${
+          held === 0 ? "" : `The ones you hold are ${[...state.checkpointIds, ...minted].join(", ")}, and `
+        }ctx.base is always the tree this run opened on.`
+      })
+    }
+    const id = `cp-${state.frame}-${mint.ordinal}`
+    const snapshot = yield* pin(engine, state, cell.digest, mint.ordinal, id)
+    if (Option.isNone(snapshot)) {
+      return new Cell.CallResult({
+        outcome: "failure",
+        value: null,
+        code: "checkpoint_unavailable",
+        message: "This host pins no trees, so nothing was checkpointed. Take your readings on the live tree instead."
+      })
+    }
+    minted.push(id)
+    yield* emit(
+      new AgentEvent.CheckpointMinted({
+        eventType: eventType.checkpointMinted,
+        id: snapshot.value.id,
+        ref: snapshot.value.ref,
+        cell: cell.digest,
+        ordinal: mint.ordinal
+      })
+    )
+    return new Cell.CallResult({ outcome: "success", value: Cell.checkpoint(snapshot.value.id) })
+  })
+
 const emitModelProgress = (
   event: ModelEvent.ModelEvent,
   emit: (event: AgentEvent.AgentEvent) => Effect.Effect<void>
@@ -1503,7 +1637,8 @@ const callHandler = (
     // Only a call that changes something is checked. Passing a fragment to a
     // search, a diff, or a summary is ordinary use of what the flow returned;
     // handing it to something that writes is the one case that destroys a file.
-    if (mutating(descriptor, invocation.input)) {
+    const changes = mutating(descriptor, invocation.input)
+    if (changes) {
       const found = TruncatedOutput.reuse(invocation.input, ledger)
       if (found !== undefined) {
         return new Cell.CallResult({
@@ -1511,6 +1646,36 @@ const callHandler = (
           value: null,
           code: "truncated_write",
           message: TruncatedOutput.refusal(invocation.flow, found)
+        })
+      }
+    }
+    // Where this call runs. A checkpoint is a tree the run has already been
+    // handed back, so it is a *reading* position and nothing else: the whole
+    // promise the surface makes is that taking a reading against one leaves the
+    // work alone, and a flow that declared a write would break that promise
+    // whichever tree the host materialized. Both refusals below are fail-soft,
+    // because both are things a cell fixes on its next line.
+    let at: string | undefined
+    if (invocation.at !== undefined) {
+      at = Cell.checkpointOf(invocation.at)
+      if (at === undefined) {
+        return new Cell.CallResult({
+          outcome: "failure",
+          value: null,
+          code: "invalid_input",
+          message:
+            `The at option takes a checkpoint, which is what ctx.checkpoint() resolves with and what ctx.base is. It was given ${
+              elide.head(CanonicalJson.stringify(invocation.at), 120, "the rest is the same shape")
+            }.`
+        })
+      }
+      if (changes) {
+        return new Cell.CallResult({
+          outcome: "failure",
+          value: null,
+          code: "checkpoint_readonly",
+          message:
+            `Flow ${invocation.flow} declares a write, and a checkpoint is a read-only view of a tree that has already been. Nothing was run. Make the change on the live tree, and keep at for the readings you take against ${at}.`
         })
       }
     }
@@ -1527,7 +1692,8 @@ const callHandler = (
         ordinal: invocation.ordinal,
         declaration: Cell.declarationDigest(descriptor),
         layers: [...new Set(state.layers)].sort()
-      })
+      }),
+      ...(at === undefined ? {} : { at })
     })
     performed.add(invocation.ordinal)
     yield* emit(new AgentEvent.CellCallStarted({ eventType: eventType.cellCallStarted, call }))
@@ -1855,8 +2021,29 @@ const frame = (
        * declared a write and performed none.
        */
       readonly mutates: boolean
-      /** What this invocation asked for, as {@link signatureOf} names it. */
+      /**
+       * What this invocation asked for, as {@link signatureOf} names it, with
+       * the tree it asked about folded in.
+       *
+       * The repeat ledger reads this one, because the identical command against
+       * a pinned tree and against the live tree are two different questions and
+       * a run that asks both has learned twice.
+       */
       readonly signature: string
+      /**
+       * The same, with the tree left out: what the call asked, of whatever
+       * tree.
+       *
+       * The check ledgers read this one, because `Sufficiency` matches a
+       * failing reading against the passing reading that answered it, and the
+       * whole shape this surface exists for takes those two readings of one
+       * command over two different trees. Keyed on the tree they would never
+       * meet. For a call on the live tree the two are the same string, so
+       * nothing that existed before checkpoints re-keys.
+       */
+      readonly subject: string
+      /** The checkpoint this call ran against, when it named one. */
+      readonly at: string | undefined
       /** What this invocation asked for, verbatim, for the narrowing ledger. */
       readonly input: Schema.Json
       /** What the call resolved with, verbatim, for the call ledger's digest. */
@@ -1900,6 +2087,13 @@ const frame = (
             const ordinal = CallLedger.settled(state.callLedger) + observedCalls.length + 1
             const descriptor = descriptors.get(invocation.flow)
             const probe = result.outcome === "success" ? invalidProbeOf(result.value) : undefined
+            // The tree this call actually ran against. A call the boundary
+            // refused ran against nothing, and one whose `at` did not decode
+            // named nothing, so neither keys anything: `performed` is the set
+            // the boundary let through.
+            const ranAt = performed.has(invocation.ordinal) && invocation.at !== undefined
+              ? Cell.checkpointOf(invocation.at)
+              : undefined
             observedCalls.push({
               flow: invocation.flow,
               ok: result.outcome === "success",
@@ -1910,7 +2104,9 @@ const frame = (
               // Every invocation the cell issued, refused ones included: a
               // refusal is still a question the run has already asked, and
               // asking it again learns nothing either.
-              signature: signatureOf(invocation.flow, invocation.input),
+              signature: signatureOf(invocation.flow, invocation.input, ranAt),
+              subject: signatureOf(invocation.flow, invocation.input),
+              at: ranAt,
               input: invocation.input,
               value: result.value,
               message: result.message,
@@ -1932,16 +2128,22 @@ const frame = (
     // the call handler and nothing else changes about how a frame runs.
     let bindings: ReadonlyArray<VariablesPanel.Binding> = []
     let outcome: Cell.Outcome
+    // Ids this frame pinned, carried out through every exit that continues the
+    // run: a checkpoint a frame minted before it raised is still a tree the run
+    // holds, and forgetting it would leak a stored tree nothing can name.
+    const minted: Array<string> = []
+    const mint = minter(state, cell, engine, minted, emit)
     if (realm === undefined) {
       outcome = yield* sandbox.evaluate({
         cell,
         flows: projections,
         call: observing,
+        mint,
         state: state.agentState,
         limits: input.limits
       })
     } else {
-      const evaluated = yield* realm.evaluate({ cell, frame: state.frame, call: observing })
+      const evaluated = yield* realm.evaluate({ cell, frame: state.frame, call: observing, mint })
       outcome = evaluated.outcome
       bindings = evaluated.bindings
       printed = printsObservation(evaluated.prints)
@@ -2018,6 +2220,7 @@ const frame = (
     const asked = new Set(state.callSignatures)
     const novel = signatures.some((signature) => !asked.has(signature))
     const callSignatures = remember(state.callSignatures, signatures)
+    const checkpointIds = minted.length === 0 ? state.checkpointIds : [...state.checkpointIds, ...minted]
     const repeatFrames = signatures.length === 0
       ? state.repeatFrames
       : novel || mutated
@@ -2034,23 +2237,40 @@ const frame = (
     // ledger's entire purpose is to say that the tree changed since a check
     // ran. An empty digest makes an entry inert rather than wrong.
     const workspaceDigest = covered ? closingDigest : ""
-    const frameChecks = observedCalls.flatMap((call) => {
-      if (!call.ok || call.mutates) return []
-      const recorded = NarrowedCheck.check({
-        flow: call.flow,
-        signature: call.signature,
-        input: call.input,
-        digest: workspaceDigest,
-        failing: call.failing,
-        passing: call.passing,
-        // A frame that also edited cannot say whether its checks ran before or
-        // after the edit, so the tree stamped on them is a guess in one
-        // direction. `UnresolvedFailure` refuses to carry a failure on such a
-        // stamp; see `NarrowedCheck.Check` `stable`.
-        stable: !mutated
+    const readings = (checkpointed: boolean) =>
+      observedCalls.flatMap((call) => {
+        if (!call.ok || call.mutates || (call.at !== undefined) !== checkpointed) return []
+        const recorded = NarrowedCheck.check({
+          flow: call.flow,
+          signature: call.subject,
+          input: call.input,
+          // A reading taken against a checkpoint is a reading of a tree that is
+          // not this workspace, so it carries no workspace digest: every ledger
+          // that reads one asks a question about the tree the run is standing
+          // on, and an entry stamped with this frame's digest would answer that
+          // question with somebody else's tree. Empty makes it inert there.
+          digest: checkpointed ? "" : workspaceDigest,
+          failing: call.failing,
+          passing: call.passing,
+          // A frame that also edited cannot say whether its checks ran before or
+          // after the edit, so the tree stamped on them is a guess in one
+          // direction. `UnresolvedFailure` refuses to carry a failure on such a
+          // stamp; see `NarrowedCheck.Check` `stable`.
+          //
+          // A checkpointed reading is the one case where the guess is not a
+          // guess. The tree it read was pinned before the edit and cannot move,
+          // so the ordering is established by the pin rather than inferred from
+          // the frame — which is exactly what this surface exists to buy, and
+          // what the run used to buy by reverting its own work.
+          stable: checkpointed || !mutated
+        })
+        return recorded === undefined ? [] : [recorded]
       })
-      return recorded === undefined ? [] : [recorded]
-    })
+    const frameChecks = readings(false)
+    // Live readings only. Every consumer of this ledger — the narrowing demand,
+    // the unresolved-failure demand, the vacuous-verification notice — asks
+    // whether the tree the run is completing on was checked, and a checkpointed
+    // reading is not a reading of that tree.
     const checks = NarrowedCheck.remember(state.checks, frameChecks)
 
     // How many frames of this run have changed the workspace, and which of
@@ -2058,7 +2278,14 @@ const frame = (
     // through every exit: a failure watched in a frame that then raised is
     // still a failure this run watched.
     const mutations = state.mutations + (mutated ? 1 : 0)
-    const failures = Sufficiency.remember(state.failures, { frame: frameChecks, epoch: state.mutations })
+    // Both, because this is the one ledger a checkpointed reading belongs in:
+    // its whole question is an ordering — this failed, then something changed,
+    // then that passed — and a pinned tree answers the first half honestly from
+    // a frame that also did the changing.
+    const failures = Sufficiency.remember(state.failures, {
+      frame: [...readings(true), ...frameChecks],
+      epoch: state.mutations
+    })
 
     // The tree the run was handed, fixed the first time a frame measured one
     // and never restamped. See `State.openingDigest`.
@@ -2144,6 +2371,7 @@ const frame = (
         readOnlyFrames: raisedFrames,
         repeatFrames,
         callSignatures,
+        checkpointIds,
         checks,
         callLedger,
         failures,
@@ -2219,6 +2447,7 @@ const frame = (
             readOnlyFrames: parkFrames,
             repeatFrames,
             callSignatures,
+            checkpointIds,
             checks,
             callLedger,
             failures,
@@ -2448,6 +2677,7 @@ const frame = (
             pendingReadOnlyDemand: undefined,
             repeatFrames,
             callSignatures,
+            checkpointIds,
             checks,
             callLedger,
             failures,
@@ -2663,6 +2893,7 @@ const frame = (
         readOnlyGrace,
         repeatFrames: repeatDemanded ? 0 : repeatFrames,
         callSignatures,
+        checkpointIds,
         checks,
         callLedger,
         failures,
