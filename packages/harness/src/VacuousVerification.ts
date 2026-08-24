@@ -7,6 +7,16 @@
  * measured on its own, in its own wave, against the contract text r92
  * measured. Everything below describes what it does when an arm turns it on.
  *
+ * **Its input no longer exists.** {@link stored} reads the reserved
+ * `verification` key out of the durable state a cell filed by hand, and the
+ * filing surface was deleted on 2026-08-24: `Cell.Continue.state` decodes and
+ * is populated by nothing. An arm that re-wires this module reads nothing until
+ * it first decides where a realm run declares its verification — a name bound
+ * in the realm, a print, or a new field — so the wave that turns this back on
+ * carries that decision with it. {@link stored} is left reading `Schema.Json`
+ * because that decision has not been made and the r90–r96 journals it can be
+ * replayed against are still filing journals.
+ *
  * It was live for exactly one wave. `fullbench/reports/rerun-r93.md` §1 reads
  * the result off the 45 journals, and the reason it is off is that the wave
  * cannot price it:

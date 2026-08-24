@@ -15,8 +15,16 @@ const CONSOLE_CALL = /console\.(?:log|info|warn|error|debug|trace)\s*\(/
  * example, so spelling it any other way to satisfy a text match would teach a
  * shape the realm does not have. Nothing in this file calls `console`; the
  * matches are inside a template literal that is shown, never run.
+ *
+ * The exemption is pinned to a count rather than left open, because a
+ * whole-file pass would let a real debugging call into the one file the guard
+ * no longer reads. Editing the worked example moves this number, which is the
+ * same deliberateness the contract's own digest and token ceiling ask for.
  */
 const TEACHING = "harness/src/internal/cellPrompt.ts"
+
+/** How many `console.*` lines the teaching text is expected to spell. */
+const TEACHING_LINES = 2
 
 /**
  * Source files under every package's `src`. Walked in-process rather than
@@ -63,6 +71,12 @@ describe("console guard", () => {
       }
     }
     expect(offenders).toEqual([])
+  })
+
+  it("holds the teaching file to the console lines its worked example spells", () => {
+    const source = readFileSync(join(PACKAGES_DIR, TEACHING), "utf8")
+    const matched = source.split("\n").filter((line) => CONSOLE_CALL.test(line))
+    expect(matched).toHaveLength(TEACHING_LINES)
   })
 
   it("scans a non-empty set of package sources", () => {

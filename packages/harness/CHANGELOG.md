@@ -54,6 +54,8 @@
 
 ### Removed
 
+- **The filing authoring surface is gone, and with it every entry above that describes one.** A run holds one realm for its whole life; a cell states its intent by calling `ctx.done`/`ctx.park`, and `Sandbox.replTransition` builds the transition. Deleted: `Cell.Mode`, `Cell.defaultMode`, `Cell.transition`, `Cell.renderEntry`, `StateManifest`, `CallLedger`'s recall half, `Sandbox.evaluate` / `Sandbox.Evaluation` / `Sandbox.makeRestricted` / `Sandbox.layerRestricted`, `CellTurn.State.cellMode` and `stateStamps`, `AgentEvent.DisciplineArmed.cellMode`, and `Transcript.ProjectedState.agentState`. `Cell.Continue`'s `state`, `context`, `render` and `recall` and `Cell.Complete`/`Cell.Park`'s `state` survive as **decode-only** optional fields: nothing populates them, nothing reads them, and they exist so the r90–r96 journals still decode. Entries in this section's siblings that announce `StateManifest`, `Cell.Continue.render`, `Cell.Continue.recall` or the state manifest describe a surface this release does not ship — they are kept because they name why the fields still decode, not because the features exist. Because nothing is released yet, no migration is owed and no compatibility mode is offered.
+
 - Removed `Steering.drainBoundary`. Its only caller was the deleted legacy
   `Turn`; `drainAtClose` and `promoteAtIdle`, the two operations it composed,
   remain.

@@ -313,6 +313,13 @@ export const eventLine = (event: ControlSchema.ControlEvent): string => {
     }
     case "control.agent.cell-produced":
       return `cell    ${compact(asString(payload.text) ?? "", 100)}`
+    // The realm's whole channel to the next model turn. It used to be the
+    // transition's `context`, which the `continue` line below reported in
+    // bytes; that field left with the filing surface, and this is what
+    // replaced it, so the reader is shown the same fact from where it now
+    // lives.
+    case "control.agent.cell-printed":
+      return `print   ${compact(asString(payload.text) ?? "", 100)}`
     case "control.agent.cell-call-started":
       return `call    ${asString(payload.flowName) ?? "?"} ${compact(payload.input, 90)}`
     case "control.agent.cell-call-settled":
@@ -322,13 +329,29 @@ export const eventLine = (event: ControlSchema.ControlEvent): string => {
     case "control.agent.transition-applied": {
       const transition = asRecord(payload.transition)
       const tag = asString(transition._tag) ?? "?"
+      const justification = asString(transition.justification)
+      // Only where the journal actually carries them, so a current run's line
+      // is not two constants and a wave that filed is still read in full.
+      const filed = [
+        transition.state === undefined || transition.state === null
+          ? undefined
+          : `state ${JSON.stringify(transition.state).length}B`,
+        Array.isArray(transition.context) && transition.context.length > 0
+          ? `context ${JSON.stringify(transition.context).length}B`
+          : undefined
+      ].filter((part) => part !== undefined).join(" · ")
       return tag === "complete"
         ? `complete ${compact(asString(transition.output) ?? "", 90)}`
         : tag === "park"
         ? `park (${asString(transition.reason) ?? "?"}) ${compact(asString(transition.message) ?? "", 80)}`
-        : `continue · context ${JSON.stringify(transition.context ?? []).length}B · state ${
-          JSON.stringify(transition.state ?? null).length
-        }B`
+        // `context` and `state` were the filing surface's two slots, and this
+        // line used to report their byte sizes. Nothing populates either since
+        // 2026-08-24, so reading them off a current run prints two constants;
+        // journals from the r90–r96 waves still carry them, and those are the
+        // only runs the byte counts are read for.
+        : `continue${justification === undefined ? "" : ` · ${compact(justification, 90)}`}${
+          filed === "" ? "" : ` · filed ${filed}`
+        }`
     }
     case "control.agent.cell-settled": {
       const outcome = asRecord(payload.outcome)

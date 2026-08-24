@@ -388,11 +388,31 @@ describe("Transcript", () => {
       applied(2, new Cell.Park({ reason: "waiting-event", message: "waiting on CI" }))
     ])
     const continued = project([settled, applied(2, new Cell.Continue({}))])
+    // The decode-only half, replayed. A journal from the r90–r96 waves carries
+    // a `continue` that filed state and chose its successor's whole context,
+    // and it is the one input that could still make this projection behave like
+    // the deleted surface. It decodes, and the entries are not read: without
+    // this case every transition under test is empty, so the branch that used
+    // to replace the prefix could come back unnoticed.
+    const filed = project([
+      settled,
+      applied(
+        2,
+        Schema.decodeUnknownSync(Cell.Transition)({
+          _tag: "continue",
+          state: { step: 2 },
+          context: [{ role: "assistant", text: "only this" }],
+          render: ["step"],
+          recall: [1]
+        })
+      )
+    ])
 
     // No transition replaces the transcript: what the model said stays said,
     // whichever way the frame ended.
     expect(parked).toEqual([ModelRequest.Message.assistant("kept", { stopReason: "stop" })])
     expect(continued).toEqual([ModelRequest.Message.assistant("kept", { stopReason: "stop" })])
+    expect(filed).toEqual([ModelRequest.Message.assistant("kept", { stopReason: "stop" })])
   })
 
   it("projects a cell that settled cleanly without adding a correction message", () => {
