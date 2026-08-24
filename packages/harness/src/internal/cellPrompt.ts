@@ -10,25 +10,24 @@
  * a 2026-08-12 ruling and reversed. It may be tested later as a benchmark arm
  * and is adopted only if it benchmarks better.
  *
+ * There is one contract, and it is the REPL's. The surface it replaced — a cell
+ * as the body of its own async function, filing JSON into `state` and choosing
+ * its successor's `context` by hand — is recorded as a design error rather than
+ * as an arm that lost: it made the model do the realm's job, which is why it
+ * never worked like a REPL. will ruled it out on 2026-08-24. The evidence and
+ * the ruling are in `docs/specs/Concepts/Repl Realm.md`.
+ *
  * The teaching here is measured, not preferred, and the measurement has now run
  * both ways. The merged optimal-trace program
  * (`evals/swebench/fullbench/analysis/PROGRAM.md`) predicted that more teaching
- * would buy verdicts, and grew this contract from 8,197 to 11,312 characters
- * across changes 2, 9 and 10. The re-run that settles those predictions
- * (`evals/swebench/fullbench/reports/rerun-r91.md`) says it did not: resolved
- * fell 35/45 to 30/45, cost rose 59 %, and five instances spent a whole 1,200 s
- * budget without editing one byte, held there by rule 8's unconditional
- * pre-edit reproduction. The same wave shows every *tool* change paying. So the
- * doctrine here is the r90 text — the version that scored 35/45 — with change
- * 2's one measured win kept in conditional form, while the lane mechanics that
- * shipped alongside it (fail-soft `.ok`, `render`/`recall`, raw read content,
- * the applied hunk, the in-frame re-ask) stay, because those are what the
- * agent's calls actually do now.
- *
- * That conditional form is two clauses in two rules and nothing else: rule 8
- * offers a baseline as what buys a same-cell complete rather than demanding one
- * before the first write, and rule 6 asks for a repaired probe before you *rely*
- * on it rather than before you edit anything. Both are the same relaxation.
+ * would buy verdicts, and grew the contract it replaced from 8,197 to 11,312
+ * characters across changes 2, 9 and 10. The re-run that settles those
+ * predictions (`evals/swebench/fullbench/reports/rerun-r91.md`) says it did not:
+ * resolved fell 35/45 to 30/45, cost rose 59 %, and five instances spent a whole
+ * 1,200 s budget without editing one byte, held there by an unconditional
+ * pre-edit reproduction rule. The same wave shows every *tool* change paying.
+ * That is why the rules below carry their traces and why a teaching change is
+ * made one at a time.
  *
  * The exception rule 8 used to state — "when the command will not bootstrap,
  * edit on the diagnosis you have and establish the proof afterwards" — is gone,
@@ -63,7 +62,7 @@
 import * as Digest from "@smthrs/core/Digest"
 import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import { Option } from "effect"
-import * as Cell from "../Cell.ts"
+import type * as Cell from "../Cell.ts"
 
 /**
  * One rendered prompt section, with the digest that identifies its
@@ -100,62 +99,21 @@ export interface Environment {
   readonly absentTools?: ReadonlyArray<string>
 }
 
-const contract = `You advance this task one cell at a time.
-
-Every reply MUST contain a fenced block tagged \`cell\`, and nothing in it but JavaScript. Several \`cell\` blocks in one reply are concatenated in order and run as ONE program in ONE frame, so declare each name once and remember that the first \`return\` ends the frame — the blocks after it never run.
-
-Here is a whole task in one cell. Names are illustrative — call what \`ctx.flows\` lists — but copy the shape: every input is computed from an earlier result, in JavaScript, in this same block.
-
-\`\`\`cell
-const found = await ctx.call("grep", { pattern: "return value", root: "src/units", limit: 5 })
-const hit = found.ok === false ? undefined : found.matches[0]                  // a failed call resolves, it does not throw
-if (hit === undefined) return { intent: "continue", state: { ...ctx.state, found }, render: ["found"], context: [{ role: "user", text: "No hit for the reported line." }] }
-const region = await ctx.call("read", { path: hit.file, offset: Math.max(1, hit.line - 20), limit: 40 })
-const check = { flow: "bash", input: { command: "run-tests tests/test_widen.py::test_keeps_unit" } }
-const anchor = hit.text                                        // a line a call returned, copied whole, never typed from memory
-const applied = await ctx.call("edit", { path: hit.file, oldString: anchor, newString: anchor.replace("return value", "return widen(value)") })
-if (applied.ok === false) return { intent: "continue", state: { ...ctx.state, applied, region }, render: ["applied"], context: [{ role: "user", text: applied.error.message }] }
-const before = await ctx.call(check.flow, check.input, { at: ctx.base })   // the tree this run opened on; your edit is untouched
-const after = await ctx.call(check.flow, check.input)          // the identical command, on the tree you changed
-return before.exitCode !== 0 && after.exitCode === 0
-  ? { intent: "complete", state: { verification: check }, output: check.input.command + " failed before the edit and exits 0 after it; the applied hunk is:\\n" + applied.hunk, reason: "verified" }
-  : { intent: "continue", state: { ...ctx.state, verification: check, after, applied }, render: ["after", "applied"], context: [{ role: "user", text: "Edit applied; the check still fails." }] }
-\`\`\`
-
-One frame: search, read, edit, baseline at ctx.base, re-check, answer. The same work at one call per frame costs six model turns and learns nothing extra.
-
-The block is the body of an async function. Rules:
-
-1. \`ctx\` is your only binding. \`ctx.call(name, input)\` runs a flow and resolves with its result; \`ctx.flows\` is the catalog of flows you may call; \`ctx.state\` is the durable state your previous cell returned, as a frozen value. There is nothing else — no imports, no exports, no require, no fetch, no filesystem, no process, no Date, no Math.random. Referencing anything else throws. This is about the JavaScript you write, not about the strings you pass: a command or pattern that mentions another language's import, such as a Python heredoc reading \`from pathlib import Path\`, is data and is fine.
-2. Everything effectful is a flow. Reading a file, running a command, remembering something, asking a question, delegating to a subagent: all of them are \`ctx.call\`.
-3. Calls are ordinary awaits, so derive later inputs from earlier results inside one cell instead of spending a frame per call. A failed call does not throw: it resolves with \`{ ok: false, error: { code, message, hint } }\`, so the branch you already wrote still runs and the calls this cell has paid for are not lost — test \`.ok === false\` where you are unsure. A successful call resolves with the flow's own result, unwrapped. If your cell throws anyway, every call that had settled survives into the next frame with the ordinal that recalls it. Long calls are fine: a test suite that runs for minutes only spends the flow's own budget, never your cell's. Captured output is capped, so a result flagged truncated is a fragment: to restore a file from git run git checkout or git restore on the path, and never route file content through captured stdout — a write of bytes a call returned truncated is refused.
-4. Return a transition. Exactly one of:
-   - \`{ intent: "continue", state, render, context }\` — run another frame. \`state\` is yours: any JSON you want carried forward. \`context\` is the exact list of \`{ role, text }\` entries the next model call will see, so summarize deliberately; anything you leave out is gone. \`text\` may be any JSON and structures print as JSON, so never \`String()\` an object into it. \`render\` names \`state\` keys and \`recall\` names settled-call ordinals: both make the harness print those bytes into the next frame's prompt for free, so never spend a frame echoing state into \`context\` or re-issuing a call you already made. Add \`justification\` only when the harness has asked why a frame changed nothing.
-   - \`{ intent: "complete", state, output, reason }\` — the task is done and \`output\` is the answer. Nothing re-checks this claim for you: name in \`output\` the exact command that proves it and what that command printed on the run you actually made. A completion you have not watched pass is a wrong answer, not a shortcut.
-   - \`{ intent: "park", state, reason, message }\` — stop durably and wait, with \`reason\` one of "waiting-input", "waiting-event", "waiting-quota". Most runs have nobody to answer a park; those refuse it, tell you what budget is left, and hand the question back to you, so park only for something no call of yours could ever settle.
-5. Your cell is re-executed from the top after a crash or a resume. Calls that already settled return their recorded results without running again, so keep cells deterministic: no wall-clock branching, no randomness, no hidden state outside \`state\`.
-6. The \`state\` you return is the next cell's \`ctx.state\`. Treat it as working memory: store what you learn — file excerpts you plan to edit, check output, decisions — and read it back instead of re-running calls. Every frame opens with a manifest of it — each key's type, size and the frame that wrote it, so you can tell a reading taken before your edit from one taken after — plus the whole JSON while it is small, plus in full whatever keys your last transition named in \`render\`. Every call this run has settled is listed for you as well, with what it asked, what came back, and a \`recall N\` marker while its bytes are still held. Read those instead of re-asking. Nothing is ever cut silently: where bytes are dropped the line says how many and how to get them back. A command becomes evidence only once you have SEEN it fail on the unmodified tree FOR THE RIGHT REASON, which is the bug itself. A command that fails because it names a test, file, module, environment, or program that does not exist reproduces nothing: it fails identically on a broken tree and on a fixed one, so it can never show you that you have won. Results carry \`invalidProbe\` when the flow can tell, but the reading is yours — repair such a probe, by listing the real names first, before you rely on it. Only a check that failed for the right reason is stored as \`verification: { flow, input, outcome }\`, and you then reuse its exact \`flow\` and \`input\` after edits rather than deriving or broadening another command.
-7. Act, then verify: read broadly in ONE cell, store findings in \`state\`, then commit to an edit. A run may be stopped for spending too many consecutive frames that write nothing, and when that budget is close the harness says so and requires either an edit or a \`justification\` on your next transition. An edit answers with the hunk it applied, raw and correctly indented: read it in the same cell, because a bad edit costs one glance there and a whole investigation anywhere else. Then put each edited file through whatever language-aware checker \`ctx.flows\` and this image actually offer (a compiler, ruff, eslint/tsc — through the shell flow); undefined-name findings are advisory — fix them before any broad suite, and where none exists record that and continue rather than guessing with regex.
-8. Prove it before you claim it, in as few frames as you can. ONE cell may make the edit, run the baseline check against \`ctx.base\` — the tree this run opened on, always there, free — and run the identical check on the tree you just changed. A baseline you have watched fail is what buys a same-cell completion, and \`{ at: ctx.base }\` is how you take one without giving up your work: a call at a checkpoint reads a tree that has already been and leaves your work exactly as you left it. NEVER undo your own edit to re-prove a baseline. \`ctx.checkpoint()\` pins the tree as it stands at that line, for a baseline of your own; a checkpoint is read-only, so a flow that writes is refused at one. After editing, reuse that identical command and store it in \`state.verification\`. Complete only once you have SEEN that identical command pass in this run, and name it in \`output\`. A broad suite that was already green proves no bug changed, and a probe that could not find what it named proves nothing at all.
-
-If a cell throws or returns something that is not a transition, you are told exactly what happened and get another frame to fix it. If a cell does not PARSE nothing ran at all, so you are asked again inside the SAME frame, with the error and the offending line.`
-
 /**
- * The contract a run armed in REPL mode is taught.
+ * The contract every run is taught.
  *
- * It is the filing contract with the bookkeeping removed and the realm stated,
- * and the difference is exactly the difference in the surface: there is no
- * returned object to describe, no `state` to file, no manifest to read, and no
- * `render`/`recall` to name, because the variable is the memory and the print is
- * the summary. What is added is three sentences and the `ctx.done`/`ctx.park`
- * line.
+ * It is the contract that replaced the filing one, and the difference is exactly
+ * the difference in the surface: there is no returned object to describe, no
+ * `state` to file, no manifest to read, and no `render`/`recall` to name,
+ * because the variable is the memory and the print is the summary.
  *
- * Every rule with a trace behind it is carried across byte-similar, and that is
- * deliberate: the r91 rerun grew the filing contract from 8,197 to 11,312
- * characters and dropped resolved from 35/45 to 30/45 at 59 % more cost, which
- * says teaching changes are expensive and must be measured one at a time. An
- * arm that changed the realm *and* re-cut the doctrine could not attribute its
- * own result. Cutting further is its own arm, with its own wave.
+ * Every rule with a trace behind it was carried across byte-similar when the
+ * surface changed, and that was deliberate: the r91 rerun grew the old contract
+ * from 8,197 to 11,312 characters and dropped resolved from 35/45 to 30/45 at
+ * 59 % more cost, which says teaching changes are expensive and must be measured
+ * one at a time. A wave that changed the realm *and* re-cut the doctrine could
+ * not attribute its own result. Cutting further is its own arm, with its own
+ * wave.
  *
  * The second worked example is the golf report's own prescription — its
  * class-(a) finding is that the contract's only worked example is a three-line
@@ -289,12 +247,11 @@ const catalogText = (flows: Readonly<Record<string, Cell.FlowProjection>>): stri
  */
 export const make = (
   flows: Readonly<Record<string, Cell.FlowProjection>>,
-  environment: Environment = {},
-  mode: Cell.Mode = Cell.defaultMode
+  environment: Environment = {}
 ): ReadonlyArray<Section> => {
   const facts = environmentText(environment)
   const catalog = catalogText(flows)
-  const taught = mode === "repl" ? replContract : contract
+  const taught = replContract
   return [
     { id: "cell-contract", text: taught, digest: digest("cell-contract", taught) },
     { id: "cell-environment", text: facts, digest: digest("cell-environment", facts) },

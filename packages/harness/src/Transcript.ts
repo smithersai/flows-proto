@@ -1,13 +1,20 @@
 /**
  * Transcript projection from durable journal entries.
  *
+ * The transcript grows: what the model saw is what it said plus what the
+ * harness answered, in journal order. A `continue` used to be able to replace
+ * the whole projection with a list of messages the cell had written for its
+ * successor, and that branch is gone with the surface that produced it — a
+ * journal from those waves still decodes, and its `context` entries are simply
+ * not read.
+ *
  * @since 0.1.0
  */
 import type { JournalEvent } from "@smthrs/journal"
 import { ModelRequest } from "@smthrs/model"
 import { Result, Schema } from "effect"
 import * as AgentEvent from "./AgentEvent.ts"
-import * as Cell from "./Cell.ts"
+import type * as Cell from "./Cell.ts"
 import type * as EngineLike from "./EngineLike.ts"
 
 /**
@@ -63,7 +70,6 @@ export interface ProjectedMessage {
 export interface ProjectedState {
   readonly messages: ReadonlyArray<ProjectedMessage>
   readonly replaced?: string | undefined
-  readonly agentState?: Schema.Json | undefined
   readonly cell: CellEvidence
 }
 
@@ -158,7 +164,6 @@ export const projectStateResult = (
   const transitions: Array<Cell.Transition> = []
   const suspensions: Array<EngineLike.SuspendReason> = []
   const aborts: Array<string> = []
-  let agentState: Schema.Json | undefined
   let compaction:
     | {
       readonly sequence: number
@@ -196,7 +201,6 @@ export const projectStateResult = (
         const decoded = decode(decodeTransitionApplied, entry)
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
         transitions.push(decoded.success.transition)
-        agentState = decoded.success.transition.state
         break
       }
       case eventType.suspended: {
@@ -268,23 +272,11 @@ export const projectStateResult = (
         }
         break
       }
-      case eventType.transitionApplied: {
-        const decoded = decode(decodeTransitionApplied, entry)
-        /* v8 ignore next -- as above: the first pass already ran `decodeTransitionApplied` over every `transitionApplied` entry of this same array and returned on failure, so this re-decode of a surviving entry cannot fail */
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
-        if (decoded.success.transition._tag !== "continue") break
-        messages.length = 0
-        for (const context of decoded.success.transition.context) {
-          messages.push({ kind: "transcript", message: Cell.renderEntry(context) })
-        }
-        break
-      }
     }
   }
   return Result.succeed({
     messages,
     replaced: compaction?.payload.replacedPrefixDigest,
-    agentState,
     cell: {
       produced,
       callsStarted,

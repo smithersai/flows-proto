@@ -2,10 +2,11 @@
  * The addressable-context cases: PROGRAM changes 1, 5 and 8.
  *
  * Everything here answers one measured failure class of the r90 SWE-bench wave:
- * a run that already paid for bytes and could not get them back. The three
- * mechanics are `CallLedger` recall by ordinal, the `StateManifest` a frame
- * opens with, and the boundary parse that answers an unparseable cell inside
- * its own frame instead of ending it.
+ * a run that already paid for bytes and could not get them back. What remains
+ * of it is the boundary parse that answers an unparseable cell inside its own
+ * frame instead of ending it, and the observation a throw carries. The ledger's
+ * recall-by-ordinal half and the state manifest went with the surface that had
+ * nowhere else to keep a result.
  */
 import { Capability } from "@smthrs/kernel"
 import { ModelEvent, ModelRequest } from "@smthrs/model"
@@ -13,14 +14,12 @@ import { Descriptor } from "@smthrs/registry"
 import { Effect, type Layer, Option, Schema, Stream } from "effect"
 import { describe, expect, it } from "vitest"
 import * as AgentEvent from "../src/AgentEvent.ts"
-import * as CallLedger from "../src/CallLedger.ts"
 import * as Cell from "../src/Cell.ts"
 import * as CellTurn from "../src/CellTurn.ts"
 import * as CellValidation from "../src/CellValidation.ts"
 import * as ContextWindow from "../src/ContextWindow.ts"
 import * as EngineLike from "../src/EngineLike.ts"
-import * as Sandbox from "../src/Sandbox.ts"
-import * as StateManifest from "../src/StateManifest.ts"
+import * as QuickJSSandbox from "../src/QuickJSSandbox.ts"
 import * as Steering from "../src/Steering.ts"
 import * as ScriptedEngine from "./fixtures/scriptedEngine.ts"
 import * as ScriptedModel from "./fixtures/scriptedModel.ts"
@@ -104,7 +103,7 @@ const run = async (options: {
   await CellTurn.run({ state: options.state ?? state(), flows: [lister] }).pipe(
     Stream.runForEach((event) => Effect.sync(() => events.push(event))),
     Effect.provide(layers),
-    Effect.provide(Sandbox.layerRestricted),
+    Effect.provide(QuickJSSandbox.layer),
     Effect.provide(Steering.layerNoop()),
     Effect.result,
     Effect.runPromise
@@ -117,171 +116,7 @@ const frameBlock = (model: ScriptedModel.Fixture, index: number): string =>
   model.recorder.requests[index]?.messages.at(-1)?.content
     .flatMap((part) => part.type === "text" ? [part.text] : []).join("\n") ?? ""
 
-const settlement = (
-  flow: string,
-  input: Schema.Json,
-  value: Schema.Json,
-  ok = true,
-  message?: string
-): CallLedger.Settlement => ({ flow, input, ok, value, ...(message === undefined ? {} : { message }) })
-
-describe("CallLedger recall", () => {
-  it("retains a settled result and prints it back when its ordinal is named", () => {
-    const ledger = CallLedger.remember([], [settlement("fs/list", { path: "src" }, { entries: ["a.py"] })])
-
-    expect(CallLedger.recall(ledger, [1])).toBe(
-      `Results you asked to see again:\n## recall 1 — fs/list {"path":"src"} (ok, 20b)\n{"entries":["a.py"]}`
-    )
-  })
-
-  it("keeps the failure message of a call that failed, which is its whole content", () => {
-    const ledger = CallLedger.remember(
-      [],
-      [settlement("edit", { path: "src/a.py" }, null, false, "oldString does not occur")]
-    )
-
-    expect(CallLedger.recall(ledger, [1])).toContain(`{"failed":"oldString does not occur"}`)
-    expect(CallLedger.recall(ledger, [1])).toContain("FAILED")
-  })
-
-  it("answers an ordinal nobody settled by name rather than by silence", () => {
-    const one = CallLedger.remember([], [settlement("fs/list", { path: "src" }, null)])
-
-    expect(CallLedger.recall(one, [9])).toContain("No settled call has ordinal 9")
-    expect(CallLedger.recall(one, [9])).toContain("has settled 1 call,")
-    expect(CallLedger.recall([], [9])).toContain("has settled 0 calls,")
-  })
-
-  it("names the size of a result too large to have been retained at all", () => {
-    const ledger = CallLedger.remember(
-      [],
-      [settlement("bash", { command: "run-tests" }, { stdout: "x".repeat(CallLedger.recallEntryBytes) })]
-    )
-
-    expect(ledger[0]?.retained).toBeUndefined()
-    expect(ledger[0]?.bytes).toBeGreaterThan(CallLedger.recallEntryBytes)
-    const recalled = CallLedger.recall(ledger, [1]) ?? ""
-    expect(recalled).toContain("bytes are no longer held")
-    expect(recalled).toContain("Issue the call again, narrowed")
-    // The line survives without its bytes, and says so.
-    expect(CallLedger.render(ledger)).not.toContain("recall 1")
-  })
-
-  it("drops the oldest retained bytes once the run's recall budget is spent", () => {
-    const half = "y".repeat(CallLedger.recallEntryBytes - 16)
-    const ledger = CallLedger.remember(
-      [],
-      Array.from({ length: 4 }, (_, index) => settlement("bash", { command: `c${index}` }, half))
-    )
-
-    // Four results of just under 16 KB against a 32 KB budget: the two newest
-    // are held whole and the two oldest keep their line without their bytes.
-    expect(ledger.map((line) => line.retained !== undefined)).toEqual([false, false, true, true])
-    expect(CallLedger.recall(ledger, [1])).toContain("no longer held")
-    expect(CallLedger.recall(ledger, [4])).toContain(`recall 4 — bash {"command":"c3"}`)
-  })
-
-  it("states the elision when a retained result is over the printable bound", () => {
-    const ledger = CallLedger.remember([], [settlement("read", { path: "a.py" }, "e".repeat(6_000))])
-    const recalled = CallLedger.recall(ledger, [1]) ?? ""
-
-    expect(recalled).toContain("bytes elided from the middle.")
-    expect(recalled).toContain(`recall 1 cannot print more than ${CallLedger.recallProjection} bytes`)
-    expect(recalled).not.toContain("e".repeat(CallLedger.recallProjection + 1))
-  })
-
-  it("renders one section per distinct ordinal and nothing at all for an empty list", () => {
-    const ledger = CallLedger.remember([], [
-      settlement("fs/list", { path: "a" }, 1),
-      settlement("fs/list", { path: "b" }, 2)
-    ])
-
-    expect(CallLedger.recall(ledger, [])).toBeUndefined()
-    const both = CallLedger.recall(ledger, [1, 2, 1]) ?? ""
-    expect(both.match(/## recall 1/g)).toHaveLength(1)
-    expect(both).toContain("## recall 2")
-  })
-})
-
-describe("StateManifest", () => {
-  it("stamps a key with the frame that changed it and carries an unchanged one", () => {
-    const first = StateManifest.stamp([], { plan: "read", note: "a" }, 2)
-    const second = StateManifest.stamp(first, { plan: "read", note: "b" }, 5)
-
-    expect(second.map((entry) => [entry.key, entry.frame])).toEqual([["plan", 2], ["note", 5]])
-  })
-
-  it("reads a non-object state as holding no keys at all", () => {
-    expect(StateManifest.stamp([], ["a"], 1)).toEqual([])
-    expect(StateManifest.stamp([], null, 1)).toEqual([])
-  })
-
-  it("names every JSON type a value can have", () => {
-    expect([null, [1], "a", 1, true].map(StateManifest.typeOf)).toEqual([
-      "null",
-      "array",
-      "string",
-      "number",
-      "boolean"
-    ])
-  })
-
-  it("says a key was written this frame when the stamp is the frame being rendered", () => {
-    const rendered = StateManifest.render({
-      state: { plan: "read" },
-      stamps: StateManifest.stamp([], { plan: "read" }, 3),
-      frame: 3,
-      keys: []
-    })
-
-    expect(rendered).toContain("- plan (string, 6b) — written this frame")
-  })
-
-  it("counts the keys it does not list rather than dropping them", () => {
-    const many = Object.fromEntries(
-      Array.from({ length: StateManifest.manifestKeys + 3 }, (_, index) => [`k${index}`, index])
-    )
-    const rendered = StateManifest.render({ state: many, stamps: [], frame: 1, keys: [] })
-
-    expect(rendered).toContain("- … and 3 more keys not listed here.")
-    expect(rendered).toContain("written before this run's stamps began")
-  })
-
-  it("counts one unlisted key in the singular", () => {
-    const many = Object.fromEntries(
-      Array.from({ length: StateManifest.manifestKeys + 1 }, (_, index) => [`k${index}`, index])
-    )
-
-    expect(StateManifest.render({ state: many, stamps: [], frame: 1, keys: [] }))
-      .toContain("- … and 1 more key not listed here.")
-  })
-})
-
 describe("CellValidation", () => {
-  it("names the statements a cell wrote after its own first top-level return", () => {
-    const notice = CellValidation.validate(
-      Cell.source(`return { intent: "complete", output: "a" }\nconst x = 1\nconst y = 2`)
-    ).notice
-
-    expect(notice).toContain("the top-level `return` on line 1")
-    expect(notice).toContain("2 top-level statements after it")
-    expect(notice).toContain("Blocks in one reply are one program")
-  })
-
-  it("counts one dead statement in the singular", () => {
-    expect(CellValidation.validate(Cell.source(`return null\nconst x = 1`)).notice)
-      .toContain("1 top-level statement after it")
-  })
-
-  it("says nothing about a cell whose return is last, or that never returns", () => {
-    expect(CellValidation.validate(Cell.source(`const x = 1\nreturn x`)).notice).toBeUndefined()
-    expect(CellValidation.validate(Cell.source(`const x = 1`)).notice).toBeUndefined()
-    // A return inside a branch is not a top-level return, so nothing after it
-    // is dead and nothing is claimed.
-    expect(CellValidation.validate(Cell.source(`if (1) { return null }\nconst y = 2`)).notice)
-      .toBeUndefined()
-  })
-
   it("reports the offending line of a syntax error, and only when it has one to quote", () => {
     const quoted = CellValidation.validate(Cell.source(`const a = 1\nconst b = (\n`)).rejected
     expect(quoted?.message).toBe("The cell did not compile — line 2, column 12: Expression expected.\n  const b = (")
@@ -292,48 +127,10 @@ describe("CellValidation", () => {
   })
 
   it("refuses module syntax and non-erasable TypeScript before anything runs", () => {
-    expect(CellValidation.validate(Cell.source(`import "node:fs"\nreturn null`)).rejected?.code)
+    expect(CellValidation.validate(Cell.source(`import "node:fs"`)).rejected?.code)
       .toBe("imports_forbidden")
-    expect(CellValidation.validate(Cell.source(`enum E { a }\nreturn null`, "typescript")).rejected?.code)
+    expect(CellValidation.validate(Cell.source(`enum E { a }`, "typescript")).rejected?.code)
       .toBe("compile_failed")
-  })
-})
-
-describe("CellTurn recall directive", () => {
-  it("prints a settled result into the next frame when the transition names its ordinal", async () => {
-    const { model } = await run({
-      script: [
-        emits(
-          `await ctx.call("fs/list", { path: "src" })
-           return { intent: "continue", state: {}, recall: [1], context: [{ role: "user", text: "next" }] }`
-        ),
-        emits(`return { intent: "complete", output: "done" }`)
-      ],
-      calls: [{ _tag: "Success", value: { entries: ["models.py", "views.py"] } }]
-    })
-
-    const block = frameBlock(model, 1)
-    expect(block).toContain("Results you asked to see again:")
-    expect(block).toContain(`## recall 1 — fs/list {"path":"src"} (ok, 36b)`)
-    expect(block).toContain(`{"entries":["models.py","views.py"]}`)
-  })
-
-  it("clears the recall when the next transition names none", async () => {
-    const { model } = await run({
-      state: state({ maxFrames: 5 }),
-      script: [
-        emits(
-          `await ctx.call("fs/list", { path: "src" })
-           return { intent: "continue", state: {}, recall: [1], context: [] }`
-        ),
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "complete", output: "done" }`)
-      ],
-      calls: [{ _tag: "Success", value: { entries: ["models.py"] } }]
-    })
-
-    expect(frameBlock(model, 1)).toContain("## recall 1")
-    expect(frameBlock(model, 2)).not.toContain("## recall 1")
   })
 })
 
@@ -341,8 +138,8 @@ describe("CellTurn in-frame revalidation", () => {
   it("answers a cell that does not parse inside its own frame instead of ending it", async () => {
     const { events, model } = await run({
       script: [
-        emits(`const a = 1\nif (a) {\n  return { intent: "complete", output: "unbalanced" }`),
-        emits(`return { intent: "complete", output: "recovered" }`)
+        emits(`const a = 1\nif (a) {\n  ctx.done("unbalanced")`),
+        emits(`ctx.done("recovered")`)
       ]
     })
 
@@ -360,7 +157,7 @@ describe("CellTurn in-frame revalidation", () => {
     const { model } = await run({
       script: [
         prose("no cell at all"),
-        emits(`return { intent: "complete", output: "recovered" }`)
+        emits(`ctx.done("recovered")`)
       ]
     })
 
@@ -378,7 +175,7 @@ describe("CellTurn in-frame revalidation", () => {
       script: [
         prose("no cell"),
         prose("still no cell"),
-        emits(`return { intent: "complete", output: "recovered" }`)
+        emits(`ctx.done("recovered")`)
       ]
     })
 
@@ -390,7 +187,7 @@ describe("CellTurn in-frame revalidation", () => {
 
   it("journals what the run was armed with", async () => {
     const { events } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)]
+      script: [emits(`ctx.done("done")`)]
     })
 
     expect(of(events, "discipline-armed")[0]?.revalidations).toBe(CellTurn.defaultRevalidations)
@@ -403,7 +200,7 @@ describe("CellTurn honest observations", () => {
     const { model } = await run({
       script: [
         emits(`${filler}throw new Error("boom")`),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`ctx.done("done")`)
       ]
     })
 
@@ -413,58 +210,44 @@ describe("CellTurn honest observations", () => {
     expect(conversation).not.toContain("z".repeat(9_000))
   })
 
-  it("names the state keys a cell threw reading a path that is not there", async () => {
+  it("names the realm's bindings when a cell threw reading a path that is not there", async () => {
     const { model } = await run({
       state: state({ maxFrames: 3 }),
       script: [
-        emits(`return { intent: "continue", state: { probe: "exit 1" }, context: [] }`),
-        emits(`return { intent: "complete", output: ctx.state.tests.verification }`),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`const probe = { tests: null }`),
+        emits(`ctx.done(probe.tests.verification)`),
+        emits(`ctx.done("done")`)
       ]
     })
 
     const observations = JSON.stringify(model.recorder.requests[2]?.messages ?? [])
-    expect(observations).toContain("If `verification` was meant to come from ctx.state")
-    expect(observations).toContain("these are the keys it holds: probe")
+    expect(observations).toContain("If `verification` was meant to come from a name an earlier cell bound")
+    expect(observations).toContain("the names your realm holds: probe")
   })
 
-  it("says so plainly when a cell threw such a path and the state holds nothing", async () => {
+  it("says so plainly when a cell threw such a path and the realm holds nothing", async () => {
     const { model } = await run({
       script: [
-        emits(`return { intent: "complete", output: ctx.state.tests.verification }`),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`ctx.flows.absent.name`),
+        emits(`ctx.done("done")`)
       ]
     })
 
     expect(JSON.stringify(model.recorder.requests[1]?.messages ?? []))
-      .toContain("this run's state holds no keys at all yet")
+      .toContain("your realm holds no names yet")
   })
 
   it("adds nothing to a throw that is not a property read", async () => {
     const { model } = await run({
       script: [
         emits(`throw new RangeError("off by one")`),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`ctx.done("done")`)
       ]
     })
 
     const observations = JSON.stringify(model.recorder.requests[1]?.messages ?? [])
     expect(observations).toContain("off by one")
-    expect(observations).not.toContain("meant to come from ctx.state")
-  })
-
-  it("tells a continuing frame which of its statements never ran", async () => {
-    const { model } = await run({
-      script: [
-        emits(
-          `return { intent: "continue", state: {}, context: [] }\nconst unused = 1\nconst other = 2`
-        ),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    expect(JSON.stringify(model.recorder.requests[1]?.messages ?? []))
-      .toContain("2 top-level statements after it")
+    expect(observations).not.toContain("meant to come from a name an earlier cell bound")
   })
 })
 

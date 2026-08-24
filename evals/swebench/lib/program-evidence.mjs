@@ -15,6 +15,11 @@
  * | --- | --- |
  * | `recallOrdinals` — ordinals named in a transition's `recall` | #1 |
  * | `renderKeys` — state keys named in a transition's `render` | #1 |
+ *
+ * The first two are structurally zero on any journal written after 2026-08-24:
+ * `recall` and `render` belonged to the filing surface, which was deleted, and
+ * the fields survive on the transition schema for decoding alone. They are read
+ * here because the waves that used them are still on disk.
  * | `zeroCallFrames` — frames whose cell issued no call | #1, #5 |
  * | `deadFrames` — frames that applied no transition | #5 |
  * | `failedCalls` / `recoveredFrames` — a failed call the same cell survived | #8 |

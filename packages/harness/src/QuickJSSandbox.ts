@@ -184,26 +184,11 @@ const sealedCall = Cell.callFailure(
   })
 )
 
-const prelude = (catalog: string, state: string): string =>
-  `(function () {
-  var bridge = globalThis.__call
-  var pin = globalThis.__checkpoint
-${preludeHelpers}
-  delete globalThis.__call
-  delete globalThis.__checkpoint
-  delete globalThis.Date
-  delete Math.random
-  globalThis.ctx = freezeValue({
-${preludeCall("")}
-    flows: freeze(${catalog}),
-    state: freeze(parse(${state}))
-  })
-})()`
-
 /**
  * The prelude a persistent realm is opened with.
  *
- * It differs from the per-cell prelude in exactly the two ways the REPL mode
+ * It differs from the per-cell prelude the filing surface used in exactly the
+ * two ways the persistent realm
  * differs: `ctx.state` is gone, because the realm is the memory, and three new
  * members plus `console` are installed, because a script cannot `return`.
  *
@@ -298,11 +283,6 @@ ${preludeCall(`      if (sealed !== null) return Deferred.resolve(sealed)\n`)}
   // above for why the clearing is per frame rather than per run.
   return function () { sealed = null }
 })()`
-
-const wrap = (text: string): string =>
-  `globalThis.__cell = (async () => {\n${text}\n})().then(function (value) {
-  return JSON.stringify(value === undefined ? null : value)
-})`
 
 const catalogOf = (flows: Readonly<Record<string, Cell.FlowProjection>>): string => {
   const entries: Record<string, unknown> = {}
@@ -444,267 +424,11 @@ const timeLimitExceeded = (timeMs: number): Cell.Rejected =>
   })
 
 /**
- * The whole-evaluation ceiling for one call.
- *
- * `Sandbox.make` runs `Sandbox.withDefaults` over the caller's limits before it
- * reaches this binding, and `totalMs` is filled whenever the `timeMs`
- * capability is declared, which this binding declares.
- */
-const totalMsOf = (evaluation: Sandbox.Evaluation): number => {
-  /* v8 ignore next -- see above: the ceiling always arrives filled, so neither the optional chain nor the coalesce takes its fallback; both only discharge optional types */
-  return evaluation.limits?.totalMs ?? Sandbox.defaultLimits.totalMs
-}
-
-const evaluate = (
-  module: QuickJSWASMModule,
-  evaluation: Sandbox.Evaluation,
-  clock: ComputeClockService
-): Effect.Effect<Cell.Outcome, Sandbox.SandboxError | HarnessError> =>
-  Effect.gen(function*() {
-    const compiled = Sandbox.compile(evaluation.cell)
-    if (compiled instanceof Cell.Rejected) return compiled
-
-    const limits = Sandbox.withDefaults(capabilities, evaluation.limits)
-    /* v8 ignore next -- `withDefaults` fills `timeMs` from `defaultLimits` whenever the `timeMs` capability is declared, and this binding declares it, so the coalesce never reaches its fallback; it only discharges the optional type on `Sandbox.Limits` */
-    const timeMs = limits.timeMs ?? Sandbox.defaultLimits.timeMs
-    // The compute clock's baseline. Host calls shift it forward by their own
-    // duration when they settle, so `timeMs` charges the cell for its
-    // JavaScript alone: a cell that awaits a ten-minute test run resumes with
-    // the budget it suspended with. Without the shift, the first interrupt
-    // check after a long `ctx.call` read the whole call as elapsed compute
-    // and rejected the frame — which taught agents that verifying their work
-    // was fatal.
-    let clockBase = clock.now()
-    let exhausted: Cell.Rejected | undefined
-
-    const acquired = yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        const runtime: QuickJSRuntime = module.newRuntime()
-        /* v8 ignore else -- `withDefaults` fills `memoryBytes` from `defaultLimits` whenever the `memoryBytes` capability is declared, and this binding declares it, so the heap ceiling is always set */
-        if (limits.memoryBytes !== undefined) {
-          runtime.setMemoryLimit(limits.memoryBytes)
-        }
-        const stepBudget = limits.steps
-        let steps = 0
-        runtime.setInterruptHandler(() => {
-          if (clock.now() - clockBase >= timeMs) {
-            exhausted = exhausted ?? timeLimitExceeded(timeMs)
-            return true
-          }
-          if (stepBudget !== undefined && ++steps > stepBudget) {
-            exhausted = exhausted ?? new Cell.Rejected({
-              code: "limit_exceeded",
-              message: `This cell exceeded its limit of ${stepBudget} interpreter steps`
-            })
-            return true
-          }
-          return false
-        })
-        const context: QuickJSContext = runtime.newContext()
-        try {
-          // Capture the pristine intrinsic before cell code can replace it.
-          // Assignment can invoke a hostile inherited setter, while
-          // QuickJSContext.defineProp cannot create a writable data property.
-          const defineDataProperty = context.unwrapResult(context.evalCode(
-            `(function (defineProperty) {
-  return function (object, key, value) {
-    defineProperty(object, key, {
-      value: value,
-      writable: true,
-      enumerable: true,
-      configurable: true
-    })
-  }
-})(Object.defineProperty)`
-          ))
-          return { runtime, context, defineDataProperty }
-        } catch (error) {
-          context.dispose()
-          runtime.dispose()
-          throw error
-        }
-      }),
-      ({ context, defineDataProperty, runtime }) =>
-        Effect.sync(() => {
-          defineDataProperty.dispose()
-          context.dispose()
-          runtime.dispose()
-        })
-    )
-    const { context, defineDataProperty, runtime } = acquired
-
-    const pending: Array<Sandbox.PendingCall> = []
-    let ordinal = 0
-    let settled: Cell.Outcome | undefined
-
-    const bind = (name: string, implementation: Parameters<QuickJSContext["newFunction"]>[1]): void => {
-      const handle = context.newFunction(name, implementation)
-      context.setProp(context.global, name, handle)
-      handle.dispose()
-    }
-    const queue = (
-      kind: "call" | "checkpoint",
-      flow: string,
-      input: Schema.Json,
-      at: Schema.Json | undefined
-    ): QuickJSHandle => {
-      const deferred = context.newPromise()
-      const reply = (payload: Schema.Json): void => {
-        const handle = handleFromJson(context, defineDataProperty, payload)
-        try {
-          deferred.resolve(handle)
-        } finally {
-          handle.dispose()
-          deferred.dispose()
-        }
-      }
-      pending.push({
-        ordinal: ordinal++,
-        flow,
-        input,
-        kind,
-        ...(at === undefined ? {} : { at }),
-        settle: (result) =>
-          reply(
-            result.outcome === "success"
-              ? { ok: true, value: result.value ?? null }
-              : { ok: false, aborted: false, failure: Cell.callFailure(result) }
-          ),
-        abort: (message) =>
-          reply({
-            ok: false,
-            aborted: true,
-            failure: Cell.callFailure(new Cell.CallResult({ outcome: "failure", value: null, message }))
-          })
-      })
-      return deferred.handle
-    }
-    bind("__call", (flowHandle, inputHandle, atHandle) =>
-      queue(
-        "call",
-        context.getString(flowHandle),
-        Schema.decodeUnknownSync(Schema.Json)(JSON.parse(context.getString(inputHandle))),
-        decodedAt(context.getString(atHandle))
-      ))
-    bind("__checkpoint", () => queue("checkpoint", checkpointFlow, null, undefined))
-
-    const install = context.evalCode(
-      // The state rides as a doubly-encoded JSON string literal so hostile
-      // content can never escape into the prelude's source.
-      prelude(catalogOf(evaluation.flows), JSON.stringify(JSON.stringify(evaluation.state ?? null)))
-    )
-    if (install.error !== undefined) {
-      const failure = context.dump(install.error)
-      install.error.dispose()
-      if (exhausted !== undefined) return exhausted
-      return yield* new Sandbox.SandboxError({
-        code: "runtime_failed",
-        message: "The sandbox prelude failed to install",
-        cause: failure
-      })
-    }
-    install.value.dispose()
-
-    const started = context.evalCode(wrap(compiled))
-    if (started.error !== undefined) {
-      const failure = context.dump(started.error)
-      started.error.dispose()
-      /* v8 ignore next -- the boundary parse refuses every program TypeScript cannot parse, so reaching a realm compile failure at all needs the two parsers to disagree, and reaching one while the interrupt budget is also spent needs that disagreement to be reported by a handler that never ran: nothing evaluates before this point */
-      if (exhausted !== undefined) return exhausted
-      return new Cell.Rejected({
-        code: "compile_failed",
-        /* v8 ignore next -- QuickJS reports a compile failure as an Error object, so the `message` arm is what a parser disagreement takes; `String(failure)` only discharges the `unknown` `context.dump` is typed as */
-        message: `The cell did not compile: ${
-          typeof failure === "object" && failure !== null && "message" in failure
-            ? String((failure as { readonly message: unknown }).message)
-            : String(failure)
-        }`
-      })
-    }
-    started.value.dispose()
-
-    const cellHandle = context.getProp(context.global, "__cell")
-    yield* Effect.addFinalizer(() => Effect.sync(() => cellHandle.dispose()))
-
-    /** Runs every queued VM job, then reads the cell promise. */
-    const poll = (): void => {
-      runtime.executePendingJobs()
-      if (exhausted !== undefined) {
-        // An interrupted job leaves the promise pending, so the ceiling ends
-        // the evaluation rather than waiting for a settlement that cannot run.
-        settled = exhausted
-        return
-      }
-      const state = context.getPromiseState(cellHandle)
-      if (state.type === "pending") return
-      if (state.type === "fulfilled") {
-        const value = context.dump(state.value)
-        state.value.dispose()
-        settled = typeof value === "string"
-          ? Cell.transition(JSON.parse(value))
-          : new Cell.Rejected({
-            code: "invalid_transition",
-            message: "The cell returned a value that is not JSON-serializable."
-          })
-        return
-      }
-      const error = context.dump(state.error)
-      state.error.dispose()
-      settled = raisedFrom(error)
-    }
-
-    return yield* Sandbox.driveCell({
-      pending,
-      ...(evaluation.mint === undefined ? {} : { mint: evaluation.mint }),
-      flush: () => poll(),
-      finished: () => {
-        poll()
-        if (settled !== undefined) return settled
-        if (pending.length > 0) return undefined
-        // Nothing is queued and no job can advance the cell: it awaited
-        // something the realm can never settle.
-        return new Cell.Rejected({
-          code: "stalled",
-          message:
-            "The cell awaited something that never settles. Inside a cell the only thing worth awaiting is ctx.call."
-        })
-      },
-      wait: Effect.void,
-      abort: () => {
-        for (const call of pending.splice(0)) call.abort("The cell was interrupted")
-      },
-      // Timed so the host call's duration is refunded to the compute clock.
-      handler: (call) =>
-        Effect.suspend(() => {
-          const pausedAt = clock.now()
-          return evaluation.call(call).pipe(
-            Effect.onExit(() =>
-              Effect.sync(() => {
-                clockBase += clock.now() - pausedAt
-              })
-            )
-          )
-        }),
-      limits
-    })
-  }).pipe(
-    Effect.scoped,
-    // The whole-evaluation backstop, host calls included. `timeMs` is
-    // enforced by the interrupt handler above; this ceiling only exists so a
-    // host call that never settles cannot hold the frame forever.
-    Effect.timeoutOrElse({
-      duration: totalMsOf(evaluation),
-      orElse: () => Effect.succeed(timeLimitExceeded(totalMsOf(evaluation)))
-    })
-  )
-
-/**
  * The reasons `ctx.park` may name, as the transition schema declares them.
  *
  * Checked on the host rather than inside the realm so a wrong one settles the
- * frame exactly as it does in the filing mode — an `invalid_transition` the next
- * frame is asked to fix — instead of as a throw that reads like a bug in the
- * cell's own logic.
+ * frame as an `invalid_transition` the next frame is asked to fix, instead of as
+ * a throw that reads like a bug in the cell's own logic.
  */
 const parkReasons = ["waiting-input", "waiting-event", "waiting-quota"] as const
 
@@ -1211,7 +935,7 @@ const openRealm = (
           return frameOf(refusal)
         }
 
-        const compiled = Sandbox.compile(evaluation.cell, "repl")
+        const compiled = Sandbox.compile(evaluation.cell)
         if (compiled instanceof Cell.Rejected) return frameOf(compiled)
 
         const started = context.evalCode(compiled, `cell-${evaluation.frame}.js`, 128)
@@ -1366,7 +1090,6 @@ export const makeWithClock: Effect.Effect<Sandbox.Sandbox, Sandbox.SandboxError,
     const module = yield* loadModule(wasmModule)
     return Sandbox.make({
       capabilities,
-      evaluate: (evaluation) => evaluate(module, evaluation, clock),
       openRealm: (options) => openRealm(module, options, clock)
     })
   }

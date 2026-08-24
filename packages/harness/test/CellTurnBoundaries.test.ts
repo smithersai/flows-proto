@@ -140,7 +140,6 @@ const state = (
     readonly placement?: Option.Option<Descriptor.Placement>
     readonly contextWindow?: ContextWindow.ContextWindow
     readonly contextWindowTokens?: number
-    readonly agentState?: Schema.Json
   } = {}
 ): CellTurn.State =>
   CellTurn.make({
@@ -157,8 +156,7 @@ const state = (
     maxFrames: overrides.maxFrames === undefined ? 4 : overrides.maxFrames,
     contextWindowTokens: overrides.contextWindowTokens === undefined ? 0 : overrides.contextWindowTokens,
     readOnlyCap: overrides.readOnlyCap === undefined ? 0 : overrides.readOnlyCap,
-    approvalChannel: overrides.approvalChannel === undefined ? false : overrides.approvalChannel,
-    ...(overrides.agentState === undefined ? {} : { agentState: overrides.agentState })
+    approvalChannel: overrides.approvalChannel === undefined ? false : overrides.approvalChannel
   })
 
 interface Observed {
@@ -188,7 +186,7 @@ const collect = async (
   const outcome = await CellTurn.run(input).pipe(
     Stream.runForEach((event) => Effect.sync(() => events.push(event))),
     Effect.provide(layers.engine),
-    Effect.provide(layers.sandbox ?? Sandbox.layerRestricted),
+    Effect.provide(layers.sandbox ?? QuickJSSandbox.layer),
     Effect.provide(layers.steering ?? Steering.layerNoop()),
     Effect.result,
     Effect.exit,
@@ -322,7 +320,7 @@ describe("CellTurn seat and placement", () => {
     ]
     for (const [value, expected] of declared) {
       const { engine } = await run({
-        script: [emits(`return { intent: "complete", output: "done" }`)],
+        script: [emits(`ctx.done("done")`)],
         state: state({ placement: Option.some(value) })
       })
       expect(engine.recorder.sealStep[0]?.keyMaterial.placement).toEqual(expected)
@@ -331,13 +329,13 @@ describe("CellTurn seat and placement", () => {
     // No placement at all is its own case: the key material omits the field
     // rather than defaulting to a host, so an unplaced run keys differently
     // from one pinned to the local process.
-    const { engine } = await run({ script: [emits(`return { intent: "complete", output: "done" }`)] })
+    const { engine } = await run({ script: [emits(`ctx.done("done")`)] })
     expect(engine.recorder.sealStep[0]?.keyMaterial.placement).toBeUndefined()
   })
 
   it("reads a seat that names no provider as the whole model id", async () => {
     const { model } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       state: state({ seat: "bare-model" })
     })
 
@@ -346,7 +344,7 @@ describe("CellTurn seat and placement", () => {
 
   it("takes only the segment after the first colon of a provider-qualified seat", async () => {
     const { model } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       state: state({ seat: "bedrock:us.anthropic:claude" })
     })
 
@@ -354,229 +352,12 @@ describe("CellTurn seat and placement", () => {
   })
 })
 
-describe("CellTurn durable state teaching", () => {
-  it("prints a state of exactly the printable limit in full, and rosters the byte over it", async () => {
-    const printable = { plan: "x".repeat(2_037) }
-    expect(CanonicalJson.stringify(printable).length).toBe(2_048)
-    const printed = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
-      state: state({ agentState: printable })
-    })
-    expect(stateSection(printed.model, 0)).toBe(
-      [
-        "Durable state for this frame (ctx.state) is 2048 bytes across 1 key:",
-        "- plan (string, 2039b) — written before this run's stamps began",
-        `The whole of it, as JSON:\n${CanonicalJson.stringify(printable)}`
-      ].join("\n")
-    )
-
-    const oversized = { plan: "x".repeat(2_038) }
-    expect(CanonicalJson.stringify(oversized).length).toBe(2_049)
-    const rostered = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
-      state: state({ agentState: oversized })
-    })
-    const teaching = stateSection(rostered.model, 0)
-    expect(teaching).toContain("(ctx.state) is 2049 bytes across 1 key")
-    expect(teaching).toContain("- plan (string, 2040b)")
-    // The point of the manifest is that the bytes are not paid twice.
-    expect(teaching).not.toContain("x".repeat(2_038))
-  })
-
-  it("rosters every key of an oversized state, whatever each key holds", async () => {
-    const { model } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
-      state: state({
-        agentState: { notes: "y".repeat(3_000), counts: [1, 2, 3], empty: null, flag: true }
-      })
-    })
-
-    const teaching = stateSection(model, 0)
-    expect(teaching).toContain("- notes (string, 3002b)")
-    expect(teaching).toContain("- counts (array, 7b)")
-    expect(teaching).toContain("- empty (null, 4b)")
-    expect(teaching).toContain("- flag (boolean, 4b)")
-  })
-
-  it("reports only the size of an oversized state that has no keys to roster", async () => {
-    const array = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
-      state: state({ agentState: ["z".repeat(3_000)] })
-    })
-    expect(stateSection(array.model, 0)).toContain("is 3004 bytes and holds no named keys")
-
-    const scalar = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
-      state: state({ agentState: "z".repeat(3_000) })
-    })
-    expect(stateSection(scalar.model, 0)).toContain("is 3002 bytes and holds no named keys")
-  })
-
-  it("prints an absent state as the literal null the cell will see", async () => {
-    const { model } = await run({ script: [emits(`return { intent: "complete", output: "done" }`)] })
-
-    expect(stateSection(model, 0)).toBe(
-      "Durable state for this frame (ctx.state) is 4 bytes and holds no named keys.\nThe whole of it, as JSON:\nnull"
-    )
-  })
-})
-
-describe("CellTurn state projection", () => {
-  /** A cell that stores an oversized state and names some of its keys. */
-  const projecting = (render: string) =>
-    emits(
-      `return {
-         intent: "continue",
-         state: { excerpt: "e".repeat(3000), probe: "exit 1", notes: "n".repeat(3000) },
-         render: ${render},
-         context: []
-       }`
-    )
-
-  it("renders the keys the last transition named in full and rosters the rest", async () => {
-    // The tax this removes: with only a roster, the sole way to look at a
-    // large state was to author a cell that copied it into `context`, which is
-    // a whole model turn spent moving bytes the run already owned.
-    const { model } = await run({
-      script: [
-        projecting(`["probe", "excerpt"]`),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    const section = stateSection(model, 1)
-    expect(section).toContain("Rendered in full because your last transition named them in `render`:")
-    expect(section).toContain("## probe\n\"exit 1\"")
-    expect(section).toContain(`## excerpt\n"${"e".repeat(3_000)}"`)
-    // The manifest names every key the state holds, projected or not, with its
-    // type, size and the frame that wrote it.
-    expect(section).toContain("- notes (string, 3002b) — written at frame 0, 1 frame ago")
-    expect(section).toContain("- probe (string, 8b) — written at frame 0, 1 frame ago")
-  })
-
-  it("states the elision when a projected value is over the per-key bound", async () => {
-    const { model } = await run({
-      script: [
-        emits(
-          `return {
-             intent: "continue",
-             state: { excerpt: "e".repeat(9000), filler: "f".repeat(3000) },
-             render: ["excerpt"],
-             context: []
-           }`
-        ),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    const section = stateSection(model, 1)
-    // 9,002 canonical bytes against a 4,096-byte bound leaves 4,906 elided,
-    // and the two ends survive because that is where the identifying bytes are.
-    expect(section).toContain("… 4906 of 9002 bytes elided from the middle.")
-    expect(section).toContain("the whole value is ctx.state.excerpt inside your cell")
-    expect(section).toContain(`## excerpt\n"${"e".repeat(2_047)}\n`)
-    expect(section).not.toContain("e".repeat(4_097))
-  })
-
-  it("keeps its roster line for every key past the projection bound, and says so", async () => {
-    const keys = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
-    const state = Object.fromEntries(keys.map((key) => [key, key.repeat(400)]))
-    const { model } = await run({
-      script: [
-        emits(
-          `return {
-             intent: "continue",
-             state: ${JSON.stringify(state)},
-             render: ${JSON.stringify(keys)},
-             context: []
-           }`
-        ),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    const section = stateSection(model, 1)
-    expect(section).toContain("Only the first 8 keys you named are rendered in full; i kept their manifest line")
-    expect(section).toContain("- i (string, 402b)")
-    expect(section).toContain("## h\n")
-  })
-
-  it("spends one projection slot on a key the transition named twice", async () => {
-    // The list is model-written, so it can repeat. A repeat used to render the
-    // same value again and take a second of the eight slots with it.
-    const { model } = await run({
-      script: [
-        projecting(`["probe", "probe", "excerpt", "probe"]`),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    const section = stateSection(model, 1)
-    expect(section.match(/^## probe$/gm)).toHaveLength(1)
-    expect(section).toContain("## excerpt\n")
-  })
-
-  it("names a key the state does not carry once, however often it was named", async () => {
-    const { model } = await run({
-      script: [
-        projecting(`["guard", "guard"]`),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    expect(stateSection(model, 1)).toContain("No such key in state: guard.")
-  })
-
-  it("names a projected key the state does not carry instead of rendering nothing", async () => {
-    const { model } = await run({
-      script: [
-        projecting(`["probe", "guard"]`),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    expect(stateSection(model, 1)).toContain("No such key in state: guard.")
-  })
-
-  it("prints a small state whole whatever the transition named", async () => {
-    const { model } = await run({
-      script: [
-        emits(`return { intent: "continue", state: { plan: "read" }, render: ["plan"], context: [] }`),
-        emits(`return { intent: "complete", output: "done" }`)
-      ]
-    })
-
-    const section = stateSection(model, 1)
-    expect(section).toContain("The whole of it, as JSON:\n{\"plan\":\"read\"}")
-    // Naming a key in a small state is not an error and is not ignored: the
-    // key is rendered as asked, under the whole state it is already inside.
-    expect(section).toContain("## plan\n\"read\"")
-  })
-
-  it("clears the projection when the next transition names none", async () => {
-    // A projection is a statement about the frame being opened, not a standing
-    // subscription: a cell that names nothing is shown the roster.
-    const { model } = await run({
-      script: [
-        projecting(`["probe"]`),
-        projecting(`undefined`),
-        emits(`return { intent: "complete", output: "done" }`)
-      ],
-      state: state({ maxFrames: 5 })
-    })
-
-    expect(stateSection(model, 1)).toContain("## probe")
-    expect(stateSection(model, 2)).not.toContain("## probe")
-    expect(stateSection(model, 2)).toContain("Read what you need from ctx.state inside your cell")
-  })
-})
-
 describe("CellTurn frame budget", () => {
   it("spends one frame on a budget of zero and stops on the budget message", async () => {
     const { events, model } = await run({
       script: [
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`),
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`)
+        emits(`console.log("again")`),
+        emits(`console.log("again")`)
       ],
       state: state({ maxFrames: 0 })
     })
@@ -591,8 +372,8 @@ describe("CellTurn frame budget", () => {
   it("spends exactly one frame on a budget of one", async () => {
     const { events, model } = await run({
       script: [
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`),
-        emits(`return { intent: "complete", output: "never reached" }`)
+        emits(`console.log("again")`),
+        emits(`ctx.done("never reached")`)
       ],
       state: state({ maxFrames: 1 })
     })
@@ -604,10 +385,10 @@ describe("CellTurn frame budget", () => {
   it("spends the whole budget and never the frame past it", async () => {
     const { model } = await run({
       script: [
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`),
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`),
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`),
-        emits(`return { intent: "complete", output: "never reached" }`)
+        emits(`console.log("again")`),
+        emits(`console.log("again")`),
+        emits(`console.log("again")`),
+        emits(`ctx.done("never reached")`)
       ],
       state: state({ maxFrames: 3 })
     })
@@ -637,7 +418,7 @@ describe("CellTurn frame budget", () => {
 describe("CellTurn context budget", () => {
   it("leaves a crowded window alone when the context budget dwarfs it", async () => {
     const { engine, events } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       state: state({ contextWindow: crowded, contextWindowTokens: 1_000_000, maxFrames: 2 }),
       flows: []
     })
@@ -648,7 +429,7 @@ describe("CellTurn context budget", () => {
 
   it("leaves a window alone when a tiny budget crosses the threshold but nothing is compactable", async () => {
     const { engine, events } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       // A budget of one token is over threshold on any window at all, and this
       // window's whole transcript is recent enough to keep: a window that has
       // already given up everything it can is not a failure.
@@ -662,7 +443,7 @@ describe("CellTurn context budget", () => {
 
   it("compacts under a tiny budget and keeps the whole recent suffix", async () => {
     const { engine, events } = await run({
-      script: [prose("the compacted summary"), emits(`return { intent: "complete", output: "done" }`)],
+      script: [prose("the compacted summary"), emits(`ctx.done("done")`)],
       state: state({ contextWindow: crowded, contextWindowTokens: 1, maxFrames: 2 }),
       flows: []
     })
@@ -677,7 +458,7 @@ describe("CellTurn context budget", () => {
 
   it("charges compaction to the sealed-step ledger and never to the frame budget", async () => {
     const { engine, model } = await run({
-      script: [prose("the compacted summary"), emits(`return { intent: "complete", output: "done" }`)],
+      script: [prose("the compacted summary"), emits(`ctx.done("done")`)],
       state: state({ contextWindow: crowded, contextWindowTokens: 40_000, maxFrames: 1 }),
       flows: []
     })
@@ -692,7 +473,7 @@ describe("CellTurn context budget", () => {
     const { events, failure } = await run({
       script: [
         { events: [ModelEvent.ModelEvent.TextStart({ type: "text-start", id: "partial" })] },
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       state: state({ contextWindow: crowded, contextWindowTokens: 40_000, maxFrames: 2 }),
       flows: []
@@ -708,7 +489,7 @@ describe("CellTurn context budget", () => {
 
   it("fails the frame when the sealed compaction step returns no text summary", async () => {
     const { events, failure } = await run({
-      script: [silent, emits(`return { intent: "complete", output: "done" }`)],
+      script: [silent, emits(`ctx.done("done")`)],
       state: state({ contextWindow: crowded, contextWindowTokens: 40_000, maxFrames: 2 }),
       flows: []
     })
@@ -730,14 +511,14 @@ describe("CellTurn call classification", () => {
       script: [
         emits(
           `await ctx.call("fs/list", ["writes"])
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "listed" }] }`
+           console.log("listed")`
         ),
         emits(
           `await ctx.call("fs/list", "writes")
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "listed" }] }`
+           console.log("listed")`
         ),
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "continue", state: {}, context: [] }`)
+        emits(``),
+        emits(``)
       ],
       calls: [{ _tag: "Success", value: [] }, { _tag: "Success", value: [] }]
     })
@@ -755,10 +536,10 @@ describe("CellTurn call classification", () => {
       script: [
         emits(
           `await ctx.call("bash", { command: "pytest", writes: [] })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "ran" }] }`
+           console.log("ran")`
         ),
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "continue", state: {}, context: [] }`)
+        emits(``),
+        emits(``)
       ],
       calls: [{ _tag: "Success", value: { exitCode: 0 } }]
     })
@@ -774,7 +555,7 @@ describe("CellTurn call classification", () => {
           `await ctx.call("fs/list", { path: "." })
            throw new Error("lost the thread")`
         ),
-        emits(`return { intent: "complete", output: "recovered" }`)
+        emits(`ctx.done("recovered")`)
       ],
       calls: [{ _tag: "Success", value: "w".repeat(5_000) }]
     })
@@ -793,7 +574,7 @@ describe("CellTurn call classification", () => {
         `try { await ctx.call("fs/list", { path: "." }) } catch (error) {}
          throw new Error("lost the thread")`
       ),
-      emits(`return { intent: "complete", output: "recovered" }`)
+      emits(`ctx.done("recovered")`)
     ])
     const engine = stubEngine(model.model, {
       call: () => Effect.succeed(new Cell.CallResult({ outcome: "failure", value: null }))
@@ -811,7 +592,7 @@ describe("CellTurn call classification", () => {
         `await ctx.call("fs/list", { path: "." })
          throw new Error("lost the thread")`
       ),
-      emits(`return { intent: "complete", output: "recovered" }`)
+      emits(`ctx.done("recovered")`)
     ])
     const engine = stubEngine(model.model, { call: () => Effect.succeed(valueless()) })
     const { events } = await collect({ state: state(), flows: [lister] }, { engine: engine.layer })
@@ -822,7 +603,7 @@ describe("CellTurn call classification", () => {
 
   it("settles a frame that makes no call at all", async () => {
     const { engine, events } = await run({
-      script: [emits(`return { intent: "complete", output: "nothing to run" }`)]
+      script: [emits(`ctx.done("nothing to run")`)]
     })
 
     expect(engine.recorder.calls).toHaveLength(0)
@@ -836,7 +617,7 @@ describe("CellTurn call classification", () => {
       script: [
         emits(
           `for (const path of ["a", "b", "c", "d"]) await ctx.call("fs/list", { path })
-           return { intent: "complete", output: "done" }`
+           ctx.done("done")`
         )
       ],
       calls: [
@@ -864,9 +645,9 @@ describe("CellTurn discipline interaction", () => {
       script: [
         emits(
           `await ctx.call("bash", { command: "grep -r todo ." })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "still reading" }] }`
+           console.log("still reading")`
         ),
-        emits(`return { intent: "complete", state: {}, output: "implemented the fix" }`)
+        emits(`ctx.done("implemented the fix")`)
       ],
       calls: [{ _tag: "Success", value: { exitCode: 0 } }]
     })
@@ -884,11 +665,11 @@ describe("CellTurn discipline interaction", () => {
       script: [
         emits(
           `await ctx.call("fs/list", { path: "." })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "still reading" }] }`
+           console.log("still reading")`
         ),
         emits(
           `await ctx.call("fs/list", { path: "." })
-           return { intent: "park", state: {}, reason: "waiting-input", message: "which branch?" }`
+           ctx.park("waiting-input", "which branch?")`
         )
       ],
       calls: [{ _tag: "Success", value: [] }, { _tag: "Success", value: [] }]
@@ -913,11 +694,11 @@ describe("CellTurn discipline interaction", () => {
       script: [
         emits(
           `await ctx.call("fs/list", { path: "." })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "still reading" }] }`
+           console.log("still reading")`
         ),
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "park", state: {}, reason: "waiting-input", message: "is this the right fix?" }`
+           ctx.park("waiting-input", "is this the right fix?")`
         )
       ],
       calls: [{ _tag: "Success", value: [] }, { _tag: "Success", value: { edited: true } }]
@@ -936,7 +717,7 @@ describe("CellTurn discipline interaction", () => {
 
   it("arms the discipline with the limits the host declared, defaulting only what it omitted", async () => {
     const { events } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       state: state({ maxFrames: 7, readOnlyCap: 3, approvalChannel: true }),
       limits: { calls: 5 }
     })
@@ -955,7 +736,7 @@ describe("CellTurn discipline interaction", () => {
 
   it("arms an unattended run as one no park can be answered on", async () => {
     const { events } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       state: state({ maxFrames: 7 })
     })
 
@@ -967,7 +748,7 @@ describe("CellTurn discipline interaction", () => {
       script: [
         emits(
           `await ctx.call("fs/list", { path: "." })
-           return { intent: "complete", output: "done" }`
+           ctx.done("done")`
         )
       ],
       state: state({ frame: 2, maxFrames: 6 }),
@@ -994,7 +775,7 @@ describe("CellTurn discipline interaction", () => {
 describe("CellTurn park without a human", () => {
   const parking = (message: string) =>
     emits(
-      `return { intent: "park", state: { asked: true }, reason: "waiting-input", message: ${JSON.stringify(message)} }`
+      `ctx.park("waiting-input", ${JSON.stringify(message)})`
     )
 
   it("refuses the park and answers it in the frame that asked", async () => {
@@ -1003,7 +784,7 @@ describe("CellTurn park without a human", () => {
       flows: [lister],
       script: [
         parking("the docinfo expression definition could not be located"),
-        emits(`return { intent: "complete", output: "found it myself" }`)
+        emits(`ctx.done("found it myself")`)
       ]
     })
 
@@ -1024,28 +805,29 @@ describe("CellTurn park without a human", () => {
     expect(answered).toContain("2 frames left")
   })
 
-  it("carries the park's own state forward as the next frame's working memory", async () => {
+  it("leaves the realm intact across a refused park", async () => {
     const { engine } = await run({
       state: state({ maxFrames: 3 }),
       flows: [lister],
       script: [
-        parking("which branch?"),
+        emits(`var asked = true\nctx.park("waiting-input", "which branch?")`),
         emits(
-          `await ctx.call("fs/list", { path: ctx.state.asked ? "asked" : "unasked" })
-           return { intent: "complete", output: "done" }`
+          `await ctx.call("fs/list", { path: asked ? "asked" : "unasked" })
+           ctx.done("done")`
         )
       ],
       calls: [{ _tag: "Success", value: [] }]
     })
 
-    // A refused park is an ordinary frame, so the state the cell chose survives.
+    // A refused park is an ordinary frame, so the name its cell bound before it
+    // asked is still bound in the cell that carries on.
     expect(engine.recorder.calls[0]?.input).toEqual({ path: "asked" })
   })
 
   it("states the per-frame time budget when the binding can enforce one", async () => {
     const model = ScriptedModel.make([
       parking("which branch?"),
-      emits(`return { intent: "complete", output: "done" }`)
+      emits(`ctx.done("done")`)
     ])
     const engine = ScriptedEngine.make(model.model, [], [])
     await CellTurn.run({ state: state({ maxFrames: 2 }), flows: [lister] }).pipe(
@@ -1088,11 +870,11 @@ describe("CellTurn park without a human", () => {
       script: [
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "park", state: {}, reason: "waiting-input", message: "is this the right fix?" }`
+           ctx.park("waiting-input", "is this the right fix?")`
         ),
         emits(
           `await ctx.call("fs/list", { path: "." })
-           return { intent: "complete", output: "done" }`
+           ctx.done("done")`
         )
       ],
       calls: [{ _tag: "Success", value: { edited: true } }, { _tag: "Success", value: [] }]
@@ -1112,7 +894,7 @@ describe("CellTurn park without a human", () => {
         parking("which branch?"),
         parking("which branch, really?"),
         parking("please, which branch?"),
-        emits(`return { intent: "complete", output: "never reached" }`)
+        emits(`ctx.done("never reached")`)
       ]
     })
 
@@ -1127,29 +909,26 @@ describe("CellTurn park without a human", () => {
     expect(of(events, "transition-applied")).toHaveLength(2)
   })
 
-  it("counts a frame that only recalls against the cap, so recall cannot loop forever", async () => {
-    // `recall` is satisfied while the NEXT prompt is assembled, which makes it
-    // free of an extra call — but not free of a turn: the frame that reads the
-    // recalled bytes is an ordinary model call. A cell that answers every frame
-    // with `{ intent: "continue", recall: [...] }` and nothing else is
-    // therefore a paid loop, and `maxFrames` alone is a hundred turns of it.
+  it("counts a frame that only reads the realm against the cap, so it cannot loop forever", async () => {
+    // A cell that binds nothing new, calls nothing and prints from what it
+    // already holds is free of a call but not free of a turn, and `maxFrames`
+    // alone is a hundred turns of it.
     //
     // What bounds it is the read-only streak, which is measured rather than
-    // declared: a recall names no call and writes nothing, so every such frame
-    // increments the streak and twice the cap ends the run as a typed failure.
-    // This case is the proof, because nothing in `Cell.Continue.recall` says so
-    // on its own.
+    // declared: such a frame names no call and writes nothing, so every one of
+    // them increments the streak and twice the cap ends the run as a typed
+    // failure.
     const { events, failure, model } = await run({
       state: state({ readOnlyCap: 1, maxFrames: 40 }),
       flows: [lister],
       script: [
         emits(
-          `await ctx.call("fs/list", { path: "src" })
-           return { intent: "continue", state: {}, recall: [1], context: [] }`
+          `var listed = await ctx.call("fs/list", { path: "src" })
+           `
         ),
-        emits(`return { intent: "continue", state: {}, recall: [1], context: [] }`),
-        emits(`return { intent: "continue", state: {}, recall: [1], context: [] }`),
-        emits(`return { intent: "complete", output: "never reached" }`)
+        emits(`console.log(listed.entries)`),
+        emits(`console.log(listed.entries)`),
+        emits(`ctx.done("never reached")`)
       ],
       calls: [{ _tag: "Success", value: { entries: ["models.py"] } }]
     })
@@ -1158,9 +937,9 @@ describe("CellTurn park without a human", () => {
     // Two frames at a cap of one, and the third cell is never asked for.
     expect(model.recorder.requests).toHaveLength(2)
     expect(of(events, "transition-applied")).toHaveLength(2)
-    // The recall itself worked on the frame that had one: this is a bound on a
-    // working mechanic, not a mechanic that never delivered.
-    expect(messagesOf(model, 1)).toContain("## recall 1")
+    // The realm really did hold the result across the frame: this is a bound on
+    // a working mechanic, not a mechanic that never delivered.
+    expect(messagesOf(model, 1)).toContain("- listed (object, 1 keys)")
   })
 
   it("restarts the streak from a refused frame that changed something", async () => {
@@ -1171,10 +950,10 @@ describe("CellTurn park without a human", () => {
         parking("which branch?"),
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "park", state: {}, reason: "waiting-input", message: "is this right?" }`
+           ctx.park("waiting-input", "is this right?")`
         ),
         parking("and now?"),
-        emits(`return { intent: "complete", output: "settled it myself" }`)
+        emits(`ctx.done("settled it myself")`)
       ],
       calls: [{ _tag: "Success", value: { edited: true } }]
     })
@@ -1191,7 +970,7 @@ describe("CellTurn park without a human", () => {
       flows: [lister],
       script: [
         parking("the docinfo expression definition could not be located"),
-        emits(`return { intent: "complete", output: "found it myself" }`)
+        emits(`ctx.done("found it myself")`)
       ]
     })
 
@@ -1221,8 +1000,8 @@ describe("CellTurn steering boundaries", () => {
   it("journals an empty drain at every continuing boundary", async () => {
     const { engine, events } = await run({
       script: [
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "next" }] }`),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`console.log("next")`),
+        emits(`ctx.done("done")`)
       ]
     })
 
@@ -1236,9 +1015,9 @@ describe("CellTurn steering boundaries", () => {
     const model = ScriptedModel.make([
       emits(
         `await ctx.call("fs/list", { path: "." })
-         return { intent: "continue", state: null, context: [{ role: "user", text: "kept" }] }`
+         console.log("kept")`
       ),
-      emits(`return { intent: "complete", output: "done" }`)
+      emits(`ctx.done("done")`)
     ])
     const arrived: Array<ModelRequest.Message> = []
     const engine = stubEngine(model.model, {
@@ -1260,21 +1039,21 @@ describe("CellTurn steering boundaries", () => {
     )
 
     // It never reached the frame it arrived during; it landed whole at the
-    // boundary, after the cell's own projected context.
+    // boundary, after the pair that frame produced.
     expect(conversation(model, 0)).toEqual([ModelRequest.Message.user("start")])
     expect(of(events, "steering-drained")[0]?.messages).toEqual([
       ModelRequest.Message.user("steer: prefer the shorter route")
     ])
-    expect(conversation(model, 1)).toEqual([
-      ModelRequest.Message.user("kept"),
+    expect(conversation(model, 1).slice(-2)).toEqual([
+      ModelRequest.Message.user("What your cell printed:\nkept"),
       ModelRequest.Message.user("steer: prefer the shorter route")
     ])
   })
 
   it("applies a thinking change without a seat change, and ignores an activated tool", async () => {
     const model = ScriptedModel.make([
-      emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "kept" }] }`),
-      emits(`return { intent: "complete", output: "done" }`)
+      emits(`console.log("kept")`),
+      emits(`ctx.done("done")`)
     ])
     const engine = ScriptedEngine.make(model.model, [], [])
     let drained = false
@@ -1299,8 +1078,8 @@ describe("CellTurn steering boundaries", () => {
 
   it("keeps the last of two seat changes drained at one boundary", async () => {
     const model = ScriptedModel.make([
-      emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "kept" }] }`),
-      emits(`return { intent: "complete", output: "done" }`)
+      emits(`console.log("kept")`),
+      emits(`ctx.done("done")`)
     ])
     const engine = ScriptedEngine.make(model.model, [], [])
     let drained = false
@@ -1323,25 +1102,146 @@ describe("CellTurn steering boundaries", () => {
   })
 })
 
-describe("CellTurn frame failures", () => {
-  it("reports a sandbox binding that cannot honour a declared limit as an engine failure", async () => {
-    const { events, failure } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
-      // The restricted binding enforces no heap ceiling, so an explicit one is
-      // refused rather than silently ignored.
-      limits: { memoryBytes: Sandbox.minimumMemoryBytes }
+describe("CellTurn defaults and refusals a shipped binding cannot reach", () => {
+  /**
+   * A realm that answers with whatever the case declares.
+   *
+   * The shipped binding enforces every ceiling and never fails an evaluation on
+   * its own, so the two endings below need a binding that does — which is what
+   * the port exists to allow.
+   */
+  const realm = (
+    evaluate: () => Effect.Effect<Sandbox.RealmFrame, Sandbox.SandboxError>,
+    capabilities: Sandbox.Capabilities = { calls: true, memoryBytes: false, steps: false, timeMs: false }
+  ): Layer.Layer<Sandbox.Sandbox> =>
+    Sandbox.layer({
+      capabilities,
+      openRealm: () => Effect.succeed({ evaluate } as Sandbox.Realm)
     })
 
+  it("takes the shipped frame budget when the caller declares none", () => {
+    const declared = CellTurn.make({
+      session: "session-1",
+      seat: "anthropic:test-model",
+      modelParams: ModelRequest.GenerationParams.make(),
+      layers: [],
+      capabilityEnvelope: [],
+      placement: Option.none(),
+      contextWindow: opening()
+    })
+
+    expect(declared.maxFrames).toBe(CellTurn.defaultMaxFrames)
+  })
+
+  it("states no per-frame seconds in a park refusal when the binding enforces no clock", async () => {
+    const model = ScriptedModel.make([
+      emits(`ctx.park("waiting-input", "which branch?")`),
+      emits(`ctx.done("settled it myself")`)
+    ])
+    const engine = ScriptedEngine.make(model.model, [], [])
+    const { events } = await collect(
+      { state: state({ maxFrames: 3 }), flows: [lister] },
+      {
+        engine: engine.layer,
+        sandbox: realm(() =>
+          Effect.succeed({
+            outcome: new Cell.Settled({
+              transition: Sandbox.replTransition(
+                { _tag: "Park", reason: "waiting-input", message: "which branch?" },
+                undefined
+              )
+            }),
+            prints: "",
+            bindings: []
+          })
+        )
+      }
+    )
+
+    const answered = messagesOf(model, 1)
+    expect(answered).toContain("No human is available")
+    expect(answered).toContain("2 frames left")
+    // A binding with no clock has no per-frame budget to quote, so the sentence
+    // stops at the frames rather than inventing a number.
+    expect(answered).not.toContain("each able to spend up to")
+    expect(of(events, "suspended")).toHaveLength(0)
+  })
+
+  it("carries a rejected outcome forward as its own observation, with nothing to diagnose", async () => {
+    // A rejection is not a throw, so there is no property read to name — the
+    // frame's note is the rejection's own message and the salvage list.
+    const model = ScriptedModel.make([
+      emits(`await ctx.call("fs/list", { path: "." })`),
+      emits(`ctx.done("recovered")`)
+    ])
+    const engine = ScriptedEngine.make(model.model, [], [{ _tag: "Success", value: [] }])
+    let frames = 0
+    const { events } = await collect(
+      { state: state({ maxFrames: 3 }), flows: [lister] },
+      {
+        engine: engine.layer,
+        sandbox: realm(() =>
+          Effect.succeed({
+            outcome: frames++ === 0
+              ? new Cell.Rejected({
+                code: "limit_exceeded",
+                message: "This cell exceeded its limit of 1 flow calls"
+              })
+              : new Cell.Settled({
+                transition: Sandbox.replTransition({ _tag: "Done", output: "recovered" }, undefined)
+              }),
+            prints: "",
+            bindings: []
+          })
+        )
+      }
+    )
+
+    expect(of(events, "cell-settled")[0]?.outcome).toMatchObject({ _tag: "rejected", code: "limit_exceeded" })
+    expect(messagesOf(model, 1)).toContain("This cell exceeded its limit of 1 flow calls")
+    expect(resolvedText(events)).toBe("recovered")
+  })
+
+  it("reports a realm that fails mid-frame as an engine failure, not a model failure", async () => {
+    const model = ScriptedModel.make([emits(`ctx.done("unreachable")`)])
+    const engine = ScriptedEngine.make(model.model, [], [])
+    const { failure } = await collect(
+      { state: state(), flows: [lister] },
+      {
+        engine: engine.layer,
+        sandbox: realm(() =>
+          Effect.fail(new Sandbox.SandboxError({ code: "runtime_failed", message: "the realm died" }))
+        )
+      }
+    )
+
     expect(failure).toMatchObject({ code: "engine_failed", message: "The cell frame failed" })
+    expect((failure as HarnessError).cause).toMatchObject({ code: "runtime_failed" })
+  })
+})
+
+describe("CellTurn frame failures", () => {
+  it("reports a limit the binding cannot honour when the realm opens", async () => {
+    const { events, failure } = await run({
+      script: [emits(`ctx.done("done")`)],
+      // A heap below what the realm needs to initialize and tear down is
+      // refused at the port rather than silently widened.
+      limits: { memoryBytes: Sandbox.minimumMemoryBytes - 1 }
+    })
+
+    expect(failure).toMatchObject({ code: "engine_failed" })
+    expect((failure as HarnessError).message).toContain("persistent realm could not be opened")
     expect((failure as HarnessError).cause).toMatchObject({ code: "unsupported" })
-    // The turn had already opened and the model had already settled, so the
-    // frame's evidence survives the failure.
-    expect(of(events, "model-settled")).toHaveLength(1)
+    // The realm is opened before the first frame and after the arming is
+    // journaled, so a run that cannot open one leaves its armed decision on the
+    // record and buys no model call at all.
+    expect(of(events, "discipline-armed")).toHaveLength(1)
+    expect(of(events, "model-settled")).toHaveLength(0)
   })
 
   it("reports a provider failure that is not a harness error as a model failure", async () => {
     const { events, failure } = await run({
-      script: [emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`)],
+      script: [emits(`console.log("again")`)],
       state: state({ maxFrames: 3 })
     })
 
@@ -1385,7 +1285,7 @@ describe("CellTurn frame failures", () => {
     const model = ScriptedModel.make([
       emits(
         `await ctx.call("fs/list", { path: "." })
-         return { intent: "complete", output: "unreachable" }`
+         ctx.done("unreachable")`
       )
     ])
     const engine = stubEngine(model.model, {
@@ -1412,7 +1312,7 @@ describe("CellTurn frame failures", () => {
     })
     ;(corrupt.segments[0]!.content as Array<unknown>)[0] = { role: "user" }
     const { events, failure } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       state: state({ contextWindow: corrupt })
     })
 
@@ -1441,8 +1341,8 @@ describe("CellTurn interruption", () => {
 
   it("reports one well-formed abort when a frame is interrupted at its closing boundary", async () => {
     const model = ScriptedModel.make([
-      emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "next" }] }`),
-      emits(`return { intent: "complete", output: "unreachable" }`)
+      emits(`console.log("next")`),
+      emits(`ctx.done("unreachable")`)
     ])
     const engine = ScriptedEngine.make(model.model, [], [])
     const steering = Steering.layer({
@@ -1469,18 +1369,18 @@ describe("CellTurn replay", () => {
     const script = (): ScriptedModel.Script => [
       emits(
         `await ctx.call("fs/list", { path: "." })
-         return { intent: "continue", state: { seen: 1 }, context: [{ role: "user", text: "again" }] }`
+         console.log("again")`
       ),
       emits(
         `await ctx.call("fs/list", { path: "src" })
-         return { intent: "complete", state: { seen: 2 }, output: "done" }`
+         ctx.done("done")`
       )
     ]
     const calls: ReadonlyArray<ScriptedEngine.CallStep> = [
       { _tag: "Success", value: ["alpha.md"] },
       { _tag: "Success", value: ["beta.md"] }
     ]
-    const original = state({ agentState: { plan: ["one"] } })
+    const original = state()
     const first = await run({ script: script(), calls, state: original })
 
     // The controller's whole carried state is serializable, so a resumed run
@@ -1503,9 +1403,9 @@ describe("CellTurn replay", () => {
   it("keys the steering-drain boundary on the frame it belongs to, not on the run", async () => {
     const { engine } = await run({
       script: [
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "one" }] }`),
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "two" }] }`),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`console.log("one")`),
+        emits(`console.log("two")`),
+        emits(`ctx.done("done")`)
       ]
     })
 

@@ -225,7 +225,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
           `await ctx.call("probe", { note: ${
             prompt.includes("Read-only discipline") ? "\"demanded\"" : "\"reading\""
           } })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "still reading" }] }`,
+           console.log("still reading")`,
         maxFrames: 20,
         readOnlyCap: 2,
         flows: [Subject.probeSource(recorder)]
@@ -251,15 +251,15 @@ const scenarios: Readonly<Record<string, Scenario>> = {
         // would spend its budget instead of answering.
         respond: (prompt, index) =>
           prompt.includes("Evidence held")
-            ? `return { intent: "complete", state: {}, output: "completed on the pair I was shown" }`
+            ? `ctx.done("completed on the pair I was shown")`
             : index === 0
             ? `await ctx.call("check", { command: "verify a/b.py", only: "one" })
-               return { intent: "continue", state: {}, context: [{ role: "user", text: "the probe fails" }] }`
+               console.log("the probe fails")`
             : index === 1
             ? `await ctx.call("apply", { path: "a/b.py" })
-               return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`
+               console.log("edited")`
             : `await ctx.call("check", { command: "verify a/b.py" })
-               return { intent: "continue", state: {}, context: [{ role: "user", text: "the probe passes" }] }`,
+               console.log("the probe passes")`,
         maxFrames: 8,
         flows: [Subject.checkSource(recorder)]
       })
@@ -290,8 +290,8 @@ const scenarios: Readonly<Record<string, Scenario>> = {
         respond: (prompt) =>
           prompt.includes("No human is available")
             ? `await ctx.call("probe", { note: "settled-it-myself" })
-               return { intent: "complete", state: {}, output: "settled it myself" }`
-            : `return { intent: "park", state: {}, reason: "waiting-input", message: "which branch?" }`,
+               ctx.done("settled it myself")`
+            : `ctx.park("waiting-input", "which branch?")`,
         maxFrames: 4,
         flows: [Subject.probeSource(recorder)]
       })
@@ -310,7 +310,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
         // other frame that changed nothing. Exempting it would leave one shape
         // of stall — ask, be refused, ask again — outside the only control
         // that ends one, and the run would spend all forty frames on it.
-        respond: () => `return { intent: "park", state: {}, reason: "waiting-input", message: "which branch?" }`,
+        respond: () => `ctx.park("waiting-input", "which branch?")`,
         maxFrames: 40,
         readOnlyCap: 1,
         flows: [Subject.probeSource(recorder)]
@@ -321,7 +321,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
 
   "repl-realm-carries-a-binding-across-frames": {
     summary:
-      "In repl mode a cell's top-level name is still bound in the next cell, and the run finishes by calling ctx.done rather than by returning a transition.",
+      "A cell's top-level name is still bound in the next cell, and the run finishes by calling ctx.done.",
     run: () => {
       const recorder = Subject.makeRecorder()
       return Subject.runAgent({
@@ -335,7 +335,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
             ? `const subject = "carried"\nawait ctx.call("probe", { note: "first" })`
             : `await ctx.call("probe", { note: subject })\nctx.done("carried " + subject)`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.probeSource(recorder)]
       })
     },
@@ -344,7 +343,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
 
   "repl-print-reaches-the-next-frame": {
     summary:
-      "What a repl cell prints opens the next frame, so console.log is the whole of the context channel and nothing has to be projected.",
+      "What a cell prints opens the next frame, so console.log is the whole of the context channel.",
     run: () => {
       const recorder = Subject.makeRecorder()
       return Subject.runAgent({
@@ -358,7 +357,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
             ? `ctx.done("read my own print")`
             : `console.log("beacon:printed")`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.probeSource(recorder)]
       })
     },
@@ -367,7 +365,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
 
   "repl-completion-behind-a-guard": {
     summary:
-      "One repl cell reproduces the failure, writes, replays the identical check and completes behind a check of both exit codes — the shape the contract teaches, in the frame that took the evidence.",
+      "One cell reproduces the failure, writes, replays the identical check and completes behind a check of both exit codes — the shape the contract teaches, in the frame that took the evidence.",
     run: () => {
       const recorder = Subject.makeRecorder()
       return Subject.runAgent({
@@ -390,7 +388,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
            const after = await ctx.call("check", { command: "verify a/b.py", only: "one" })
            if (before.exitCode !== 0 && after.exitCode === 0) ctx.done("verify a/b.py failed before the write and exits 0 after it")`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.checkSource(recorder)]
       })
     },
@@ -420,7 +417,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
                if (before.exitCode !== 0 && after.exitCode === 0) ctx.done("proved it")`
             : `ctx.done("the baseline was already green")`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.checkSource(recorder)]
       })
     },
@@ -443,7 +439,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
           `const answer = await ctx.checkpoint()
            ctx.done(answer.ok === false ? "refused " + answer.error.code : "pinned " + answer.checkpoint)`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.probeSource(recorder)]
       })
     },
@@ -464,7 +459,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
           `const before = await ctx.call("check", { command: "verify a/b.py" }, { at: ctx.base })
            ctx.done(before.ok === false ? "refused " + before.error.code : "ran " + before.exitCode)`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.checkSource(recorder)]
       })
     },
@@ -482,7 +476,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
           `const applied = await ctx.call("apply", { path: "a/b.py" }, { at: ctx.base })
            ctx.done(applied.ok === false ? "refused " + applied.error.code : "wrote")`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.checkSource(recorder)]
       })
     },
@@ -491,9 +484,9 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     expected: answered("refused checkpoint_readonly", 1)
   },
 
-  "checkpoint-is-offered-in-filing-mode-too": {
+  "checkpoint-is-refused-by-a-host-that-pins-nothing": {
     summary:
-      "Pinning a tree is not a property of how cells relate to each other, so the filing arm has the same surface and the same refusal.",
+      "`ctx.base` is always there and costs nothing; a mint on a host with no store is a catchable refusal at the line that asked, not a failed run.",
     run: () => {
       const recorder = Subject.makeRecorder()
       return Subject.runAgent({
@@ -501,7 +494,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
         respond: () =>
           `const answer = await ctx.checkpoint()
            const base = JSON.stringify(ctx.base)
-           return { intent: "complete", state: {}, output: base + " " + (answer.ok === false ? answer.error.code : "pinned") }`,
+           ctx.done(base + " " + (answer.ok === false ? answer.error.code : "pinned"))`,
         maxFrames: 4,
         flows: [Subject.probeSource(recorder)]
       })
@@ -525,7 +518,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
            const after = await ctx.call("probe", { note: "after-done" })
            ctx.done("never " + after.error.code)`,
         maxFrames: 4,
-        cellMode: "repl",
         flows: [Subject.probeSource(recorder)]
       })
     },
@@ -534,7 +526,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
 
   "repl-read-only-cap-takes-ctx-justify": {
     summary:
-      "The read-only cap is armed in repl mode too, and ctx.justify is the answer that buys quiet frames where a justification field used to.",
+      "The read-only cap holds a run that only reads, and ctx.justify is the answer that buys quiet frames.",
     run: () => {
       const recorder = Subject.makeRecorder()
       return Subject.runAgent({
@@ -548,11 +540,10 @@ const scenarios: Readonly<Record<string, Scenario>> = {
             : `await ctx.call("probe", { note: "reading" })`,
         maxFrames: 20,
         readOnlyCap: 2,
-        cellMode: "repl",
         flows: [Subject.probeSource(recorder)]
       })
     },
-    // Same shape as the filing case: the demand arrives at the cap, the
+    // The demand arrives at the cap, the
     // justification buys quiet frames without resetting the counter, and the
     // run still stops at twice the cap rather than reporting work it never did.
     expected: failed("/harness/HarnessError", 4, ["probe:reading", "probe:demanded"])

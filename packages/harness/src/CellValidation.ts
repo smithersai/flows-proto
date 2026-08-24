@@ -15,17 +15,12 @@
  * inside the same frame, at cached-prefix price, instead of ending the frame on
  * it.
  *
- * It also reports what parsing gives away for free — statements the cell wrote
- * after its own first top-level `return`, which never run. That is a notice and
- * not a rejection: the program is legal, the model simply did not know.
+ * The same parse does one more thing: it normalizes the top-level statement
+ * list so the persistent realm behaves like a notebook rather than like a script
+ * that may only be run once. See {@link normalize}.
  *
- * In REPL mode the same parse does one more thing: it normalizes the top-level
- * statement list so a persistent realm behaves like a notebook rather than like
- * a script that may only be run once. See {@link normalize}.
- *
- * Nothing here executes anything, and nothing here is a gate. The only outcomes
- * are a rejection the model is asked to fix in this frame, or a sentence added
- * to the next one.
+ * Nothing here executes anything, and nothing here is a gate. The only outcome
+ * it can produce is a rejection the model is asked to fix in this frame.
  *
  * @since 0.1.0
  */
@@ -36,8 +31,7 @@ import * as Cell from "./Cell.ts"
  * What the boundary learned by parsing one cell.
  *
  * Exactly one of `rejected` and `compiled` is present: a cell either has a
- * program to run or a reason it does not. `notice` is independent of both —
- * legal source can still carry a statement that will never run.
+ * program to run or a reason it does not.
  *
  * @category models
  * @since 0.1.0
@@ -48,8 +42,6 @@ export interface Validation {
   readonly rejected: Cell.Rejected | undefined
   /** The JavaScript to evaluate, when there is any. */
   readonly compiled: string | undefined
-  /** Something true about the cell that does not stop it running. */
-  readonly notice: string | undefined
 }
 
 /**
@@ -141,33 +133,6 @@ const located = (text: string, diagnostic: ts.Diagnostic): string => {
 
 const firstError = (diagnostics: ReadonlyArray<ts.Diagnostic> | undefined): ts.Diagnostic | undefined =>
   diagnostics?.find((item) => item.category === ts.DiagnosticCategory.Error)
-
-/**
- * Names the statements a cell wrote after its own first top-level `return`.
- *
- * Blocks in one reply are concatenated into one program and the first `return`
- * ends it, which the contract states — but a model that batches four steps into
- * four blocks has written three programs that will not run, and nothing else
- * would ever tell it so. Parsing already produced the statement list, so this
- * costs nothing and can only be right: a top-level `return` is unconditional by
- * construction.
- *
- * @private
- */
-const unreachable = (source: ts.SourceFile, text: string): string | undefined => {
-  const index = source.statements.findIndex((statement) => ts.isReturnStatement(statement))
-  if (index < 0 || index === source.statements.length - 1) return undefined
-  const at = source.getLineAndCharacterOfPosition(source.statements[index]!.getStart(source))
-  const dead = source.statements.length - index - 1
-  const last = source.getLineAndCharacterOfPosition(source.statements[source.statements.length - 1]!.getStart(source))
-  return `Dead code — the top-level \`return\` on line ${
-    at.line + 1
-  } ends the frame, so the ${dead} top-level statement${dead === 1 ? "" : "s"} after it (through line ${
-    last.line + 1
-  } of ${
-    text.split("\n").length
-  }) never ran. Blocks in one reply are one program: put the work before the return, or return once at the end.`
-}
 
 /**
  * One replacement of a byte range of a cell's compiled text.
@@ -312,15 +277,15 @@ export const normalize = (compiled: string): string => {
 /**
  * Parses one cell and reports everything the parse can decide.
  *
- * `mode` selects the surface the cell was written against. `repl` refuses a
- * `return` the realm cannot compile and normalizes the top-level declarations
- * the realm has to be able to re-run; `filing` — the default — changes nothing.
+ * It refuses a `return` the realm cannot compile, refuses a top-level
+ * declaration of a name the realm owns, and normalizes the top-level
+ * declarations the realm has to be able to re-run.
  *
  * @category conversions
  * @since 0.1.0
  * @slop
  */
-export const validate = (cell: Cell.Source, mode: Cell.Mode = Cell.defaultMode): Validation => {
+export const validate = (cell: Cell.Source): Validation => {
   const isTypeScript = cell.language === "typescript"
   const parsed = ts.createSourceFile(
     isTypeScript ? "cell.ts" : "cell.js",
@@ -329,7 +294,7 @@ export const validate = (cell: Cell.Source, mode: Cell.Mode = Cell.defaultMode):
     true,
     isTypeScript ? ts.ScriptKind.TS : ts.ScriptKind.JS
   )
-  const refuse = (rejected: Cell.Rejected): Validation => ({ rejected, compiled: undefined, notice: undefined })
+  const refuse = (rejected: Cell.Rejected): Validation => ({ rejected, compiled: undefined })
   const moduleUse = moduleSyntax(parsed)
   if (moduleUse !== undefined) {
     return refuse(
@@ -380,9 +345,6 @@ export const validate = (cell: Cell.Source, mode: Cell.Mode = Cell.defaultMode):
   // The JavaScript a cell wrote is run as written. Only TypeScript is handed
   // to the emitter, and only to have its type-only syntax erased.
   const compiled = isTypeScript ? transpiled.outputText : cell.text
-  if (mode === "filing") {
-    return { rejected: undefined, compiled, notice: unreachable(parsed, cell.text) }
-  }
   const returned = topLevelReturn(parsed)
   if (returned !== undefined) {
     const at = parsed.getLineAndCharacterOfPosition(returned.getStart(parsed))
@@ -408,6 +370,5 @@ export const validate = (cell: Cell.Source, mode: Cell.Mode = Cell.defaultMode):
       })
     )
   }
-  // A REPL cell's tail always runs, so there is no dead-code notice to give.
-  return { rejected: undefined, compiled: normalize(compiled), notice: undefined }
+  return { rejected: undefined, compiled: normalize(compiled) }
 }

@@ -167,10 +167,10 @@ const checkFlow = CoreFlow.make({
 
 const frameZero = `await ctx.call("project/check", { command: "npm test" })
 const saved = await ctx.call("note/save", { text: "frame zero note" })
-return { intent: "continue", state: { saved: saved.saved }, context: [{ role: "user", text: "note saved" }] }`
+console.log("note saved")`
 
 const frameOne = `const decision = await ctx.call("ask", { question: "publish the log?", options: ["yes", "no"] })
-return { intent: "complete", state: null, output: "approved=" + decision.approved }`
+ctx.done("approved=" + decision.approved)`
 
 const cellEvents = (source: string, id: string): ReadonlyArray<ModelEvent.ModelEvent> => [
   ModelEvent.ModelEvent.TextStart({ type: "text-start", id }),

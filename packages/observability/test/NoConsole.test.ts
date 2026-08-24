@@ -7,6 +7,18 @@ const PACKAGES_DIR = fileURLToPath(new URL("../..", import.meta.url))
 const CONSOLE_CALL = /console\.(?:log|info|warn|error|debug|trace)\s*\(/
 
 /**
+ * The one file whose `console.log` is data rather than a call.
+ *
+ * `cellPrompt.ts` is the contract a model is taught, and the contract's worked
+ * example is JavaScript for a *different* realm: `console.log` is how a cell
+ * talks to its next turn, so the example has to spell it. Models imitate the
+ * example, so spelling it any other way to satisfy a text match would teach a
+ * shape the realm does not have. Nothing in this file calls `console`; the
+ * matches are inside a template literal that is shown, never run.
+ */
+const TEACHING = "harness/src/internal/cellPrompt.ts"
+
+/**
  * Source files under every package's `src`. Walked in-process rather than
  * shelled out to ripgrep: a runner without `rg` makes `spawnSync` return
  * `status: null`, which fails this guard with "expected null to be 1" and
@@ -41,10 +53,12 @@ describe("console guard", () => {
     const offenders: string[] = []
     for (const root of packageSourceRoots()) {
       for (const file of sourceFiles(root)) {
+        const relative = file.slice(PACKAGES_DIR.length)
+        if (relative === TEACHING) continue
         const source = readFileSync(file, "utf8")
         if (!CONSOLE_CALL.test(source)) continue
         for (const [index, line] of source.split("\n").entries()) {
-          if (CONSOLE_CALL.test(line)) offenders.push(`${file.slice(PACKAGES_DIR.length)}:${index + 1}: ${line.trim()}`)
+          if (CONSOLE_CALL.test(line)) offenders.push(`${relative}:${index + 1}: ${line.trim()}`)
         }
       }
     }

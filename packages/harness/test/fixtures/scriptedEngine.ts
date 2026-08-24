@@ -127,6 +127,13 @@ export const make = (
   let spliceIndex = 0
   let callIndex = 0
   const engine = EngineLike.make({
+    capture: (request) =>
+      Effect.sync(() => {
+        recorder.captures.push({ id: request.id, tree: workspace.value })
+        return pins
+          ? Option.some(new EngineLike.Snapshot({ id: request.id, ref: `test/${request.id}` }))
+          : Option.none()
+      }),
     sealStep: (step) => {
       recorder.sealStep.push(step)
       return model.stream(step.request)
@@ -196,13 +203,6 @@ export const make = (
       recorder.records.push(boundary)
       return boundary.execute
     },
-    capture: (request) =>
-      Effect.sync(() => {
-        recorder.captures.push({ id: request.id, tree: workspace.value })
-        return pins
-          ? Option.some(new EngineLike.Snapshot({ id: request.id, ref: `test/${request.id}` }))
-          : Option.none()
-      }),
     observe: Effect.suspend(() =>
       Effect.succeed(
         workspace.value === undefined

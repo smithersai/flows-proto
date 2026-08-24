@@ -85,7 +85,7 @@ const recorded = (requests: Array<string>, cells: ReadonlyArray<string>): Model.
               message.content.flatMap((part) => (part.type === "text" ? [part.text] : []))
             ).join("\n")
         )
-        const source = cells[index++] ?? cells.at(-1) ?? "return { intent: \"complete\", output: \"done\" }"
+        const source = cells[index++] ?? cells.at(-1) ?? "ctx.done(\"done\")"
         return Stream.fromIterable([
           ModelEvent.ModelEvent.TextStart({ type: "text-start", id: `cell-${index}` }),
           ModelEvent.ModelEvent.TextDelta({
@@ -311,7 +311,7 @@ describe("standard capabilities are flows", () => {
           `const page = await ctx.call("read", { path: "/repo/alpha.md" })
 const ran = await ctx.call("bash", { mode: "unhermetic", command: "echo hi" })
 const kept = await ctx.call("remember", { bank: "notes", key: "k1", text: page.content })
-return { intent: "complete", state: { kept: kept }, output: page.content + "|" + ran.stdout + "|" + kept.key }`
+ctx.done(page.content + "|" + ran.stdout + "|" + kept.key)`
         ]
       })
     )
@@ -377,7 +377,7 @@ return { intent: "complete", state: { kept: kept }, output: page.content + "|" +
         ],
         cells: [
           `const probe = await ctx.call("bash", { mode: "unhermetic", container: "testbed", cwd: "/testbed", interpreter: "python3", script: "print(1 + 2)" })
-return { intent: "complete", state: {}, output: probe.stdout.trim() }`
+ctx.done(probe.stdout.trim())`
         ]
       })
     )
@@ -431,7 +431,7 @@ return { intent: "complete", state: {}, output: probe.stdout.trim() }`
         ],
         cells: [
           `const suite = await ctx.call("test", { selection: ["tests/test_widen.py"] })
-return { intent: "complete", state: { suite: suite }, output: suite.passed + " passed, " + suite.failed.join(",") }`
+ctx.done(suite.passed + " passed, " + suite.failed.join(","))`
         ]
       })
     )
@@ -456,7 +456,7 @@ return { intent: "complete", state: { suite: suite }, output: suite.passed + " p
         cells: [
           `let caught = "none"
 try { await ctx.call("read", { path: "/missing.md" }) } catch (error) { caught = String(error.message) }
-return { intent: "complete", output: caught }`
+ctx.done(caught)`
         ]
       })
     )
@@ -474,7 +474,7 @@ return { intent: "complete", output: caught }`
         cells: [
           `let caught = "none"
 try { await ctx.call("ask", { question: "ship it?" }) } catch (error) { caught = String(error.message) }
-return { intent: "complete", output: caught }`
+ctx.done(caught)`
         ]
       })
     )
@@ -523,7 +523,7 @@ return { intent: "complete", output: caught }`
           }),
         cells: [
           `const kept = await ctx.call("remember", { bank: "notes", key: "k1", text: "hello" })
-return { intent: "complete", output: kept.key }`
+ctx.done(kept.key)`
         ]
       }),
       { resume: true }
@@ -548,7 +548,7 @@ return { intent: "complete", output: kept.key }`
           flows: [StandardFlows.clock(services)],
           cells: [
             `const waited = await ctx.call("wait", { seconds: 0 })
-return { intent: "complete", output: String(waited.waitedSeconds) }`
+ctx.done(String(waited.waitedSeconds))`
           ]
         })
       })
@@ -593,7 +593,7 @@ return { intent: "complete", output: String(waited.waitedSeconds) }`
           cells: [
             `const first = await ctx.call("wait", { seconds: 61 })
 const second = await ctx.call("wait", { seconds: 61 })
-return { intent: "complete", output: String(first.waitedSeconds + second.waitedSeconds) }`
+ctx.done(String(first.waitedSeconds + second.waitedSeconds))`
           ]
         })
       })
@@ -671,7 +671,7 @@ describe("plugin-contributed flows", () => {
         plugins: [plugin, excluded],
         cells: [
           `const out = await ctx.call("ping", { note: "one" })
-return { intent: "complete", output: out.echoed }`
+ctx.done(out.echoed)`
         ]
       })
     )
@@ -731,7 +731,7 @@ return { intent: "complete", output: out.echoed }`
         ],
         cells: [
           `const out = await ctx.call("flow-first", {})
-return { intent: "complete", output: out.from }`
+ctx.done(out.from)`
         ]
       })
     )
@@ -749,7 +749,7 @@ return { intent: "complete", output: out.from }`
     const outcome = await drive(
       collect({
         flows: [FlowBinding.source("first", [duplicate]), FlowBinding.source("second", [duplicate])],
-        cells: ["return { intent: \"complete\", output: \"unreachable\" }"]
+        cells: ["ctx.done(\"unreachable\")"]
       })
     )
 
@@ -767,7 +767,7 @@ return { intent: "complete", output: out.from }`
           name: "flows-plugin-collides",
           bindings: [FlowBinding.make({ flow: ping, handler: () => Effect.succeed({ echoed: "plugin" }) })]
         })],
-        cells: ["return { intent: \"complete\", output: \"unreachable\" }"]
+        cells: ["ctx.done(\"unreachable\")"]
       })
     )
 
@@ -813,7 +813,7 @@ return { intent: "complete", output: out.from }`
         cells: [
           `let caught = "none"
 try { await ctx.call("ping", { note: "one" }) } catch (error) { caught = String(error.message) }
-return { intent: "complete", output: caught }`
+ctx.done(caught)`
         ]
       })
     )
@@ -845,7 +845,7 @@ describe("subagents are flows", () => {
         cells: [
           `const child = await ctx.call("agent/spawn", { flow: "review", input: { path: "a.md" } })
 const done = await ctx.call("agent/await", { child: child.child })
-return { intent: "complete", output: done.output }`
+ctx.done(done.output)`
         ]
       })
     )
@@ -866,7 +866,7 @@ return { intent: "complete", output: done.output }`
 for (const call of [["agent/spawn", { flow: "review" }], ["agent/send", { child: "c", message: "hi" }], ["agent/await", { child: "c" }]]) {
   try { await ctx.call(call[0], call[1]) } catch (error) { caught.push(String(error.message)) }
 }
-return { intent: "complete", output: caught.join("|") }`
+ctx.done(caught.join("|"))`
         ]
       })
     )
@@ -916,7 +916,7 @@ return { intent: "complete", output: caught.join("|") }`
         cells: [
           `const child = await ctx.call("agent/spawn", { flow: "review" })
 const answer = await ctx.call("ask", { question: "merge it?" })
-return { intent: "complete", output: child.child + ":" + answer.answer }`
+ctx.done(child.child + ":" + answer.answer)`
         ]
       }),
       { resume: true }

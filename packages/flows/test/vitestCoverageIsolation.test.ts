@@ -524,36 +524,37 @@ describe("vitest coverage isolation conformance", () => {
       "harness/src/CellTurn.ts": 1,
       // `transpileModule` reports syntactic diagnostics only, and attaches a
       // source file and a position to every one of them; the position came
-      // from the same text this splits. Both guards discharge optional types
-      // rather than reachable states.
-      "harness/src/CellValidation.ts": 2,
-      // Three are limits: `withDefaults` fills each declared limit from
-      // `defaultLimits`, so the optional chains and coalesces never take their
-      // fallbacks. Two are the realm's compile path: reaching it needs the
-      // boundary parse and QuickJS to disagree about what parses, and reaching
-      // it with the interrupt budget spent needs that disagreement to be
-      // reported by a handler that never ran, because nothing evaluates before
-      // that point.
-      "harness/src/QuickJSSandbox.ts": 5,
-      // One coalesce over `validate`'s closed two-member answer, one guard on
-      // a `with` binding's identifier, and two on the host cell's failure
-      // path: the `Function` constructor rejects unparseable source with a
-      // `SyntaxError` and raises nothing else, and `cell` is an async function
-      // that settles its rejection through its promise rather than throwing
-      // synchronously. The only cells that ever reached either escaped the
-      // wrapper, which the boundary parse now refuses as the syntax error it
-      // is.
-      "harness/src/Sandbox.ts": 6,
+      // from the same text this splits. The third is the normalizer's
+      // nameless-class guard: a top-level class with no name is only spellable
+      // as `export default class {}`, and module syntax is refused before the
+      // normalizer runs. All three discharge optional types rather than
+      // reachable states.
+      "harness/src/CellValidation.ts": 3,
+      // Four are limits: `withDefaults` fills each declared limit from
+      // `defaultLimits`, so the optional chains, the coalesces and the heap
+      // ceiling's `else` never take their fallbacks. One is the realm's
+      // compile path, which needs the boundary parse and QuickJS to disagree
+      // about what parses. The last is the bridge drain a frame interrupted
+      // between two settled calls would leave behind: no deterministic test
+      // produces that interleaving, and without the guard such a frame leaves
+      // a live handle in a realm that outlives it.
+      "harness/src/QuickJSSandbox.ts": 6,
+      // One coalesce over `validate`'s closed two-member answer. The five
+      // beside it belonged to the same-realm binding — its `with` scope proxy
+      // and the host cell's failure path — and left with it when the filing
+      // surface was deleted.
+      "harness/src/Sandbox.ts": 1,
       // Both callers pass an `Error` (`JSON.parse` throws `SyntaxError`;
       // `Schema.decodeUnknownEffect` fails with `SchemaError`, which extends
       // `Error`), so the `String` arm only discharges the `unknown` a `catch`
       // binding and a schema failure channel are typed as.
       "harness/src/StructuredOutput.ts": 1,
-      // The first pass already ran the decoders over every entry of the same
+      // The first pass already ran the decoder over every entry of the same
       // `events` array and returned on failure, and `decode` is pure, so
-      // re-decoding a surviving entry cannot fail; the branches exist
-      // because `Result` has no way to carry that proof.
-      "harness/src/Transcript.ts": 2,
+      // re-decoding a surviving entry cannot fail; the branch exists because
+      // `Result` has no way to carry that proof. Its twin left with the
+      // transcript-replacement branch a `continue` used to take.
+      "harness/src/Transcript.ts": 1,
       "journal/src/SqlJournal.ts": 1,
       // `FileSet.Entry` is a closed two-member union, so the final
       // comparison arm's `else` and the fallthrough after every pair

@@ -1,36 +1,38 @@
 /**
  * The cell contract.
  *
- * A Smithers frame is `model -> generated cell -> sandbox execution ->
+ * A Smithers frame is `model -> generated cell -> realm evaluation ->
  * individually durable flow calls -> next transition`. This module owns the
  * serializable half of that sentence: the cell source the model emits, the
- * transition the cell returns, the typed outcomes a cell may settle with, and
+ * transition the cell settled, the typed outcomes a cell may settle with, and
  * the identity carried by every flow call made inside one.
  *
  * Nothing here executes anything. Execution is `Sandbox`; durability is
  * `EngineLike.call`; the loop is `CellTurn`.
  *
- * Governing design: `docs/specs/Concepts/Durable Cell Loop.md` and
+ * A cell does not *return* its transition. The realm is a REPL that outlives
+ * the cell, so a cell states its intent by calling `ctx.done` or `ctx.park` and
+ * `Sandbox.replTransition` builds the value; there is no returned object to
+ * decode. What the cell filed by hand — durable state, a projected context, a
+ * list of keys to re-render, a list of ordinals to recall — is gone with the
+ * surface that asked for it, and the fields survive here for one purpose only:
+ * decoding the journals that were written while it existed.
+ *
+ * Governing design: `docs/specs/Concepts/Durable Cell Loop.md`,
+ * `docs/specs/Concepts/Repl Realm.md` and
  * `docs/specs/Concepts/Agent Cell Context.md`.
  *
  * @since 0.1.0
  */
 import * as Digest from "@smthrs/core/Digest"
 import * as CanonicalJson from "@smthrs/model/CanonicalJson"
-import * as ModelRequest from "@smthrs/model/ModelRequest"
 import * as Descriptor from "@smthrs/registry/Descriptor"
 import { Effect, Option, Result, Schema } from "effect"
-import * as elide from "./internal/elide.ts"
 
 const NonNegativeSafeInt = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)
 )
-
-/** How much of a decoder's own report one rejection message may carry. */
-const issueBytes = 1024
-
-const clipIssue = (message: string): string => elide.head(message, issueBytes, "the rest repeats the same shape")
 
 /**
  * The source language a cell is written in.
@@ -55,40 +57,6 @@ export const Language = Schema.Literals(["javascript", "typescript"])
  * @slop
  */
 export type Language = typeof Language.Type
-
-/**
- * How a run's cells relate to one another.
- *
- * `filing` is the shipped default: every cell is the body of its own async
- * function, its names vanish when it returns, and what carries forward is the
- * JSON it filed in `state` plus the context it projected.
- *
- * `repl` gives the run one realm for its whole life. A cell is a global async
- * script, so its top-level declarations are still bound in the next cell, and
- * `console.log` is how a cell talks to the next model turn. It is an arm, not a
- * replacement, and it is adopted only on the numbers; see
- * `docs/specs/Concepts/Repl Realm.md`.
- *
- * @category models
- * @since 0.1.0
- */
-export const Mode = Schema.Literals(["filing", "repl"])
-
-/**
- * How a run's cells relate to one another.
- *
- * @category models
- * @since 0.1.0
- */
-export type Mode = typeof Mode.Type
-
-/**
- * The mode a run takes when its host declares none.
- *
- * @category constants
- * @since 0.1.0
- */
-export const defaultMode: Mode = "filing"
 
 /**
  * One unit of agent-authored source and its stable content digest.
@@ -127,14 +95,14 @@ export const source = (text: string, language: Language = "javascript"): Source 
   new Source({ language, text, digest: digestOf(language, text) })
 
 /**
- * One projected message a cell places in the next model context.
+ * One projected message a filing cell placed in the next model context.
  *
- * A cell owns its next context: it returns exactly the entries that survive
- * into the following frame, and the harness renders them. This keeps the
- * projection JSON-shaped so it crosses the sandbox boundary unchanged.
+ * **Deprecated: decode-only.** It is the element type of {@link Continue}
+ * `context`, and nothing constructs one any more. See that field.
  *
  * @category models
  * @since 0.1.0
+ * @deprecated
  * @slop
  */
 export class ContextEntry extends Schema.Class<ContextEntry>("flows/harness/Cell/ContextEntry")({
@@ -143,59 +111,60 @@ export class ContextEntry extends Schema.Class<ContextEntry>("flows/harness/Cell
 }) {}
 
 /**
- * Renders one projected context entry as a provider-neutral message.
+ * The cell's turn ended without settling the run.
  *
- * @category conversions
- * @since 0.1.0
- * @slop
- */
-export const renderEntry = (entry: ContextEntry): ModelRequest.Message =>
-  entry.role === "user"
-    ? ModelRequest.Message.user(entry.text)
-    : ModelRequest.Message.assistant(entry.text, { stopReason: "stop" })
-
-/**
- * The cell asks for another frame, carrying its own durable state and the
- * exact context the next model call should see.
+ * A REPL cell that calls neither `ctx.done` nor `ctx.park` gets another frame,
+ * and this is what that frame is journaled as. The only thing it carries is a
+ * justification, because everything else a `continue` used to carry was the
+ * filing surface's bookkeeping and the realm holds it now.
+ *
+ * The four deprecated fields below are decode-only. They stay on the schema —
+ * rather than behind a versioned decoder — because a journal payload carries no
+ * version to switch on: the events are read back by decoding this very class,
+ * so one schema that accepts both shapes is the only mechanism that leaves the
+ * r90–r96 waves readable. They are optional, nothing populates them, and no
+ * behaviour reads them.
  *
  * @category models
  * @since 0.1.0
  * @slop
  */
 export class Continue extends Schema.TaggedClass<Continue>("flows/harness/Cell/Continue")("continue", {
-  state: Schema.Json,
-  context: Schema.Array(ContextEntry),
   /**
-   * Ordinals of settled calls whose results the next frame must be shown.
+   * The JSON a filing cell filed for its successor.
    *
-   * The sibling of `render`, for the half of a run's knowledge that does not
-   * live in `state`. A cell is authored before any of its results exist, so
-   * deciding which of them to copy into `state` is a guess made before the
-   * answer is known; when the guess is wrong the only way back to a result the
-   * run already paid for was to issue the call again. Naming its ordinal here
-   * asks the harness to print the stored result in the next frame's prompt,
-   * which is the same mechanic `render` already uses and costs no model turn
-   * of its own.
+   * **Deprecated: decode-only.** The realm is the run's memory now — a name a
+   * cell binds is still bound in the next cell — so there is nothing to file
+   * and nothing to re-read. See `docs/specs/Concepts/Repl Realm.md`.
    *
-   * Ordinals are the numbers the call ledger prints. A number that names no
-   * settled call, or one whose result is past the recall bound, is answered by
-   * name in the next frame rather than dropped. See `CallLedger` `recall`.
+   * @deprecated
+   */
+  state: Schema.optional(Schema.Json),
+  /**
+   * The exact messages a filing cell chose for its successor's context.
+   *
+   * **Deprecated: decode-only.** A REPL run's window is
+   * `[cell₁, prints₁], [cell₂, prints₂], …`, appended rather than replaced, so
+   * what the next turn reads is what the cell printed.
+   *
+   * @deprecated
+   */
+  context: Schema.optional(Schema.Array(ContextEntry)),
+  /**
+   * Ordinals of settled calls a filing cell asked to be shown again.
+   *
+   * **Deprecated: decode-only.** A REPL run's results are under the names its
+   * cells gave them, so there is nothing to recall.
+   *
+   * @deprecated
    */
   recall: Schema.optional(Schema.Array(Schema.Number)),
   /**
-   * Durable-state keys the next frame must be shown in full.
+   * Durable-state keys a filing cell asked to be shown in full.
    *
-   * `state` is what the next *cell* computes with; this is what the next
-   * *model turn* reads. Without it a state larger than the printable limit
-   * renders as a manifest of names and sizes, so the only way to look at what
-   * the run already knows is to author a cell that copies it into `context` —
-   * which is a whole model turn spent moving bytes the run already owns.
-   * Twenty-eight of ninety-one frames in one graded wave did exactly that, and
-   * the justifications those frames volunteered say so in the model's own
-   * words: "the stored excerpts were not visible in the model context".
+   * **Deprecated: decode-only.** The sibling of `state`, and gone with it.
    *
-   * Naming a key here renders its JSON in the next frame's state section as
-   * well as its manifest line. See `StateManifest` for the bounds.
+   * @deprecated
    */
   render: Schema.optional(Schema.Array(Schema.String)),
   /**
@@ -207,7 +176,8 @@ export class Continue extends Schema.TaggedClass<Continue>("flows/harness/Cell/C
    * 132 calls without one edit attempt and then claimed the fix was
    * implemented. A justification is the typed way out of the read-only cap —
    * it is recorded, it buys a bounded grace, and it does not reset the
-   * counter that eventually stops the run.
+   * counter that eventually stops the run. A cell writes one by calling
+   * `ctx.justify`.
    */
   justification: Schema.optional(Schema.String)
 }) {}
@@ -225,7 +195,14 @@ export class Continue extends Schema.TaggedClass<Continue>("flows/harness/Cell/C
  * @slop
  */
 export class Complete extends Schema.TaggedClass<Complete>("flows/harness/Cell/Complete")("complete", {
-  state: Schema.Json,
+  /**
+   * The JSON a filing cell filed alongside its answer.
+   *
+   * **Deprecated: decode-only.** See {@link Continue} `state`.
+   *
+   * @deprecated
+   */
+  state: Schema.optional(Schema.Json),
   output: Schema.String,
   reason: Schema.optional(Schema.String)
 }) {}
@@ -238,7 +215,14 @@ export class Complete extends Schema.TaggedClass<Complete>("flows/harness/Cell/C
  * @slop
  */
 export class Park extends Schema.TaggedClass<Park>("flows/harness/Cell/Park")("park", {
-  state: Schema.Json,
+  /**
+   * The JSON a filing cell filed alongside its question.
+   *
+   * **Deprecated: decode-only.** See {@link Continue} `state`.
+   *
+   * @deprecated
+   */
+  state: Schema.optional(Schema.Json),
   reason: Schema.Literals(["waiting-input", "waiting-event", "waiting-quota"]),
   message: Schema.String
 }) {}
@@ -262,22 +246,6 @@ export const Transition = Schema.Union([Continue, Complete, Park]).pipe(Schema.t
 export type Transition = typeof Transition.Type
 
 /**
- * One projected context entry as a cell may write it.
- *
- * `text` is `Json` rather than `String` because a cell that hands a structured
- * value straight to `context` is doing the obvious thing, and the two ways that
- * used to end were both bad: the transition failed to decode and the frame died
- * holding work it had already done, or the cell defended itself with
- * `String(value)` and wrote `[object Object]` into its own next prompt.
- * {@link renderText} settles it here instead, by rendering anything that is not
- * a string as JSON.
- */
-const ReturnedEntry = Schema.Struct({
-  role: Schema.Literals(["user", "assistant"]),
-  text: Schema.Json
-})
-
-/**
  * Renders a projected value as the text one context entry carries.
  *
  * A string is itself. Everything else is canonical JSON, which is the whole of
@@ -290,41 +258,6 @@ const ReturnedEntry = Schema.Struct({
  */
 export const renderText = (value: Schema.Json): string =>
   typeof value === "string" ? value : CanonicalJson.stringify(value)
-
-/**
- * The wire shape a cell returns, before decoding into a {@link Transition}.
- *
- * A cell is plain JavaScript, so it returns a plain object keyed by `intent`
- * rather than Effect's `_tag`. Keeping the two apart means a malformed
- * transition is a decode failure with a message the model can act on, not a
- * crash.
- */
-const Returned = Schema.Union([
-  Schema.Struct({
-    intent: Schema.Literal("continue"),
-    state: Schema.optional(Schema.Json),
-    context: Schema.Array(ReturnedEntry),
-    render: Schema.optional(Schema.Array(Schema.String)),
-    recall: Schema.optional(Schema.Array(Schema.Number)),
-    justification: Schema.optional(Schema.String)
-  }),
-  Schema.Struct({
-    intent: Schema.Literal("complete"),
-    state: Schema.optional(Schema.Json),
-    // `Json` for the same reason `context` carries `Json`: a frame that did all
-    // its work and handed back a structured answer is a frame that succeeded,
-    // and refusing it as malformed loses everything the frame paid for. It is
-    // rendered by {@link renderText}, never coerced.
-    output: Schema.Json,
-    reason: Schema.optional(Schema.String)
-  }),
-  Schema.Struct({
-    intent: Schema.Literal("park"),
-    state: Schema.optional(Schema.Json),
-    reason: Schema.Literals(["waiting-input", "waiting-event", "waiting-quota"]),
-    message: Schema.Json
-  })
-]).pipe(Schema.toTaggedUnion("intent"))
 
 /**
  * Stable reasons a cell failed to produce a transition.
@@ -413,62 +346,6 @@ export const Outcome = Schema.Union([Settled, Raised, Rejected]).pipe(Schema.toT
  * @slop
  */
 export type Outcome = typeof Outcome.Type
-
-/**
- * Decodes the plain value a cell returned into a durable transition.
- *
- * @category conversions
- * @since 0.1.0
- * @slop
- */
-export const transition = (value: unknown): Outcome => {
-  const decoded = Schema.decodeUnknownResult(Returned)(value)
-  if (decoded._tag === "Failure") {
-    return new Rejected({
-      code: "invalid_transition",
-      // The exact issue, not only the shape. This message is the whole of what
-      // the next frame is told about a transition that did not decode, and a
-      // frame that spent real calls before returning it cannot be replayed — so
-      // "it was not a transition" costs a model turn to re-derive what the
-      // decoder already knew.
-      message:
-        `The cell did not return a transition. Return { intent: "continue" | "complete" | "park", ... } exactly as the contract describes. The decoder reported:\n${
-          clipIssue(decoded.failure.message)
-        }`
-    })
-  }
-  const returned = decoded.success
-  switch (returned.intent) {
-    case "continue":
-      return new Settled({
-        transition: new Continue({
-          state: returned.state ?? null,
-          context: returned.context.map((entry) =>
-            new ContextEntry({ role: entry.role, text: renderText(entry.text) })
-          ),
-          render: returned.render,
-          recall: returned.recall,
-          justification: returned.justification
-        })
-      })
-    case "complete":
-      return new Settled({
-        transition: new Complete({
-          state: returned.state ?? null,
-          output: renderText(returned.output),
-          reason: returned.reason
-        })
-      })
-    case "park":
-      return new Settled({
-        transition: new Park({
-          state: returned.state ?? null,
-          reason: returned.reason,
-          message: renderText(returned.message)
-        })
-      })
-  }
-}
 
 /**
  * The read-only projection of one callable flow handed to a cell.

@@ -25,7 +25,6 @@ import * as NodeDatabase from "@smthrs/database/node/NodeDatabase"
 import * as StepBoundary from "@smthrs/engine-store/StepBoundary"
 import * as WorkspaceSandbox from "@smthrs/engine-store/WorkspaceSandbox"
 import * as NodeFlowsRuntime from "@smthrs/flows/NodeRuntime"
-import type * as Cell from "@smthrs/harness/Cell"
 import type * as FlowBinding from "@smthrs/harness/FlowBinding"
 import type * as Sandbox from "@smthrs/harness/Sandbox"
 import * as NodeJj from "@smthrs/jj/node/NodeJj"
@@ -495,24 +494,6 @@ const cellLimits: Sandbox.Limits = {
 }
 
 /**
- * Which cell authoring surface this host arms its runs with.
- *
- * Read from the environment beside `FLOWS_TEST_COMMAND`, and for the same
- * reason: the rig selects an arm the way it selects a test runner, so nothing
- * benchmark-specific enters the harness. `repl` is the persistent-realm arm;
- * anything else — unset, empty, a typo — is the shipped `filing` default, so a
- * mistyped variable can only fail to select the arm and can never select a third
- * thing. The choice is journaled in `discipline-armed`, so a report reads the
- * host's decision rather than a constant.
- *
- * @category constructors
- * @since 0.1.0
- */
-export const cellMode = (
-  environment: Readonly<Record<string, string | undefined>>
-): Cell.Mode => environment["FLOWS_CELL_MODE"]?.trim().toLowerCase() === "repl" ? "repl" : "filing"
-
-/**
  * The repository's own test invocation, as this host declares it.
  *
  * `TestRun` is a declaration flow: a caller selects *which* tests, never *how*
@@ -728,8 +709,7 @@ export const layerExecutor = (
           StandardFlows.memory(memoryServices),
           ...testFlows(shellServices, container, runner)
         ],
-        limits: cellLimits,
-        cellMode: cellMode(environment)
+        limits: cellLimits
       })
     })
   ).pipe(

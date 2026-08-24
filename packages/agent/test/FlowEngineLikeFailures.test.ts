@@ -277,6 +277,37 @@ describe("callMaterial", () => {
     expect(material.layers).toEqual(["layer-a"])
   })
 
+  it("folds the checkpoint a call names into what the call asked for", () => {
+    // A reading of the pinned tree and the same command against the tree as it
+    // stands are two different questions, so they key differently. A call that
+    // names none keys byte-identically to every call written before checkpoints
+    // existed, because an absent `at` spreads to nothing.
+    const at = FlowEngineLike.callMaterial(
+      new Cell.Call({
+        flowName: "bash",
+        input: { command: "run-tests" },
+        capabilities: [],
+        effects,
+        placement: Option.none(),
+        identity,
+        at: "cp-0-0"
+      })
+    )
+    const live = FlowEngineLike.callMaterial(
+      new Cell.Call({
+        flowName: "bash",
+        input: { command: "run-tests" },
+        capabilities: [],
+        effects,
+        placement: Option.none(),
+        identity
+      })
+    )
+
+    expect(at.body).toMatchObject({ at: "cp-0-0" })
+    expect(live.body).not.toHaveProperty("at")
+  })
+
   it("scopes an unsealed call to the cell invocation that issued it", () => {
     const material = FlowEngineLike.callMaterial(
       new Cell.Call({

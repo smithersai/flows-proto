@@ -58,7 +58,7 @@ const scripted = (
     stream: (request) =>
       Stream.suspend(() => {
         requests.push(request)
-        const source = cells[index] ?? cells.at(-1) ?? "return { intent: \"complete\", output: \"done\" }"
+        const source = cells[index] ?? cells.at(-1) ?? "ctx.done(\"done\")"
         index++
         return Stream.fromIterable([
           ModelEvent.ModelEvent.TextStart({ type: "text-start", id: `cell-${index}` }),
@@ -210,7 +210,7 @@ const completedOutput = (settled: ReadonlyArray<AgentEvent.AgentEvent>): string 
 const systemTexts = (request: ModelRequest.ModelRequest): ReadonlyArray<string> =>
   request.system.map((part) => part.text)
 
-const complete = "return { intent: \"complete\", state: {}, output: \"done\" }"
+const complete = "ctx.done(\"done\")"
 
 /**
  * A cell that never completes and never repeats its context.
@@ -221,8 +221,8 @@ const complete = "return { intent: \"complete\", state: {}, output: \"done\" }"
  * assertion counting provider calls would count the cache instead of the
  * budget.
  */
-const keepGoing = `const seen = (ctx.state && ctx.state.seen ? ctx.state.seen : 0) + 1
-return { intent: "continue", state: { seen }, context: [{ role: "user", text: "again " + seen }] }`
+const keepGoing = `var seen = (typeof seen === "number" ? seen : 0) + 1
+console.log("again " + seen)`
 
 const memoryText = "<flows_memory_context>\n[bank/fact] remembered\n</flows_memory_context>"
 const memory: MemorySource.DeclaredText = { text: memoryText, digest: "memory-digest" }
@@ -305,7 +305,7 @@ for (const flow of ["fs/read", "fs/write"]) {
   const result = await ctx.call(flow, {})
   results.push(flow + ": " + (result.ok === false ? result.error.message : result))
 }
-return { intent: "complete", state: {}, output: results.join("\\n") }`
+ctx.done(results.join("\\n"))`
 
   const flows = [
     descriptor("fs/read", { capabilities: ["fs:read:**"] }),
@@ -417,7 +417,7 @@ describe("the frame budget", () => {
 describe("authorize decides per call, and only when supplied", () => {
   const two = `await ctx.call("fs/read", {})
 await ctx.call("fs/write", {})
-return { intent: "complete", state: {}, output: "done" }`
+ctx.done("done")`
 
   const flows = [descriptor("fs/read"), descriptor("fs/write")]
 
@@ -472,7 +472,7 @@ return { intent: "complete", state: {}, output: "done" }`
 
 describe("a markdown flow needs a prompt runner", () => {
   const call = `const answer = await ctx.call("docs/summarise", { args: "the release notes" })
-return { intent: "complete", state: {}, output: String(answer) }`
+ctx.done(String(answer))`
 
   const flows = [descriptor("docs/summarise", { markdown: true })]
 
@@ -513,7 +513,7 @@ return { intent: "complete", state: {}, output: String(answer) }`
 
 describe("a discovered flow needs an implementation", () => {
   const call = `await ctx.call("fs/read", {})
-return { intent: "complete", state: {}, output: "done" }`
+ctx.done("done")`
 
   const run = (implementations: ReadonlyMap<string, CellCalls.Implementation> | undefined) => {
     const requests: Array<ModelRequest.ModelRequest> = []

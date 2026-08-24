@@ -208,17 +208,6 @@ export interface Options {
    * caller that claims it wrongly buys a run that waits forever.
    */
   readonly approvalChannel?: boolean | undefined
-  /**
-   * Which authoring surface this run is armed for; see `Cell.Mode`.
-   *
-   * `filing` is the default and is what every existing host gets. `repl` gives
-   * the run one persistent realm for its whole life, teaches the REPL contract
-   * instead of the filing one, and needs a sandbox binding that offers a realm —
-   * the QuickJS binding does; a host that arms `repl` against one that does not
-   * is told so rather than quietly served the other surface. It is an arm, not
-   * a replacement: see `docs/specs/Concepts/Repl Realm.md`.
-   */
-  readonly cellMode?: Cell.Mode | undefined
   readonly limits?: Sandbox.Limits | undefined
 }
 
@@ -251,12 +240,10 @@ const opening = (
       modelId: Seat.modelIdOf(options.seat.id),
       segments: [
         ...declared,
-        // The task itself is a PREFIX segment. The tail is rebuilt every
-        // frame from whatever the cell returns, so a task placed there is
-        // gone after frame one and the model works from its own summaries of
-        // its instructions — a benchmark run made the intended fix, forgot
-        // the environment teaching that lived only in the opening prompt,
-        // and parked asking a human for what the prompt had told it.
+        // The task itself is a PREFIX segment, so it survives compaction: a
+        // benchmark run made the intended fix, forgot the environment teaching
+        // that lived only in the opening prompt, and parked asking a human for
+        // what the prompt had told it.
         {
           kind: "instructions",
           zone: "prefix",
@@ -273,8 +260,7 @@ const opening = (
         }
       ]
     }),
-    flows,
-    options.cellMode
+    flows
   )
 }
 
@@ -425,8 +411,7 @@ const runProduction: Service["run"] = (options) =>
             narrowingCap: options.narrowingCap,
             unmovedCap: options.unmovedCap,
             unresolvedCap: options.unresolvedCap,
-            approvalChannel: options.approvalChannel,
-            mode: options.cellMode
+            approvalChannel: options.approvalChannel
           })
           return CellTurn.run({ state, flows, limits: options.limits }).pipe(
             Stream.provideService(EngineLike.EngineLike, withRequestPlugins(port, kernel.plugins))

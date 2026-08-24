@@ -607,12 +607,41 @@ describe("QuickJSSandbox.openRealm", () => {
 })
 
 describe("Sandbox.replTransition", () => {
-  it("never populates the filing mode's fields", () => {
+  it("populates none of the deprecated fields the filing surface wrote", () => {
     const transition = Sandbox.replTransition(undefined, undefined)
-    expect(transition).toEqual(
-      new Cell.Continue({ state: null, context: [], render: undefined, recall: undefined, justification: undefined })
-    )
+    expect(transition).toEqual(new Cell.Continue({ justification: undefined }))
     expect(Schema.encodeUnknownSync(Cell.Transition)(transition)).toBeDefined()
+  })
+
+  it("still decodes a journal written while those fields carried something", () => {
+    // The r90–r96 waves are on disk and have to stay readable, so the fields
+    // survive on the schema as decode-only. Nothing writes them.
+    const legacy = Schema.decodeUnknownSync(Cell.Transition)({
+      _tag: "continue",
+      state: { plan: ["read"] },
+      context: [{ role: "user", text: "keep exactly this" }],
+      render: ["plan"],
+      recall: [1]
+    })
+    expect(legacy._tag).toBe("continue")
+    expect((legacy as Cell.Continue).state).toEqual({ plan: ["read"] })
+    expect((legacy as Cell.Continue).context?.[0]?.text).toBe("keep exactly this")
+    expect((legacy as Cell.Continue).render).toEqual(["plan"])
+    expect((legacy as Cell.Continue).recall).toEqual([1])
+
+    const completed = Schema.decodeUnknownSync(Cell.Transition)({
+      _tag: "complete",
+      state: { verification: "x" },
+      output: "done"
+    })
+    expect((completed as Cell.Complete).state).toEqual({ verification: "x" })
+    const parked = Schema.decodeUnknownSync(Cell.Transition)({
+      _tag: "park",
+      state: null,
+      reason: "waiting-input",
+      message: "which branch?"
+    })
+    expect((parked as Cell.Park).state).toBeNull()
   })
 })
 
@@ -650,21 +679,12 @@ describe("CellValidation.normalize", () => {
   })
 
   it("erases type-only syntax before it normalizes, so a typed cell persists too", () => {
-    const validated = CellValidation.validate(Cell.source("const total: number = 1", "typescript"), "repl")
+    const validated = CellValidation.validate(Cell.source("const total: number = 1", "typescript"))
     expect(validated.compiled).toContain("var total = 1")
   })
 
-  it("leaves the filing mode's parse byte-identical", () => {
-    const filing = CellValidation.validate(Cell.source("const a = 1\nreturn { intent: 'continue' }"))
-    expect(filing.rejected).toBeUndefined()
-    expect(filing.compiled).toBe("const a = 1\nreturn { intent: 'continue' }")
-  })
-
   it("refuses a return the realm could not compile, wherever the cell put it", () => {
-    const nested = CellValidation.validate(
-      Cell.source("if (ready) {\n  return { intent: 'continue' }\n}"),
-      "repl"
-    )
+    const nested = CellValidation.validate(Cell.source("if (ready) {\n  return { intent: 'continue' }\n}"))
     expect(nested.rejected?.code).toBe("compile_failed")
     expect(nested.rejected?.message).toContain("line 2")
   })
@@ -686,22 +706,16 @@ describe("CellValidation.normalize", () => {
     ["a nested object pattern", "const { a: { console: console } } = { a: { console: 1 } }", "console"],
     ["an array pattern with a hole", "const [, ctx] = [1, 2]", "ctx"]
   ])("refuses %s that claims the realm's own binding", (_shape, text, name) => {
-    const refused = CellValidation.validate(Cell.source(text), "repl")
+    const refused = CellValidation.validate(Cell.source(text))
     expect(refused.rejected?.code).toBe("compile_failed")
     expect(refused.rejected?.message).toContain(`may not declare \`${name}\``)
   })
 
   it("leaves a nested declaration of the realm's names alone, because it shadows nothing", () => {
     const nested = CellValidation.validate(
-      Cell.source("function scope() {\n  const ctx = 1\n  return ctx\n}\nvar out = scope()"),
-      "repl"
+      Cell.source("function scope() {\n  const ctx = 1\n  return ctx\n}\nvar out = scope()")
     )
     expect(nested.rejected).toBeUndefined()
-  })
-
-  it("lets the filing mode declare the names its per-cell realm throws away", () => {
-    const filed = CellValidation.validate(Cell.source("const ctx = 1\nreturn { intent: 'continue' }"), "filing")
-    expect(filed.rejected).toBeUndefined()
   })
 })
 
@@ -724,7 +738,7 @@ describe("the REPL contract's worked example", () => {
   }
 
   it("runs, in order, in the realm it is written for", async () => {
-    const contract = CellPrompt.make(shown, {}, "repl").find((section) => section.id === "cell-contract")?.text ?? ""
+    const contract = CellPrompt.make(shown).find((section) => section.id === "cell-contract")?.text ?? ""
     const blocks = [...contract.matchAll(/```cell\n([\s\S]*?)```/g)].map((match) => match[1]!)
     expect(blocks).toHaveLength(2)
 
@@ -790,7 +804,7 @@ describe("the REPL contract's worked example", () => {
     // The same second cell, against a tree the edit does not fix. The guard is
     // the whole difference between a run that answers and a run that carries on,
     // and nothing else in the cell changes.
-    const contract = CellPrompt.make(shown, {}, "repl").find((section) => section.id === "cell-contract")?.text ?? ""
+    const contract = CellPrompt.make(shown).find((section) => section.id === "cell-contract")?.text ?? ""
     const blocks = [...contract.matchAll(/```cell\n([\s\S]*?)```/g)].map((match) => match[1]!)
     const stubbed: Sandbox.Handler = (invocation) =>
       Effect.sync(() =>

@@ -50,7 +50,7 @@ const route: FlowEngineLike.RouteResolver = { prepare: () => Effect.succeed(prep
 
 const cell = `const listed = await ctx.call("fs/list", { path: "." })
 const written = await ctx.call("fs/write", { path: listed[0], text: "done" })
-return { intent: "complete", state: { written: written }, output: written }`
+ctx.done(written)`
 
 /** A recorded model that replies with exactly one cell and records its prompt. */
 const recorded = (requests: Array<string>): Model.Model =>
@@ -89,7 +89,7 @@ const recordedCells = (requests: Array<string>, cells: ReadonlyArray<string>): M
               message.content.flatMap((part) => (part.type === "text" ? [part.text] : []))
             ).join("\n")
         )
-        const source = cells[index++] ?? cells.at(-1) ?? "return { intent: \"complete\", output: \"done\" }"
+        const source = cells[index++] ?? cells.at(-1) ?? "ctx.done(\"done\")"
         return Stream.fromIterable([
           ModelEvent.ModelEvent.TextStart({ type: "text-start", id: `cell-${index}` }),
           ModelEvent.ModelEvent.TextDelta({
@@ -479,8 +479,8 @@ describe("Agent.run", () => {
       collect({
         registry: registryOf([descriptor("fs/write", { tier: "irreversible" })]),
         model: recordedCells(selectedRequests, [
-          "await ctx.call(\"fs/write\", { path: \"alpha.md\", text: \"done\" }); return { intent: \"continue\", state: { kept: true }, context: [{ role: \"user\", text: \"next\" }] }",
-          "return { intent: \"complete\", output: \"done\" }"
+          "await ctx.call(\"fs/write\", { path: \"alpha.md\", text: \"done\" }); console.log(\"next\")",
+          "ctx.done(\"done\")"
         ]),
         implementations: implementations([]),
         authorize: () =>
@@ -510,7 +510,7 @@ describe("Agent.run", () => {
     const unselectedOutcome = await drive(
       collect({
         registry: registryOf([]),
-        model: recordedCells(unselectedRequests, ["return { intent: \"complete\", output: \"done\" }"])
+        model: recordedCells(unselectedRequests, ["ctx.done(\"done\")"])
       })
     )
 

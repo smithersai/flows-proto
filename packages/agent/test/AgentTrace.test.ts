@@ -39,7 +39,7 @@ const call = new Cell.Call({
   identity
 })
 
-const cell = Cell.source("return { intent: 'complete', output: 'done' }")
+const cell = Cell.source("ctx.done('done')")
 const transition = new Cell.Complete({ state: null, output: "done", reason: "finished" })
 const outcome = new Cell.Settled({ transition })
 const reason = new EngineLike.SuspendReason({ code: "waiting-input", message: "Needs an answer" })
@@ -124,10 +124,6 @@ describe("trace", () => {
             // — journaled for the same reason and read the same way.
             unmovedCap: 1,
             unresolvedCap: 1,
-            // Which authoring surface the run was armed for. The one arming a
-            // grader cannot infer from behaviour, so it is journaled with the
-            // budgets rather than left to be guessed from a run's own shape.
-            cellMode: "filing",
             calls: 64,
             memoryBytes: 134_217_728,
             steps: 1_000,
@@ -414,6 +410,22 @@ describe("trace", () => {
         "resolved",
         new AgentEvent.Resolved({ eventType: "flows.harness.resolved.v1", message: assistant }),
         { eventType: "control.agent.resolved", payload: { text: "First line.\nSecond line." } }
+      ],
+      [
+        "checkpoint-minted",
+        new AgentEvent.CheckpointMinted({
+          eventType: "flows.harness.checkpoint-minted.v1",
+          id: "cp-0-0",
+          ref: "stash-cp-0-0",
+          cell: "cell-digest",
+          ordinal: 0
+        }),
+        {
+          eventType: "control.agent.checkpoint-minted",
+          // The store's own name for the tree travels with the id: a journal
+          // holding only the reading could not say which tree it was of.
+          payload: { id: "cp-0-0", ref: "stash-cp-0-0", cell: "cell-digest", ordinal: 0 }
+        }
       ]
     ] satisfies ReadonlyArray<readonly [string, AgentEvent.AgentEvent, unknown]>
   )(

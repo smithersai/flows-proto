@@ -13,6 +13,7 @@ import * as CellTurn from "@smthrs/harness/CellTurn"
 import * as ContextWindow from "@smthrs/harness/ContextWindow"
 import * as EngineLike from "@smthrs/harness/EngineLike"
 import { HarnessError } from "@smthrs/harness/HarnessError"
+import * as QuickJSSandbox from "@smthrs/harness/QuickJSSandbox"
 import * as Sandbox from "@smthrs/harness/Sandbox"
 import * as Steering from "@smthrs/harness/Steering"
 import * as ModelEvent from "@smthrs/model/ModelEvent"
@@ -30,7 +31,7 @@ const decoder = new TextDecoder()
 const encoder = new TextEncoder()
 
 const cell = `const written = await ctx.call("fs/write", { path: "notes/todo.md", text: "done" })
-return { intent: "complete", state: {}, output: written }`
+ctx.done(written)`
 
 const descriptor = (
   name: string,
@@ -123,7 +124,7 @@ const cellEvents = Stream.fromIterable([
 const turn = (
   sandbox: WorkspaceSandbox.Service,
   flow: Descriptor.FlowDescriptor
-): Effect.Effect<ReadonlyArray<string>, HarnessError, Crypto.Crypto> =>
+): Effect.Effect<ReadonlyArray<string>, HarnessError | Sandbox.SandboxError, Crypto.Crypto> =>
   Effect.gen(function*() {
     const calls = yield* FlowEngineLike.sandboxed(sandbox, writer, { layers: ["layer-a"] })
     const port = EngineLike.makeNoop({
@@ -141,7 +142,7 @@ const turn = (
           if (event._tag === "cell-call-settled") messages.push(`${event.flowName}:${event.result.outcome}`)
         })
       ),
-      Effect.provideService(Sandbox.Sandbox, Sandbox.makeRestricted()),
+      Effect.provide(QuickJSSandbox.layer),
       Effect.provideService(Steering.Source, Steering.makeNoop()),
       Effect.provideService(EngineLike.EngineLike, port)
     )
