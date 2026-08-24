@@ -431,6 +431,19 @@ describe("cellPrompt", () => {
     expect(environment).toContain("keeps its own attempt and durability snapshots in a repository of its own")
   })
 
+  it("names the one thing a history search now does find, and says whose it is", () => {
+    // A checkpoint is recorded as an unreferenced commit, so `git fsck` reports
+    // it as dangling and `git show` prints the agent's own working tree back at
+    // it. Left unsaid, that is django-13346 again one wave later: a commit
+    // holding the fix, found by mining, applied as if somebody else had written
+    // it. The claim about `git fsck` therefore came out of the list and the
+    // truth went in its place.
+    const environment = sectionOf("cell-environment")
+    expect(environment).not.toContain("or `git fsck` for one costs a frame")
+    expect(environment).toContain("A dangling commit is this harness pinning your own tree for a checkpoint")
+    expect(environment).toContain("`git fsck` reports your edit and never a fix")
+  })
+
   it("teaches the archaeology that does pay, reading history backwards", () => {
     const environment = sectionOf("cell-environment")
     expect(environment).toContain("says what an assertion was written for")
