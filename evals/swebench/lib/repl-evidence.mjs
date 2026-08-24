@@ -16,6 +16,8 @@
  * | `filing` | did the realm arm ever file state or project context — the surface it is supposed to have removed |
  * | `repeats` | the note-taking failure: did a run re-issue a call it had already settled, which is a run that lost track of what it had read |
  * | `referenceErrors` | the other note-taking failure: did a cell name something the realm was not holding |
+ * | `guardedCompletions` / `callFreeFinalFrame` | did a run finish behind a check in the frame that ran it, or in a later frame that watched nothing |
+ * | `rePrintFrames` | the print channel's own note-taking failure: did a frame print a line the frame before it had already printed |
  *
  * Both arms are read by the same code, and the two that are defined for both
  * are the ones that decide the A/B: `carried*` and `repeats`. The other two are
@@ -187,16 +189,23 @@ const ambient = new Set([
 ])
 
 /**
- * Strips comments, strings, template literals and regular expressions from cell
- * source, leaving code whose identifiers are identifiers.
+ * The half-open spans of cell source that are not code: comments, strings,
+ * template literals and regular expression literals.
  *
  * A single left-to-right scan rather than a parse, because the input is one
  * model-authored script and the failure mode of a parse — a syntax error the
- * realm accepted — would drop a whole cell from the count. Each construct is
- * replaced by a space so tokens on either side stay apart.
+ * realm accepted — would drop a whole cell from the count.
+ *
+ * Two readers want this scan and want different things back from it. `strip`
+ * wants the code with each span collapsed, because it counts identifiers and
+ * only needs the tokens on either side of a literal to stay apart. `masked`
+ * wants the code with each span blanked in place, because it walks brace and
+ * paren structure by index and a collapse would move every position after the
+ * first string. Sharing the scan is what keeps the two readings the same
+ * reading.
  */
-export const strip = (text) => {
-  let out = ""
+const literalSpans = (text) => {
+  const spans = []
   let index = 0
   // A `/` opens a regular expression only where a value may begin. Tracking the
   // last significant character is enough to tell that from division, and being
@@ -206,18 +215,21 @@ export const strip = (text) => {
     const char = text[index]
     const next = text[index + 1]
     if (char === "/" && next === "/") {
+      const start = index
       while (index < text.length && text[index] !== "\n") index += 1
-      out += " "
+      spans.push([start, index])
       continue
     }
     if (char === "/" && next === "*") {
+      const start = index
       index += 2
       while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) index += 1
       index += 2
-      out += " "
+      spans.push([start, Math.min(index, text.length)])
       continue
     }
     if (char === "\"" || char === "'" || char === "`") {
+      const start = index
       const quote = char
       index += 1
       while (index < text.length) {
@@ -231,11 +243,12 @@ export const strip = (text) => {
         }
         index += 1
       }
-      out += " "
+      spans.push([start, Math.min(index, text.length)])
       previous = "x"
       continue
     }
     if (char === "/" && (previous === "" || "=(,:[!&|?{};+-*%<>~^".includes(previous))) {
+      const start = index
       index += 1
       let inClass = false
       while (index < text.length) {
@@ -251,18 +264,168 @@ export const strip = (text) => {
         } else if (text[index] === "\n") break
         index += 1
       }
-      out += " "
+      spans.push([start, Math.min(index, text.length)])
       previous = "x"
       continue
     }
-    out += char
     if (!/\s/.test(char)) previous = char
     index += 1
   }
-  return out
+  return spans
+}
+
+/**
+ * Strips comments, strings, template literals and regular expressions from cell
+ * source, leaving code whose identifiers are identifiers.
+ *
+ * Each construct is replaced by a space so tokens on either side stay apart.
+ */
+export const strip = (text) => {
+  let out = ""
+  let at = 0
+  for (const [start, end] of literalSpans(text)) {
+    out += text.slice(at, start) + " "
+    at = end
+  }
+  return out + text.slice(at)
+}
+
+/**
+ * The same scan, blanked in place: every character of every literal, comment and
+ * regular expression becomes a space, and the source keeps its length, its line
+ * breaks and every other index.
+ *
+ * This is what a structural reader needs. `completions` decides whether a
+ * `ctx.done` sits behind a check by walking back through braces and parentheses
+ * from the position it was found at, and a `{` inside a shell script in a
+ * template literal would derail that walk. Newlines inside a span survive
+ * because a statement's extent is read off them.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const masked = (text) => {
+  let out = ""
+  let at = 0
+  for (const [start, end] of literalSpans(text)) {
+    out += text.slice(at, start)
+    for (let index = start; index < end; index += 1) out += text[index] === "\n" ? "\n" : " "
+    at = end
+  }
+  return out + text.slice(at)
 }
 
 const identifierPattern = /[A-Za-z_$][A-Za-z0-9_$]*/g
+
+/**
+ * Whether the `{` or the `ctx.done` at `at` is the body of an `if` test.
+ *
+ * Reads backwards, structurally: skip whitespace, expect a `)`, walk to the `(`
+ * it closes counting depth, skip whitespace again, and require the word `if`.
+ * Nothing here is a regular expression over the whole prefix, because a greedy
+ * `if\s*\([\s\S]*\)` matches any earlier `if` in the cell and would call every
+ * completion after the first one guarded.
+ */
+const behindIfTest = (code, at) => {
+  let index = at - 1
+  while (index >= 0 && /\s/.test(code[index])) index -= 1
+  if (index < 0 || code[index] !== ")") return false
+  let depth = 0
+  for (; index >= 0; index -= 1) {
+    if (code[index] === ")") depth += 1
+    else if (code[index] === "(") {
+      depth -= 1
+      if (depth === 0) break
+    }
+  }
+  if (index < 0) return false
+  index -= 1
+  while (index >= 0 && /\s/.test(code[index])) index -= 1
+  if (index < 1 || code.slice(index - 1, index + 1) !== "if") return false
+  return !/[A-Za-z0-9_$.]/.test(code[index - 2] ?? " ")
+}
+
+/** Whether the `{` at `at` opens an `else` branch. */
+const behindElse = (code, at) => {
+  let index = at - 1
+  while (index >= 0 && /\s/.test(code[index])) index -= 1
+  if (index < 3 || code.slice(index - 3, index + 1) !== "else") return false
+  return !/[A-Za-z0-9_$.]/.test(code[index - 4] ?? " ")
+}
+
+/**
+ * Every `ctx.done` and `ctx.park` a cell contains, and whether each one is
+ * behind a check.
+ *
+ * The contract as of `c23c21e4f` teaches completion as a guard —
+ * `if (after.exitCode === 0) ctx.done(...)` — because a completion now takes
+ * effect where it is called, so a cell can run its verification and finish on
+ * the result in one frame. Before that a cell could only finish by ending, and
+ * the shape it produced was see-then-attest: one frame that ran the check, and
+ * a second, call-free frame that declared the outcome. This is the reader that
+ * tells the two apart.
+ *
+ * **Guarded** is structural, not textual. A completion counts as guarded when
+ * it sits directly behind an `if` test (`if (ok) ctx.done(...)`), inside a block
+ * that an `if` test or an `else` opens, or after a `&&` or `?` that short-circuits
+ * on a value. Every one of those is read by walking back from the completion
+ * through balanced parentheses and braces of `masked` source, so a `{` in a
+ * heredoc and an `if` in a comment are not structure.
+ *
+ * Conservative in the one direction that matters: it can call a real guard
+ * unguarded — a completion behind an early `return`, or one whose check is a
+ * `throw` above it — and it cannot invent a guard out of a cell that has none,
+ * because every path to `true` requires an `if`, an `else`, a `&&` or a `?`
+ * lexically dominating the call in code the realm actually ran.
+ *
+ * **REPL-only by construction.** A filing cell has no `ctx.done`: it finishes by
+ * returning `{ _tag: "done" }`, so this reads zero over the filing arm and the
+ * quantity to read against it is `callFreeFinalFrame`, which is defined for both.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const completions = (text) => {
+  const code = masked(text)
+  const found = []
+  for (const match of code.matchAll(/\bctx\s*\.\s*(done|park)\s*\(/g)) {
+    const at = match.index
+    let guarded = behindIfTest(code, at)
+    if (!guarded) {
+      const open = []
+      for (let index = 0; index < at; index += 1) {
+        if (code[index] === "{") open.push(index)
+        else if (code[index] === "}") open.pop()
+      }
+      guarded = open.some((brace) => behindIfTest(code, brace) || behindElse(code, brace))
+    }
+    if (!guarded) {
+      let index = at - 1
+      while (index >= 0 && /\s/.test(code[index])) index -= 1
+      guarded = code[index] === "?" || (index >= 1 && code.slice(index - 1, index + 1) === "&&")
+    }
+    found.push({ kind: match[1], index: at, guarded })
+  }
+  return found
+}
+
+/**
+ * The shortest printed line two frames must share for the second to count as a
+ * re-print.
+ *
+ * Twenty characters. Short lines are the channel working: `ok`, a repeated
+ * heading, a file name, a `0`. A twenty-character line that a frame prints when
+ * the frame before it printed the same line is the model re-deriving what it was
+ * already handed, which is the print channel's own version of the note-taking
+ * failure `repeats.information` counts for calls. The count is flat across the
+ * whole band 16–36 on the r95repl lane (72 down to 66), so nothing turns on the
+ * exact number.
+ */
+const rePrintFloor = 20
+
+/** The lines of one print buffer a re-print may be counted on. */
+const printedLines = (text) =>
+  text.split("\n").map((line) => line.trim()).filter((line) => line.length >= rePrintFloor)
 
 /**
  * What a repeated call of each flow means, by what the flow does to the tree.
@@ -372,6 +535,7 @@ export const readRun = (databasePath) => {
   let filedState = 0
   let projectedContext = 0
   let frame = -1
+  let finished
 
   for (const row of rows) {
     const payload = JSON.parse(row.payload_json)
@@ -417,7 +581,7 @@ export const readRun = (databasePath) => {
         if (transition?._tag === "continue") {
           if (transition.state !== null && transition.state !== undefined) filedState += 1
           if (Array.isArray(transition.context) && transition.context.length > 0) projectedContext += 1
-        }
+        } else if (transition?._tag !== undefined) finished = { tag: transition._tag, frame }
         break
       }
       default:
@@ -472,6 +636,50 @@ export const readRun = (databasePath) => {
     repeated.push({ kind, flow: seen.flow, frames: [...seen.frames].sort((a, b) => a - b), signature })
   }
 
+  // Completion: how a run finished, and whether the frame that finished it had
+  // watched anything. `callFreeFinalFrame` is the one defined for both arms —
+  // the last frame of the run issued no call at all, which is the see-then-attest
+  // shape whatever surface produced it.
+  //
+  // Two counts, and they answer different questions. `guardedCompletions` counts
+  // the *cells that wrote a completion*, fired or not, because a guard the check
+  // declined is the shape being adopted just as much as one that fired: the
+  // contract asks for the guard in every cell that could finish. `finished`
+  // names the one transition that ended the run, so `finishedGuarded` is about
+  // the completion that actually took.
+  const callFrames = new Set(calls.map((call) => call.frame))
+  const lastFrame = frame
+  const callFreeFinalFrame = frame >= 0 && !callFrames.has(lastFrame)
+  let guardedCompletions = 0
+  let unguardedCompletions = 0
+  let inCellCompletions = 0
+  const completionFrames = []
+  for (const cell of cells) {
+    const found = completions(cell.text)
+    if (found.length === 0) continue
+    const guarded = found.some((one) => one.guarded)
+    if (guarded) guardedCompletions += 1
+    else unguardedCompletions += 1
+    if (callFrames.has(cell.frame)) inCellCompletions += 1
+    completionFrames.push({ frame: cell.frame, guarded, withCalls: callFrames.has(cell.frame) })
+  }
+  const finishing = finished === undefined
+    ? undefined
+    : completionFrames.find((one) => one.frame === finished.frame)
+
+  // Re-prints: a frame that printed a line the frame before it had already
+  // printed, which is the print channel's own note-taking failure. Read against
+  // the immediately preceding frame rather than against the whole run, because
+  // the preceding frame's buffer is exactly what this turn was handed: repeating
+  // it is spending output tokens on bytes already in the context.
+  let rePrintFrames = 0
+  let previousLines = null
+  for (const print of prints) {
+    const lines = printedLines(print.text)
+    if (previousLines !== null && lines.some((line) => previousLines.has(line))) rePrintFrames += 1
+    previousLines = new Set(lines)
+  }
+
   const printed = prints.filter((print) => print.text.length > 0)
   // A frame that printed more than the harness delivers says so in its own
   // buffer, in one of the sentences the sandbox writes. Counting them is how a
@@ -508,8 +716,17 @@ export const readRun = (databasePath) => {
     printedFrames: printed.length,
     silentFrames: prints.length - printed.length,
     elidedFrames,
+    rePrintFrames,
     printBytes,
     printLines,
+    callFreeFinalFrame,
+    guardedCompletions,
+    unguardedCompletions,
+    inCellCompletions,
+    completionFrames,
+    finished,
+    finishedGuarded: finishing?.guarded ?? false,
+    finishedWithCalls: finishing?.withCalls ?? false,
     filedState,
     projectedContext,
     repeats,
@@ -557,8 +774,15 @@ export const totals = (runs) => {
     printedFrames: 0,
     silentFrames: 0,
     elidedFrames: 0,
+    rePrintFrames: 0,
     printBytes: 0,
     printLines: 0,
+    callFreeFinalFrames: 0,
+    guardedCompletions: 0,
+    unguardedCompletions: 0,
+    inCellCompletions: 0,
+    finishedGuarded: 0,
+    finishedWithCalls: 0,
     filedState: 0,
     projectedContext: 0,
     repeats: { information: 0, check: 0, edit: 0, other: 0 },
@@ -581,8 +805,15 @@ export const totals = (runs) => {
     sum.printedFrames += run.printedFrames
     sum.silentFrames += run.silentFrames
     sum.elidedFrames += run.elidedFrames
+    sum.rePrintFrames += run.rePrintFrames
     sum.printBytes += run.printBytes
     sum.printLines += run.printLines
+    if (run.callFreeFinalFrame) sum.callFreeFinalFrames += 1
+    sum.guardedCompletions += run.guardedCompletions
+    sum.unguardedCompletions += run.unguardedCompletions
+    sum.inCellCompletions += run.inCellCompletions
+    if (run.finishedGuarded) sum.finishedGuarded += 1
+    if (run.finishedWithCalls) sum.finishedWithCalls += 1
     sum.filedState += run.filedState
     sum.projectedContext += run.projectedContext
     for (const kind of Object.keys(sum.repeats)) {
@@ -622,14 +853,19 @@ const main = () => {
       run.carriedReferences,
       run.carriedDepth,
       run.printBytes,
+      run.rePrintFrames,
       run.repeats.information,
       run.repeats.check,
       run.repeats.edit,
+      run.guardedCompletions,
+      run.unguardedCompletions,
+      run.callFreeFinalFrame ? 1 : 0,
       run.filedState
     ].join("\t")
   )
   process.stdout.write(
-    "instance\tmode\tframes\tcells\tnames\tcarryFrames\tcarryRefs\tdepth\tprintBytes\treread\trecheck\treedit\tfiled\n"
+    "instance\tmode\tframes\tcells\tnames\tcarryFrames\tcarryRefs\tdepth\tprintBytes\treprint"
+      + "\treread\trecheck\treedit\tguarded\tunguarded\tattest\tfiled\n"
       + rows.join("\n") + "\n\n" + JSON.stringify(sum, undefined, 2) + "\n"
   )
 }
