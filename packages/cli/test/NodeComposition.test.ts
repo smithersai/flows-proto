@@ -139,6 +139,28 @@ describe("NodeControl.cellMode", () => {
   })
 })
 
+describe("NodeControl.checkpointStore", () => {
+  it("pins on the workspace, under both the names a container gives it", () => {
+    // One directory, two names. The host checks a checkpoint out under the
+    // workspace and the container reaches the same directory through the mount
+    // it already has — which is why the scratch lives inside the workspace at
+    // all, and why the store needs both paths.
+    expect(NodeControl.checkpointStore({ FLOWS_TEST_CWD: "/testbed" }, "/work/repo")).toEqual({
+      root: "/work/repo",
+      cwd: "/testbed"
+    })
+  })
+
+  it("still pins for a host that runs its own tree directly", () => {
+    // No container, so the two names of the one directory are the same name.
+    // A host that declares nothing still gets checkpoints; it is the workspace
+    // root that decides, not the container.
+    for (const environment of [{}, { FLOWS_TEST_CWD: "" }, { FLOWS_TEST_CWD: "  " }]) {
+      expect(NodeControl.checkpointStore(environment, "/work/repo")).toEqual({ root: "/work/repo" })
+    }
+  })
+})
+
 describe("NodeControl.testRunner", () => {
   it("declares no runner until the host names a command", () => {
     // A `test` flow bound over a declaration that can only refuse is worse than

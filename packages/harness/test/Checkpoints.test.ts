@@ -12,7 +12,7 @@
 import { Capability } from "@smthrs/kernel"
 import { ModelEvent, ModelRequest } from "@smthrs/model"
 import { Descriptor } from "@smthrs/registry"
-import { Effect, Layer, Option, Schema, Stream } from "effect"
+import { Effect, Layer, Option, Stream } from "effect"
 import { describe, expect, it } from "vitest"
 import type * as AgentEvent from "../src/AgentEvent.ts"
 import * as Cell from "../src/Cell.ts"
