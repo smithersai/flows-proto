@@ -18,6 +18,7 @@ import * as ContextWindow from "@smthrs/harness/ContextWindow"
 import * as EngineLike from "@smthrs/harness/EngineLike"
 import { HarnessError } from "@smthrs/harness/HarnessError"
 import * as Plan from "@smthrs/harness/Plan"
+import * as QuickJSSandbox from "@smthrs/harness/QuickJSSandbox"
 import * as Sandbox from "@smthrs/harness/Sandbox"
 import * as Steering from "@smthrs/harness/Steering"
 import * as Model from "@smthrs/model/Model"
@@ -26,6 +27,7 @@ import * as ModelRequest from "@smthrs/model/ModelRequest"
 import type * as Route from "@smthrs/model/Route"
 import { Node } from "@smthrs/plan"
 import * as Descriptor from "@smthrs/registry/Descriptor"
+import * as Checkpoints from "@smthrs/std/Checkpoints"
 import { Cause, Deferred, Effect, Exit, Layer, Option, Schema, Scope, Stream } from "effect"
 import type * as Crypto from "effect/Crypto"
 import { describe, expect, it } from "vitest"
@@ -45,7 +47,7 @@ const route: FlowEngineLike.RouteResolver = { prepare: () => Effect.succeed(prep
 
 const cell = `const listed = await ctx.call("fs/list", { path: "." })
 const written = await ctx.call("fs/write", { path: listed[0], text: "done" })
-return { intent: "complete", state: { written: written }, output: written }`
+ctx.done(written)`
 
 /** A model that records every provider call and replies with exactly one cell. */
 const cellModel = (calls: Array<string>): Model.Model =>
@@ -236,7 +238,7 @@ const loop = (options: {
     const events: Array<AgentEvent.AgentEvent> = []
     yield* CellTurn.run({ state: options.state ?? state, flows }).pipe(
       Stream.runForEach((event) => Effect.sync(() => events.push(event))),
-      Effect.provideService(Sandbox.Sandbox, Sandbox.makeRestricted()),
+      Effect.provide(QuickJSSandbox.layer),
       Effect.provideService(Steering.Source, options.steering ?? Steering.makeNoop()),
       Effect.provideService(EngineLike.EngineLike, port)
     )
@@ -292,7 +294,7 @@ describe("the cell loop on the durable engine", () => {
   it("journals the turn-boundary steering drain and replays it after a park", async () => {
     // Frame 0 continues; frame 1 parks on the irreversible write's permission,
     // so the resume re-executes frame 0 — including its steering drain.
-    const continueCell = `return { intent: "continue", state: null, context: [{ role: "user", text: "frame one" }] }`
+    const continueCell = `console.log("frame one")`
     const requests: Array<ModelRequest.ModelRequest> = []
     const scripted = Model.make({
       stream: (request) =>
@@ -432,6 +434,51 @@ const counting = (executed: Array<string>): FlowEngineLike.CallRunner => ({
     })
 })
 
+describe("the port's capture seam", () => {
+  const request = { id: "cp-0-0", identity: { session: "session-1", frame: 0, boundary: "cell-digest" } }
+
+  it("reports nothing pinned when the composition holds no checkpoint store", async () => {
+    const outcome = await drive(Effect.gen(function*() {
+      const port = yield* FlowEngineLike.make({ model: cellModel([]), route })
+      return Option.isNone(yield* port.capture(request))
+    }))
+
+    expect(outcome).toMatchObject({ _tag: "completed", value: true })
+  })
+
+  it("carries the store's own name for the tree back to the controller", async () => {
+    const outcome = await drive(
+      Effect.gen(function*() {
+        const port = yield* FlowEngineLike.make({ model: cellModel([]), route })
+        const pinned = yield* port.capture(request)
+        return Option.getOrUndefined(pinned)?.ref
+      }).pipe(
+        Effect.provideService(
+          Checkpoints.Checkpoints,
+          Checkpoints.make({
+            capture: (id) => Effect.succeed(new Checkpoints.Snapshot({ id, ref: `stash-${id}` })),
+            materialize: (_id, use) =>
+              use({ id: "cp-0-0", host: "/host", guest: "/guest", root: "/work", guestRoot: "/work" })
+          })
+        )
+      )
+    )
+
+    expect(outcome).toMatchObject({ _tag: "completed", value: "stash-cp-0-0" })
+  })
+
+  it("reads a store that failed as nothing pinned, because that is what happened", async () => {
+    const outcome = await drive(
+      Effect.gen(function*() {
+        const port = yield* FlowEngineLike.make({ model: cellModel([]), route })
+        return Option.isNone(yield* port.capture(request))
+      }).pipe(Effect.provideService(Checkpoints.Checkpoints, Checkpoints.makeNoop()))
+    )
+
+    expect(outcome).toMatchObject({ _tag: "completed", value: true })
+  })
+})
+
 describe("cell call identity", () => {
   it("shares one sealed result across frames and cells, because that is what sealed means", async () => {
     const executed: Array<string> = []
@@ -448,6 +495,26 @@ describe("cell call identity", () => {
 
     expect(outcome).toMatchObject({ _tag: "completed", value: [1, 1] })
     expect(executed).toEqual(["fs/list#0:0"])
+  })
+
+  it("keys a reading of a pinned tree apart from the same reading of the live one", async () => {
+    // The whole of a fails-before proof is that these two are different
+    // questions. Sealed means "reusable wherever the same declaration appears
+    // with the same arguments", and the tree a call reads is one of its
+    // arguments — so a sealed read taken at a checkpoint must not replay as a
+    // read of the tree as it stands.
+    const executed: Array<string> = []
+    const outcome = await drive(Effect.gen(function*() {
+      const port = yield* FlowEngineLike.make({ model: cellModel([]), route, calls: counting(executed) })
+      const live = yield* port.call(cellCall({ path: "." }))
+      const pinned = yield* port.call(
+        new Cell.Call({ ...cellCall({ path: "." }), at: "cp-0-0" })
+      )
+      return [live.value, pinned.value]
+    }))
+
+    expect(outcome).toMatchObject({ _tag: "completed", value: [1, 2] })
+    expect(executed).toEqual(["fs/list#0:0", "fs/list#0:0"])
   })
 
   it("refuses to alias a sealed reading of a pinned tree with the same reading of the live one", async () => {

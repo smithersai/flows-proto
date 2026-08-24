@@ -67,8 +67,7 @@ const scripted = (cells: ReadonlyArray<string>, requests: Array<string>): Model.
 }
 
 /** A cell that completes immediately with a literal answer. */
-const answering = (output: string): string =>
-  `return { intent: "complete", state: {}, output: ${JSON.stringify(output)} }`
+const answering = (output: string): string => `ctx.done(${JSON.stringify(output)})`
 
 const emptyRegistry: Registry.Registry = Registry.makeNoop({
   list: () => Effect.succeed([]),
@@ -205,7 +204,7 @@ describe("AgentAction.make", () => {
             Layer.mergeAll(Staller.layer, Interpreter.layer(Stalling)).pipe(
               Layer.provideMerge(AgentAction.layerHost(host)),
               Layer.provideMerge(
-                seats(scripted(["return { intent: \"continue\", state: {}, context: [] }"], requests))
+                seats(scripted([""], requests))
               ),
               Layer.provideMerge(Layer.merge(Agent.layer, Agent.layerDefaults)),
               Layer.provideMerge(Action.layerImplementations),
@@ -260,8 +259,8 @@ const stack = <ROut, RIn>(
   )
 
 /** A cell that continues forever, projecting a different window every frame. */
-const stalling = `const seen = (ctx.state && ctx.state.seen ? ctx.state.seen : 0) + 1
-return { intent: "continue", state: { seen }, context: [{ role: "user", text: "again " + seen }] }`
+const stalling = `var seen = (typeof seen === "number" ? seen : 0) + 1
+console.log("again " + seen)`
 
 describe("AgentAction correction budgets", () => {
   it("rejects non-finite, fractional, and negative budgets at declaration time", () => {

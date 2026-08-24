@@ -3,11 +3,12 @@
  *
  *   node lib/repl-evidence.mjs <journals-dir> [--json] [--instance <id>]
  *
- * `run-45.sh --lane <name>` may arm `FLOWS_CELL_MODE=repl`, which gives a run
- * one QuickJS realm for its whole life instead of one async function per frame.
- * The A/B that decides whether that is adopted is settled on resolved, cost and
- * wall clock, all of which `compare-runs.mjs` already reads. This reads the
- * things only the realm can be asked about, off the runs' own journals:
+ * Every run holds one QuickJS realm for its whole life. The surface that
+ * preceded it — one async function per frame, filing JSON into `state` and
+ * projecting a `context` by hand — was deleted on 2026-08-24, and the waves
+ * that ran under it are still on disk. This reads both, off the runs' own
+ * journals, because the comparison between them is the record of why the
+ * deletion happened:
  *
  * | metric | the question it settles |
  * | --- | --- |
@@ -19,20 +20,21 @@
  * | `guardedCompletions` / `callFreeFinalFrame` | did a run finish behind a check in the frame that ran it, or in a later frame that watched nothing |
  * | `rePrintFrames` | the print channel's own note-taking failure: did a frame print a line the frame before it had already printed |
  *
- * Both arms are read by the same code, and the two that are defined for both
- * are the ones that decide the A/B: `carried*` and `repeats`. The other two are
- * one-sided by construction and say so rather than pretending otherwise.
+ * Both surfaces are read by the same code, and the two that are defined for
+ * both are the ones the comparison rested on: `carried*` and `repeats`. The
+ * other two are one-sided by construction and say so rather than pretending
+ * otherwise.
  *
- * **`prints` is REPL-only.** `CellTurn` emits `control.agent.cell-printed`
- * only where a realm ran, because filing mode has no print channel to journal —
- * a filing cell has no `console`, and what it says to its successor is the
- * `context` it returned. So the filing arm's zero here is structural, and the
+ * **`prints` is the realm's.** `CellTurn` emits `control.agent.cell-printed`
+ * only where a realm ran, because the filing surface had no print channel to
+ * journal — its cells had no `console`, and what one said to its successor was
+ * the `context` it returned. A filing wave's zero here is structural, and the
  * quantity to read against it is `projectedContext`.
  *
- * **`filedState` and `projectedContext` are the filing arm's own.** In REPL
- * mode the contract offers neither, so a non-zero count says the arm did not
- * take. In filing mode they are how the surface works, and their count is what
- * the REPL arm removed.
+ * **`filedState` and `projectedContext` are the filing surface's own.** Nothing
+ * writes them now — the fields survive on the transition schema for decoding
+ * alone — so a non-zero count in a journal is a journal from before the
+ * deletion.
  *
  * `carried*` is defined identically for both and is the honest control: a
  * filing cell's names vanish at its return, so a filing run that scores a carry
@@ -69,9 +71,9 @@
  *
  * **Filing** is read off the durable transition, not off the source: a
  * `control.agent.transition-applied` whose `continue` carries a non-null
- * `state` or a non-empty `context`. In REPL mode the contract offers neither,
- * so a non-zero count here says the arm did not take, and a zero says the
- * surface really was removed rather than merely undocumented.
+ * `state` or a non-empty `context`. Nothing writes either now, so a non-zero
+ * count here says the journal is from before the deletion, and a zero says the
+ * surface really is gone rather than merely undocumented.
  *
  * **A repeat** is one (flow, input) signature settled in two or more *different*
  * frames of one run. The signature is the canonical rendering of the pair, the
@@ -541,7 +543,11 @@ export const readRun = (databasePath) => {
     const payload = JSON.parse(row.payload_json)
     switch (row.event_type) {
       case "control.agent.discipline-armed":
-        mode = payload.cellMode
+        // The arming stopped carrying a surface when there stopped being two
+        // of them. A journal that names one is a journal from the waves that
+        // had a choice; one that names none ran the realm, which is the only
+        // surface there is.
+        mode = payload.cellMode ?? "repl"
         break
       case "control.agent.turn-opened":
         frame += 1

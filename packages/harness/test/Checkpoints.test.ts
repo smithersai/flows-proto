@@ -25,7 +25,7 @@ import * as ScriptedEngine from "./fixtures/scriptedEngine.ts"
 import * as ScriptedModel from "./fixtures/scriptedModel.ts"
 
 // ---------------------------------------------------------------------------
-// The sandbox surface, proved identically against both bindings.
+// The sandbox surface, proved against the binding a production host selects.
 // ---------------------------------------------------------------------------
 
 const projection = (name: string): Cell.FlowProjection =>
@@ -39,11 +39,6 @@ const projection = (name: string): Cell.FlowProjection =>
   })
 
 const flows = { probe: projection("probe") }
-
-const bindings: ReadonlyArray<readonly [string, Layer.Layer<Sandbox.Sandbox, unknown>]> = [
-  ["restricted", Sandbox.layerRestricted],
-  ["quickjs", QuickJSSandbox.layer]
-]
 
 /** Records what each invocation asked, and which tree it asked about. */
 const recording = (observed: Array<Sandbox.Invocation>): Sandbox.Handler => (invocation) =>
@@ -59,8 +54,8 @@ const pinning = (minted: Array<number>): Sandbox.Minter => (mint) =>
     return new Cell.CallResult({ outcome: "success", value: Cell.checkpoint(`cp-${mint.ordinal}`) })
   })
 
+/** Evaluates one cell in a realm of its own, which is what one frame does. */
 const evaluate = (
-  binding: Layer.Layer<Sandbox.Sandbox, unknown>,
   text: string,
   options: {
     readonly call?: Sandbox.Handler | undefined
@@ -69,13 +64,17 @@ const evaluate = (
 ): Promise<Cell.Outcome> =>
   Effect.gen(function*() {
     const sandbox = yield* Sandbox.Sandbox
-    return yield* sandbox.evaluate({
+    const open = sandbox.openRealm
+    expect(open).toBeDefined()
+    const realm = yield* open!({ flows })
+    const frame = yield* realm.evaluate({
       cell: Cell.source(text),
-      flows,
+      frame: 0,
       call: options.call ?? recording([]),
       ...(options.mint === undefined ? {} : { mint: options.mint })
     })
-  }).pipe(Effect.provide(binding), Effect.runPromise)
+    return frame.outcome
+  }).pipe(Effect.provide(QuickJSSandbox.layer), Effect.scoped, Effect.runPromise)
 
 const completed = (outcome: Cell.Outcome): string => {
   expect(outcome._tag).toBe("settled")
@@ -84,152 +83,146 @@ const completed = (outcome: Cell.Outcome): string => {
   return (transition as Cell.Complete).output
 }
 
-for (const [name, binding] of bindings) {
-  describe(`ctx.checkpoint (${name})`, () => {
-    it("pins the tree at the line the mint is written on, not the line it is awaited", async () => {
-      // The ruling's own spelling — `const cp = ctx.checkpoint()`, unawaited —
-      // and the reason it is honest: the queue settles in issue order, so the
-      // mint is dispatched before the call written after it whatever the cell
-      // does with the handle afterwards.
-      const observed: Array<Sandbox.Invocation> = []
-      const minted: Array<number> = []
-      const outcome = await evaluate(
-        binding,
-        `const cp = ctx.checkpoint()
+describe("ctx.checkpoint", () => {
+  it("pins the tree at the line the mint is written on, not the line it is awaited", async () => {
+    // The ruling's own spelling — `const cp = ctx.checkpoint()`, unawaited —
+    // and the reason it is honest: the queue settles in issue order, so the
+    // mint is dispatched before the call written after it whatever the cell
+    // does with the handle afterwards.
+    const observed: Array<Sandbox.Invocation> = []
+    const minted: Array<number> = []
+    const outcome = await evaluate(
+      `const cp = ctx.checkpoint()
          await ctx.call("probe", { step: "after the mint" })
          const held = await cp
-         return { intent: "complete", output: JSON.stringify(held) }`,
-        { call: recording(observed), mint: pinning(minted) }
-      )
+         ctx.done(JSON.stringify(held))`,
+      { call: recording(observed), mint: pinning(minted) }
+    )
 
-      expect(minted).toEqual([0])
-      expect(observed.map((call) => call.ordinal)).toEqual([1])
-      expect(completed(outcome)).toBe(`{"checkpoint":"cp-0"}`)
-    })
+    expect(minted).toEqual([0])
+    expect(observed.map((call) => call.ordinal)).toEqual([1])
+    expect(completed(outcome)).toBe(`{"checkpoint":"cp-0"}`)
+  })
 
-    it("carries the handle through to the boundary as the call's at", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `const cp = ctx.checkpoint()
+  it("carries the handle through to the boundary as the call's at", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `const cp = ctx.checkpoint()
          await ctx.call("probe", { at: "pinned" }, { at: cp })
          await ctx.call("probe", { at: "live" })
-         return { intent: "complete", output: "done" }`,
-        { call: recording(observed), mint: pinning([]) }
-      )
+         ctx.done("done")`,
+      { call: recording(observed), mint: pinning([]) }
+    )
 
-      expect(observed.map((call) => [call.input, call.at ?? null])).toEqual([
-        [{ at: "pinned" }, { checkpoint: "cp-0" }],
-        [{ at: "live" }, null]
-      ])
-      expect(completed(outcome)).toBe("done")
-    })
+    expect(observed.map((call) => [call.input, call.at ?? null])).toEqual([
+      [{ at: "pinned" }, { checkpoint: "cp-0" }],
+      [{ at: "live" }, null]
+    ])
+    expect(completed(outcome)).toBe("done")
+  })
 
-    it("awaits a handle the cell already resolved, without changing what it names", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      await evaluate(
-        binding,
-        `const cp = await ctx.checkpoint()
+  it("awaits a handle the cell already resolved, without changing what it names", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    await evaluate(
+      `const cp = await ctx.checkpoint()
          await ctx.call("probe", {}, { at: cp })
-         return { intent: "complete", output: "done" }`,
-        { call: recording(observed), mint: pinning([]) }
-      )
+         ctx.done("done")`,
+      { call: recording(observed), mint: pinning([]) }
+    )
 
-      expect(observed[0]?.at).toEqual({ checkpoint: "cp-0" })
-    })
+    expect(observed[0]?.at).toEqual({ checkpoint: "cp-0" })
+  })
 
-    it("binds ctx.base without anybody minting it", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const minted: Array<number> = []
-      const outcome = await evaluate(
-        binding,
-        `await ctx.call("probe", {}, { at: ctx.base })
-         return { intent: "complete", output: JSON.stringify(ctx.base) }`,
-        { call: recording(observed), mint: pinning(minted) }
-      )
+  it("binds ctx.base without anybody minting it", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const minted: Array<number> = []
+    const outcome = await evaluate(
+      `await ctx.call("probe", {}, { at: ctx.base })
+         ctx.done(JSON.stringify(ctx.base))`,
+      { call: recording(observed), mint: pinning(minted) }
+    )
 
-      // The dominant use case costs nothing: no mint, no bound spent, and the
-      // handle is there in frame one without any foresight.
-      expect(minted).toEqual([])
-      expect(observed[0]?.at).toEqual({ checkpoint: "base" })
-      expect(completed(outcome)).toBe(`{"checkpoint":"base"}`)
-    })
+    // The dominant use case costs nothing: no mint, no bound spent, and the
+    // handle is there in frame one without any foresight.
+    expect(minted).toEqual([])
+    expect(observed[0]?.at).toEqual({ checkpoint: "base" })
+    expect(completed(outcome)).toBe(`{"checkpoint":"base"}`)
+  })
 
-    it("hands the boundary whatever the cell passed as at, undecoded", async () => {
-      // The realm does not judge it. A cell that passes the wrong thing gets an
-      // ordinary catchable failure from the boundary, which is a frame it can
-      // fix, rather than a throw that loses every call the cell already paid
-      // for.
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `await ctx.call("probe", {}, { at: "not a checkpoint" })
+  it("hands the boundary whatever the cell passed as at, undecoded", async () => {
+    // The realm does not judge it. A cell that passes the wrong thing gets an
+    // ordinary catchable failure from the boundary, which is a frame it can
+    // fix, rather than a throw that loses every call the cell already paid
+    // for.
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `await ctx.call("probe", {}, { at: "not a checkpoint" })
          await ctx.call("probe", {}, { at: 7 })
          await ctx.call("probe", {}, { at: null })
-         return { intent: "complete", output: "done" }`,
-        { call: recording(observed) }
-      )
+         ctx.done("done")`,
+      { call: recording(observed) }
+    )
 
-      // `null` in particular: it is an object to `typeof`, so a thenable check
-      // that did not guard it would throw out of `ctx.call` and take the frame
-      // with it.
-      expect(observed.map((call) => call.at)).toEqual(["not a checkpoint", 7, null])
-      expect(completed(outcome)).toBe("done")
-    })
+    // `null` in particular: it is an object to `typeof`, so a thenable check
+    // that did not guard it would throw out of `ctx.call` and take the frame
+    // with it.
+    expect(observed.map((call) => call.at)).toEqual(["not a checkpoint", 7, null])
+    expect(completed(outcome)).toBe("done")
+  })
 
-    it("treats a missing options bag and a bag without at as the live tree", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      await evaluate(
-        binding,
-        `await ctx.call("probe", {})
+  it("treats a missing options bag and a bag without at as the live tree", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    await evaluate(
+      `await ctx.call("probe", {})
          await ctx.call("probe", {}, {})
          await ctx.call("probe", {}, null)
-         return { intent: "complete", output: "done" }`,
-        { call: recording(observed) }
-      )
+         ctx.done("done")`,
+      { call: recording(observed) }
+    )
 
-      expect(observed.map((call) => call.at ?? "live")).toEqual(["live", "live", "live"])
-    })
+    expect(observed.map((call) => call.at ?? "live")).toEqual(["live", "live", "live"])
+  })
 
-    it("refuses a mint, catchably, when the caller wired no minter", async () => {
-      const outcome = await evaluate(
-        binding,
-        `const answer = await ctx.checkpoint()
-         return { intent: "complete", output: JSON.stringify(answer) }`
-      )
+  it("refuses a mint, catchably, when the caller wired no minter", async () => {
+    const outcome = await evaluate(
+      `const answer = await ctx.checkpoint()
+         ctx.done(JSON.stringify(answer))`
+    )
 
-      const output = JSON.parse(completed(outcome)) as {
-        readonly ok: boolean
-        readonly error: { readonly code: string }
-      }
-      expect(output.ok).toBe(false)
-      expect(output.error.code).toBe("checkpoint_unavailable")
-    })
+    const output = JSON.parse(completed(outcome)) as {
+      readonly ok: boolean
+      readonly error: { readonly code: string }
+    }
+    expect(output.ok).toBe(false)
+    expect(output.error.code).toBe("checkpoint_unavailable")
+  })
 
-    it("counts a mint against the cell's own call budget", async () => {
-      // A mint crosses the boundary, so it is one of the crossings a cell is
-      // allowed. Nothing about it is free except `ctx.base`.
-      const outcome = await Effect.gen(function*() {
-        const sandbox = yield* Sandbox.Sandbox
-        return yield* sandbox.evaluate({
-          cell: Cell.source(
-            `ctx.checkpoint()
+  it("counts a mint against the cell's own call budget", async () => {
+    // A mint crosses the boundary, so it is one of the crossings a cell is
+    // allowed. Nothing about it is free except `ctx.base`.
+    const outcome = await Effect.gen(function*() {
+      const sandbox = yield* Sandbox.Sandbox
+      const limits = { calls: 2 }
+      const realm = yield* sandbox.openRealm!({ flows, limits })
+      const frame = yield* realm.evaluate({
+        cell: Cell.source(
+          `ctx.checkpoint()
              ctx.checkpoint()
              await ctx.call("probe", {})
-             return { intent: "complete", output: "done" }`
-          ),
-          flows,
-          call: recording([]),
-          mint: pinning([]),
-          limits: { calls: 2, timeMs: undefined, memoryBytes: undefined, steps: undefined, totalMs: undefined }
-        })
-      }).pipe(Effect.provide(binding), Effect.runPromise)
+             ctx.done("done")`
+        ),
+        frame: 0,
+        call: recording([]),
+        mint: pinning([]),
+        limits
+      })
+      return frame.outcome
+    }).pipe(Effect.provide(QuickJSSandbox.layer), Effect.scoped, Effect.runPromise)
 
-      expect(outcome._tag).toBe("rejected")
-      expect((outcome as Cell.Rejected).code).toBe("limit_exceeded")
-    })
+    expect(outcome._tag).toBe("rejected")
+    expect((outcome as Cell.Rejected).code).toBe("limit_exceeded")
   })
-}
+})
 
 describe("ctx.checkpoint in a persistent realm", () => {
   it("names a tree in one frame and reads against it in a later one", async () => {
@@ -375,7 +368,7 @@ const drive = async (options: {
   }).pipe(
     Stream.runForEach((event) => Effect.sync(() => events.push(event))),
     Effect.provide(engine.layer),
-    Effect.provide(Sandbox.layerRestricted),
+    Effect.provide(QuickJSSandbox.layer),
     Effect.provide(Steering.layerNoop()),
     Effect.result,
     Effect.runPromise
@@ -405,7 +398,7 @@ describe("CellTurn checkpoints", () => {
     const { engine, events } = await drive({
       cells: [
         `const cp = await ctx.checkpoint()
-         return { intent: "complete", state: {}, output: cp.checkpoint }`
+         ctx.done(cp.checkpoint)`
       ]
     })
 
@@ -430,7 +423,7 @@ describe("CellTurn checkpoints", () => {
         `await ctx.call("edit", { path: "a.py", text: "one" })
          await ctx.checkpoint()
          await ctx.call("edit", { path: "a.py", text: "two" })
-         return { intent: "complete", state: {}, output: "done" }`
+         ctx.done("done")`
       ],
       calls: [
         { _tag: "Success", value: null, tree: "a.py=one" },
@@ -446,7 +439,7 @@ describe("CellTurn checkpoints", () => {
       cells: [
         `await ctx.call("bash", { mode: "unhermetic", command: "check" }, { at: ctx.base })
          await ctx.call("bash", { mode: "unhermetic", command: "check" })
-         return { intent: "complete", state: {}, output: "done" }`
+         ctx.done("done")`
       ]
     })
 
@@ -457,7 +450,7 @@ describe("CellTurn checkpoints", () => {
     const { engine, events } = await drive({
       cells: [
         `const refusal = await ctx.call("edit", { path: "a.py", text: "x" }, { at: ctx.base })
-         return { intent: "complete", state: {}, output: JSON.stringify(refusal) }`
+         ctx.done(JSON.stringify(refusal))`
       ]
     })
 
@@ -479,7 +472,7 @@ describe("CellTurn checkpoints", () => {
     const { engine, events } = await drive({
       cells: [
         `const refusal = await ctx.call("bash", { mode: "hermetic", command: "sed -i s/a/b/ a.py", reads: [], writes: ["a.py"] }, { at: ctx.base })
-         return { intent: "complete", state: {}, output: JSON.stringify(refusal) }`
+         ctx.done(JSON.stringify(refusal))`
       ]
     })
 
@@ -494,7 +487,7 @@ describe("CellTurn checkpoints", () => {
     const { engine, events } = await drive({
       cells: [
         `const refusal = await ctx.call("read", { path: "a.py" }, { at: "base" })
-         return { intent: "complete", state: {}, output: JSON.stringify(refusal) }`
+         ctx.done(JSON.stringify(refusal))`
       ]
     })
 
@@ -510,7 +503,7 @@ describe("CellTurn checkpoints", () => {
       pins: false,
       cells: [
         `const answer = await ctx.checkpoint()
-         return { intent: "complete", state: {}, output: JSON.stringify(answer) }`
+         ctx.done(JSON.stringify(answer))`
       ]
     })
 
@@ -527,7 +520,7 @@ describe("CellTurn checkpoints", () => {
         `const one = await ctx.checkpoint()
          const two = await ctx.checkpoint()
          const three = await ctx.checkpoint()
-         return { intent: "complete", state: {}, output: JSON.stringify([one, two, three]) }`
+         ctx.done(JSON.stringify([one, two, three]))`
       ]
     })
 
@@ -551,7 +544,7 @@ describe("CellTurn checkpoints", () => {
       cells: [
         `const answer = await ctx.checkpoint()
          await ctx.call("read", { path: "a.py" }, { at: ctx.base })
-         return { intent: "complete", state: {}, output: JSON.stringify(answer) }`
+         ctx.done(JSON.stringify(answer))`
       ]
     })
 
@@ -569,9 +562,9 @@ describe("CellTurn checkpoints", () => {
       checkpointCap: 1,
       cells: [
         `await ctx.checkpoint()
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "pinned" }] }`,
+         console.log("pinned")`,
         `await ctx.checkpoint()
-         return { intent: "complete", state: {}, output: "done" }`
+         ctx.done("done")`
       ]
     })
 
@@ -585,7 +578,7 @@ describe("CellTurn checkpoints", () => {
       cells: [
         `await ctx.call("read", { path: "a.py" }, { at: ctx.base })
          await ctx.call("read", { path: "a.py" })
-         return { intent: "complete", state: {}, output: "done" }`
+         ctx.done("done")`
       ]
     })
 
@@ -616,9 +609,11 @@ describe("the sympy__sympy-13878 proof loop, replayed with checkpoints", () => {
      const check = { mode: "unhermetic", command: "bin/test sympy/stats/tests/test_continuous_rv.py" }
      const before = await ctx.call("bash", check, { at: ctx.base })
      const after = await ctx.call("bash", check)
-     return before.exitCode !== 0 && after.exitCode === 0
-       ? { intent: "complete", state: {}, output: "failed before, exits 0 after; hunk " + JSON.stringify(applied) }
-       : { intent: "continue", state: {}, context: [{ role: "user", text: "still failing" }] }`
+     if (before.exitCode !== 0 && after.exitCode === 0) {
+       ctx.done("failed before, exits 0 after; hunk " + JSON.stringify(applied))
+     } else {
+       console.log("still failing")
+     }`
 
   it("proves fails-before and passes-after in one frame, with the edit never given back", async () => {
     const { engine, events } = await drive({
@@ -659,7 +654,7 @@ describe("the sympy__sympy-13878 proof loop, replayed with checkpoints", () => {
     const { events } = await drive({
       cells: [
         cell,
-        `return { intent: "complete", state: {}, output: "done" }`
+        `ctx.done("done")`
       ],
       calls: [
         { _tag: "Success", value: { hunk: "-old\n+new" }, tree: "crv_types.py=fixed" },
@@ -686,8 +681,8 @@ describe("the sympy__sympy-13878 proof loop, replayed with checkpoints", () => {
         // Frame 1: a second edit and the identical check, which now passes.
         `await ctx.call("edit", { path: "sympy/stats/crv_types.py", text: "second attempt" })
          const after = await ctx.call("bash", { mode: "unhermetic", command: "bin/test sympy/stats/tests/test_continuous_rv.py" })
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "rechecked" }] }`,
-        `return { intent: "complete", state: {}, output: "done" }`
+         console.log("rechecked")`,
+        `ctx.done("done")`
       ],
       calls: [
         { _tag: "Success", value: { hunk: "-old\n+new" }, tree: "crv_types.py=first" },

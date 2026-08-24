@@ -42,7 +42,7 @@ import { Agent, AgentAction, type FlowEngineLike, Seat, SeatResolver } from "../
 import { Flow as CoreFlow } from "../../packages/core/src/index.ts"
 import { FlowEngine } from "../../packages/engine/src/index.ts"
 import { Action, Flow, FlowRuntime, Interpreter } from "../../packages/flow/src/index.ts"
-import type { AgentEvent, Cell } from "../../packages/harness/src/index.ts"
+import type { AgentEvent } from "../../packages/harness/src/index.ts"
 import { FlowBinding } from "../../packages/harness/src/index.ts"
 import { Model, ModelEvent, type ModelRequest, type Route } from "../../packages/model/src/index.ts"
 import { Node } from "../../packages/plan/src/index.ts"
@@ -169,8 +169,7 @@ const scripted = (recorder: Recorder, respond: Respond): Model.Model =>
  * @category constructors
  * @since 0.1.0
  */
-export const completeWith = (output: string): string =>
-  `return { intent: "complete", state: {}, output: ${JSON.stringify(output)} }`
+export const completeWith = (output: string): string => `ctx.done(${JSON.stringify(output)})`
 
 /**
  * A cell that never finishes, so a frame budget is what stops the run.
@@ -178,7 +177,7 @@ export const completeWith = (output: string): string =>
  * @category constructors
  * @since 0.1.0
  */
-export const stall = `return { intent: "continue", state: {}, context: [] }`
+export const stall = `var thinking = true`
 
 /**
  * A cell that calls the `echo` flow and reports what came back.
@@ -187,7 +186,7 @@ export const stall = `return { intent: "continue", state: {}, context: [] }`
  * @since 0.1.0
  */
 export const callEcho =
-  `const out = await ctx.call("echo", { note: "one" })\nreturn { intent: "complete", state: {}, output: '{"approved":true,"issues":["' + out.echoed + '"]}' }`
+  `const out = await ctx.call("echo", { note: "one" })\nctx.done('{"approved":true,"issues":["' + out.echoed + '"]}')`
 
 /** The seat seam, holding a scripted model instead of a credentialed route. */
 const scriptedSeats = (
@@ -445,15 +444,6 @@ export interface AgentOptions {
   readonly readOnlyCap?: number | undefined
   /** Host executable flows the cell may call. */
   readonly flows?: ReadonlyArray<FlowBinding.Source> | undefined
-  /**
-   * Which authoring surface the run is armed for; omitted takes `filing`.
-   *
-   * The arm is a host decision, so it is declared here the way every other host
-   * decision is. A `repl` scenario runs the same production loop against the
-   * same scripted provider; what changes is that the run holds one QuickJS
-   * realm for its whole life.
-   */
-  readonly cellMode?: Cell.Mode | undefined
 }
 
 /**
@@ -485,7 +475,6 @@ export const runAgent = (options: AgentOptions): Effect.Effect<Observation> =>
         maxFrames: options.maxFrames,
         ...(options.flows === undefined ? {} : { flows: options.flows }),
         ...(options.readOnlyCap === undefined ? {} : { readOnlyCap: options.readOnlyCap }),
-        ...(options.cellMode === undefined ? {} : { cellMode: options.cellMode })
       }).pipe(
         Stream.runForEach((event) => Effect.sync(() => collected.push(event))),
         Effect.provide(Agent.layerDefaults)

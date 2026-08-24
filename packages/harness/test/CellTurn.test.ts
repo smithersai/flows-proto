@@ -95,8 +95,6 @@ const state = (
     readonly approvalChannel?: boolean
     /** Wall-clock one model call may spend; omitted takes the armed default. */
     readonly modelCallMs?: number
-    /** The durable state the run opens holding. */
-    readonly agentState?: Schema.Json
     /**
      * How many times a frame may answer its own unparseable cell.
      *
@@ -125,7 +123,6 @@ const state = (
     readOnlyCap: overrides.readOnlyCap ?? 0,
     approvalChannel: overrides.approvalChannel ?? false,
     ...(overrides.modelCallMs === undefined ? {} : { modelCallMs: overrides.modelCallMs }),
-    ...(overrides.agentState === undefined ? {} : { agentState: overrides.agentState }),
     ...(overrides.revalidations === undefined ? {} : { revalidations: overrides.revalidations })
   })
 
@@ -189,7 +186,7 @@ const run = async (options: {
   }).pipe(
     Stream.runForEach((event) => Effect.sync(() => events.push(event))),
     Effect.provide(engine.layer),
-    Effect.provide(Sandbox.layerRestricted),
+    Effect.provide(QuickJSSandbox.layer),
     Effect.provide(Steering.layerNoop()),
     (effect) => options.clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, options.clock),
     Effect.result,
@@ -225,7 +222,7 @@ const of = <T extends AgentEvent.AgentEvent["_tag"]>(
 
 describe("CellTurn", () => {
   it("projects a model-boundary retry as its own control event", async () => {
-    const settled = emits(`return { intent: "complete", state: {}, output: "done" }`)
+    const settled = emits(`ctx.done("done")`)
     const { events } = await run({
       script: [{
         events: [
@@ -253,8 +250,8 @@ describe("CellTurn", () => {
     const { events } = await run({
       state: state({ maxFrames: 2, readOnlyCap: 3 }),
       script: [
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "continue", state: {}, context: [] }`)
+        emits(``),
+        emits(``)
       ]
     })
 
@@ -275,7 +272,9 @@ describe("CellTurn", () => {
         repeatCap: CellTurn.defaultRepeatFrames
       })
     ])
-    expect(armed[0]).not.toHaveProperty("totalMs")
+    // The realm binding enforces every ceiling it declares, so the
+    // whole-evaluation backstop is armed and journaled with the rest.
+    expect(armed[0]?.totalMs).toBe(Sandbox.defaultLimits.totalMs)
     expect(events[0]?._tag).toBe("discipline-armed")
   })
 
@@ -283,8 +282,8 @@ describe("CellTurn", () => {
     const { engine, events } = await run({
       state: state({ modelCallMs: 45_000, maxFrames: 3 }),
       script: [
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(``),
+        emits(`ctx.done("done")`)
       ]
     })
 
@@ -303,7 +302,7 @@ describe("CellTurn", () => {
         emits(
           `const listed = await ctx.call("fs/list", { path: "." })
            const detail = await ctx.call("fs/read", { path: listed[0] })
-           return { intent: "complete", state: { read: listed[0] }, output: detail }`
+           ctx.done(detail)`
         )
       ],
       flows: [
@@ -340,11 +339,11 @@ describe("CellTurn", () => {
         emits(
           `await ctx.call("fs/list", { path: "." })
            await ctx.call("fs/list", { path: "." })
-           return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`
+           console.log("again")`
         ),
         emits(
           `await ctx.call("fs/list", { path: "." })
-           return { intent: "complete", output: "done" }`
+           ctx.done("done")`
         )
       ],
       calls: [
@@ -364,52 +363,29 @@ describe("CellTurn", () => {
     expect(new Set(identities.map((identity) => identity.declaration)).size).toBe(1)
   })
 
-  it("carries agent-selected state and the exact next context into the following frame", async () => {
+  it("carries what the cell printed, and the pair, into the following frame", async () => {
     const { events, model } = await run({
       script: [
         emits(
-          `return {
-             intent: "continue",
-             state: { plan: ["one", "two"] },
-             context: [
-               { role: "user", text: "the original goal" },
-               { role: "assistant", text: "I chose to keep only this." }
-             ]
-           }`
+          `const kept = "I chose to keep only this."
+console.log(kept)`
         ),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`ctx.done("done")`)
       ]
     })
 
     const second = model.recorder.requests[1]
-    expect(conversation(second)).toEqual([
-      ModelRequest.Message.user("the original goal"),
-      ModelRequest.Message.assistant("I chose to keep only this.", { stopReason: "stop" })
-    ])
-    expect(stateSection(second)).toBe(
-      [
-        "Durable state for this frame (ctx.state) is 22 bytes across 1 key:",
-        "- plan (array, 13b) — written at frame 0, 1 frame ago",
-        "The whole of it, as JSON:\n{\"plan\":[\"one\",\"two\"]}"
-      ].join("\n")
+    // The transcript grows rather than being replaced: the frame's own reply is
+    // still there, and what the cell printed is appended after it.
+    expect(conversation(second).at(-1)).toEqual(
+      ModelRequest.Message.user("What your cell printed:\nI chose to keep only this.")
     )
-    // The transition is on the record, so a replayed run rebuilds the same
-    // state and the same context.
+    // The panel is the run's memory, and the name the cell bound is on it.
+    expect(stateSection(second)).toContain("- kept (string, 26 chars) — new this frame")
+    // The transition is on the record, and it carries nothing the realm already
+    // holds: a `continue` is the fact that the cell settled no run, and no more.
     const applied = of(events, "transition-applied")[0]
-    expect(applied?.transition).toMatchObject({ _tag: "continue", state: { plan: ["one", "two"] } })
-    const encoded = Schema.encodeUnknownSync(CellTurn.State)(
-      CellTurn.make({
-        session: "s",
-        seat: "a:b",
-        modelParams: ModelRequest.GenerationParams.make(),
-        layers: [],
-        capabilityEnvelope: [],
-        placement: Option.none(),
-        contextWindow: window,
-        agentState: { plan: ["one", "two"] }
-      })
-    )
-    expect(Schema.decodeUnknownSync(CellTurn.State)(encoded).agentState).toEqual({ plan: ["one", "two"] })
+    expect(applied?.transition).toEqual({ _tag: "continue" })
   })
 
   it("turns a malformed cell into an observation the next frame can correct", async () => {
@@ -418,18 +394,19 @@ describe("CellTurn", () => {
         prose("I will just describe the plan instead of writing a cell."),
         emits(`return "not a transition"`),
         emits(`throw new RangeError("off by one")`),
-        emits(`return { intent: "complete", output: "recovered" }`)
+        emits(`ctx.done("recovered")`)
       ]
     })
 
     // The reply with no cell at all never ran, so it is answered inside its
     // own frame rather than costing one; the reply after it is what that frame
-    // settles on.
+    // settles on. That reply returns, which a script cannot do, so it is
+    // refused for the same reason and by the same parse.
     const inFrame = of(events, "cell-rejected-in-frame")
     expect(inFrame.map((event) => [event.attempt, event.code])).toEqual([[1, "no_cell"]])
     const settled = of(events, "cell-settled")
     expect(settled.map((event) => event.outcome._tag)).toEqual(["rejected", "raised", "settled"])
-    expect((settled[0]?.outcome as Cell.Rejected).code).toBe("invalid_transition")
+    expect((settled[0]?.outcome as Cell.Rejected).code).toBe("compile_failed")
     expect((settled[1]?.outcome as Cell.Raised).name).toBe("RangeError")
     expect(of(events, "resolved")[0]?.message.content).toEqual([
       ModelRequest.TextPart.make({ text: "recovered" })
@@ -448,7 +425,7 @@ describe("CellTurn", () => {
         emits(
           `const first = await ctx.call("net/fetch", {})
            const second = await ctx.call("shell/run", {})
-           return { intent: "complete", output: [first, second].map((r) => r.error.message).join(" | ") }`
+           ctx.done([first, second].map((r) => r.error.message).join(" | "))`
         )
       ],
       flows: [
@@ -471,7 +448,7 @@ describe("CellTurn", () => {
       script: [
         emits(
           `const refusal = await ctx.call("broken", {})
-           return { intent: "complete", output: refusal.error.message }`
+           ctx.done(refusal.error.message)`
         )
       ],
       flows: [descriptor("broken", { capabilities: ["not-a-capability"] })]
@@ -494,7 +471,7 @@ describe("CellTurn", () => {
         emits(
           `await ctx.call("fs/list", { path: "." })
            await ctx.call("shell/run", { command: "ls" })
-           return { intent: "complete", output: "unreachable" }`
+           ctx.done("unreachable")`
         )
       ],
       flows: [
@@ -520,7 +497,7 @@ describe("CellTurn", () => {
       state: state({ approvalChannel: true }),
       script: [
         emits(
-          `return { intent: "park", state: { waiting: true }, reason: "waiting-input", message: "which branch?" }`
+          `ctx.park("waiting-input", "which branch?")`
         )
       ]
     })
@@ -538,9 +515,9 @@ describe("CellTurn", () => {
   it("stops at the frame budget instead of continuing forever", async () => {
     const { events, model } = await run({
       script: [
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`),
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`),
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "again" }] }`)
+        emits(`console.log("again")`),
+        emits(`console.log("again")`),
+        emits(`console.log("again")`)
       ],
       state: state({ maxFrames: 2 })
     })
@@ -556,7 +533,7 @@ describe("CellTurn", () => {
     const model = ScriptedModel.make([
       emits(
         `const listed = await ctx.call("fs/list", { path: "." })
-         return { intent: "complete", output: listed.join(",") }`
+         ctx.done(listed.join(","))`
       )
     ])
     const engine = ScriptedEngine.make(model.model, [], [{ _tag: "Success", value: ["alpha", "beta"] }])
@@ -580,7 +557,7 @@ describe("CellTurn", () => {
 
   it("declares no provider tools and forbids the provider from inventing one", async () => {
     const { events, model } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)]
+      script: [emits(`ctx.done("done")`)]
     })
 
     expect(model.recorder.requests[0]?.tools).toEqual([])
@@ -595,8 +572,8 @@ describe("CellTurn", () => {
     const taught = state()
     const { model } = await run({
       script: [
-        emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "next" }] }`),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`console.log("next")`),
+        emits(`ctx.done("done")`)
       ],
       flows,
       state: CellTurn.make({
@@ -616,15 +593,15 @@ describe("CellTurn", () => {
     expect(system(0)).toContain("ctx.call")
     expect(system(0)).toContain("- fs/list (sealed) capabilities=fs:read:**: The fs/list flow.")
     expect(system(0)).toContain("- shell/run (irreversible): The shell/run flow.")
-    // Teaching is a prefix segment, so the cell's own projected context replaces
-    // the transcript without ever dropping the contract.
+    // Teaching is a prefix segment, so it is byte-identical on every frame and
+    // a provider caches it once for the run.
     expect(system(1)).toBe(system(0))
   })
 
   it("appends steering after the cell's own context and applies seat changes to the next frame", async () => {
     const model = ScriptedModel.make([
-      emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "kept" }] }`),
-      emits(`return { intent: "complete", output: "done" }`)
+      emits(`console.log("kept")`),
+      emits(`ctx.done("done")`)
     ])
     const engine = ScriptedEngine.make(model.model, [], [])
     let drained = false
@@ -658,7 +635,7 @@ describe("CellTurn", () => {
     await CellTurn.run({ state: state(), flows: [] }).pipe(
       Stream.runForEach((event) => Effect.sync(() => events.push(event))),
       Effect.provide(engine.layer),
-      Effect.provide(Sandbox.layerRestricted),
+      Effect.provide(QuickJSSandbox.layer),
       Effect.provide(steering),
       Effect.runPromise
     )
@@ -667,8 +644,10 @@ describe("CellTurn", () => {
       ModelRequest.Message.user("steer: prefer the shorter route")
     ])
     const second = model.recorder.requests[1]
-    expect(conversation(second)).toEqual([
-      ModelRequest.Message.user("kept"),
+    // The transcript grows, so the steer lands after the pair the frame
+    // produced rather than after a context the cell chose.
+    expect(conversation(second).slice(-2)).toEqual([
+      ModelRequest.Message.user("What your cell printed:\nkept"),
       ModelRequest.Message.user("steer: prefer the shorter route")
     ])
     // The seat change applies only after the turn closes.
@@ -679,14 +658,14 @@ describe("CellTurn", () => {
 
   it("journals the turn-boundary drain through the engine instead of reading the queue directly", async () => {
     const model = ScriptedModel.make([
-      emits(`return { intent: "continue", state: null, context: [{ role: "user", text: "kept" }] }`),
-      emits(`return { intent: "complete", output: "done" }`)
+      emits(`console.log("kept")`),
+      emits(`ctx.done("done")`)
     ])
     const engine = ScriptedEngine.make(model.model, [], [])
     await CellTurn.run({ state: state(), flows: [] }).pipe(
       Stream.runDrain,
       Effect.provide(engine.layer),
-      Effect.provide(Sandbox.layerRestricted),
+      Effect.provide(QuickJSSandbox.layer),
       Effect.provide(Steering.layerNoop()),
       Effect.runPromise
     )
@@ -726,7 +705,7 @@ describe("CellTurn", () => {
     const model = ScriptedModel.make([
       emits(
         `await ctx.call("fs/list", { path: "." })
-         return { intent: "complete", output: "unreachable" }`
+         ctx.done("unreachable")`
       )
     ])
     const engine = ScriptedEngine.make(model.model, [], [{ _tag: "Interrupt" }])
@@ -737,7 +716,7 @@ describe("CellTurn", () => {
     }).pipe(
       Stream.runForEach((event) => Effect.sync(() => events.push(event))),
       Effect.provide(engine.layer),
-      Effect.provide(Sandbox.layerRestricted),
+      Effect.provide(QuickJSSandbox.layer),
       Effect.provide(Steering.layerNoop()),
       Effect.exit,
       Effect.runPromise
@@ -790,7 +769,7 @@ const readCells = (count: number): ReadonlyArray<ScriptedModel.Step> =>
     () =>
       emits(
         `await ctx.call("fs/list", { path: "." })
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "still reading" }] }`
+         console.log("still reading")`
       )
   )
 
@@ -801,12 +780,8 @@ const justifiedCells = (count: number, reason: string): ReadonlyArray<ScriptedMo
     () =>
       emits(
         `await ctx.call("fs/list", { path: "." })
-         return {
-           intent: "continue",
-           state: {},
-           context: [{ role: "user", text: "still reading" }],
-           justification: ${JSON.stringify(reason)}
-         }`
+         ctx.justify(${JSON.stringify(reason)})
+console.log("still reading")`
       )
   )
 
@@ -830,7 +805,7 @@ describe("CellTurn invalid probes", () => {
   const probing = (summary: string) =>
     emits(
       `await ctx.call("bash", { command: "pytest -q tests/test_admin.py::Basic::test_absent" })
-       return { intent: "continue", state: {}, context: [{ role: "user", text: ${JSON.stringify(summary)} }] }`
+       console.log(${JSON.stringify(summary)})`
     )
 
   it("contradicts a cell that read a broken probe as the bug reproducing", async () => {
@@ -841,7 +816,7 @@ describe("CellTurn invalid probes", () => {
       flows: [check],
       script: [
         probing("The test still fails, so the bug is unfixed."),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: [brokenCheck]
     })
@@ -861,9 +836,9 @@ describe("CellTurn invalid probes", () => {
         emits(
           `await ctx.call("bash", { command: "pytest -q tests/a.py::Basic::test_absent" })
            await ctx.call("bash", { command: "pytest -q tests/b.py::Basic::test_absent" })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "both fail" }] }`
+           console.log("both fail")`
         ),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: [brokenCheck, brokenCheck]
     })
@@ -882,9 +857,9 @@ describe("CellTurn invalid probes", () => {
         probing("ran the check"),
         emits(
           `await ctx.call("bash", { command: "pytest -q tests/test_admin.py::Basic::test_absent" })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "again" }] }`
+           console.log("again")`
         ),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: [
         { _tag: "Success", value: { exitCode: 1, invalidProbe: "unknown-test" } },
@@ -902,7 +877,7 @@ describe("CellTurn invalid probes", () => {
       flows: [check],
       script: [
         probing("One test failed, as expected."),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: [{ _tag: "Success", value: { exitCode: 1, stdout: "1 failed" } }]
     })
@@ -919,7 +894,7 @@ describe("CellTurn invalid probes", () => {
           `await ctx.call("bash", { command: "pytest -q tests/test_admin.py::Basic::test_absent" })
            throw new Error("half-written cell")`
         ),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: [brokenCheck]
     })
@@ -961,9 +936,9 @@ describe("CellTurn read-only cap", () => {
         ...readCells(1),
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "continue", state: {}, context: [] }`
+           `
         ),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: successes(2)
     })
@@ -988,7 +963,7 @@ describe("CellTurn read-only cap", () => {
         ),
         emits(
           `await ctx.call("edit", { path: "a.py", text: "recovered" })
-           return { intent: "complete", state: {}, output: "done" }`
+           ctx.done("done")`
         )
       ],
       calls: successes(3)
@@ -1013,7 +988,7 @@ describe("CellTurn read-only cap", () => {
         emits(`throw new Error("diagnostic failed")`),
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "complete", state: {}, output: "done" }`
+           ctx.done("done")`
         )
       ],
       calls: successes(3)
@@ -1060,7 +1035,7 @@ describe("CellTurn read-only cap", () => {
       script: [
         emits(`throw new Error("first")`),
         emits(`throw new Error("second")`),
-        emits(`return { intent: "complete", state: {}, output: "never reached" }`)
+        emits(`ctx.done("never reached")`)
       ]
     })
 
@@ -1102,7 +1077,7 @@ describe("CellTurn read-only cap", () => {
       script: [
         prose("first, some reasoning"),
         prose("second, more reasoning"),
-        emits(`return { intent: "complete", state: {}, output: "never reached" }`)
+        emits(`ctx.done("never reached")`)
       ]
     })
 
@@ -1122,7 +1097,7 @@ describe("CellTurn read-only cap", () => {
         ...readCells(1),
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`
+           console.log("edited")`
         ),
         ...readCells(3)
       ],
@@ -1144,14 +1119,14 @@ describe("CellTurn read-only cap", () => {
       script: [
         emits(
           `await ctx.call("bash", { command: "sed -i s/a/b/ a.py", writes: ["a.py"] })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "patched" }] }`
+           console.log("patched")`
         ),
         emits(
           `await ctx.call("bash", { command: "pytest", writes: [] })
-           return { intent: "continue", state: {}, context: [{ role: "user", text: "ran tests" }] }`
+           console.log("ran tests")`
         ),
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "continue", state: {}, context: [] }`)
+        emits(``),
+        emits(``)
       ],
       calls: [
         { _tag: "Success", value: { exitCode: 0 } },
@@ -1168,18 +1143,14 @@ describe("CellTurn read-only cap", () => {
   })
 
   it("lets a justification buy quiet frames without stopping the run's clock", async () => {
-    const { failure, model } = await run({
+    const { events, failure } = await run({
       state: capped(2, 12),
       flows: [descriptor("fs/list", { capabilities: ["fs:read:**"] })],
       script: [
         ...readCells(2),
         emits(
-          `return {
-             intent: "continue",
-             state: {},
-             context: [{ role: "user", text: "still reading" }],
-             justification: "the failing test names a symbol I have not located yet"
-           }`
+          `ctx.justify("the failing test names a symbol I have not located yet")
+console.log("still reading")`
         ),
         ...readCells(9)
       ],
@@ -1189,7 +1160,9 @@ describe("CellTurn read-only cap", () => {
     // The justified frame silences the demand for the next two frames, and
     // the counter keeps running underneath it: the run still stops at twice
     // the cap rather than reading forever on a rationale.
-    expect(JSON.stringify(model.recorder.requests[3]?.messages)).not.toContain("Read-only discipline")
+    // The transcript grows, so the demand stays where it was written. What
+    // says it was issued once is the control event, not its absence later.
+    expect(of(events, "read-only-demanded")).toHaveLength(1)
     expect(failure).toMatchObject({ code: "read_only_cap" })
   })
 
@@ -1210,9 +1183,10 @@ describe("CellTurn read-only cap", () => {
     // and the demand goes to frame three regardless. Grace is for an answer,
     // so the justification frame three writes — the first one this run was
     // actually asked for — buys the full spell and frame four is quiet.
+    // The transcript grows, so a demand stays visible where it was written;
+    // what says it was issued once is the control event.
     expect(JSON.stringify(model.recorder.requests[2]?.messages)).not.toContain("Read-only discipline")
     expect(JSON.stringify(model.recorder.requests[3]?.messages)).toContain("Read-only discipline")
-    expect(JSON.stringify(model.recorder.requests[4]?.messages)).not.toContain("Read-only discipline")
     expect(of(events, "read-only-demanded")).toEqual([
       expect.objectContaining({ streak: 3, cap: 3, nextFrame: 3, nextAction: "justification" })
     ])
@@ -1321,7 +1295,7 @@ describe("CellTurn read-only cap", () => {
       flows: [descriptor("fs/list", { capabilities: ["fs:read:**"] })],
       script: [
         ...readCells(1),
-        emits(`return { intent: "complete", state: {}, output: "implemented the fix" }`)
+        emits(`ctx.done("implemented the fix")`)
       ],
       calls: successes(2)
     })
@@ -1339,9 +1313,9 @@ describe("CellTurn read-only cap", () => {
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
            throw new Error("lost the thread after editing")`
         ),
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "continue", state: {}, context: [] }`)
+        emits(``),
+        emits(``),
+        emits(``)
       ],
       calls: successes(1)
     })
@@ -1364,10 +1338,10 @@ describe("CellTurn read-only cap", () => {
       script: [
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "continue", state: {}, context: [] }`
+           `
         ),
         ...readCells(13),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: successes(14)
     })
@@ -1385,7 +1359,7 @@ describe("CellTurn read-only cap", () => {
     const { model } = await run({
       state: capped(1, 3),
       flows: [descriptor("fs/list", { capabilities: ["fs:read:**"] }), editor],
-      script: [...readCells(2), emits(`return { intent: "complete", state: {}, output: "done" }`)],
+      script: [...readCells(2), emits(`ctx.done("done")`)],
       calls: successes(2)
     })
 
@@ -1410,10 +1384,10 @@ describe("CellTurn read-only cap", () => {
         ...readCells(1),
         emits(
           `try { await ctx.call("edit", { path: "a.py", text: "fixed" }) } catch (error) {}
-           return { intent: "continue", state: {}, context: [] }`
+           `
         ),
         ...readCells(1),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: successes(2)
     })
@@ -1458,10 +1432,10 @@ describe("CellTurn observed mutation", () => {
       mode: "unhermetic",
       command: "git show base:src/_pytest/python.py > src/_pytest/python.py"
     })
-    return { intent: "continue", state: {}, context: [] }`
+    `
 
   const reading = `await ctx.call("bash", { mode: "unhermetic", command: "git status --short" })
-    return { intent: "continue", state: {}, context: [] }`
+    `
 
   const shell = (
     cells: ReadonlyArray<string>,
@@ -1521,7 +1495,6 @@ describe("CellTurn observed mutation", () => {
       expect.objectContaining({ nextFrame: 5, nextAction: "read-only" })
     ])
     expect(JSON.stringify(model.recorder.requests[2]?.messages)).toContain("Read-only discipline")
-    expect(JSON.stringify(model.recorder.requests[3]?.messages)).not.toContain("Read-only discipline")
   })
 
   it("leaves the streak running through a shell call that changed nothing", async () => {
@@ -1547,7 +1520,7 @@ describe("CellTurn observed mutation", () => {
   })
 
   const declaring = `await ctx.call("edit", { path: "a.py", text: "same" })
-       return { intent: "continue", state: {}, context: [] }`
+       `
 
   it("keeps a declared write the measurement never saw, rather than failing the run", async () => {
     // The measurement is rooted at one path, prunes directories, and stops at
@@ -1616,9 +1589,9 @@ describe("CellTurn observed mutation", () => {
       script: [
         emits(
           `await ctx.call("edit", { path: "a.py", text: "fixed" })
-           return { intent: "continue", state: {}, context: [] }`
+           `
         ),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       calls: successes(1)
     })
@@ -1674,11 +1647,11 @@ describe("CellTurn observed mutation", () => {
   /** An edit the cell attempts and survives, whatever the flow answers. */
   const attempt = (text: string) =>
     `try { await ctx.call("edit", { path: "a.py", text: ${JSON.stringify(text)} }) } catch (error) {}
-     return { intent: "continue", state: {}, context: [] }`
+     `
 
   it("lets a complete measurement veto the declaration of a call that failed", async () => {
     const { events, model } = await shell(
-      [attempt("one"), attempt("two"), attempt("three"), `return { intent: "complete", state: {}, output: "done" }`],
+      [attempt("one"), attempt("two"), attempt("three"), `ctx.done("done")`],
       [
         { _tag: "Failure", message: "oldString does not occur" },
         { _tag: "Failure", message: "Failed to find expected lines" },
@@ -1737,7 +1710,7 @@ describe("CellTurn repeated observation", () => {
   /** A frame that runs one command and reports on it. */
   const running = (command: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "checked" }] }`
+     console.log("checked")`
 
   const spinning = (cells: ReadonlyArray<string>, calls?: ReadonlyArray<ScriptedEngine.CallStep>) =>
     run({
@@ -1822,7 +1795,7 @@ describe("CellTurn repeated observation", () => {
       running("git diff"),
       running("git diff"),
       running("git diff"),
-      `return { intent: "continue", state: {}, context: [{ role: "user", text: "thinking" }] }`,
+      `console.log("thinking")`,
       running("git diff"),
       running("git diff"),
       running("git diff")
@@ -1877,18 +1850,18 @@ describe("CellTurn narrowed verification", () => {
   /** A frame that runs one command and asks for another. */
   const running = (command: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "checked" }] }`
+     console.log("checked")`
 
   /** A frame that runs one command and declares the task finished. */
   const finishing = (command: string, output: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "complete", state: {}, output: ${JSON.stringify(output)} }`
+     ctx.done(${JSON.stringify(output)})`
 
   /** The shape this control exists for: edit, narrow the check, and finish. */
   const fixing = (command: string, output: string) =>
     `await ctx.call("edit", { path: "a.py", text: "fix" })
      await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "complete", state: {}, output: ${JSON.stringify(output)} }`
+     ctx.done(${JSON.stringify(output)})`
 
   const ok = (tree?: string): ScriptedEngine.CallStep =>
     tree === undefined ? { _tag: "Success", value: null } : { _tag: "Success", value: null, tree }
@@ -1994,7 +1967,7 @@ describe("CellTurn narrowed verification", () => {
       [
         running("check suite"),
         fixing("check suite -k one", "narrowed"),
-        `return { intent: "complete", state: {}, output: "the dropped cases were deleted by this change", reason: "superseded" }`
+        `ctx.done("the dropped cases were deleted by this change")`
       ],
       [ok(), ok("a.py=fixed"), ok()]
     )
@@ -2016,7 +1989,7 @@ describe("CellTurn narrowed verification", () => {
       [
         running("check suite"),
         `await ctx.call("edit", { path: "a.py", text: "fix" })
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`,
+         console.log("edited")`,
         finishing("check suite -k one", "narrowed"),
         finishing("check suite", "re-run in full")
       ],
@@ -2038,7 +2011,7 @@ describe("CellTurn narrowed verification", () => {
     const { events, model } = await verifying(
       [
         `await ctx.call("edit", { path: "a.py", text: "fix" })
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`,
+         console.log("edited")`,
         running("check suite"),
         finishing("check suite -k one", "narrowed")
       ],
@@ -2168,12 +2141,12 @@ describe("CellTurn narrow-only verification", () => {
 
   const running = (command: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "checked" }] }`
+     console.log("checked")`
 
   const fixing = (command: string, output: string) =>
     `await ctx.call("edit", { path: "a.py", text: "fix" })
      await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "complete", state: {}, output: ${JSON.stringify(output)} }`
+     ctx.done(${JSON.stringify(output)})`
 
   const ok = (tree?: string): ScriptedEngine.CallStep =>
     tree === undefined ? { _tag: "Success", value: null } : { _tag: "Success", value: null, tree }
@@ -2214,7 +2187,7 @@ describe("CellTurn narrow-only verification", () => {
         running("look at tests/a.py"),
         running("look at src/b.py"),
         fixing("check src/b.py tests/a.py -k one", "narrow only"),
-        `return { intent: "complete", state: {}, output: "answered" }`
+        `ctx.done("answered")`
       ],
       [ok(), ok(), ok("a.py=fixed"), ok()]
     )
@@ -2253,7 +2226,7 @@ describe("CellTurn narrow-only verification", () => {
       [
         running("look at src/b.py tests/a.py"),
         fixing("check src/b.py tests/a.py -k one", "covered"),
-        `return { intent: "complete", state: {}, output: "unreached" }`
+        `ctx.done("unreached")`
       ],
       [ok(), ok("a.py=fixed"), ok()]
     )
@@ -2273,7 +2246,7 @@ describe("CellTurn narrow-only verification", () => {
         running("look at tests/a.py"),
         running("check src/b.py tests/a.py -k one"),
         fixing("check src/b.py tests/a.py -k one", "replayed"),
-        `return { intent: "complete", state: {}, output: "unreached" }`
+        `ctx.done("unreached")`
       ],
       [ok(), ok(), ok("a.py=fixed"), ok()]
     )
@@ -2294,7 +2267,7 @@ describe("CellTurn narrow-only verification", () => {
         running("look at src/b.py"),
         fixing("check src/b.py tests/a.py -k one", "first"),
         `await ctx.call("bash", { mode: "unhermetic", command: "check src/b.py tests/a.py -k two" })
-         return { intent: "complete", state: {}, output: "second" }`
+         ctx.done("second")`
       ],
       [ok(), ok(), ok("a.py=fixed"), ok()]
     )
@@ -2332,13 +2305,13 @@ describe("CellTurn sufficiency", () => {
   /** A frame that runs one command and asks for another. */
   const checking = (command: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "checked" }] }`
+     console.log("checked")`
 
   /** A frame that edits and re-runs the same command. */
   const fixing = (command: string) =>
     `await ctx.call("edit", { path: "a.py", text: "fix" })
      await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "fixed" }] }`
+     console.log("fixed")`
 
   const exits = (exitCode: number, tree?: string): ScriptedEngine.CallStep =>
     tree === undefined
@@ -2376,7 +2349,7 @@ describe("CellTurn sufficiency", () => {
 
   it("tells the next frame it holds failing-before and passing-after evidence", async () => {
     const { events, model } = await watching(
-      [checking("check a.py"), fixing("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [checking("check a.py"), fixing("check a.py"), `ctx.done("done")`],
       [exits(1), { _tag: "Success", value: null, tree: "a.py=fixed" }, exits(0)]
     )
 
@@ -2408,18 +2381,24 @@ describe("CellTurn sufficiency", () => {
         checking("check a.py"),
         fixing("check a.py"),
         checking("check a.py"),
-        `return { intent: "complete", state: {}, output: "done" }`
+        `ctx.done("done")`
       ],
       [exits(1), { _tag: "Success", value: null, tree: "a.py=fixed" }, exits(0), exits(0)]
     )
 
+    // Once per run: the transcript grows, so the notice the run was shown stays
+    // shown, and what says it was written once is the control event.
     expect(of(events, "sufficiency-observed")).toHaveLength(1)
-    expect(JSON.stringify(model.recorder.requests[3]?.messages)).not.toContain("Evidence held")
+    expect(
+      (model.recorder.requests[3]?.messages ?? []).filter((message) =>
+        message.content.some((part) => part.type === "text" && part.text.includes("Evidence held"))
+      )
+    ).toHaveLength(1)
   })
 
   it("says nothing when the check passed over the tree it had already failed on", async () => {
     const { events, model } = await watching(
-      [checking("check a.py"), checking("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [checking("check a.py"), checking("check a.py"), `ctx.done("done")`],
       [exits(1), exits(0), exits(0)]
     )
 
@@ -2431,7 +2410,7 @@ describe("CellTurn sufficiency", () => {
 
   it("says nothing when the run has watched nothing fail", async () => {
     const { events } = await watching(
-      [checking("check a.py"), fixing("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [checking("check a.py"), fixing("check a.py"), `ctx.done("done")`],
       [exits(0), { _tag: "Success", value: null, tree: "a.py=fixed" }, exits(0)]
     )
 
@@ -2440,7 +2419,7 @@ describe("CellTurn sufficiency", () => {
 
   it("says nothing when the answering call reports no exit status at all", async () => {
     const { events } = await watching(
-      [checking("check a.py"), fixing("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [checking("check a.py"), fixing("check a.py"), `ctx.done("done")`],
       [exits(1), { _tag: "Success", value: null, tree: "a.py=fixed" }, { _tag: "Success", value: null }]
     )
 
@@ -2465,11 +2444,7 @@ describe("CellTurn vacuous verification, unwired", () => {
   /** A frame that runs one command and stores it as the proof it will use. */
   const storing = (command: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return {
-       intent: "continue",
-       state: { verification: { flow: "bash", input: { mode: "unhermetic", command: ${JSON.stringify(command)} } } },
-       context: [{ role: "user", text: "stored the proof" }]
-     }`
+     console.log("stored the proof")`
 
   const exits = (exitCode: number): ScriptedEngine.CallStep => ({ _tag: "Success", value: { exitCode } })
 
@@ -2507,7 +2482,7 @@ describe("CellTurn vacuous verification, unwired", () => {
 
   it("says nothing to a run whose stored proof was already green", async () => {
     const { events, model } = await running(
-      [storing("check a.py"), `return { intent: "complete", state: {}, output: "done" }`],
+      [storing("check a.py"), `ctx.done("done")`],
       [exits(0)]
     )
 
@@ -2525,12 +2500,8 @@ describe("CellTurn vacuous verification, unwired", () => {
     const { events, model } = await running(
       [
         `await ctx.call("bash", { mode: "unhermetic", command: "check a.py" })
-         return {
-           intent: "complete",
-           state: { verification: { flow: "bash", input: { mode: "unhermetic", command: "check a.py" } } },
-           output: "done"
-         }`,
-        `return { intent: "complete", state: {}, output: "done anyway" }`
+         ctx.done("done")`,
+        `ctx.done("done anyway")`
       ],
       [exits(0)],
       { unmovedCap: 1 }
@@ -2549,8 +2520,8 @@ describe("CellTurn call latency", () => {
     const { events } = await run({
       state: state({ maxFrames: 2 }),
       script: [
-        emits(`return { intent: "continue", state: {}, context: [{ role: "user", text: "on it" }] }`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`console.log("on it")`),
+        emits(`ctx.done("done")`)
       ],
       clock: tickingClock(250)
     })
@@ -2575,7 +2546,7 @@ describe("CellTurn compaction", () => {
       maxFrames: 2
     })
     const { engine, events, model } = await run({
-      script: [prose("the compacted summary"), emits(`return { intent: "complete", output: "done" }`)],
+      script: [prose("the compacted summary"), emits(`ctx.done("done")`)],
       state: crowdedState,
       flows: []
     })
@@ -2618,7 +2589,7 @@ describe("CellTurn compaction", () => {
 
   it("leaves the window alone when the host declared no context budget", async () => {
     const { engine, events } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
+      script: [emits(`ctx.done("done")`)],
       state: CellTurn.make({
         session: "session-1",
         seat: "anthropic:test-model",
@@ -2661,9 +2632,7 @@ describe("CellTurn truncated output", () => {
   const restoring = (target: string) =>
     `const out = await ctx.call("bash", { mode: "unhermetic", command: "git show HEAD:src/module.py" })
      const wrote = await ctx.call(${JSON.stringify(target)}, { path: "src/module.py", content: out.stdout })
-     return wrote.ok === false
-       ? { intent: "complete", output: "refused: " + wrote.error.message }
-       : { intent: "complete", output: "wrote the file" }`
+     ctx.done(wrote.ok === false ? "refused: " + wrote.error.message : "wrote the file")`
 
   it("refuses a write of bytes a call already returned truncated", async () => {
     const { engine, events } = await run({
@@ -2700,17 +2669,11 @@ describe("CellTurn truncated output", () => {
       script: [
         emits(
           `const out = await ctx.call("bash", { mode: "unhermetic", command: "git show HEAD:src/module.py" })
-           return {
-             intent: "continue",
-             state: { captured: out.stdout },
-             context: [{ role: "user", text: "restore the module" }]
-           }`
+           console.log("restore the module")`
         ),
         emits(
-          `const wrote = await ctx.call("write", { path: "src/module.py", content: ctx.state.captured })
-           return wrote.ok === false
-             ? { intent: "complete", output: "refused: " + wrote.error.message }
-             : { intent: "complete", output: "wrote the file" }`
+          `const wrote = await ctx.call("write", { path: "src/module.py", content: out.stdout })
+           ctx.done(wrote.ok === false ? "refused: " + wrote.error.message : "wrote the file")`
         )
       ],
       flows: restoreFlows,
@@ -2730,14 +2693,14 @@ describe("CellTurn truncated output", () => {
       script: [
         emits(
           `await ctx.call("bash", { mode: "unhermetic", command: "git show HEAD:src/module.py" })
-           return { intent: "continue", state: {}, context: [] }`
+           `
         ),
         emits(
           `const out = await ctx.call("bash", { mode: "unhermetic", command: "git show HEAD:src/module.py" })
            try { await ctx.call("write", { path: "src/module.py", content: out.stdout }) } catch (error) {}
-           return { intent: "continue", state: {}, context: [] }`
+           `
         ),
-        emits(`return { intent: "complete", output: "done" }`)
+        emits(`ctx.done("done")`)
       ],
       flows: restoreFlows,
       calls: [truncatedShellResult, truncatedShellResult]
@@ -2758,7 +2721,7 @@ describe("CellTurn truncated output", () => {
           `await ctx.call("bash", { mode: "unhermetic", command: "git show HEAD:src/module.py" })
            const generated = "print('generated')\\n".repeat(4000)
            await ctx.call("write", { path: "src/generated.py", content: generated })
-           return { intent: "complete", output: "wrote " + generated.length + " characters" }`
+           ctx.done("wrote " + generated.length + " characters")`
         )
       ],
       flows: restoreFlows,
@@ -2780,7 +2743,7 @@ describe("CellTurn truncated output", () => {
         emits(
           `const out = await ctx.call("bash", { mode: "unhermetic", command: "git show HEAD:src/module.py" })
            const hits = await ctx.call("grep", { pattern: "def visit", text: out.stdout })
-           return { intent: "complete", output: JSON.stringify(hits) }`
+           ctx.done(JSON.stringify(hits))`
         )
       ],
       flows: restoreFlows,
@@ -2843,14 +2806,14 @@ describe("CellTurn unmoved workspace", () => {
 
   /** A frame that reads and asks for another. */
   const reading = `await ctx.call("bash", { mode: "unhermetic", command: "read a.py" })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "read it" }] }`
+     console.log("read it")`
 
   /** A frame that runs one check and asks for another. */
   const checking = (command: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "checked" }] }`
+     console.log("checked")`
 
-  const done = (output: string) => `return { intent: "complete", state: {}, output: ${JSON.stringify(output)} }`
+  const done = (output: string) => `ctx.done(${JSON.stringify(output)})`
 
   it("bounces one completion whose run never moved the tree it was handed", async () => {
     const { events, model } = await completing(
@@ -2921,7 +2884,7 @@ describe("CellTurn unmoved workspace", () => {
     const moved = await completing(
       [
         `await ctx.call("edit", { path: "a.py", text: "fix" })
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`,
+         console.log("edited")`,
         ...displaced
       ],
       [{ _tag: "Success", value: null, tree: "a.py=fixed" }, failing, passing],
@@ -2996,7 +2959,7 @@ describe("CellTurn unmoved workspace", () => {
     const { events } = await completing(
       [
         `await ctx.call("edit", { path: "a.py", text: "fix" })
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`,
+         console.log("edited")`,
         reading,
         done("fixed it")
       ],
@@ -3079,15 +3042,15 @@ describe("CellTurn unanswered failure", () => {
 
   /** The edit that moves the tree, so the completion is not an unmoved one. */
   const editing = `await ctx.call("edit", { path: "a.py", text: "fix" })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "edited" }] }`
+     console.log("edited")`
 
   const running = (command: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "continue", state: {}, context: [{ role: "user", text: "checked" }] }`
+     console.log("checked")`
 
   const finishing = (command: string, output: string) =>
     `await ctx.call("bash", { mode: "unhermetic", command: ${JSON.stringify(command)} })
-     return { intent: "complete", state: {}, output: ${JSON.stringify(output)} }`
+     ctx.done(${JSON.stringify(output)})`
 
   const edited: ScriptedEngine.CallStep = { _tag: "Success", value: null, tree: "a.py=fixed" }
   const red: ScriptedEngine.CallStep = { _tag: "Success", value: { exitCode: 1, stdout: "2 failed" } }
@@ -3124,7 +3087,7 @@ describe("CellTurn unanswered failure", () => {
         editing,
         running("check src/a.py"),
         finishing("check src/a.py::one", "narrowed"),
-        `return { intent: "complete", state: {}, output: "both failures predate this change" }`
+        `ctx.done("both failures predate this change")`
       ],
       [edited, red, green]
     )
@@ -3193,7 +3156,7 @@ describe("CellTurn unanswered failure", () => {
       [
         `await ctx.call("edit", { path: "a.py", text: "fix" })
          await ctx.call("bash", { mode: "unhermetic", command: "check src/a.py" })
-         return { intent: "continue", state: {}, context: [{ role: "user", text: "edited and checked" }] }`,
+         console.log("edited and checked")`,
         finishing("check src/a.py::one", "narrowed")
       ],
       [edited, red, green]
@@ -3263,7 +3226,7 @@ describe("CellTurn multi-block replies", () => {
         emitsBlocks(
           `const listed = await ctx.call("fs/list", { path: "src" })`,
           `const read = await ctx.call("fs/list", { path: listed.next })`,
-          `return { intent: "complete", state: {}, output: "saw " + read.entries }`
+          `ctx.done("saw " + read.entries)`
         )
       ],
       calls: [
@@ -3283,8 +3246,8 @@ describe("CellTurn multi-block replies", () => {
   it("journals how many blocks a reply was written in", async () => {
     const { events } = await run({
       script: [
-        emitsBlocks(`const a = 1`, `return { intent: "complete", state: {}, output: "a=" + a }`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emitsBlocks(`const a = 1`, `ctx.done("a=" + a)`),
+        emits(`ctx.done("done")`)
       ]
     })
 
@@ -3293,7 +3256,7 @@ describe("CellTurn multi-block replies", () => {
 
   it("journals one block for an ordinary single-cell reply", async () => {
     const { events } = await run({
-      script: [emits(`return { intent: "complete", state: {}, output: "done" }`)]
+      script: [emits(`ctx.done("done")`)]
     })
 
     expect(of(events, "cell-produced")[0]?.blocks).toBe(1)
@@ -3303,7 +3266,7 @@ describe("CellTurn multi-block replies", () => {
     const { engine, events } = await run({
       script: [
         emitsBlocks(
-          `return { intent: "complete", state: {}, output: "first" }`,
+          `ctx.done("first")`,
           `await ctx.call("fs/list", { path: "never" })`
         )
       ],
@@ -3316,24 +3279,20 @@ describe("CellTurn multi-block replies", () => {
     ])
   })
 
-  it("reports a reply whose blocks redeclare a name as a correctable compile failure", async () => {
-    // One program means one set of declarations. The contract says so; this is
-    // what the model is told when it says otherwise, and it is a durable
-    // observation rather than a silently executed fragment of the program.
-    const { events, model } = await run({
-      script: [
-        emitsBlocks(`const seen = 1`, `const seen = 2\nreturn { intent: "complete", state: {}, output: "x" }`),
-        emits(`return { intent: "complete", state: {}, output: "recovered" }`)
-      ]
+  it("rebinds a name two blocks both declare, rather than refusing the program", async () => {
+    // One program means one set of declarations, and the realm's top-level
+    // declarations are rebindable by construction — that is what makes a run a
+    // notebook rather than a script. A reply that declares the same name in two
+    // blocks therefore runs, with the later binding winning, instead of dying on
+    // a redeclaration the model could not see coming.
+    const { events } = await run({
+      script: [emitsBlocks(`const seen = 1`, `const seen = 2\nctx.done("saw " + seen)`)]
     })
 
-    expect(of(events, "cell-settled")[0]?.outcome).toMatchObject({ _tag: "rejected", code: "compile_failed" })
-    // The compiler names the identifier; only the controller knows the reply
-    // was written as several blocks, so it says where the redeclaration came
-    // from.
-    expect(observationsOf(model, 1)).toContain("This reply carried 2 cell blocks.")
+    expect(of(events, "cell-produced")[0]?.blocks).toBe(2)
+    expect(of(events, "cell-settled")[0]?.outcome).toMatchObject({ _tag: "settled" })
     expect(of(events, "resolved")[0]?.message.content).toEqual([
-      ModelRequest.TextPart.make({ text: "recovered" })
+      ModelRequest.TextPart.make({ text: "saw 2" })
     ])
   })
 
@@ -3341,11 +3300,10 @@ describe("CellTurn multi-block replies", () => {
     // Wave 10's astropy reply is exactly this: the same state-echo block
     // emitted twice. Concatenating the repeat would redeclare `s` and lose a
     // frame that runs today.
-    const echo = `const s = ctx.state
-return { intent: "complete", state: s, output: "echoed " + s.plan }`
+    const echo = `const s = { plan: "read" }
+ctx.done("echoed " + s.plan)`
     const { events } = await run({
-      script: [emitsBlocks(echo, echo)],
-      state: state({ agentState: { plan: "read" } })
+      script: [emitsBlocks(echo, echo)]
     })
 
     expect(of(events, "cell-produced")[0]?.blocks).toBe(2)
@@ -3366,9 +3324,9 @@ return { intent: "complete", state: s, output: "echoed " + s.plan }`
           `const first = await ctx.call("fs/list", { path: "one" })`,
           `throw new Error("boom in block two")`,
           `await ctx.call("fs/list", { path: "three" })
-           return { intent: "complete", state: {}, output: "never " + first.n }`
+           ctx.done("never " + first.n)`
         ),
-        emits(`return { intent: "complete", state: {}, output: "recovered" }`)
+        emits(`ctx.done("recovered")`)
       ],
       calls: [{ _tag: "Success", value: { n: 1 } }, { _tag: "Success", value: { n: 3 } }]
     })
@@ -3382,120 +3340,31 @@ return { intent: "complete", state: s, output: "echoed " + s.plan }`
     expect(stateSection(model.recorder.requests[1])).toContain("1. fs/list {\"path\":\"one\"} — ok: n=1")
   })
 
-  it("bounces wave-10 django's seven-block reply instead of running its imagined completion", async () => {
-    // The recorded reply, verbatim. Under the rule this replaced, the harness
-    // ran block seven — a completion citing a probe and a suite nothing had
-    // executed — against a tree where blocks one through six had never run:
-    // `mutated: false`, zero declared writes, empty patch, run over in two
-    // frames. As one program it redeclares `st`, so the frame issues no call at
-    // all and the model is told what shape its reply was in.
+  it("refuses wave-10 django's seven-block reply for the return a script cannot make", async () => {
+    // The recorded reply, verbatim, and it is a filing-surface reply: each of
+    // its blocks ends in `return { intent: … }`. A cell is a script, so the
+    // first of those returns cannot compile and nothing runs — which is the
+    // answer the boundary gives before the frame commits to anything, in the
+    // same frame, at cached-prefix price.
     const cells = [...batchedReply("django-16612-seq12").matchAll(/```cell\n([\s\S]*?)\n```/g)]
       .map((match) => match[1]!)
-    const { engine, events, model } = await run({
+    const { engine, events } = await run({
       script: [
         emitsBlocks(...cells),
-        emits(`return { intent: "complete", state: {}, output: "recovered" }`)
+        emits(`ctx.done("recovered")`)
       ],
       flows: [descriptor("read", { capabilities: ["fs:read:**"] })]
     })
 
     expect(cells).toHaveLength(7)
-    expect(of(events, "cell-produced")[0]?.blocks).toBe(7)
+    expect(of(events, "cell-rejected-in-frame").map((event) => [event.attempt, event.code])).toEqual([
+      [1, "compile_failed"]
+    ])
+    expect(of(events, "cell-rejected-in-frame")[0]?.message).toContain("A cell is a script, not a function body")
     expect(engine.recorder.calls).toEqual([])
-    expect(of(events, "cell-settled")[0]?.outcome).toMatchObject({
-      _tag: "rejected",
-      code: "compile_failed",
-      message: "The cell did not compile: Identifier 'st' has already been declared"
-    })
-    expect(observationsOf(model, 1)).toContain("This reply carried 7 cell blocks.")
-  })
-})
-
-describe("CellTurn call ledger", () => {
-  it("lists every settled call of the run in the next frame, without the model copying it", async () => {
-    const { model } = await run({
-      script: [
-        emits(
-          `await ctx.call("fs/list", { path: "src/lib/index.ts" })
-           try { await ctx.call("fs/list", { path: "src/missing.ts" }) } catch {}
-           return { intent: "continue", state: {}, context: [] }`
-        ),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
-      ],
-      calls: [
-        { _tag: "Success", value: { content: "abcd", totalLines: 12, truncated: false } },
-        { _tag: "Failure", message: "no such file" }
-      ]
-    })
-
-    const section = stateSection(model.recorder.requests[1])
-    expect(section).toContain("Calls this run has settled (2), oldest first")
-    // Ordinal, flow, what the call was about, the outcome, and a structural
-    // digest of the result — counts and statuses, never the payload.
-    expect(section).toContain("1. fs/list src/lib/index.ts — ok: content=4b totalLines=12 truncated=false")
-    expect(section).toContain("2. fs/list src/missing.ts — FAILED: no such file")
-    expect(section).not.toContain("abcd")
-  })
-
-  it("shows no ledger at all until the run has settled a call", async () => {
-    const { model } = await run({
-      script: [
-        emits(`return { intent: "continue", state: {}, context: [] }`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
-      ]
-    })
-
-    expect(stateSection(model.recorder.requests[1])).not.toContain("Calls this run has settled")
-  })
-
-  it("carries the calls a raised frame settled before it threw", async () => {
-    // The advice a raise already gives — "use them instead of redoing the
-    // work" — was unactionable because the results were addressable from
-    // nowhere. The ledger is where they now are.
-    const { model } = await run({
-      script: [
-        emits(`await ctx.call("fs/list", { path: "src/a.ts" })\nthrow new Error("boom")`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
-      ],
-      calls: [{ _tag: "Success", value: { totalLines: 3 } }]
-    })
-
-    expect(stateSection(model.recorder.requests[1])).toContain("1. fs/list src/a.ts — ok: totalLines=3")
-  })
-
-  it("bounds the line a call that named no flow at all contributes", async () => {
-    // The flow name is whatever the cell passed to `ctx.call`, and a name that
-    // matches no descriptor still settles — as a failure saying so. The ledger
-    // is durable controller state re-rendered every remaining frame, so an
-    // unbounded name there is fifty kilobytes of model-written padding in the
-    // state, in the journal, and in every prompt after it.
-    const { model } = await run({
-      script: [
-        emits(
-          `try { await ctx.call("Z".repeat(50000), {}) } catch {}
-           return { intent: "continue", state: {}, context: [] }`
-        ),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
-      ]
-    })
-
-    const section = stateSection(model.recorder.requests[1])
-    expect(section).toContain("Calls this run has settled (1), oldest first")
-    expect(section).toContain(`1. ${"Z".repeat(120)}…`)
-    expect(section.length).toBeLessThan(1_000)
-  })
-
-  it("bounds the same name in the salvage note a raised frame writes", async () => {
-    const { model } = await run({
-      script: [
-        emits(`try { await ctx.call("Z".repeat(50000), {}) } catch {}\nthrow new Error("boom")`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
-      ]
-    })
-
-    const observed = observationsOf(model, 1)
-    expect(observed).toContain(`- 1. ${"Z".repeat(120)}…`)
-    expect(observed.length).toBeLessThan(2_000)
+    expect(of(events, "resolved")[0]?.message.content).toEqual([
+      ModelRequest.TextPart.make({ text: "recovered" })
+    ])
   })
 })
 
@@ -3518,15 +3387,16 @@ describe("CellTurn context ordering", () => {
   }
 
   it("keeps every byte a provider can cache ahead of the frame's own state section", async () => {
-    // Two consecutive frames whose projected transcripts differ from their
-    // first byte. The state section, the roster and the ledger all change every
-    // frame, so the only way the shared prefix reaches past the teaching is
-    // for that section to sit LAST, after the transcript.
+    // The panel, the ledger and the frame block all change every frame, so the
+    // only way a shared prefix reaches past the teaching at all is for that
+    // block to sit LAST, after the transcript. It then reaches much further:
+    // the transcript is appended to rather than rebuilt, so consecutive frames
+    // share everything up to the newest pair.
     const { model } = await run({
       script: [
-        emits(`return { intent: "continue", state: { a: 1 }, context: [{ role: "user", text: "alpha" }] }`),
-        emits(`return { intent: "continue", state: { b: 2 }, context: [{ role: "user", text: "beta" }] }`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`console.log("alpha")`),
+        emits(`console.log("beta")`),
+        emits(`ctx.done("done")`)
       ]
     })
 
@@ -3534,15 +3404,19 @@ describe("CellTurn context ordering", () => {
     const second = model.recorder.requests[2]
     expect(stable(first)).toBe(stable(second))
     expect(stable(first).length).toBeGreaterThan(0)
-    expect(commonPrefix(wire(first), wire(second))).toBe(stable(first).length)
+    const shared = commonPrefix(wire(first), wire(second))
+    expect(shared).toBeGreaterThan(stable(first).length)
+    // Everything the earlier frame showed except its own frame block is what
+    // the later frame opens with, byte for byte.
+    expect(wire(second).startsWith(wire(first).slice(0, wire(first).lastIndexOf("\n\n")))).toBe(true)
   })
 
   it("serializes the stable span byte-identically across every frame of a run", async () => {
     const { model } = await run({
       script: [
-        emits(`return { intent: "continue", state: { a: 1 }, context: [{ role: "user", text: "alpha" }] }`),
-        emits(`return { intent: "continue", state: { b: 2 }, context: [{ role: "user", text: "beta" }] }`),
-        emits(`return { intent: "complete", state: {}, output: "done" }`)
+        emits(`console.log("alpha")`),
+        emits(`console.log("beta")`),
+        emits(`ctx.done("done")`)
       ]
     })
 

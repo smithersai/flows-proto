@@ -66,7 +66,6 @@ const window = ContextWindow.make({
 
 const state = (
   overrides: {
-    readonly mode?: Cell.Mode
     readonly maxFrames?: number
     readonly readOnlyCap?: number
     readonly repeatCap?: number
@@ -81,8 +80,7 @@ const state = (
       new Capability.CapabilityPattern({ action: "fs:read", resource: "**" })
     ],
     placement: Option.none(),
-    contextWindow: CellTurn.teach(window, flows, overrides.mode ?? "repl"),
-    mode: overrides.mode ?? "repl",
+    contextWindow: CellTurn.teach(window, flows),
     maxFrames: overrides.maxFrames ?? 6,
     readOnlyCap: overrides.readOnlyCap ?? 0,
     repeatCap: overrides.repeatCap ?? 0,
@@ -196,9 +194,10 @@ const of = <T extends AgentEvent.AgentEvent["_tag"]>(
   events.filter((event): event is Extract<AgentEvent.AgentEvent, { readonly _tag: T }> => event._tag === tag)
 
 describe("CellTurn in repl mode", () => {
-  it("journals the armed arm beside every other armed budget", async () => {
+  it("journals the armed budgets once, before the run's first frame", async () => {
     const { events } = await run({ script: [emits("ctx.done('finished')")] })
-    expect(of(events, "discipline-armed")[0]?.cellMode).toBe("repl")
+    expect(of(events, "discipline-armed")).toHaveLength(1)
+    expect(events[0]?._tag).toBe("discipline-armed")
   })
 
   it("does not re-arm a resumed REPL run that re-enters past its first frame", async () => {
@@ -211,8 +210,7 @@ describe("CellTurn in repl mode", () => {
       layers: ["layer-a"],
       capabilityEnvelope: [],
       placement: Option.none(),
-      contextWindow: CellTurn.teach(window, flows, "repl"),
-      mode: "repl",
+      contextWindow: CellTurn.teach(window, flows),
       frame: 2,
       maxFrames: 6
     })
@@ -221,15 +219,7 @@ describe("CellTurn in repl mode", () => {
     expect(of(events, "resolved")).toHaveLength(1)
   })
 
-  it("still journals filing for a run that arms nothing", async () => {
-    const { events } = await run({
-      script: [emits(`return { intent: "complete", output: "done" }`)],
-      state: state({ mode: "filing" })
-    })
-    expect(of(events, "discipline-armed")[0]?.cellMode).toBe("filing")
-  })
-
-  it("teaches the REPL contract instead of the filing one", async () => {
+  it("teaches the realm contract, and nothing about a returned transition", async () => {
     const { model } = await run({ script: [emits("ctx.done('finished')")] })
     const system = (model.recorder.requests[0]?.system ?? []).map((part) => part.text).join("\n")
     expect(system).toContain("a JavaScript REPL that stays alive for the whole run")
@@ -376,7 +366,7 @@ describe("CellTurn in repl mode", () => {
   it("refuses to run at all on a binding with no persistent realm", async () => {
     const { failure } = await run({
       script: [emits("ctx.done('ok')")],
-      sandbox: Sandbox.makeRestricted()
+      sandbox: Sandbox.makeNoop()
     })
     expect(failure).toBeInstanceOf(HarnessError)
     expect((failure as HarnessError).message).toContain("persistent realm could not be opened")

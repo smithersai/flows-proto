@@ -1,9 +1,10 @@
 /**
- * The sandbox contract, proved identically against both bindings.
+ * The sandbox contract, proved against the binding a production host selects.
  *
- * Every case runs twice: once on the dependency-free restricted binding and
- * once on the QuickJS-WASM binding that a production host actually selects.
- * A contract only one of them honours is not a contract.
+ * One binding ships. The dependency-free same-realm binding beside it went with
+ * the surface it existed for: a cell whose names vanish when it returns can run
+ * inside a `with`-scoped function wrapper, and a run whose cells share a realm
+ * cannot — so the contract is proved where it is actually honoured, on QuickJS.
  */
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { describe, expect, it } from "vitest"
@@ -42,644 +43,600 @@ const handler = (
       : new Cell.CallResult({ outcome: "success", value: replies[invocation.flow] ?? null })
   })
 
-const bindings: ReadonlyArray<readonly [string, Layer.Layer<Sandbox.Sandbox, unknown>]> = [
-  ["restricted", Sandbox.layerRestricted],
-  ["quickjs", QuickJSSandbox.layer]
-]
-
+/** Evaluates one cell in a realm of its own, which is what one frame does. */
 const evaluate = (
-  binding: Layer.Layer<Sandbox.Sandbox, unknown>,
   text: string,
   options: {
     readonly call?: Sandbox.Handler | undefined
     readonly limits?: Sandbox.Limits | undefined
-    readonly state?: Schema.Json | undefined
+    readonly mint?: Sandbox.Minter | undefined
   } = {}
 ): Promise<Cell.Outcome> =>
   Effect.gen(function*() {
     const sandbox = yield* Sandbox.Sandbox
-    return yield* sandbox.evaluate({
+    const open = sandbox.openRealm
+    expect(open).toBeDefined()
+    const realm = yield* open!({ flows, limits: options.limits })
+    const frame = yield* realm.evaluate({
       cell: Cell.source(text),
-      flows,
+      frame: 0,
       call: options.call ?? handler({}, []),
-      state: options.state,
+      ...(options.mint === undefined ? {} : { mint: options.mint }),
       limits: options.limits
     })
-  }).pipe(Effect.provide(binding), Effect.runPromise)
+    return frame.outcome
+  }).pipe(Effect.provide(QuickJSSandbox.layer), Effect.scoped, Effect.runPromise)
 
-for (const [name, binding] of bindings) {
-  describe(`Sandbox (${name})`, () => {
-    it("runs data-dependent calls in issue order without a round trip between them", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `const listed = await ctx.call("fs/list", { path: "." })
+/** Opens a realm and hands it to the body, so a case can drive it directly. */
+const withRealm = <A, E>(
+  body: (realm: Sandbox.Realm) => Effect.Effect<A, E, never>,
+  limits?: Sandbox.Limits
+): Effect.Effect<A, E | Sandbox.SandboxError, never> =>
+  Effect.gen(function*() {
+    const sandbox = yield* Sandbox.Sandbox
+    const open = sandbox.openRealm
+    expect(open).toBeDefined()
+    const realm = yield* open!({ flows, ...(limits === undefined ? {} : { limits }) })
+    return yield* body(realm)
+  }).pipe(Effect.provide(QuickJSSandbox.layer), Effect.scoped) as Effect.Effect<A, E | Sandbox.SandboxError, never>
+
+describe("Sandbox", () => {
+  it("runs data-dependent calls in issue order without a round trip between them", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `const listed = await ctx.call("fs/list", { path: "." })
          const detail = await ctx.call("fs/list", { path: listed.entries[0] })
-         return { intent: "complete", state: { detail }, output: detail.entries.join(",") }`,
-        {
-          call: handler(
-            { "fs/list": { entries: ["alpha", "beta"] } },
-            observed
-          )
-        }
-      )
+         ctx.done(detail.entries.join(","))`,
+      {
+        call: handler(
+          { "fs/list": { entries: ["alpha", "beta"] } },
+          observed
+        )
+      }
+    )
 
-      expect(observed.map((call) => [call.ordinal, call.flow, call.input])).toEqual([
-        [0, "fs/list", { path: "." }],
-        // The second input is derived from the first result inside the cell.
-        [1, "fs/list", { path: "alpha" }]
-      ])
-      expect(outcome._tag).toBe("settled")
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "alpha,beta"
-      })
+    expect(observed.map((call) => [call.ordinal, call.flow, call.input])).toEqual([
+      [0, "fs/list", { path: "." }],
+      // The second input is derived from the first result inside the cell.
+      [1, "fs/list", { path: "alpha" }]
+    ])
+    expect(outcome._tag).toBe("settled")
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "alpha,beta"
     })
+  })
 
-    it("returns mutable object properties from flow calls", async () => {
-      const outcome = await evaluate(
-        binding,
-        `const result = await ctx.call("fs/list", {})
+  it("returns mutable object properties from flow calls", async () => {
+    const outcome = await evaluate(
+      `const result = await ctx.call("fs/list", {})
          result.entry.name = "renamed"
-         return { intent: "complete", output: result.entry.name }`,
-        { call: handler({ "fs/list": { entry: { name: "original" } } }, []) }
-      )
+         ctx.done(result.entry.name)`,
+      { call: handler({ "fs/list": { entry: { name: "original" } } }, []) }
+    )
 
-      expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "renamed" })
-    })
+    expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "renamed" })
+  })
 
-    it("returns mutable arrays from flow calls", async () => {
-      const outcome = await evaluate(
-        binding,
-        `const result = await ctx.call("fs/list", {})
+  it("returns mutable arrays from flow calls", async () => {
+    const outcome = await evaluate(
+      `const result = await ctx.call("fs/list", {})
          result.entries.push("beta")
          result.entries[0] = "renamed"
-         return { intent: "complete", output: result.entries.join(",") }`,
-        { call: handler({ "fs/list": { entries: ["alpha"] } }, []) }
-      )
+         ctx.done(result.entries.join(","))`,
+      { call: handler({ "fs/list": { entries: ["alpha"] } }, []) }
+    )
 
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "renamed,beta"
-      })
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "renamed,beta"
     })
+  })
 
-    it("uses ordinary JSON data-property descriptors for flow results", async () => {
-      const outcome = await evaluate(
-        binding,
-        `const result = await ctx.call("fs/list", {})
+  it("uses ordinary JSON data-property descriptors for flow results", async () => {
+    const outcome = await evaluate(
+      `const result = await ctx.call("fs/list", {})
          const objectDescriptor = Object.getOwnPropertyDescriptor(result, "entry")
          const indexDescriptor = Object.getOwnPropertyDescriptor(result.entries, "0")
-         return {
-           intent: "complete",
-           output: [
+         ctx.done([
              objectDescriptor.writable,
              objectDescriptor.enumerable,
              objectDescriptor.configurable,
              indexDescriptor.writable,
              indexDescriptor.enumerable,
              indexDescriptor.configurable
-           ].join(",")
-         }`,
-        { call: handler({ "fs/list": { entry: "value", entries: ["alpha"] } }, []) }
-      )
+           ].join(","))`,
+      { call: handler({ "fs/list": { entry: "value", entries: ["alpha"] } }, []) }
+    )
 
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "true,true,true,true,true,true"
-      })
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "true,true,true,true,true,true"
     })
+  })
 
-    it("denies ambient time, randomness, network, and process access", async () => {
-      for (const expression of ["Date.now()", "Math.random()", "fetch(\"http://x\")", "process.exit()"]) {
-        const outcome = await evaluate(binding, `return { intent: "complete", output: String(${expression}) }`)
-        expect(outcome._tag, expression).toBe("raised")
-      }
+  it("denies ambient time, randomness, network, and process access", async () => {
+    for (const expression of ["Date.now()", "Math.random()", "fetch(\"http://x\")", "process.exit()"]) {
+      const outcome = await evaluate(`ctx.done(String(${expression}))`)
+      expect(outcome._tag, expression).toBe("raised")
+    }
+  })
+
+  it("reaches nothing through `this`, which no identifier check can deny", async () => {
+    // A `with` block only runs in sloppy mode, and a sloppy function called
+    // without a receiver binds `this` to the host realm's global object. That
+    // is a path around the scope proxy entirely: `this.process` never looks
+    // up an identifier, so denial by identifier cannot see it.
+    const outcome = await evaluate(
+      `ctx.done([typeof this, String(this && this.process)].join("|"))`
+    )
+
+    expect(outcome._tag).toBe("settled")
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "object|undefined"
     })
+  })
 
-    it("reaches nothing through `this`, which no identifier check can deny", async () => {
-      // A `with` block only runs in sloppy mode, and a sloppy function called
-      // without a receiver binds `this` to the host realm's global object. That
-      // is a path around the scope proxy entirely: `this.process` never looks
-      // up an identifier, so denial by identifier cannot see it.
-      const outcome = await evaluate(
-        binding,
-        `return { intent: "complete", output: [typeof this, String(this && this.process)].join("|") }`
-      )
-
-      expect(outcome._tag).toBe("settled")
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "object|undefined"
-      })
-    })
-
-    it("evaluates deterministically: the same cell issues the same calls twice", async () => {
-      const first: Array<Sandbox.Invocation> = []
-      const second: Array<Sandbox.Invocation> = []
-      const text = `const a = await ctx.call("fs/list", { path: "." })
+  it("evaluates deterministically: the same cell issues the same calls twice", async () => {
+    const first: Array<Sandbox.Invocation> = []
+    const second: Array<Sandbox.Invocation> = []
+    const text = `const a = await ctx.call("fs/list", { path: "." })
         const b = await ctx.call("fs/list", { path: a.entries.length > 1 ? "many" : "one" })
-        return { intent: "complete", output: JSON.stringify(b) }`
-      const replies = { "fs/list": { entries: ["a", "b"] } }
+        ctx.done(JSON.stringify(b))`
+    const replies = { "fs/list": { entries: ["a", "b"] } }
 
-      const one = await evaluate(binding, text, { call: handler(replies, first) })
-      const two = await evaluate(binding, text, { call: handler(replies, second) })
+    const one = await evaluate(text, { call: handler(replies, first) })
+    const two = await evaluate(text, { call: handler(replies, second) })
 
-      expect(first).toEqual(second)
-      expect(one).toStrictEqual(two)
-    })
+    expect(first).toEqual(second)
+    expect(one).toStrictEqual(two)
+  })
 
-    it("resolves a failed flow call with the failure envelope instead of throwing", async () => {
-      const outcome = await evaluate(
-        binding,
-        `const result = await ctx.call("fs/list", {})
-         return { intent: "complete", output: JSON.stringify(result) }`,
-        { call: handler({}, [], new Set(["fs/list"])) }
-      )
+  it("resolves a failed flow call with the failure envelope instead of throwing", async () => {
+    const outcome = await evaluate(
+      `const result = await ctx.call("fs/list", {})
+         ctx.done(JSON.stringify(result))`,
+      { call: handler({}, [], new Set(["fs/list"])) }
+    )
 
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: JSON.stringify({
-          ok: false,
-          error: {
-            code: "flow_failed",
-            message: "fs/list refused",
-            hint: Cell.callFailureHint.flow_failed
-          }
-        })
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: JSON.stringify({
+        ok: false,
+        error: {
+          code: "flow_failed",
+          message: "fs/list refused",
+          hint: Cell.callFailureHint.flow_failed
+        }
       })
     })
+  })
 
-    it("runs the calls a cell makes after one that failed, in the same frame", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `const first = await ctx.call("fs/list", { path: "missing" })
+  it("runs the calls a cell makes after one that failed, in the same frame", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `const first = await ctx.call("fs/list", { path: "missing" })
          const second = await ctx.call("fs/read", { path: "ok" })
-         return { intent: "complete", output: JSON.stringify([first.ok, second]) }`,
-        { call: handler({ "fs/read": "kept" }, observed, new Set(["fs/list"])) }
-      )
+         ctx.done(JSON.stringify([first.ok, second]))`,
+      { call: handler({ "fs/read": "kept" }, observed, new Set(["fs/list"])) }
+    )
 
-      expect(observed.map((call) => call.flow)).toEqual(["fs/list", "fs/read"])
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: JSON.stringify([false, "kept"])
+    expect(observed.map((call) => call.flow)).toEqual(["fs/list", "fs/read"])
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: JSON.stringify([false, "kept"])
+    })
+  })
+
+  it("settles the active VM bridge before propagating a host failure", async () => {
+    const result = await withRealm((realm) =>
+      Effect.result(
+        realm.evaluate({
+          cell: Cell.source(`await ctx.call("fs/list", {})`),
+          frame: 0,
+          call: () => Effect.fail(new HarnessError({ code: "engine_failed", message: "permission park" }))
+        })
+      )
+    ).pipe(Effect.runPromise)
+
+    expect(result).toMatchObject({
+      _tag: "Failure",
+      failure: { code: "engine_failed", message: "permission park" }
+    })
+  })
+
+  it("reports a thrown cell as a durable observation", async () => {
+    const outcome = await evaluate(`throw new TypeError("bad plan")`)
+    expect(outcome).toStrictEqual(new Cell.Raised({ name: "TypeError", message: "bad plan" }))
+  })
+
+  it("reports a cell that returns at all as a compile failure, before anything runs", async () => {
+    const outcome = await evaluate(`return "done"`)
+    expect(outcome._tag).toBe("rejected")
+    expect((outcome as Cell.Rejected).code).toBe("compile_failed")
+    expect((outcome as Cell.Rejected).message).toContain("ctx.done(output)")
+  })
+
+  it("reports a cell that does not compile without running anything", async () => {
+    const outcome = await evaluate(`return {`)
+    expect(outcome._tag).toBe("rejected")
+    expect((outcome as Cell.Rejected).code).toBe("compile_failed")
+  })
+
+  it("teaches ctx.call to a cell that imports, and runs one that only quotes an import", async () => {
+    const imported = await evaluate(`import { readFile } from "node:fs"\nreturn null`)
+    expect(imported._tag).toBe("rejected")
+    expect((imported as Cell.Rejected).code).toBe("imports_forbidden")
+    expect((imported as Cell.Rejected).message).toContain("ctx.call")
+
+    // The same word, inside the string a benchmark cell actually passed.
+    const quoted = await evaluate(
+      `const command = "python - <<'PY'\\nfrom pathlib import Path\\nprint(Path('.'))\\nPY"
+         ctx.done(command)`
+    )
+    expect(quoted._tag).toBe("settled")
+  })
+
+  it("runs erasable TypeScript without changing its runtime meaning", async () => {
+    const outcome = await withRealm((realm) =>
+      realm.evaluate({
+        cell: Cell.source("const x: number = 1\nctx.done(String(x))", "typescript"),
+        frame: 0,
+        call: handler({}, [])
       })
-    })
+    ).pipe(Effect.map((frame) => frame.outcome), Effect.runPromise)
 
-    it("settles the active VM bridge before propagating a host failure", async () => {
-      const result = await Effect.gen(function*() {
-        const sandbox = yield* Sandbox.Sandbox
-        return yield* Effect.result(
-          sandbox.evaluate({
-            cell: Cell.source(`await ctx.call("fs/list", {})\nreturn null`),
-            flows,
-            call: () => Effect.fail(new HarnessError({ code: "engine_failed", message: "permission park" }))
-          })
-        )
-      }).pipe(Effect.provide(binding), Effect.runPromise)
-
-      expect(result).toMatchObject({
-        _tag: "Failure",
-        failure: { code: "engine_failed", message: "permission park" }
+    expect(outcome).toStrictEqual(
+      new Cell.Settled({
+        transition: new Cell.Complete({ output: "1", reason: undefined })
       })
-    })
+    )
+  })
 
-    it("reports a thrown cell as a durable observation", async () => {
-      const outcome = await evaluate(binding, `throw new TypeError("bad plan")`)
-      expect(outcome).toStrictEqual(new Cell.Raised({ name: "TypeError", message: "bad plan" }))
-    })
+  it("rejects TypeScript syntax that requires JavaScript emit", async () => {
+    const typed = await withRealm((realm) =>
+      realm.evaluate({
+        cell: Cell.source("enum Direction { Left, Right }", "typescript"),
+        frame: 0,
+        call: handler({}, [])
+      })
+    ).pipe(Effect.map((frame) => frame.outcome), Effect.runPromise)
+    expect(typed._tag).toBe("rejected")
+    expect((typed as Cell.Rejected).code).toBe("compile_failed")
+  })
 
-    it("reports a cell that returns something else as an invalid transition", async () => {
-      const outcome = await evaluate(binding, `return "done"`)
-      expect(outcome._tag).toBe("rejected")
-      expect((outcome as Cell.Rejected).code).toBe("invalid_transition")
-    })
-
-    it("reports a cell that does not compile without running anything", async () => {
-      const outcome = await evaluate(binding, `return {`)
-      expect(outcome._tag).toBe("rejected")
-      expect((outcome as Cell.Rejected).code).toBe("compile_failed")
-    })
-
-    it("teaches ctx.call to a cell that imports, and runs one that only quotes an import", async () => {
-      const imported = await evaluate(binding, `import { readFile } from "node:fs"\nreturn null`)
-      expect(imported._tag).toBe("rejected")
-      expect((imported as Cell.Rejected).code).toBe("imports_forbidden")
-      expect((imported as Cell.Rejected).message).toContain("ctx.call")
-
-      // The same word, inside the string a benchmark cell actually passed.
-      const quoted = await evaluate(
-        binding,
-        `const command = "python - <<'PY'\\nfrom pathlib import Path\\nprint(Path('.'))\\nPY"
-         return { intent: "complete", output: command }`
-      )
-      expect(quoted._tag).toBe("settled")
-    })
-
-    it("runs erasable TypeScript without changing its runtime meaning", async () => {
-      const outcome = await Effect.gen(function*() {
-        const sandbox = yield* Sandbox.Sandbox
-        return yield* sandbox.evaluate({
-          cell: Cell.source(
-            "const x: number = 1\nreturn { intent: \"complete\", output: String(x) }",
-            "typescript"
-          ),
-          flows,
-          call: handler({}, [])
-        })
-      }).pipe(Effect.provide(binding), Effect.runPromise)
-
-      expect(outcome).toStrictEqual(
-        new Cell.Settled({
-          transition: new Cell.Complete({ state: null, output: "1", reason: undefined })
-        })
-      )
-    })
-
-    it("rejects TypeScript syntax that requires JavaScript emit", async () => {
-      const typed = await Effect.gen(function*() {
-        const sandbox = yield* Sandbox.Sandbox
-        return yield* sandbox.evaluate({
-          cell: Cell.source("enum Direction { Left, Right }\nreturn null", "typescript"),
-          flows,
-          call: handler({}, [])
-        })
-      }).pipe(Effect.provide(binding), Effect.runPromise)
-      expect(typed._tag).toBe("rejected")
-      expect((typed as Cell.Rejected).code).toBe("compile_failed")
-    })
-
-    it("enforces a declared call limit as an uncatchable typed outcome", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `await ctx.call("fs/list", {})
+  it("enforces a declared call limit as an uncatchable typed outcome", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `await ctx.call("fs/list", {})
          try {
            await ctx.call("fs/list", {})
          } catch (error) {
-           return { intent: "complete", output: error.message }
+           ctx.done(error.message)
          }
-         return { intent: "complete", output: "unreachable" }`,
-        { call: handler({}, observed), limits: { calls: 1 } }
-      )
+         ctx.done("unreachable")`,
+      { call: handler({}, observed), limits: { calls: 1 } }
+    )
 
-      expect(observed).toHaveLength(1)
-      expect(outcome).toMatchObject({
-        _tag: "rejected",
-        code: "limit_exceeded",
-        message: "This cell exceeded its limit of 1 flow calls"
-      })
+    expect(observed).toHaveLength(1)
+    expect(outcome).toMatchObject({
+      _tag: "rejected",
+      code: "limit_exceeded",
+      message: "This cell exceeded its limit of 1 flow calls"
     })
+  })
 
-    it("settles a stalled flow call at its own budget as a catchable failure", async () => {
-      // The defect this bounds: a broad `grep` that never settled held its
-      // frame for the whole 900,000 ms evaluation ceiling and was reported to
-      // the model as nothing at all. A per-call budget answers the call
-      // instead, inside the frame the cell is still running.
-      let entered = false
-      const outcome = await evaluate(
-        binding,
-        `const result = await ctx.call("fs/list", {})
-         return { intent: "complete", output: JSON.stringify(result) }`,
-        {
-          call: () =>
-            Effect.sync(() => {
-              entered = true
-            }).pipe(Effect.andThen(Effect.never)),
-          limits: { callMs: 50 }
+  it("settles a stalled flow call at its own budget as a catchable failure", async () => {
+    // The defect this bounds: a broad `grep` that never settled held its
+    // frame for the whole 900,000 ms evaluation ceiling and was reported to
+    // the model as nothing at all. A per-call budget answers the call
+    // instead, inside the frame the cell is still running.
+    let entered = false
+    const outcome = await evaluate(
+      `const result = await ctx.call("fs/list", {})
+         ctx.done(JSON.stringify(result))`,
+      {
+        call: () =>
+          Effect.sync(() => {
+            entered = true
+          }).pipe(Effect.andThen(Effect.never)),
+        limits: { callMs: 50 }
+      }
+    )
+
+    expect(entered).toBe(true)
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: JSON.stringify({
+        ok: false,
+        error: {
+          code: "timeout",
+          message: "Flow fs/list timed out after 0.05 seconds.",
+          hint: Cell.callFailureHint.timeout
         }
-      )
-
-      expect(entered).toBe(true)
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: JSON.stringify({
-          ok: false,
-          error: {
-            code: "timeout",
-            message: "Flow fs/list timed out after 0.05 seconds.",
-            hint: Cell.callFailureHint.timeout
-          }
-        })
       })
     })
+  })
 
-    it("leaves the frame alive after a timed-out call, so a narrower call still runs", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `const broad = await ctx.call("fs/list", { path: "." })
+  it("leaves the frame alive after a timed-out call, so a narrower call still runs", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `const broad = await ctx.call("fs/list", { path: "." })
          if (broad.ok !== false || broad.error.code !== "timeout") {
-           return { intent: "complete", output: "unreachable" }
+           ctx.done("unreachable")
          }
          const narrowed = await ctx.call("fs/list", { path: "django" })
-         return { intent: "complete", output: narrowed.entries.join(",") }`,
-        {
-          call: (invocation) => {
-            observed.push(invocation)
-            return invocation.ordinal === 0
-              ? Effect.never
-              : Effect.succeed(new Cell.CallResult({ outcome: "success", value: { entries: ["sites.py"] } }))
-          },
-          limits: { callMs: 50 }
-        }
-      )
+         ctx.done(narrowed.entries.join(","))`,
+      {
+        call: (invocation) => {
+          observed.push(invocation)
+          return invocation.ordinal === 0
+            ? Effect.never
+            : Effect.succeed(new Cell.CallResult({ outcome: "success", value: { entries: ["sites.py"] } }))
+        },
+        limits: { callMs: 50 }
+      }
+    )
 
-      expect(observed.map((call) => call.input)).toEqual([{ path: "." }, { path: "django" }])
-      expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "sites.py" })
-    })
+    expect(observed.map((call) => call.input)).toEqual([{ path: "." }, { path: "django" }])
+    expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "sites.py" })
+  })
 
-    it("does not charge a settled call against the next call's budget", async () => {
-      const outcome = await evaluate(
-        binding,
-        `await ctx.call("fs/list", { path: "one" })
+  it("does not charge a settled call against the next call's budget", async () => {
+    const outcome = await evaluate(
+      `await ctx.call("fs/list", { path: "one" })
          await ctx.call("fs/list", { path: "two" })
-         return { intent: "complete", output: "both" }`,
-        {
-          call: () =>
-            Effect.sleep(120).pipe(
-              Effect.as(new Cell.CallResult({ outcome: "success", value: null }))
-            ),
-          limits: { callMs: 300, timeMs: undefined }
-        }
-      )
+         ctx.done("both")`,
+      {
+        call: () =>
+          Effect.sleep(120).pipe(
+            Effect.as(new Cell.CallResult({ outcome: "success", value: null }))
+          ),
+        limits: { callMs: 300, timeMs: undefined }
+      }
+    )
 
-      expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "both" })
+    expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "both" })
+  })
+
+  it("exposes the catalog, the checkpoint pair, the settling calls, and nothing else", async () => {
+    const outcome = await evaluate(
+      `ctx.done(Object.keys(ctx).sort().join(",") + "|" + Object.keys(ctx.flows).join(","))`
+    )
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "base,call,checkpoint,done,flows,justify,park|fs/list"
     })
+  })
 
-    it("exposes the catalog, the state, the checkpoint pair, and nothing else on the frozen context", async () => {
-      const outcome = await evaluate(
-        binding,
-        `return { intent: "complete", output: Object.keys(ctx).sort().join(",") + "|" + Object.keys(ctx.flows).join(",") }`
-      )
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        // `base` and `checkpoint` are here in the filing mode as well as the
-        // repl one, and deliberately: nothing about pinning a tree is a
-        // property of how cells relate to each other, and the filing arm has
-        // the same revert-to-reprove failure the repl arm has.
-        output: "base,call,checkpoint,flows,state|fs/list"
-      })
-    })
+  it("deep-freezes every catalog descriptor", async () => {
+    const outcome = await evaluate(
+      `ctx.done(String(Object.isFrozen(ctx.flows) && Object.isFrozen(ctx.flows["fs/list"]) && Object.isFrozen(ctx.flows["fs/list"].capabilities)))`
+    )
+    expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "true" })
+  })
 
-    it("hands the previous frame's state to the cell as a frozen ctx.state", async () => {
-      const outcome = await evaluate(
-        binding,
-        `const before = ctx.state.plan[0]
-         try { ctx.state.plan.push("mutated") } catch (error) {}
-         return { intent: "complete", state: {}, output: before + ":" + ctx.state.plan.length }`,
-        { state: { plan: ["read calc.py"] } }
-      )
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "read calc.py:1"
-      })
-    })
-
-    it("deep-freezes every catalog descriptor", async () => {
-      const outcome = await evaluate(
-        binding,
-        `return {
-           intent: "complete",
-           output: String(Object.isFrozen(ctx.flows) && Object.isFrozen(ctx.flows["fs/list"]) && Object.isFrozen(ctx.flows["fs/list"].capabilities))
-         }`
-      )
-      expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "true" })
-    })
-
-    it("rejects a non-string flow name before opening a boundary", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `try {
+  it("rejects a non-string flow name before opening a boundary", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `try {
            await ctx.call(42, {})
          } catch (error) {
-           return { intent: "complete", output: error.name }
+           ctx.done(error.name)
          }`,
-        { call: handler({}, observed) }
-      )
-      expect(observed).toHaveLength(0)
-      expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "TypeError" })
-    })
+      { call: handler({}, observed) }
+    )
+    expect(observed).toHaveLength(0)
+    expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "TypeError" })
+  })
 
-    it("rejects non-JSON call input before opening a boundary", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `try {
+  it("rejects non-JSON call input before opening a boundary", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `try {
            await ctx.call("fs/list", { invalid: new Map() })
          } catch (error) {
-           return { intent: "complete", output: error.name + ": " + error.message }
+           ctx.done(error.name + ": " + error.message)
          }`,
-        { call: handler({}, observed) }
-      )
-      expect(observed).toHaveLength(0)
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "TypeError: ctx.call input must be JSON-serializable"
-      })
+      { call: handler({}, observed) }
+    )
+    expect(observed).toHaveLength(0)
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "TypeError: ctx.call input must be JSON-serializable"
     })
+  })
 
-    it("reads an omitted call input as the same null an explicit one carries", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `const omitted = await ctx.call("fs/list")
+  it("reads an omitted call input as the same null an explicit one carries", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `const omitted = await ctx.call("fs/list")
          const explicit = await ctx.call("fs/list", null)
-         return { intent: "complete", output: JSON.stringify([omitted, explicit]) }`,
-        { call: handler({}, observed) }
-      )
+         ctx.done(JSON.stringify([omitted, explicit]))`,
+      { call: handler({}, observed) }
+    )
 
-      expect(observed.map((call) => [call.ordinal, call.input])).toEqual([[0, null], [1, null]])
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "[null,null]"
-      })
+    expect(observed.map((call) => [call.ordinal, call.input])).toEqual([[0, null], [1, null]])
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "[null,null]"
     })
+  })
 
-    it("answers a call at a zero per-call budget without waiting for the host", async () => {
-      // Zero is the boundary the message renderer has to survive as well: a
-      // whole number of seconds must not read as "0.000".
-      const outcome = await evaluate(
-        binding,
-        `const result = await ctx.call("fs/list", {})
-         return { intent: "complete", output: result.error.code + ": " + result.error.message }`,
-        { call: () => Effect.never, limits: { callMs: 0 } }
-      )
+  it("answers a call at a zero per-call budget without waiting for the host", async () => {
+    // Zero is the boundary the message renderer has to survive as well: a
+    // whole number of seconds must not read as "0.000".
+    const outcome = await evaluate(
+      `const result = await ctx.call("fs/list", {})
+         ctx.done(result.error.code + ": " + result.error.message)`,
+      { call: () => Effect.never, limits: { callMs: 0 } }
+    )
 
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "timeout: Flow fs/list timed out after 0 seconds."
-      })
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "timeout: Flow fs/list timed out after 0 seconds."
     })
+  })
 
-    it("admits exactly as many calls as the budget allows", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `await ctx.call("fs/list", {})
-         return { intent: "complete", output: "spent the budget exactly" }`,
-        { call: handler({}, observed), limits: { calls: 1 } }
-      )
+  it("admits exactly as many calls as the budget allows", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `await ctx.call("fs/list", {})
+         ctx.done("spent the budget exactly")`,
+      { call: handler({}, observed), limits: { calls: 1 } }
+    )
 
-      expect(observed).toHaveLength(1)
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "spent the budget exactly"
-      })
+    expect(observed).toHaveLength(1)
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "spent the budget exactly"
     })
+  })
 
-    it("refuses the very first call when the budget is zero", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `await ctx.call("fs/list", {})
-         return { intent: "complete", output: "unreachable" }`,
-        { call: handler({}, observed), limits: { calls: 0 } }
-      )
+  it("refuses the very first call when the budget is zero", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `await ctx.call("fs/list", {})
+         ctx.done("unreachable")`,
+      { call: handler({}, observed), limits: { calls: 0 } }
+    )
 
-      expect(observed).toEqual([])
-      expect(outcome).toStrictEqual(
-        new Cell.Rejected({ code: "limit_exceeded", message: "This cell exceeded its limit of 0 flow calls" })
-      )
-    })
+    expect(observed).toEqual([])
+    expect(outcome).toStrictEqual(
+      new Cell.Rejected({ code: "limit_exceeded", message: "This cell exceeded its limit of 0 flow calls" })
+    )
+  })
 
-    it("settles a cell that makes no call at all under a zero call budget", async () => {
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `return { intent: "complete", output: String(Object.keys(ctx.flows).length) }`,
-        { call: handler({}, observed), limits: { calls: 0 } }
-      )
+  it("settles a cell that makes no call at all under a zero call budget", async () => {
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `ctx.done(String(Object.keys(ctx.flows).length))`,
+      { call: handler({}, observed), limits: { calls: 0 } }
+    )
 
-      expect(observed).toEqual([])
-      expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "1" })
-    })
+    expect(observed).toEqual([])
+    expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "1" })
+  })
 
-    it("settles the calls still queued behind the one that spent the budget", async () => {
-      // Three calls are issued before any of them settles, so when the second
-      // one meets the ceiling a third is still queued behind it. A queued call
-      // that is never answered leaves a live promise behind a frame that is
-      // already gone.
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `await Promise.all([
+  it("settles the calls still queued behind the one that spent the budget", async () => {
+    // Three calls are issued before any of them settles, so when the second
+    // one meets the ceiling a third is still queued behind it. A queued call
+    // that is never answered leaves a live promise behind a frame that is
+    // already gone.
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `await Promise.all([
            ctx.call("fs/list", { a: 1 }),
            ctx.call("fs/list", { b: 2 }),
            ctx.call("fs/list", { c: 3 })
          ])
-         return { intent: "complete", output: "unreachable" }`,
-        { call: handler({}, observed), limits: { calls: 1 } }
-      )
+         ctx.done("unreachable")`,
+      { call: handler({}, observed), limits: { calls: 1 } }
+    )
 
-      expect(observed.map((call) => call.input)).toEqual([{ a: 1 }])
-      expect(outcome).toStrictEqual(
-        new Cell.Rejected({ code: "limit_exceeded", message: "This cell exceeded its limit of 1 flow calls" })
-      )
-    })
+    expect(observed.map((call) => call.input)).toEqual([{ a: 1 }])
+    expect(outcome).toStrictEqual(
+      new Cell.Rejected({ code: "limit_exceeded", message: "This cell exceeded its limit of 1 flow calls" })
+    )
+  })
 
-    it("settles concurrent calls one at a time, in the order the cell issued them", async () => {
-      // Ordinals are the replay anchor, so calls that are issued together must
-      // still be numbered and answered in issue order rather than interleaved.
-      const observed: Array<Sandbox.Invocation> = []
-      const outcome = await evaluate(
-        binding,
-        `const results = await Promise.all([
+  it("settles concurrent calls one at a time, in the order the cell issued them", async () => {
+    // Ordinals are the replay anchor, so calls that are issued together must
+    // still be numbered and answered in issue order rather than interleaved.
+    const observed: Array<Sandbox.Invocation> = []
+    const outcome = await evaluate(
+      `const results = await Promise.all([
            ctx.call("fs/list", { path: "a" }),
            ctx.call("fs/list", { path: "b" }),
            ctx.call("fs/list", { path: "a" })
          ])
-         return { intent: "complete", output: results.join(",") }`,
-        {
-          call: (invocation) => {
-            observed.push(invocation)
-            return Effect.succeed(
-              new Cell.CallResult({ outcome: "success", value: `${invocation.ordinal}:${observed.length}` })
-            )
-          }
+         ctx.done(results.join(","))`,
+      {
+        call: (invocation) => {
+          observed.push(invocation)
+          return Effect.succeed(
+            new Cell.CallResult({ outcome: "success", value: `${invocation.ordinal}:${observed.length}` })
+          )
         }
-      )
+      }
+    )
 
-      expect(observed.map((call) => [call.ordinal, call.input])).toEqual([
-        [0, { path: "a" }],
-        [1, { path: "b" }],
-        // The same input twice is two calls with two ordinals, not one shared
-        // answer: identity is positional, not content-addressed.
-        [2, { path: "a" }]
-      ])
-      expect((outcome as Cell.Settled).transition).toMatchObject({
-        _tag: "complete",
-        output: "0:1,1:2,2:3"
-      })
+    expect(observed.map((call) => [call.ordinal, call.input])).toEqual([
+      [0, { path: "a" }],
+      [1, { path: "b" }],
+      // The same input twice is two calls with two ordinals, not one shared
+      // answer: identity is positional, not content-addressed.
+      [2, { path: "a" }]
+    ])
+    expect((outcome as Cell.Settled).transition).toMatchObject({
+      _tag: "complete",
+      output: "0:1,1:2,2:3"
     })
+  })
 
-    it("reports a rejected promise the cell returns as the failure it carries", async () => {
-      expect(await evaluate(binding, `return Promise.reject(new RangeError("nope"))`)).toStrictEqual(
-        new Cell.Raised({ name: "RangeError", message: "nope" })
-      )
-    })
+  it("reports a rejected promise the cell awaits as the failure it carries", async () => {
+    expect(await evaluate(`await Promise.reject(new RangeError("nope"))`)).toStrictEqual(
+      new Cell.Raised({ name: "RangeError", message: "nope" })
+    )
+  })
 
-    it("lets a host handler that dies take the frame down instead of answering the cell", async () => {
-      const exit = await Effect.gen(function*() {
-        const sandbox = yield* Sandbox.Sandbox
-        return yield* Effect.exit(sandbox.evaluate({
-          cell: Cell.source(
-            `try {
+  it("lets a host handler that dies take the frame down instead of answering the cell", async () => {
+    const exit = await withRealm((realm) =>
+      Effect.exit(realm.evaluate({
+        cell: Cell.source(
+          `try {
                await ctx.call("fs/list", {})
              } catch (error) {
-               return { intent: "complete", output: "the cell caught a host defect" }
+               ctx.done("the cell caught a host defect")
              }
-             return { intent: "complete", output: "unreachable" }`
-          ),
-          flows,
-          call: () =>
-            Effect.sync(() => {
-              throw new Error("the host blew up")
-            })
-        }))
-      }).pipe(Effect.provide(binding), Effect.runPromise)
+             ctx.done("unreachable")`
+        ),
+        frame: 0,
+        call: () =>
+          Effect.sync(() => {
+            throw new Error("the host blew up")
+          })
+      }))
+    ).pipe(Effect.runPromise)
 
-      // A defect in the host is not data the cell may recover from: the frame
-      // ends, and no outcome is produced for the journal to record as an answer.
-      expect(Exit.isFailure(exit)).toBe(true)
-      expect(Cause.pretty((exit as Exit.Failure<never, never>).cause)).toContain("the host blew up")
-    })
+    // A defect in the host is not data the cell may recover from: the frame
+    // ends, and no outcome is produced for the journal to record as an answer.
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(Cause.pretty((exit as Exit.Failure<never, never>).cause)).toContain("the host blew up")
+  })
 
-    it("rejects every returned shape that is not a transition", async () => {
-      for (
-        const expression of [
-          "",
-          " 42",
-          " null",
-          " \"done\"",
-          " []",
-          " { intent: \"explode\" }",
-          " { intent: \"complete\" }",
-          " [{ intent: \"complete\", output: \"x\" }]"
-        ]
-      ) {
-        const outcome = await evaluate(binding, `return${expression}`)
-        expect(outcome._tag, expression).toBe("rejected")
-        expect((outcome as Cell.Rejected).code, expression).toBe("invalid_transition")
-      }
-    })
+  it("refuses a return in every shape it can be written in", async () => {
+    for (
+      const expression of [
+        "",
+        " 42",
+        " null",
+        " \"done\"",
+        " []",
+        " { intent: \"complete\", output: \"x\" }"
+      ]
+    ) {
+      const outcome = await evaluate(`return${expression}`)
+      expect(outcome._tag, expression).toBe("rejected")
+      expect((outcome as Cell.Rejected).code, expression).toBe("compile_failed")
+    }
+  })
 
-    it("carries a half-megabyte output out of the cell", async () => {
-      const outcome = await evaluate(binding, `return { intent: "complete", output: "q".repeat(512 * 1024) }`)
-      const settled = outcome as Cell.Settled
-      expect(settled.transition._tag).toBe("complete")
-      expect((settled.transition as Cell.Complete).output.length).toBe(512 * 1024)
-    }, 60_000)
+  it("carries a half-megabyte output out of the cell", async () => {
+    const outcome = await evaluate(`ctx.done("q".repeat(512 * 1024))`)
+    const settled = outcome as Cell.Settled
+    expect(settled.transition._tag).toBe("complete")
+    expect((settled.transition as Cell.Complete).output.length).toBe(512 * 1024)
+  }, 60_000)
 
-    it("surfaces an interruption mid-call as an interrupted exit, never as an outcome", async () => {
-      const result = await Effect.gen(function*() {
-        const sandbox = yield* Sandbox.Sandbox
+  it("surfaces an interruption mid-call as an interrupted exit, never as an outcome", async () => {
+    const result = await withRealm((realm) =>
+      Effect.gen(function*() {
         const entered = yield* Deferred.make<void>()
-        const frame = yield* sandbox.evaluate({
-          cell: Cell.source(`await ctx.call("fs/list", {})\nreturn { intent: "complete", output: "unreachable" }`),
-          flows,
+        const frame = yield* realm.evaluate({
+          cell: Cell.source(`await ctx.call("fs/list", {})\nctx.done("unreachable")`),
+          frame: 0,
           call: () => Deferred.succeed(entered, void 0).pipe(Effect.andThen(Effect.never))
         }).pipe(Effect.forkChild({ startImmediately: true }))
 
@@ -687,24 +644,37 @@ for (const [name, binding] of bindings) {
         yield* Deferred.await(entered)
         yield* Fiber.interrupt(frame)
         return { exit: yield* Fiber.await(frame) }
-      }).pipe(Effect.provide(binding), Effect.scoped, Effect.runPromise)
+      })
+    ).pipe(Effect.runPromise)
 
-      expect(Exit.isFailure(result.exit) && Cause.hasInterruptsOnly(result.exit.cause)).toBe(true)
-    })
+    expect(Exit.isFailure(result.exit) && Cause.hasInterruptsOnly(result.exit.cause)).toBe(true)
   })
-}
+})
 
 describe("Sandbox.makeNoop", () => {
-  it("reports that no sandbox is configured rather than pretending to run", async () => {
-    const outcome = await Effect.gen(function*() {
-      const sandbox = yield* Sandbox.Sandbox
-      return yield* Effect.result(
-        sandbox.evaluate({ cell: Cell.source("return null"), flows: {}, call: handler({}, []) })
-      )
-    }).pipe(Effect.provide(Sandbox.layerNoop()), Effect.runPromise)
+  it("offers no realm, which is the whole of what it cannot do", () => {
+    expect(Sandbox.makeNoop().openRealm).toBeUndefined()
+    expect(Sandbox.realmUnsupported.code).toBe("unsupported")
+    expect(Sandbox.realmUnsupported.message).toContain("no persistent realm")
+  })
 
-    expect(outcome._tag).toBe("Failure")
-    expect((outcome as { readonly failure: Sandbox.SandboxError }).failure.code).toBe("unavailable")
+  it("takes an override for the one operation it has", async () => {
+    const opened = await Effect.gen(function*() {
+      const sandbox = yield* Sandbox.Sandbox
+      const open = sandbox.openRealm
+      expect(open).toBeDefined()
+      return yield* open!({ flows: {} })
+    }).pipe(
+      Effect.provide(
+        Sandbox.layerNoop({
+          openRealm: () => Effect.succeed({ evaluate: () => Effect.die("unused") } as Sandbox.Realm)
+        })
+      ),
+      Effect.scoped,
+      Effect.runPromise
+    )
+
+    expect(typeof opened.evaluate).toBe("function")
   })
 })
 
@@ -734,31 +704,22 @@ describe("Sandbox projections", () => {
     const observed: Array<Sandbox.Limits | undefined> = []
     const sandbox = Sandbox.make({
       capabilities: { calls: true, memoryBytes: true, steps: true, timeMs: true },
-      evaluate: (evaluation) =>
+      openRealm: (options) =>
         Effect.sync(() => {
-          observed.push(evaluation.limits)
-          return new Cell.Rejected({ code: "stalled", message: "recorded" })
+          observed.push(options.limits)
+          return { evaluate: () => Effect.die("unused") } as Sandbox.Realm
         })
     })
-    const request = {
-      cell: Cell.source("return null"),
-      flows: {},
-      call: handler({}, [])
-    }
+    const open = (limits?: Sandbox.Limits) =>
+      Effect.runPromise(Effect.scoped(sandbox.openRealm!({ flows: {}, ...(limits === undefined ? {} : { limits }) })))
 
-    await Effect.runPromise(sandbox.evaluate(request))
-    await Effect.runPromise(sandbox.evaluate({
-      ...request,
-      limits: { steps: Sandbox.defaultLimits.steps + 1 }
-    }))
-    await Effect.runPromise(sandbox.evaluate({
-      ...request,
-      limits: {
-        memoryBytes: Sandbox.defaultLimits.memoryBytes + 1,
-        steps: Sandbox.defaultLimits.steps + 1,
-        timeMs: Sandbox.defaultLimits.timeMs + 1
-      }
-    }))
+    await open()
+    await open({ steps: Sandbox.defaultLimits.steps + 1 })
+    await open({
+      memoryBytes: Sandbox.defaultLimits.memoryBytes + 1,
+      steps: Sandbox.defaultLimits.steps + 1,
+      timeMs: Sandbox.defaultLimits.timeMs + 1
+    })
 
     expect(observed).toEqual([
       Sandbox.defaultLimits,
@@ -781,20 +742,15 @@ describe("Sandbox projections", () => {
     ])
   })
 
-  it("rejects invalid numeric ceilings before entering a binding", async () => {
-    let evaluations = 0
+  it("rejects invalid numeric ceilings before a realm is opened", async () => {
+    let opens = 0
     const sandbox = Sandbox.make({
       capabilities: { calls: true, memoryBytes: true, steps: true, timeMs: true },
-      evaluate: () => {
-        evaluations = evaluations + 1
-        return Effect.succeed(new Cell.Rejected({ code: "stalled", message: "entered" }))
+      openRealm: () => {
+        opens = opens + 1
+        return Effect.succeed({ evaluate: () => Effect.die("unused") } as Sandbox.Realm)
       }
     })
-    const request = {
-      cell: Cell.source("return null"),
-      flows: {},
-      call: handler({}, [])
-    }
 
     for (
       const limits of [
@@ -810,23 +766,19 @@ describe("Sandbox projections", () => {
         { memoryBytes: 1 }
       ]
     ) {
-      const result = await Effect.runPromise(Effect.result(sandbox.evaluate({ ...request, limits })))
+      const result = await Effect.runPromise(
+        Effect.scoped(Effect.result(sandbox.openRealm!({ flows: {}, limits })))
+      )
       expect(result).toMatchObject({
         _tag: "Failure",
         failure: { code: "unsupported" }
       })
     }
 
-    expect(evaluations).toBe(0)
+    expect(opens).toBe(0)
   })
 
-  it("reports which limits a binding can enforce", async () => {
-    const capabilities = await Effect.gen(function*() {
-      const sandbox = yield* Sandbox.Sandbox
-      return sandbox.capabilities
-    }).pipe(Effect.provide(Sandbox.layerRestricted), Effect.runPromise)
-    expect(capabilities).toEqual({ calls: true, memoryBytes: false, steps: false, timeMs: false })
-
+  it("reports which limits the binding can enforce", async () => {
     const quickjs = await Effect.gen(function*() {
       const sandbox = yield* Sandbox.Sandbox
       return sandbox.capabilities
@@ -835,17 +787,15 @@ describe("Sandbox projections", () => {
   })
 })
 
-describe("Sandbox.layerRestricted", () => {
+describe("Sandbox call refusals", () => {
   it("rejects a call whose flow name is not a string, without queueing it", async () => {
     const observed: Array<Sandbox.Invocation> = []
     const outcome = await evaluate(
-      Sandbox.layerRestricted,
       `try {
          await ctx.call(42, {})
        } catch (error) {
-         return { intent: "complete", output: error.name }
-       }
-       return { intent: "complete", output: "unreachable" }`,
+         ctx.done(error.name)
+       }`,
       { call: handler({}, observed) }
     )
 
@@ -853,38 +803,11 @@ describe("Sandbox.layerRestricted", () => {
     expect((outcome as Cell.Settled).transition).toMatchObject({ _tag: "complete", output: "TypeError" })
   })
 
-  it("denies assigning to the cell scope", async () => {
-    const outcome = await evaluate(Sandbox.layerRestricted, `leaked = 1\nreturn null`)
-    expect(outcome._tag).toBe("raised")
-  })
-
-  it("refuses a limit it cannot enforce instead of ignoring it", async () => {
-    for (
-      const limits of [{ memoryBytes: 1024 * 1024 }, { steps: 1000 }, { timeMs: 1000 }, { totalMs: 1000 }]
-    ) {
-      const outcome = await Effect.gen(function*() {
-        const sandbox = yield* Sandbox.Sandbox
-        return yield* Effect.result(
-          sandbox.evaluate({
-            cell: Cell.source("return { intent: \"complete\", output: \"\" }"),
-            flows,
-            call: handler({}, []),
-            limits
-          })
-        )
-      }).pipe(Effect.provide(Sandbox.layerRestricted), Effect.runPromise)
-
-      expect(outcome._tag).toBe("Failure")
-      expect((outcome as { readonly failure: Sandbox.SandboxError }).failure.code).toBe("unsupported")
-    }
-  })
-
   it("never reaches the host for a call issued after the budget was already spent", async () => {
     // The frame is already rejected by the time the third call is issued, so
     // its only observable trace is whether the host saw it. It must not.
     const observed: Array<Sandbox.Invocation> = []
     const outcome = await evaluate(
-      Sandbox.layerRestricted,
       `await ctx.call("fs/list", {})
        try {
          await ctx.call("fs/list", {})
@@ -892,10 +815,9 @@ describe("Sandbox.layerRestricted", () => {
          try {
            await ctx.call("fs/list", {})
          } catch (afterAbort) {
-           return { intent: "complete", output: afterAbort.message }
+           ctx.done(afterAbort.message)
          }
-       }
-       return { intent: "complete", output: "unreachable" }`,
+       }`,
       { call: handler({}, observed), limits: { calls: 1 } }
     )
 
@@ -904,56 +826,39 @@ describe("Sandbox.layerRestricted", () => {
       new Cell.Rejected({ code: "limit_exceeded", message: "This cell exceeded its limit of 1 flow calls" })
     )
   })
-
-  it("refuses a cell that would escape its function wrapper", async () => {
-    // This binding is explicitly not an isolation boundary: the cell text is
-    // interpolated into a wrapper built with `new Function`, so a cell that
-    // closed the wrapper would run in the host realm. Escaping needs unbalanced
-    // braces, and unbalanced braces are a syntax error in the cell read on its
-    // own — which is what the boundary parse now reads it as, before any of it
-    // reaches a realm.
-    const outcome = await evaluate(
-      Sandbox.layerRestricted,
-      `} }).call(__this) + (function () {
-         throw new Error("escaped:" + String(__scope[Symbol.iterator]))
-       })();
-       (async function () { with (__scope) {`
-    )
-
-    expect(outcome).toMatchObject({ _tag: "rejected", code: "compile_failed" })
-    expect((outcome as Cell.Rejected).message).toContain("line 1")
-  })
 })
 
 describe("Sandbox.compile", () => {
-  it("hands a JavaScript cell through untouched", () => {
-    expect(Sandbox.compile(Cell.source("return null", "javascript"))).toBe("return null")
+  it("hands a JavaScript cell through with its top-level declarations rebindable", () => {
+    // The realm outlives the cell, so a top-level `const` becomes a `var`: that
+    // is what lets a later cell declare the same name again. Nothing else about
+    // the JavaScript the model wrote is touched. See `CellValidation.normalize`.
+    expect(Sandbox.compile(Cell.source("const kept = 1", "javascript"))).toBe("var kept = 1")
+    expect(Sandbox.compile(Cell.source("await ctx.call(\"fs/list\", {})", "javascript")))
+      .toBe("await ctx.call(\"fs/list\", {})")
   })
 
   it("erases type-only syntax from a TypeScript cell", () => {
-    const compiled = Sandbox.compile(Cell.source("const x: number = 1\nreturn x", "typescript"))
-    expect(compiled).toContain("const x = 1")
+    const compiled = Sandbox.compile(Cell.source("const x: number = 1\nctx.done(String(x))", "typescript"))
+    expect(compiled).toContain("var x = 1")
     expect(compiled).not.toContain("number")
-    // The emit carries a "use strict" line. It is not a directive prologue
-    // where the restricted binding places it, so the `with` wrapper that
-    // binding relies on still runs — which the TypeScript cases above prove.
     expect(compiled).toContain("\"use strict\"")
   })
 
   it("names the construct that needs JavaScript emit rather than emitting it", () => {
     const cases: ReadonlyArray<readonly [string, string]> = [
-      ["enum Direction { Left, Right }\nreturn null", "enum declarations"],
+      ["enum Direction { Left, Right }", "enum declarations"],
       // The `export` inside the namespace is not ESM, and the module check
       // steps over a namespace body so it cannot be read as ESM either.
-      ["namespace Shapes { export const sides = 3 }\nreturn null", "namespace/module declarations"],
-      ["declare module \"node:fs\" {}\nreturn null", "namespace/module declarations"],
-      ["class A { constructor(public a: number) {} }\nreturn null", "parameter properties"],
-      ["class A { constructor(private a: number) {} }\nreturn null", "parameter properties"],
-      ["class A { constructor(protected a: number) {} }\nreturn null", "parameter properties"],
-      ["class A { constructor(readonly a: number) {} }\nreturn null", "parameter properties"],
+      ["namespace Shapes { export const sides = 3 }", "namespace/module declarations"],
+      ["declare module \"node:fs\" {}", "namespace/module declarations"],
+      ["class A { constructor(public a: number) {} }", "parameter properties"],
+      ["class A { constructor(private a: number) {} }", "parameter properties"],
+      ["class A { constructor(protected a: number) {} }", "parameter properties"],
+      ["class A { constructor(readonly a: number) {} }", "parameter properties"],
       // `override` is the last modifier the check tests, so it is the one that
       // proves the whole list is consulted and not just its first entries.
-      ["class A { constructor(override a: number) {} }\nreturn null", "parameter properties"]
+      ["class A { constructor(override a: number) {} }", "parameter properties"]
     ]
 
     for (const [text, forbidden] of cases) {
@@ -968,17 +873,17 @@ describe("Sandbox.compile", () => {
 
   it("keeps a class whose constructor parameters carry no modifier at all", () => {
     const compiled = Sandbox.compile(
-      Cell.source("class Point { constructor(x: number) { this.x = x } }\nreturn null", "typescript")
+      Cell.source("class Point { constructor(x: number) { this.x = x } }", "typescript")
     )
     expect(typeof compiled).toBe("string")
     expect(compiled).toContain("constructor(x)")
   })
 
   it("reports a TypeScript cell that does not parse as a correctable rejection", () => {
-    expect(Sandbox.compile(Cell.source("return {", "typescript"))).toStrictEqual(
+    expect(Sandbox.compile(Cell.source("const held = {", "typescript"))).toStrictEqual(
       new Cell.Rejected({
         code: "compile_failed",
-        message: "The cell did not compile — line 1, column 9: '}' expected.\n  return {"
+        message: "The cell did not compile — line 1, column 15: '}' expected.\n  const held = {"
       })
     )
   })
@@ -986,7 +891,7 @@ describe("Sandbox.compile", () => {
   it("reports a JavaScript cell that does not parse, with the line it is on", () => {
     // The realm used to be the first party to notice, which cost the whole
     // frame. Compiling here is what lets `CellTurn` answer inside it.
-    expect(Sandbox.compile(Cell.source("const a = 1\nif (a) {\n  return null\n", "javascript"))).toStrictEqual(
+    expect(Sandbox.compile(Cell.source("const a = 1\nif (a) {\n  ctx.done('x')\n", "javascript"))).toStrictEqual(
       new Cell.Rejected({
         code: "compile_failed",
         message: "The cell did not compile — line 4, column 1: '}' expected."
@@ -996,15 +901,15 @@ describe("Sandbox.compile", () => {
 
   it("refuses module syntax and says which binding to use instead", () => {
     const cases: ReadonlyArray<readonly [string, Cell.Language, string]> = [
-      ["import { readFile } from \"node:fs\"\nreturn null", "javascript", "import"],
-      ["import \"node:fs\"\nimport \"node:path\"\nreturn null", "javascript", "import"],
-      ["const m = await import(\"node:fs\")\nreturn null", "javascript", "import"],
-      ["return import.meta.url", "javascript", "import"],
-      ["const fs = require(\"node:fs\")\nreturn null", "javascript", "require"],
-      ["export const x = 1\nreturn null", "javascript", "export"],
-      ["const x = 1\nexport { x }\nreturn null", "javascript", "export"],
+      ["import { readFile } from \"node:fs\"", "javascript", "import"],
+      ["import \"node:fs\"\nimport \"node:path\"", "javascript", "import"],
+      ["const m = await import(\"node:fs\")", "javascript", "import"],
+      ["const here = import.meta.url", "javascript", "import"],
+      ["const fs = require(\"node:fs\")", "javascript", "require"],
+      ["export const x = 1", "javascript", "export"],
+      ["const x = 1\nexport { x }", "javascript", "export"],
       ["export default 1", "javascript", "export"],
-      ["import fs = require(\"node:fs\")\nreturn null", "typescript", "import"],
+      ["import fs = require(\"node:fs\")", "typescript", "import"],
       ["export = 1", "typescript", "export"]
     ]
 
@@ -1024,24 +929,32 @@ describe("Sandbox.compile", () => {
     const cases: ReadonlyArray<string> = [
       // The identifier prefix, the property name, and the string: the three
       // ways a regexp over the source read a cell as importing.
-      "const important = ctx.flows\nreturn important.export",
-      "return ctx.call(\"bash\", { command: \"python -c 'from pathlib import Path'\" })",
-      "return ctx.call(\"grep\", { pattern: \"from _pytest import\" })",
+      "await ctx.call(\"bash\", { command: \"python -c 'from pathlib import Path'\" })",
+      "await ctx.call(\"grep\", { pattern: \"from _pytest import\" })",
       // A modifier that is not `export`, and a meta-property that is not
       // `import.meta`.
-      "async function work() { return new.target }\nreturn work()"
+      "async function work() { return new.target }\nawait work()"
     ]
 
     for (const text of cases) {
       expect(Sandbox.compile(Cell.source(text)), text).toBe(text)
     }
+    // The identifier prefix and the property name, which a regexp over the
+    // source read as an export.
+    expect(Sandbox.compile(Cell.source("const important = ctx.flows\nconst named = important.export")))
+      .toBe("var important = ctx.flows\nvar named = important.export")
   })
 
   for (const name of rejectedCellNames) {
-    it(`compiles the wave-5 cell ${name} that the text match rejected`, () => {
+    it(`never reads the wave-5 cell ${name} as importing anything`, () => {
+      // These are the cells a regexp over the source refused: each one quotes
+      // an import inside a string it passes to a flow. The parse is what tells
+      // the quote from the syntax, and it still does — whatever else it has to
+      // say about a cell written against a surface that no longer exists.
       const extracted = Cell.extract(rejectedCell(name))
       expect(extracted._tag).toBe("Success")
-      expect(typeof Sandbox.compile((extracted as { readonly success: Cell.Extracted }).success.source)).toBe("string")
+      const compiled = Sandbox.compile((extracted as { readonly success: Cell.Extracted }).success.source)
+      expect(compiled instanceof Cell.Rejected ? compiled.code : "compiled").not.toBe("imports_forbidden")
     })
   }
 })
@@ -1049,23 +962,23 @@ describe("Sandbox.compile", () => {
 describe("Sandbox.layer", () => {
   it("provides an implementation that still validates and defaults its ceilings", async () => {
     const observed: Array<Sandbox.Limits | undefined> = []
+    const opened: Sandbox.Realm = { evaluate: () => Effect.die("unused") }
     const layer = Sandbox.layer({
       capabilities: { calls: true, memoryBytes: false, steps: false, timeMs: true },
-      evaluate: (evaluation) =>
+      openRealm: (options) =>
         Effect.sync(() => {
-          observed.push(evaluation.limits)
-          return new Cell.Rejected({ code: "stalled", message: "recorded" })
+          observed.push(options.limits)
+          return opened
         })
     })
-    const request = { cell: Cell.source("return null"), flows: {}, call: handler({}, []) }
 
     const [defaulted, refused] = await Effect.gen(function*() {
       const sandbox = yield* Sandbox.Sandbox
       return [
-        yield* sandbox.evaluate(request),
-        yield* Effect.result(sandbox.evaluate({ ...request, limits: { calls: -1 } }))
+        yield* sandbox.openRealm!({ flows: {} }),
+        yield* Effect.result(sandbox.openRealm!({ flows: {}, limits: { calls: -1 } }))
       ] as const
-    }).pipe(Effect.provide(layer), Effect.runPromise)
+    }).pipe(Effect.provide(layer), Effect.scoped, Effect.runPromise)
 
     // The ceilings the declared capabilities can enforce are filled in, and the
     // one they cannot (`memoryBytes`) is left absent rather than invented.
@@ -1076,8 +989,43 @@ describe("Sandbox.layer", () => {
       totalMs: Sandbox.defaultLimits.totalMs,
       callMs: Sandbox.defaultLimits.callMs
     }])
-    expect(defaulted).toStrictEqual(new Cell.Rejected({ code: "stalled", message: "recorded" }))
+    expect(defaulted).toBe(opened)
     expect(refused).toMatchObject({ _tag: "Failure", failure: { code: "unsupported" } })
+  })
+})
+
+describe("Sandbox.driveCell", () => {
+  it("takes the shipped per-call ceiling when the caller declares none", async () => {
+    // A binding that fills its own ceilings never reaches this fallback, and a
+    // caller driving the loop directly still gets a bounded call rather than an
+    // unbounded one.
+    const observed: Array<Sandbox.Invocation> = []
+    let settled: Cell.Outcome | undefined
+    const gate = Sandbox.latch()
+    const pending: Array<Sandbox.PendingCall> = [{
+      ordinal: 0,
+      flow: "fs/list",
+      input: { path: "." },
+      settle: () => {
+        settled = new Cell.Settled({ transition: Sandbox.replTransition({ _tag: "Done", output: "ok" }, undefined) })
+        gate.wake()
+      },
+      abort: () => {}
+    }]
+
+    const outcome = await Effect.runPromise(
+      Sandbox.driveCell({
+        pending,
+        flush: () => {},
+        finished: () => settled,
+        wait: gate.wait,
+        abort: () => {},
+        handler: handler({ "fs/list": { entries: [] } }, observed)
+      })
+    )
+
+    expect(observed.map((call) => call.flow)).toEqual(["fs/list"])
+    expect(outcome._tag).toBe("settled")
   })
 })
 
@@ -1110,8 +1058,7 @@ describe("Sandbox.latch", () => {
 describe("QuickJSSandbox", () => {
   it("exposes a flow's input schema document in the cell realm", async () => {
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
-      `return { intent: "complete", output: JSON.stringify(ctx.flows["fs/list"].input) }`
+      `ctx.done(JSON.stringify(ctx.flows["fs/list"].input))`
     )
 
     expect(outcome).toMatchObject({
@@ -1123,18 +1070,14 @@ describe("QuickJSSandbox", () => {
   it("preserves a JSON __proto__ key as an own data property", async () => {
     const payload = JSON.parse("{\"__proto__\":{\"unexpected\":\"prototype\"}}") as Schema.Json
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `const result = await ctx.call("fs/list", {})
-       return {
-         intent: "complete",
-         output: [
+       ctx.done([
            Object.keys(result).join(","),
            Object.hasOwn(result, "__proto__"),
            Object.prototype.hasOwnProperty.call(result, "__proto__"),
            Object.getPrototypeOf(result) === Object.prototype ? "" : "yes",
            Object.getOwnPropertyDescriptor(result, "__proto__").writable
-         ].join("|")
-       }`,
+         ].join("|"))`,
       { call: handler({ "fs/list": payload }, []) }
     )
 
@@ -1146,17 +1089,13 @@ describe("QuickJSSandbox", () => {
 
   it("does not invoke hostile Object.prototype setters while materializing flow results", async () => {
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `let captured = "missed"
        Object.defineProperty(Object.prototype, "entry", {
          configurable: true,
          set: function () { captured = "captured" }
        })
        const result = await ctx.call("fs/list", {})
-       return {
-         intent: "complete",
-         output: [Object.hasOwn(result, "entry"), String(result.entry), captured].join("|")
-       }`,
+       ctx.done([Object.hasOwn(result, "entry"), String(result.entry), captured].join("|"))`,
       { call: handler({ "fs/list": { entry: "preserved" } }, []) }
     )
 
@@ -1168,17 +1107,18 @@ describe("QuickJSSandbox", () => {
 
   it("does not invoke hostile Array.prototype setters while materializing flow results", async () => {
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
-      `let captured = "missed"
-       Object.defineProperty(Array.prototype, "0", {
+      // The poison is removed before the cell ends: the realm outlives the
+      // cell, so a booby-trapped `Array.prototype` left in place would be there
+      // for the harness's own reflection as well as for the next cell.
+      `var captured = "missed"
+       Object.defineProperty(Array.prototype, 0, {
          configurable: true,
          set: function (value) { if (value === "preserved") captured = "captured" }
        })
        const result = await ctx.call("fs/list", {})
-       return {
-         intent: "complete",
-         output: [Object.hasOwn(result.entries, "0"), String(result.entries[0]), captured].join("|")
-       }`,
+       const answer = [Object.hasOwn(result.entries, "0"), String(result.entries[0]), captured].join("|")
+       delete Array.prototype[0]
+       ctx.done(answer)`,
       { call: handler({ "fs/list": { entries: ["preserved"] } }, []) }
     )
 
@@ -1191,9 +1131,8 @@ describe("QuickJSSandbox", () => {
   it("carries a 2 MB flow result across the WebAssembly boundary", async () => {
     const payload = `${"x".repeat(2 * 1024 * 1024)}🗼`
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `const text = await ctx.call("fs/list", { path: "big" })
-       return { intent: "complete", output: text.length + ":" + text.slice(-2) }`,
+       ctx.done(text.length + ":" + text.slice(-2))`,
       { call: handler({ "fs/list": payload }, []) }
     )
 
@@ -1208,15 +1147,8 @@ describe("QuickJSSandbox", () => {
     for (const memoryBytes of [0, 1]) {
       const result = await Effect.gen(function*() {
         const sandbox = yield* Sandbox.Sandbox
-        return yield* Effect.result(
-          sandbox.evaluate({
-            cell: Cell.source("return null"),
-            flows,
-            call: handler({}, []),
-            limits: { memoryBytes }
-          })
-        )
-      }).pipe(Effect.provide(QuickJSSandbox.layer), Effect.runPromise)
+        return yield* Effect.result(sandbox.openRealm!({ flows, limits: { memoryBytes } }))
+      }).pipe(Effect.provide(QuickJSSandbox.layer), Effect.scoped, Effect.runPromise)
 
       expect(result).toMatchObject({
         _tag: "Failure",
@@ -1230,27 +1162,25 @@ describe("QuickJSSandbox", () => {
 
   it("enforces a declared memory limit", async () => {
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `const held = []
        for (let index = 0; index < 100000; index++) held.push({ index: index, pad: "x".repeat(64) })
-       return { intent: "complete", output: String(held.length) }`,
+       ctx.done(String(held.length))`,
       { limits: { memoryBytes: Sandbox.minimumMemoryBytes } }
     )
     expect(outcome._tag).not.toBe("settled")
   })
 
   it("stops a cell that awaits something the realm can never settle", async () => {
-    const outcome = await evaluate(QuickJSSandbox.layer, `await new Promise(() => {})\nreturn null`)
+    const outcome = await evaluate(`await new Promise(() => {})`)
     expect(outcome._tag).toBe("rejected")
     expect((outcome as Cell.Rejected).code).toBe("stalled")
   })
 
   it("enforces a declared step limit", async () => {
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `let total = 0
        for (let index = 0; index < 100000000; index++) total += index
-       return { intent: "complete", output: String(total) }`,
+       ctx.done(String(total))`,
       { limits: { steps: 100 } }
     )
     expect(outcome).toMatchObject({
@@ -1262,7 +1192,6 @@ describe("QuickJSSandbox", () => {
 
   it("enforces default ceilings when the caller omits limits", async () => {
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `let total = 0
        while (true) total += 1`
     )
@@ -1273,9 +1202,8 @@ describe("QuickJSSandbox", () => {
   it("bounds a stalled flow call with the whole-evaluation ceiling, not the compute clock", async () => {
     let handlerEntered = false
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `await ctx.call("fs/list", {})
-       return { intent: "complete", output: "unreachable" }`,
+       ctx.done("unreachable")`,
       {
         call: () =>
           Effect.sync(() => {
@@ -1298,9 +1226,8 @@ describe("QuickJSSandbox", () => {
     // duration to the cell rejected every frame that awaited a real test run;
     // the settled call must instead resume the cell with its budget intact.
     const outcome = await evaluate(
-      QuickJSSandbox.layer,
       `const listed = await ctx.call("fs/list", {})
-       return { intent: "complete", state: {}, output: String(listed.ok) }`,
+       ctx.done(String(listed.ok))`,
       {
         call: () =>
           Effect.sleep(400).pipe(

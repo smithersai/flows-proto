@@ -77,7 +77,12 @@ const journal = (name, events) => {
   return path
 }
 
-const armed = (cellMode) => ["control.agent.discipline-armed", { cellMode }]
+// A journal from the waves that had a surface to choose names the one it ran
+// under; one written since names none, and reads as the realm.
+const armed = (cellMode) => [
+  "control.agent.discipline-armed",
+  cellMode === undefined ? {} : { cellMode }
+]
 const opened = () => ["control.agent.turn-opened", { seat: "openai:gpt-5.6-sol" }]
 const produced = (text) => ["control.agent.cell-produced", { language: "javascript", digest: `d${text.length}`, text }]
 const printed = (text) => ["control.agent.cell-printed", { cell: "d", text }]
@@ -263,7 +268,8 @@ const completed = (output = "green") => [
 }
 
 // ---------------------------------------------------------------------------
-// Filing is read off the transition, and a filing arm reads as one.
+// Filing is read off the transition, and a journal from before the deletion
+// still reads as one.
 // ---------------------------------------------------------------------------
 {
   const path = journal("filing", [
@@ -285,8 +291,16 @@ const completed = (output = "green") => [
 {
   const path = journal("unfiled", [armed("repl"), opened(), produced("const a = 1\n"), printed("1"), continued()])
   const run = readRun(path)
-  assert.equal(run.filedState, 0, "a repl transition files nothing")
+  assert.equal(run.filedState, 0, "a realm transition files nothing")
   assert.equal(run.projectedContext, 0)
+}
+{
+  // An arming with no surface on it is a journal written since there stopped
+  // being two, so it reads as the realm rather than as unknown.
+  const path = journal("unarmed", [armed(undefined), opened(), produced("const a = 1\n"), printed("1"), continued()])
+  const run = readRun(path)
+  assert.equal(run.mode, "repl")
+  assert.equal(run.filedState, 0)
 }
 
 // ---------------------------------------------------------------------------

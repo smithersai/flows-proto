@@ -156,15 +156,6 @@ export interface Options {
    * at medium and resolved four times as many instances).
    */
   readonly reasoningEffort?: ModelRequest.ReasoningEffort | undefined
-  /**
-   * Which authoring surface this executor's runs are armed for.
-   *
-   * Passed straight through to `Agent.Options.cellMode`, whose default is
-   * `filing`. A host selects `repl` per run — the rig reads `FLOWS_CELL_MODE`
-   * beside `FLOWS_TEST_COMMAND` — so the arm is a property of the run and is
-   * journaled with the rest of its discipline.
-   */
-  readonly cellMode?: Cell.Mode | undefined
 }
 
 const sourceId = JournalEvent.SourceId.make("/control/executor")
@@ -233,10 +224,6 @@ export const trace = (
           // needed" from "never armed".
           unmovedCap: event.unmovedCap,
           unresolvedCap: event.unresolvedCap,
-          // Which authoring surface the run was armed for. The one arming a
-          // grader cannot infer from behaviour: a REPL run that binds nothing
-          // and a filing run that files nothing look identical in the events.
-          cellMode: event.cellMode,
           calls: event.calls,
           memoryBytes: event.memoryBytes,
           steps: event.steps,
@@ -979,8 +966,7 @@ export const make = (
           narrowingCap: options.narrowingCap,
           unmovedCap: options.unmovedCap,
           unresolvedCap: options.unresolvedCap,
-          approvalChannel: options.approvalChannel ?? false,
-          cellMode: options.cellMode
+          approvalChannel: options.approvalChannel ?? false
         }).pipe(
           Stream.runForEach(record),
           Effect.provide(QuickJSSandbox.layer),

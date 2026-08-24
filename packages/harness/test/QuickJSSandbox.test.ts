@@ -1,12 +1,12 @@
 /**
  * The QuickJS-WASM binding's own edges.
  *
- * The contract both bindings must answer identically lives in `Sandbox.test.ts`
- * and runs there against each of them. What is pinned here is what only the
- * separate-realm binding has: the ceilings it alone enforces, the shapes that
- * cross the WebAssembly boundary, and the failure modes of the realm itself.
+ * The contract lives in `Sandbox.test.ts` and runs there against this binding.
+ * What is pinned here is what belongs to the WebAssembly realm itself: the
+ * ceilings it enforces, the shapes that cross its boundary, and its own failure
+ * modes.
  */
-import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema, Scope } from "effect"
 import { describe, expect, it } from "vitest"
 import * as Cell from "../src/Cell.ts"
 import * as QuickJSSandbox from "../src/QuickJSSandbox.ts"
@@ -25,30 +25,67 @@ const flows: Readonly<Record<string, Cell.FlowProjection>> = {
 
 const succeeds: Sandbox.Handler = () => Effect.succeed(new Cell.CallResult({ outcome: "success", value: null }))
 
+/** A catalog wide enough for its own installation to cost something. */
+const wideCatalog = (
+  count: number,
+  description = "List a directory."
+): Readonly<Record<string, Cell.FlowProjection>> =>
+  Object.fromEntries(
+    Array.from({ length: count }, (_, index) => [
+      `fs/list${index}`,
+      new Cell.FlowProjection({
+        name: `fs/list${index}`,
+        description,
+        capabilities: ["fs:read:**"],
+        tier: "sealed",
+        placement: Option.none(),
+        input: Option.none()
+      })
+    ])
+  )
+
+interface Options {
+  readonly call?: Sandbox.Handler | undefined
+  readonly limits?: Sandbox.Limits | undefined
+}
+
+/**
+ * Opens a realm of this binding's own and evaluates one cell in it.
+ *
+ * `QuickJSSandbox.make` rather than the layer, because these cases drive the
+ * binding directly: what they pin is what the realm does with a limit, not what
+ * the port does with one before it arrives.
+ */
+const inRealm = (
+  text: string,
+  options: Options
+): Effect.Effect<Cell.Outcome, Sandbox.SandboxError | Error> =>
+  Effect.gen(function*() {
+    const sandbox = yield* QuickJSSandbox.make
+    const realm = yield* sandbox.openRealm!({
+      flows,
+      ...(options.limits === undefined ? {} : { limits: options.limits })
+    })
+    const frame = yield* realm.evaluate({
+      cell: Cell.source(text),
+      frame: 0,
+      call: options.call ?? succeeds,
+      limits: options.limits
+    })
+    return frame.outcome
+  }).pipe(Effect.scoped) as Effect.Effect<Cell.Outcome, Sandbox.SandboxError | Error>
+
 /** Runs one cell and reports the whole `Exit`, so a defect is observable too. */
 const evaluate = (
   text: string,
-  options: {
-    readonly call?: Sandbox.Handler | undefined
-    readonly limits?: Sandbox.Limits | undefined
-    readonly state?: Schema.Json | undefined
-  } = {}
+  options: Options = {}
 ): Promise<Exit.Exit<Cell.Outcome, Sandbox.SandboxError | Error>> =>
-  Effect.gen(function*() {
-    const sandbox = yield* QuickJSSandbox.make
-    return yield* Effect.exit(sandbox.evaluate({
-      cell: Cell.source(text),
-      flows,
-      call: options.call ?? succeeds,
-      state: options.state,
-      limits: options.limits
-    }))
-  }).pipe(Effect.runPromise)
+  Effect.runPromise(Effect.exit(inRealm(text, options)))
 
 /** Runs one cell that is expected to settle with an outcome rather than fail. */
 const outcomeOf = async (
   text: string,
-  options: Parameters<typeof evaluate>[1] = {}
+  options: Options = {}
 ): Promise<Cell.Outcome> => {
   const exit = await evaluate(text, options)
   if (Exit.isFailure(exit)) throw new Error(`expected an outcome, got: ${Cause.pretty(exit.cause)}`)
@@ -56,20 +93,7 @@ const outcomeOf = async (
 }
 
 /** Runs one cell and reports the binding's own typed failure as data. */
-const resultOf = (
-  text: string,
-  options: Parameters<typeof evaluate>[1] = {}
-) =>
-  Effect.gen(function*() {
-    const sandbox = yield* QuickJSSandbox.make
-    return yield* Effect.result(sandbox.evaluate({
-      cell: Cell.source(text),
-      flows,
-      call: options.call ?? succeeds,
-      state: options.state,
-      limits: options.limits
-    }))
-  }).pipe(Effect.runPromise)
+const resultOf = (text: string, options: Options = {}) => Effect.runPromise(Effect.result(inRealm(text, options)))
 
 describe("QuickJSSandbox limits", () => {
   it("retries a rejected cached module load instead of poisoning the cache", async () => {
@@ -98,26 +122,25 @@ describe("QuickJSSandbox limits", () => {
     let now = 0
     const outcome = await Effect.gen(function*() {
       const sandbox = yield* QuickJSSandbox.makeWithClock
-      return yield* sandbox.evaluate({
-        cell: Cell.source(`while (true) {}`),
-        flows,
-        call: succeeds,
-        limits: { timeMs: 2, steps: Number.MAX_SAFE_INTEGER }
-      })
+      const limits = { timeMs: 2, steps: Number.MAX_SAFE_INTEGER }
+      const realm = yield* sandbox.openRealm!({ flows, limits })
+      const frame = yield* realm.evaluate({ cell: Cell.source(`while (true) {}`), frame: 0, call: succeeds, limits })
+      return frame.outcome
     }).pipe(
       Effect.provideService(QuickJSSandbox.ComputeClock, { now: () => now++ }),
+      Effect.scoped,
       Effect.runPromise
     )
     expect(outcome).toMatchObject({ _tag: "rejected", code: "limit_exceeded" })
   })
 
   it("runs at exactly the minimum heap and refuses the byte below it", async () => {
-    const atMinimum = await outcomeOf(`return { intent: "complete", output: "ok" }`, {
+    const atMinimum = await outcomeOf(`ctx.done("ok")`, {
       limits: { memoryBytes: Sandbox.minimumMemoryBytes }
     })
     expect(atMinimum).toMatchObject({ _tag: "settled", transition: { _tag: "complete", output: "ok" } })
 
-    const below = await resultOf(`return { intent: "complete", output: "ok" }`, {
+    const below = await resultOf(`ctx.done("ok")`, {
       limits: { memoryBytes: Sandbox.minimumMemoryBytes - 1 }
     })
     expect(below).toMatchObject({
@@ -135,7 +158,7 @@ describe("QuickJSSandbox limits", () => {
     const outcome = await outcomeOf(
       `const held = []
        for (let index = 0; index < 1000000; index++) held.push({ index: index, pad: "x".repeat(64) })
-       return { intent: "complete", output: String(held.length) }`,
+       ctx.done(String(held.length))`,
       { limits: { memoryBytes: Sandbox.minimumMemoryBytes, steps: Number.MAX_SAFE_INTEGER } }
     )
 
@@ -177,32 +200,45 @@ describe("QuickJSSandbox limits", () => {
     )
   }, 60_000)
 
-  it("charges the prelude to the step budget, so a one-step frame never reaches its cell", async () => {
-    // The catalog and the previous frame's state are installed by interpreted
-    // code, so a budget this small is spent before the cell's first statement.
-    const state: Record<string, number> = {}
-    for (let index = 0; index < 4000; index++) state[`key${index}`] = index
-
-    const outcome = await outcomeOf(`return { intent: "complete", output: "unreachable" }`, {
-      limits: { steps: 1 },
-      state
-    })
-
-    expect(outcome).toStrictEqual(
-      new Cell.Rejected({
-        code: "limit_exceeded",
-        message: "This cell exceeded its limit of 1 interpreter steps"
-      })
+  it("charges the prelude to the step budget, so a realm too small for its own catalog never opens", async () => {
+    // The catalog is installed by interpreted code, and it is installed once
+    // for the run rather than once per frame. A budget this small is therefore
+    // spent at the open, before any cell has been asked for — and the run is
+    // told so there rather than one frame at a time.
+    const result = await Effect.runPromise(
+      Effect.result(
+        Effect.gen(function*() {
+          const sandbox = yield* QuickJSSandbox.make
+          return yield* sandbox.openRealm!({ flows: wideCatalog(400), limits: { steps: 1 } })
+        }).pipe(Effect.scoped)
+      )
     )
+
+    expect(result).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        code: "runtime_failed",
+        message: "The sandbox prelude failed to install",
+        cause: { name: "InternalError", message: "interrupted" }
+      }
+    })
   })
 
-  it("fails the frame when the prelude itself cannot fit the heap", async () => {
+  it("fails the realm when the prelude itself cannot fit the heap", async () => {
     // A prelude that cannot be installed is the binding failing at its job, not
-    // the cell failing at its own, so it travels in the error channel.
-    const result = await resultOf(`return { intent: "complete", output: "unreachable" }`, {
-      limits: { memoryBytes: Sandbox.minimumMemoryBytes, steps: Number.MAX_SAFE_INTEGER },
-      state: { blob: "y".repeat(3 * 1024 * 1024) }
-    })
+    // the cell failing at its own, so it travels in the error channel — and it
+    // travels from the open, before any cell has been asked for.
+    const result = await Effect.runPromise(
+      Effect.result(
+        Effect.gen(function*() {
+          const sandbox = yield* QuickJSSandbox.make
+          return yield* sandbox.openRealm!({
+            flows: wideCatalog(1, "y".repeat(3 * 1024 * 1024)),
+            limits: { memoryBytes: Sandbox.minimumMemoryBytes, steps: Number.MAX_SAFE_INTEGER }
+          })
+        }).pipe(Effect.scoped)
+      )
+    )
 
     expect(result).toMatchObject({
       _tag: "Failure",
@@ -218,7 +254,7 @@ describe("QuickJSSandbox limits", () => {
   it("lets a cell that settles synchronously through a zero whole-evaluation ceiling", async () => {
     // `totalMs` bounds waiting, and this cell never waits: it is finished
     // before the ceiling has anything to interrupt.
-    const outcome = await outcomeOf(`return { intent: "complete", output: "instant" }`, {
+    const outcome = await outcomeOf(`ctx.done("instant")`, {
       limits: { totalMs: 0 }
     })
 
@@ -231,7 +267,7 @@ describe("QuickJSSandbox limits", () => {
     // the acquire as a defect rather than as `limit_exceeded`. The runtime is
     // still torn down, which the following frames in this file prove.
     for (const limits of [{ steps: 0 }, { timeMs: 0 }]) {
-      const exit = await evaluate(`return { intent: "complete", output: "unreachable" }`, { limits })
+      const exit = await evaluate(`ctx.done("unreachable")`, { limits })
       expect(Exit.isFailure(exit), JSON.stringify(limits)).toBe(true)
       expect(Cause.pretty((exit as Exit.Failure<never, never>).cause)).toContain("interrupted")
     }
@@ -259,29 +295,20 @@ describe("QuickJSSandbox realm", () => {
     )
   })
 
-  it("separates a value JSON cannot carry from one that is JSON but not a transition", async () => {
-    // Both end the frame, and the two rejections say different things: one is
-    // about the boundary, the other about the contract.
-    for (const expression of [`function () {}`, `Symbol("x")`, `() => 1`]) {
-      expect(await outcomeOf(`return ${expression}`), expression).toStrictEqual(
-        new Cell.Rejected({
-          code: "invalid_transition",
-          message: "The cell returned a value that is not JSON-serializable."
-        })
-      )
-    }
-
-    const contract = await outcomeOf(`return { intent: "explode" }`) as Cell.Rejected
+  it("names a park reason the contract does not declare, rather than throwing at the cell", async () => {
+    // `ctx.park` is checked on the host, not inside the realm: a reason the
+    // contract does not declare is a transition the next frame is asked to fix,
+    // not a throw that reads like a bug in the cell's own logic.
+    const contract = await outcomeOf(`ctx.park("waiting-forever", "held")`) as Cell.Rejected
     expect(contract.code).toBe("invalid_transition")
-    expect(contract.message).toContain("did not return a transition")
+    expect(contract.message).toContain("waiting-input")
   })
 
-  it("refuses a cell that would escape the async wrapper, before the realm sees it", async () => {
-    // The cell text is interpolated into a wrapper, so a cell that closed the
-    // wrapper would run at the top level of the evaluated program. Closing it
-    // needs unbalanced parentheses, which the boundary parse reads as the
-    // syntax error it is — so neither escape reaches the realm at all, and
-    // neither can spend the step budget getting there.
+  it("refuses a cell whose parentheses do not balance, before the realm sees it", async () => {
+    // A cell is evaluated as a global script, so unbalanced parentheses are a
+    // syntax error the boundary parse reads before the realm is asked — neither
+    // shape reaches the realm at all, and neither can spend the step budget
+    // getting there.
     for (
       const escape of [
         `})(), (function () { throw "primitive" })(), (async () => {`,
@@ -317,9 +344,9 @@ describe("QuickJSSandbox calls", () => {
         `try {
            await ctx.call("fs/list", ${expression})
          } catch (error) {
-           return { intent: "complete", output: error.name + ": " + error.message }
+           ctx.done(error.name + ": " + error.message)
          }
-         return { intent: "complete", output: "accepted" }`,
+         ctx.done("accepted")`,
         { call }
       )
       expect(outcome, expression).toMatchObject({
@@ -337,7 +364,7 @@ describe("QuickJSSandbox calls", () => {
       `const bare = Object.create(null)
        bare.path = "."
        await ctx.call("fs/list", bare)
-       return { intent: "complete", output: "accepted" }`,
+       ctx.done("accepted")`,
       {
         call: (invocation) => {
           observed.push(invocation)
@@ -356,7 +383,7 @@ describe("QuickJSSandbox calls", () => {
     // grammar error TypeScript reports semantically and QuickJS reports at
     // compile, so the realm's own refusal is still reachable and still has to
     // read as one sentence a model can act on.
-    const outcome = await outcomeOf(`const o = { a: 1 }\nreturn { intent: "complete", output: String(#a in o) }`)
+    const outcome = await outcomeOf(`const o = { a: 1 }\nctx.done(String(#a in o))`)
 
     expect(outcome).toMatchObject({ _tag: "rejected", code: "compile_failed" })
     expect((outcome as Cell.Rejected).message).toContain("The cell did not compile:")
@@ -365,7 +392,7 @@ describe("QuickJSSandbox calls", () => {
   it("names a failure the host reported without a message", async () => {
     const outcome = await outcomeOf(
       `const result = await ctx.call("fs/list", {})
-       return { intent: "complete", output: result.error.code + "|" + result.error.message }`,
+       ctx.done(result.error.code + "|" + result.error.message)`,
       { call: () => Effect.succeed(new Cell.CallResult({ outcome: "failure", value: { why: "denied" } })) }
     )
 
@@ -382,7 +409,7 @@ describe("QuickJSSandbox calls", () => {
     const outcome = await outcomeOf(
       `await null
        const listed = await ctx.call("fs/list", { path: "." })
-       return { intent: "complete", output: String(listed.entries.length) }`,
+       ctx.done(String(listed.entries.length))`,
       {
         call: (invocation) => {
           observed.push(invocation)
@@ -399,13 +426,15 @@ describe("QuickJSSandbox calls", () => {
 })
 
 describe("QuickJSSandbox interruption", () => {
-  it("tears the realm down when the frame is interrupted mid-call, and the next frame still runs", async () => {
+  it("tears the realm down when a frame is interrupted mid-call, and a fresh realm still runs", async () => {
     const result = await Effect.gen(function*() {
       const sandbox = yield* QuickJSSandbox.make
       const entered = yield* Deferred.make<void>()
-      const frame = yield* sandbox.evaluate({
-        cell: Cell.source(`await ctx.call("fs/list", {})\nreturn { intent: "complete", output: "unreachable" }`),
-        flows,
+      const scope = yield* Effect.scope
+      const realm = yield* sandbox.openRealm!({ flows }).pipe(Effect.provideService(Scope.Scope, scope))
+      const frame = yield* realm.evaluate({
+        cell: Cell.source(`await ctx.call("fs/list", {})\nctx.done("unreachable")`),
+        frame: 0,
         call: () => Deferred.succeed(entered, void 0).pipe(Effect.andThen(Effect.never))
       }).pipe(Effect.forkChild({ startImmediately: true }))
 
@@ -414,14 +443,15 @@ describe("QuickJSSandbox interruption", () => {
       yield* Fiber.interrupt(frame)
       const exit = yield* Fiber.await(frame)
 
-      // The realm the interrupted frame held is gone; a fresh frame proves the
-      // shared WebAssembly module was not left in a broken state.
-      const after = yield* sandbox.evaluate({
-        cell: Cell.source(`return { intent: "complete", output: "after" }`),
-        flows,
+      // A realm opened after it proves the shared WebAssembly module was not
+      // left in a broken state.
+      const next = yield* sandbox.openRealm!({ flows })
+      const after = yield* next.evaluate({
+        cell: Cell.source(`ctx.done("after")`),
+        frame: 0,
         call: succeeds
       })
-      return { after, exit }
+      return { after: after.outcome, exit }
     }).pipe(Effect.scoped, Effect.runPromise)
 
     expect(Exit.isFailure(result.exit) && Cause.hasInterruptsOnly(result.exit.cause)).toBe(true)
@@ -435,7 +465,7 @@ describe("QuickJSSandbox memory pressure", () => {
   it("fails the frame rather than handing the cell a half-materialized reply", async () => {
     const exit = await evaluate(
       `const listed = await ctx.call("fs/list", {})
-       return { intent: "complete", output: String(listed.blob.length) }`,
+       ctx.done(String(listed.blob.length))`,
       {
         limits: { memoryBytes: Sandbox.minimumMemoryBytes, steps: Number.MAX_SAFE_INTEGER },
         call: () =>

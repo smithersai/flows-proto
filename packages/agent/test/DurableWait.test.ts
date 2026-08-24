@@ -161,7 +161,7 @@ const driveDurable = (
     const scope = yield* Effect.scope
     const settled = Deferred.makeUnsafe<ReadonlyArray<AgentEvent.AgentEvent>>()
     yield* engine.register(runFlow, () =>
-      Effect.flatMap(body, (events) => Effect.asVoid(Deferred.succeed(settled, events)))).pipe(
+      Effect.flatMap(body, (events) => Effect.asVoid(Deferred.succeed(settled, events))).pipe(Effect.orDie)).pipe(
         Scope.provide(scope)
       )
     yield* engine.execute(runFlow, { executionId: "durable-wait-1", payload: {}, discard: true })
@@ -169,7 +169,8 @@ const driveDurable = (
       Effect.map((events): Outcome => ({ _tag: "settled", events })),
       Effect.timeoutOrElse({
         duration: "20 seconds",
-        orElse: () => Effect.succeed<Outcome>({ _tag: "never settled" })
+        orElse: () =>
+          Effect.succeed<Outcome>({ _tag: "never settled" })
       })
     )
   }).pipe(
@@ -187,7 +188,6 @@ const collect = (options: {
     const collected: Array<AgentEvent.AgentEvent> = []
     const agent = yield* Agent.Agent
     yield* agent.run({
-      cellMode: "repl",
       session: "session-wait",
       seat: Seat.make({
         id: "anthropic:test-model",

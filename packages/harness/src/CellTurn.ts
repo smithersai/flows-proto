@@ -33,7 +33,6 @@ import * as cellPrompt from "./internal/cellPrompt.ts"
 import * as elide from "./internal/elide.ts"
 import * as NarrowedCheck from "./NarrowedCheck.ts"
 import * as Sandbox from "./Sandbox.ts"
-import * as StateManifest from "./StateManifest.ts"
 import * as Steering from "./Steering.ts"
 import * as Sufficiency from "./Sufficiency.ts"
 import * as TruncatedOutput from "./TruncatedOutput.ts"
@@ -285,9 +284,10 @@ const eventType = {
 /**
  * The serializable state carried across cell frames.
  *
- * `agentState` is the cell's own durable memory: the harness stores and
- * replays it verbatim and never interprets it. Anything too large for the
- * transcript belongs behind a state or artifact flow, not in here.
+ * The run's own memory is the realm, which is not in here and cannot be: it is
+ * a live JavaScript context, rebuilt on a resume by re-executing the cells that
+ * built it. What this carries is the controller's view of it — the panel of
+ * names, the call ledger, the budgets and the counters the discipline reads.
  *
  * @category models
  * @since 0.1.0
@@ -298,23 +298,11 @@ export class State extends Schema.Class<State>("flows/harness/CellTurn/State")({
   frame: NonNegativeSafeInt,
   maxFrames: MaxFrames,
   /**
-   * Which authoring surface this run is armed for. See `Cell.Mode`.
-   *
-   * `filing` is the default and decodes from every journal written before the
-   * arm existed, so an existing run's state reconstructs as the mode it ran
-   * under rather than as whatever is current.
-   */
-  mode: Cell.Mode.pipe(
-    Schema.withConstructorDefault(Effect.succeed<Cell.Mode>(Cell.defaultMode)),
-    Schema.withDecodingDefaultKey(Effect.succeed<Cell.Mode>(Cell.defaultMode))
-  ),
-  /**
    * Every name the realm holds, with the frame that last bound it.
    *
-   * The REPL mode's answer to {@link State.stateStamps}: freshness is a
-   * property of the run, the frame that reads a name is rarely the frame that
-   * bound it, and "how old is this" cannot be recovered from the realm. Empty
-   * in filing mode, where there is no realm to read. See `VariablesPanel`.
+   * Freshness is a property of the run: the frame that reads a name is rarely
+   * the frame that bound it, and "how old is this" cannot be recovered from the
+   * realm itself. See `VariablesPanel`.
    */
   panel: VariablesPanel.Ledger,
   seat: Schema.String,
@@ -324,7 +312,6 @@ export class State extends Schema.Class<State>("flows/harness/CellTurn/State")({
   placement: Schema.Option(Descriptor.Placement),
   contextWindow: ContextWindow.ContextWindow,
   contextWindowTokens: ContextWindowTokens,
-  agentState: Schema.Json,
   /**
    * Consecutive read-only frames this run may spend before the controller
    * intervenes. Zero disarms the cap, which is what a conversational run gets.
@@ -586,44 +573,6 @@ export class State extends Schema.Class<State>("flows/harness/CellTurn/State")({
     Schema.withDecodingDefaultKey(Effect.succeed(false))
   ),
   /**
-   * Durable-state keys the next frame is shown in full instead of by roster.
-   *
-   * Named by the transition that closed the previous frame and replaced by
-   * every `continue` — a projection is a statement about the frame being
-   * opened, not a standing subscription, so a cell that names nothing is shown
-   * the roster. An exit that settles no `continue` carries the standing
-   * projection forward: a raise and a refused park leave `agentState` where it
-   * was, and a bounced completion moves it to the state that completion carried
-   * while naming no projection of its own, so the last list a cell asked for is
-   * the only one there is. A key the new state no longer holds is named as
-   * missing rather than dropped, which is the same calm notice any wrong name
-   * gets. See `Cell.Continue` `render`.
-   */
-  renderKeys: Schema.Array(Schema.String).pipe(
-    Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<string>>([])),
-    Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<string>>([]))
-  ),
-  /**
-   * Settled-call ordinals the next frame is shown in full.
-   *
-   * The `render` of the call ledger, and replaced by every `continue` for the
-   * same reason: a recall is a statement about the frame being opened, not a
-   * standing subscription. See `Cell.Continue` `recall` and `CallLedger`
-   * `recall`.
-   */
-  recallOrdinals: Schema.Array(Schema.Number).pipe(
-    Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<number>>([])),
-    Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<number>>([]))
-  ),
-  /**
-   * When each top-level durable-state key was last written.
-   *
-   * Carried in state because freshness is a property of the run: the frame that
-   * reads a key is rarely the frame that wrote it, and "how old is this" cannot
-   * be recovered from the value. See `StateManifest`.
-   */
-  stateStamps: StateManifest.Ledger,
-  /**
    * How many times one frame may answer its own unparseable cell before the
    * frame ends. Zero disarms the answer, which restores the old behaviour: a
    * cell that does not parse settles the frame.
@@ -746,7 +695,6 @@ export const make = (options: {
   readonly placement: Option.Option<Descriptor.Placement>
   readonly contextWindow: ContextWindow.ContextWindow
   readonly contextWindowTokens?: number | undefined
-  readonly agentState?: Schema.Json | undefined
   readonly frame?: number | undefined
   readonly maxFrames?: number | undefined
   /**
@@ -799,12 +747,6 @@ export const make = (options: {
    */
   readonly revalidations?: number | undefined
   /**
-   * Which authoring surface this run is armed for. Omitted takes
-   * `Cell.defaultMode`, which is `filing`; `repl` needs a sandbox binding that
-   * offers a persistent realm and is refused on one that does not.
-   */
-  readonly mode?: Cell.Mode | undefined
-  /**
    * Caps how many trees this run may pin with `ctx.checkpoint()`. Omitted takes
    * {@link defaultMaxCheckpoints}; zero disarms minting and leaves `ctx.base`,
    * which nobody mints, working.
@@ -815,7 +757,6 @@ export const make = (options: {
     session: options.session,
     frame: options.frame ?? 0,
     maxFrames: options.maxFrames ?? defaultMaxFrames,
-    mode: options.mode ?? Cell.defaultMode,
     panel: [],
     seat: options.seat,
     modelParams: options.modelParams,
@@ -824,7 +765,6 @@ export const make = (options: {
     placement: options.placement,
     contextWindow: options.contextWindow,
     contextWindowTokens: options.contextWindowTokens ?? 0,
-    agentState: options.agentState ?? null,
     readOnlyCap: options.readOnlyCap ?? 0,
     modelCallMs: options.modelCallMs ?? defaultModelCallMs,
     readOnlyFrames: 0,
@@ -845,9 +785,6 @@ export const make = (options: {
     failures: [],
     mutations: 0,
     sufficiencyStated: false,
-    renderKeys: [],
-    recallOrdinals: [],
-    stateStamps: [],
     revalidations: options.revalidations ?? defaultRevalidations,
     approvalChannel: options.approvalChannel ?? false,
     workspace: undefined,
@@ -870,12 +807,11 @@ export const make = (options: {
  */
 export const teach = (
   contextWindow: ContextWindow.ContextWindow,
-  flows: ReadonlyArray<Descriptor.FlowDescriptor>,
-  mode: Cell.Mode = Cell.defaultMode
+  flows: ReadonlyArray<Descriptor.FlowDescriptor>
 ): ContextWindow.ContextWindow => {
   const projections: Record<string, Cell.FlowProjection> = {}
   for (const descriptor of flows) projections[descriptor.name] = Cell.project(descriptor)
-  const taught = cellPrompt.make(projections, {}, mode).map((section) =>
+  const taught = cellPrompt.make(projections, {}).map((section) =>
     ContextWindow.makeSegment({
       kind: "system",
       zone: "prefix",
@@ -937,11 +873,9 @@ const keyMaterialFrom = (
 /**
  * Everything the model is told about the run's own memory this frame.
  *
- * Three sections, and each of them exists because a run paid for the same bytes
- * twice without it: what `ctx.state` holds and how fresh each key is
- * (`StateManifest`), what the run has already asked and which of those results
- * are still recallable (`CallLedger`), and the results this frame's predecessor
- * asked to see again.
+ * Two sections, and each of them exists because a run paid for the same bytes
+ * twice without it: what names the realm holds and how fresh each one is
+ * (`VariablesPanel`), and what the run has already asked (`CallLedger`).
  *
  * It is one trailing user message rather than a system part, and that placement
  * is the whole point: the teaching, the task and the flow catalog are
@@ -953,29 +887,12 @@ const keyMaterialFrom = (
  * input against model time that is 76% to 93% of wall clock.
  */
 const stateSection = (state: State): string => {
-  if (state.mode === "repl") {
-    // The panel takes the slot the manifest holds in filing mode, and it is
-    // stamped by the frame that ran — which is the frame before the one this
-    // prompt is opening. The recall half of the ledger is gone with the stored
-    // bytes it named: a REPL run's results are under the names its cells gave
-    // them.
-    const settled = CallLedger.render(state.callLedger, false)
-    return [
-      VariablesPanel.render({ ledger: state.panel, frame: state.frame - 1 }),
-      ...(settled === undefined ? [] : [settled])
-    ].join("\n\n")
-  }
-  const ledger = CallLedger.render(state.callLedger)
-  const recalled = CallLedger.recall(state.callLedger, state.recallOrdinals)
+  // The panel is stamped by the frame that ran, which is the frame before the
+  // one this prompt is opening.
+  const settled = CallLedger.render(state.callLedger)
   return [
-    StateManifest.render({
-      state: state.agentState,
-      stamps: state.stateStamps,
-      frame: state.frame,
-      keys: state.renderKeys
-    }),
-    ...(ledger === undefined ? [] : [ledger]),
-    ...(recalled === undefined ? [] : [recalled])
+    VariablesPanel.render({ ledger: state.panel, frame: state.frame - 1 }),
+    ...(settled === undefined ? [] : [settled])
   ].join("\n\n")
 }
 
@@ -1104,32 +1021,13 @@ const missedProperty = (message: string): string | undefined => {
 }
 
 /**
- * States what `ctx.state` actually holds, when a cell threw reading a path.
+ * States what the realm holds, when a cell threw reading a property.
  *
- * PROGRAM change 5: "a state path that misses reports the available keys". The
- * cell cannot be stopped from throwing — reading an absent key is legal
- * JavaScript and every guard a cell writes depends on it staying legal — so the
- * answer lands in the observation the throw already produces.
- */
-const statePathMiss = (message: string, agentState: Schema.Json): string | undefined => {
-  const property = missedProperty(message)
-  if (property === undefined) return undefined
-  const keys = agentState !== null && typeof agentState === "object" && !Array.isArray(agentState)
-    ? Object.keys(agentState)
-    : []
-  return keys.length === 0
-    ? `If \`${property}\` was meant to come from ctx.state: this run's state holds no keys at all yet.`
-    : `If \`${property}\` was meant to come from ctx.state, these are the keys it holds: ${
-      keys.join(", ")
-    }. The manifest in the frame block gives each one's type, size and age.`
-}
-
-/**
- * States what the realm holds, when a REPL cell threw reading a property.
- *
- * The REPL answer to {@link statePathMiss}, and a better one to the same
- * question: the names are the run's memory, so naming them is naming what the
- * cell could have read.
+ * The names are the run's memory, so naming them is naming what the cell could
+ * have read. The cell cannot be stopped from throwing — reading an absent
+ * property is legal JavaScript and every guard a cell writes depends on it
+ * staying legal — so the answer lands in the observation the throw already
+ * produces.
  */
 const bindingPathMiss = (
   message: string,
@@ -1151,12 +1049,12 @@ const bindingPathMiss = (
 /**
  * What the next model turn is told about the frame's print buffer.
  *
- * The whole of the REPL mode's context channel, delivered once and appended
+ * The whole of the context channel, delivered once and appended
  * rather than rebuilt: a run's window is `[cell₁, prints₁], [cell₂, prints₂], …`
  * plus whatever the harness has to say, so the tail is byte-identical to the
  * previous frame's tail plus one pair. That is exactly what a provider's prefix
- * cache is for, and it is what the filing mode's per-frame rebuild of the
- * transcript could never be.
+ * cache is for, and it is what the per-frame rebuild of the transcript this
+ * replaced could never be.
  */
 const printsObservation = (prints: string): string =>
   prints === ""
@@ -1180,32 +1078,6 @@ const bounded = (
     elide.middle(text, echo, "the reply is not re-read in full; the observation below names what went wrong"),
     { stopReason: assistant.stopReason }
   )
-}
-
-/**
- * Replaces the transcript with exactly the context the cell projected.
- *
- * Prefix segments — system teaching, registry disclosure, instructions — are
- * fixed for the run and survive; everything the model sees beyond them is the
- * cell's choice.
- */
-const projected = (
-  contextWindow: ContextWindow.ContextWindow,
-  entries: ReadonlyArray<Cell.ContextEntry>,
-  steered: ReadonlyArray<ModelRequest.Message>
-): ContextWindow.ContextWindow => {
-  const messages = [...entries.map(Cell.renderEntry), ...steered]
-  return ContextWindow.make({
-    modelId: contextWindow.modelId,
-    segments: [
-      ...contextWindow.segments.filter((segment) => segment.zone === "prefix"),
-      ...(messages.length === 0
-        ? []
-        : [ContextWindow.makeSegment({ kind: "transcript", zone: "tail", content: messages })])
-    ],
-    activeTools: contextWindow.activeTools,
-    replaced: contextWindow.replaced
-  })
 }
 
 const clip = (text: string, width: number): string => elide.head(text, width, "clipped")
@@ -1268,7 +1140,7 @@ const invalidProbeNotice = (
  * but it asks the question that a run repeating itself cannot answer twice.
  */
 const readOnlyDemand = (cap: number, frames: number): string =>
-  `Read-only discipline — ${frames} consecutive frames have made no call that declares a write, and this run's read-only budget is ${cap}. The next cell must do one of two things, and they are equally acceptable: land an edit you can already name the evidence for — the file, the change, and the check you have watched fail that will now pass — or return { intent: "continue", state, context, justification: "<the evidence you are still missing, the exact call that will get it, and what that makes the next frames do differently from these ${frames}>" }. Do not write something merely to answer this notice. A restore, a revert, an overwrite from captured output, or any edit whose evidence you cannot name is worse than another read-only frame, because it destroys work this run has already done. A justification is recorded and buys ${cap} quiet frames; it does not reset this counter, and one that names the same next step the last quiet frame named has bought a repeat of that frame. At ${
+  `Read-only discipline — ${frames} consecutive frames have made no call that declares a write, and this run's read-only budget is ${cap}. The next cell must do one of two things, and they are equally acceptable: land an edit you can already name the evidence for — the file, the change, and the check you have watched fail that will now pass — or call ctx.justify("<the evidence you are still missing, the exact call that will get it, and what that makes the next frames do differently from these ${frames}>"). Do not write something merely to answer this notice. A restore, a revert, an overwrite from captured output, or any edit whose evidence you cannot name is worse than another read-only frame, because it destroys work this run has already done. A justification is recorded and buys ${cap} quiet frames; it does not reset this counter, and one that names the same next step the last quiet frame named has bought a repeat of that frame. At ${
     cap * 2
   } consecutive read-only frames the run stops as a failure, so ${
     cap * 2 - frames
@@ -1816,7 +1688,7 @@ const frame = (
   input: Input,
   engine: EngineLike.EngineLike,
   sandbox: Sandbox.Sandbox,
-  realm: Sandbox.Realm | undefined,
+  realm: Sandbox.Realm,
   steering: Steering.Source,
   emit: (event: AgentEvent.AgentEvent) => Effect.Effect<void>
 ): Effect.Effect<Step, HarnessError | Sandbox.SandboxError | Model.ModelFailure> =>
@@ -1849,9 +1721,7 @@ const frame = (
     // cache and the answer costs the output it writes.
     let contextWindow = state.contextWindow
     let settled = undefined as ReturnType<typeof ModelEvent.ModelEvent.settledMessage> | undefined
-    let produced:
-      | { readonly source: Cell.Source; readonly blocks: number; readonly notice: string | undefined }
-      | undefined
+    let produced: { readonly source: Cell.Source; readonly blocks: number } | undefined
     let refused: Cell.Rejected | undefined
     for (let attempt = 0;; attempt++) {
       const request = yield* Effect.fromResult(requestFrom(state, contextWindow))
@@ -1889,14 +1759,10 @@ const frame = (
       else {
         // The parse the realm used to do, done here instead: a cell that cannot
         // run is refused before the frame commits to it.
-        const validation = CellValidation.validate(extracted.success.source, state.mode)
+        const validation = CellValidation.validate(extracted.success.source)
         rejection = validation.rejected
         if (rejection === undefined) {
-          produced = {
-            source: extracted.success.source,
-            blocks: extracted.success.blocks,
-            notice: validation.notice
-          }
+          produced = { source: extracted.success.source, blocks: extracted.success.blocks }
         }
       }
       if (rejection === undefined) break
@@ -1921,13 +1787,7 @@ const frame = (
     }
     const answer = settled
 
-    /**
-     * What this frame's cell printed, once it has run.
-     *
-     * Empty until the realm answers, and empty for the whole of a filing frame:
-     * there is no print channel there, and a cell that never reached the
-     * sandbox printed nothing in either mode.
-     */
+    /** What this frame's cell printed, once it has run. */
     let printed = ""
 
     /** Records an unusable frame and asks for another, budget permitting. */
@@ -2131,40 +1991,28 @@ const frame = (
     // the first opens on the measurement its predecessor closed with, so this
     // walks the workspace only when the run has none yet.
     const opened = state.workspace ?? (yield* witness(engine, state, cell.digest, "open"))
-    // One realm per run in REPL mode, one per evaluation in filing mode. The
-    // realm is the caller's scoped resource, so the loop hands it the cell and
-    // the call handler and nothing else changes about how a frame runs.
-    let bindings: ReadonlyArray<VariablesPanel.Binding> = []
-    let outcome: Cell.Outcome
-    // Ids this frame pinned, carried out through every exit that continues the
-    // run: a checkpoint a frame minted before it raised is still a tree the run
-    // holds, and forgetting it would leak a stored tree nothing can name.
+    // One realm per run. It is the caller's scoped resource, so the loop hands
+    // it the cell and the call handler and nothing else about how a frame runs
+    // depends on where the realm came from.
+    //
+    // Ids this frame pinned are carried out through every exit that continues
+    // the run: a checkpoint a frame minted before it raised is still a tree the
+    // run holds, and forgetting it would leak a stored tree nothing can name.
     const minted: Array<string> = []
     const mint = minter(state, cell, engine, minted, emit)
-    if (realm === undefined) {
-      outcome = yield* sandbox.evaluate({
-        cell,
-        flows: projections,
-        call: observing,
-        mint,
-        state: state.agentState,
-        limits: input.limits
+    const evaluated = yield* realm.evaluate({ cell, frame: state.frame, call: observing, mint })
+    const outcome = evaluated.outcome
+    const bindings = evaluated.bindings
+    printed = printsObservation(evaluated.prints)
+    yield* emit(
+      new AgentEvent.CellPrinted({
+        eventType: eventType.cellPrinted,
+        cell: cell.digest,
+        text: evaluated.prints
       })
-    } else {
-      const evaluated = yield* realm.evaluate({ cell, frame: state.frame, call: observing, mint })
-      outcome = evaluated.outcome
-      bindings = evaluated.bindings
-      printed = printsObservation(evaluated.prints)
-      yield* emit(
-        new AgentEvent.CellPrinted({
-          eventType: eventType.cellPrinted,
-          cell: cell.digest,
-          text: evaluated.prints
-        })
-      )
-    }
+    )
     // The panel the next frame opens with, stamped by the frame that ran.
-    const panel = realm === undefined ? state.panel : VariablesPanel.stamp(state.panel, bindings, state.frame)
+    const panel = VariablesPanel.stamp(state.panel, bindings, state.frame)
     const closed = yield* witness(engine, state, cell.digest, "close")
     yield* emit(
       new AgentEvent.CellSettled({ eventType: eventType.cellSettled, cell: cell.digest, outcome })
@@ -2174,7 +2022,7 @@ const frame = (
     // exit that continues the run carries it, a raise included: a call that
     // settled before the throw is work the run paid for, and the ledger is the
     // only place the next model turn can read it.
-    const callLedger = CallLedger.remember(state.callLedger, observedCalls, state.mode === "filing")
+    const callLedger = CallLedger.remember(state.callLedger, observedCalls)
 
     // The frame's own record of what it did to the world, computed once and
     // carried out through every exit.
@@ -2351,29 +2199,17 @@ const frame = (
             .join("\n")
         }`
       const alert = probeNotice === undefined ? "" : `\n\n${probeNotice}`
-      // A multi-block reply is concatenated into one program, so the most
-      // likely way it fails to compile is a name two of its blocks both
-      // declare. The compiler says which name; only the controller knows the
-      // reply's shape, so it says where the second declaration came from.
-      const batched = outcome._tag === "rejected" && outcome.code === "compile_failed" &&
-          produced.blocks > 1
-        ? `\nThis reply carried ${produced.blocks} cell blocks. They run as ONE program, in order, so a name two of them declare is declared twice. Emit one program.`
-        : ""
       // A property read through an absent path is the one throw the harness can
       // diagnose without guessing, and it is the throw a cell reaching into
       // `ctx.state` makes. The keys are already computed for the manifest, so
       // naming them costs nothing and closes the loop the model would otherwise
-      // spend a frame on. See `StateManifest`.
-      const missed = outcome._tag !== "raised"
-        ? undefined
-        : state.mode === "repl"
-        ? bindingPathMiss(outcome.message, bindings)
-        : statePathMiss(outcome.message, state.agentState)
+      // spend a frame on. See `VariablesPanel`.
+      const missed = outcome._tag === "raised" ? bindingPathMiss(outcome.message, bindings) : undefined
       const note = outcome._tag === "raised"
         ? `The cell threw ${outcome.name}: ${outcome.message}. Emit a corrected cell.${
           missed === undefined ? "" : `\n${missed}`
         }${salvage}${alert}`
-        : `${outcome.message}${batched}${salvage}${alert}`
+        : `${outcome.message}${salvage}${alert}`
       const step = observe(note, {
         workspace: closed,
         readOnlyFrames: raisedFrames,
@@ -2448,8 +2284,6 @@ const frame = (
             limits.totalMs === undefined ? undefined : Math.floor(limits.totalMs / 1000)
           ),
           {
-            agentState: transition.state,
-            stateStamps: StateManifest.stamp(state.stateStamps, transition.state, state.frame),
             pendingReadOnlyDemand: undefined,
             workspace: closed,
             readOnlyFrames: parkFrames,
@@ -2677,8 +2511,6 @@ const frame = (
             // no context for a next frame, and a run answering this one needs
             // the frame it just wrote.
             contextWindow: observedOn(contextWindow, answer.message, demanded.note, liveCellEcho),
-            agentState: transition.state,
-            stateStamps: StateManifest.stamp(state.stateStamps, transition.state, state.frame),
             truncatedOutputs: TruncatedOutput.retain(ledger),
             workspace: closed,
             readOnlyFrames,
@@ -2827,11 +2659,6 @@ const frame = (
       ? [ModelRequest.Message.user(repeatDemand(repeatFrames, state.repeatCap))]
       : []
     const alerts = probeNotice === undefined ? [] : [ModelRequest.Message.user(probeNotice)]
-    // What the boundary parse noticed and did not refuse. Delivered on the
-    // frame that continues, because a cell whose tail never ran still settled
-    // a transition and the model has no other way to learn that the work it
-    // wrote after its own `return` was never done. See `CellValidation`.
-    const parsed = produced.notice === undefined ? [] : [ModelRequest.Message.user(produced.notice)]
     // The counterweight, and the only notice here that asks for nothing. It is
     // written on the frame that completes the pair rather than at a completion,
     // because its whole purpose is to reach a run that is still deciding
@@ -2855,26 +2682,21 @@ const frame = (
     const held = sufficient === undefined ? [] : [ModelRequest.Message.user(Sufficiency.observation(sufficient))]
     const trailing = [
       ...drained.inserts,
-      ...parsed,
       ...alerts,
       ...demand,
       ...repeated,
       ...held
     ]
-    // Filing mode replaces the transcript with what the cell projected; REPL
-    // mode appends the pair the frame produced. The append is what keeps the
-    // provider's prefix cache covering everything below the last frame — a
-    // replaced transcript breaks the prefix on every turn, and one graded wave
-    // recorded zero cached input tokens on an instance where an earlier wave
-    // had 5,142.
-    const context = state.mode === "filing"
-      ? projected(contextWindow, transition.context, trailing)
-      : appended(
-        contextWindow,
-        answer.message,
-        [ModelRequest.Message.user(printed), ...trailing],
-        liveCellEcho
-      )
+    // The frame's own pair, appended. The append is what keeps the provider's
+    // prefix cache covering everything below the last frame — a transcript the
+    // cell replaced broke the prefix on every turn, and one graded wave recorded
+    // zero cached input tokens on an instance where an earlier wave had 5,142.
+    const context = appended(
+      contextWindow,
+      answer.message,
+      [ModelRequest.Message.user(printed), ...trailing],
+      liveCellEcho
+    )
     return {
       _tag: "Continue",
       state: advance(state, {
@@ -2887,14 +2709,6 @@ const frame = (
           activeTools: context.activeTools,
           replaced: context.replaced
         }),
-        agentState: transition.state,
-        stateStamps: StateManifest.stamp(state.stateStamps, transition.state, state.frame),
-        // A projection is a statement about the frame being opened, so it is
-        // replaced rather than merged: a cell that names nothing is shown the
-        // manifest alone, and no key stays projected because some earlier frame
-        // wanted it. `recall` is replaced for the same reason.
-        renderKeys: transition.render ?? [],
-        recallOrdinals: transition.recall ?? [],
         truncatedOutputs: TruncatedOutput.retain(ledger),
         workspace: closed,
         readOnlyFrames,
@@ -2961,23 +2775,21 @@ export const run = (
             unmovedCap: current.unmovedCap,
             unresolvedCap: current.unresolvedCap,
             revalidations: current.revalidations,
-            cellMode: current.mode,
             ...limits
           })
         )
       }
-      // The run's realm, in REPL mode: an `acquireRelease` on this loop's scope
-      // rather than on one evaluation, so teardown is still scope closure and
-      // cancellation is still fiber interruption. A resumed run rebuilds it by
-      // re-executing its own cells from the top — every `ctx.call` replays from
-      // its recorded boundary, so the realm that comes out is the realm that was
-      // lost, without anything having been serialized.
+      // The run's realm: an `acquireRelease` on this loop's scope rather than
+      // on one evaluation, so teardown is still scope closure and cancellation
+      // is still fiber interruption. A resumed run rebuilds it by re-executing
+      // its own cells from the top — every `ctx.call` replays from its recorded
+      // boundary, so the realm that comes out is the realm that was lost,
+      // without anything having been serialized.
       //
       // Opened after the arming is journaled, so a run whose realm cannot be
-      // built still has its armed decision on the record. That is what the
-      // `discipline-armed` event is for: a failure that leaves no record of
-      // which arm was asked for is a failure a grader cannot read.
-      const realm = input.state.mode === "filing" ? undefined : yield* Effect.suspend(() => {
+      // built still has its armed budgets on the record. A failure that leaves
+      // no record of what was asked for is a failure a grader cannot read.
+      const realm = yield* Effect.suspend(() => {
         const projections: Record<string, Cell.FlowProjection> = {}
         for (const descriptor of input.flows) projections[descriptor.name] = Cell.project(descriptor)
         return sandbox.openRealm === undefined

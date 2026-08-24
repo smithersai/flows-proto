@@ -134,7 +134,7 @@ describe("CallLedger.render", () => {
       settlement("grep", { pattern: "def x", root: "src/lib" }, { matches: [1, 2] })
     ])
 
-    expect(CallLedger.render(ledger)).toContain("1. grep src/lib — ok: matches=[2] (17b, recall 1)")
+    expect(CallLedger.render(ledger)).toContain("1. grep src/lib — ok: matches=[2] (17b)")
   })
 
   it("states how many lines aged out rather than renumbering what is left", () => {
@@ -178,7 +178,7 @@ describe("CallLedger and the writes a run has already made", () => {
       wrote("bash", { command: "git checkout -- sympy/stats/crv_types.py" }, { exitCode: 0 }),
       wrote("apply_patch", { input: patch }, applied)
     ])
-    const rendered = CallLedger.render(second, false) ?? ""
+    const rendered = CallLedger.render(second) ?? ""
 
     expect(rendered).toContain(
       "3. apply_patch sympy/stats/crv_types.py — WROTE 4965b, ok — the same write as 1, which succeeded"

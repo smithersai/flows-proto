@@ -57,32 +57,33 @@ loop and its seams, not durability and not a real catalog.
 | `sufficiency-signal-reaches-the-next-frame` | A run holding a check that failed before its change and a broader one that passed after is told so, and completes on it. |
 | `park-without-a-human-is-answered`     | A park in a run with no approval channel is refused, answered in-frame, and the run spends the budget it still held.  |
 | `park-every-frame-still-hits-the-read-only-cap` | A run that answers every refusal with another park stops at twice its read-only cap instead of spending the frame budget. |
-| `repl-realm-carries-a-binding-across-frames` | In repl mode a cell's top-level name is still bound in the next cell, and the run finishes with `ctx.done`.        |
-| `repl-print-reaches-the-next-frame`    | What a repl cell prints opens the next frame, so `console.log` is the whole of the context channel.                    |
-| `repl-completion-behind-a-guard`       | One repl cell reproduces, writes, re-checks and completes behind a check of the exit codes it just took.               |
+| `repl-realm-carries-a-binding-across-frames` | A cell's top-level name is still bound in the next cell, and the run finishes with `ctx.done`.                    |
+| `repl-print-reaches-the-next-frame`    | What a cell prints opens the next frame, so `console.log` is the whole of the context channel.                         |
+| `repl-completion-behind-a-guard`       | One cell reproduces, writes, re-checks and completes behind a check of the exit codes it just took.                    |
 | `repl-guard-that-does-not-fire-carries-on` | The identical cell against an already-green baseline does not complete: the guard is the whole difference.        |
 | `repl-completion-stops-the-calls-after-it` | `ctx.done` takes effect where it is called, and the calls after it fail soft as `run_completed` without running.  |
-| `repl-read-only-cap-takes-ctx-justify` | The read-only cap is armed in repl mode too, and `ctx.justify` is the answer that buys quiet frames.                   |
+| `repl-read-only-cap-takes-ctx-justify` | The read-only cap holds a run that only reads, and `ctx.justify` is the answer that buys quiet frames.                 |
 | `checkpoint-mint-is-refused-catchably-without-a-store` | `ctx.checkpoint()` reaches the boundary through the real loop, and a host that pins no trees answers it catchably.   |
 | `checkpoint-at-base-is-never-silently-ignored` | A call naming `ctx.base` on a host that pins nothing is refused rather than run against the live tree.        |
 | `checkpoint-refuses-a-write-at-a-pinned-tree` | A flow that declares a write is refused at a checkpoint before it reaches the engine, and nothing runs.        |
-| `checkpoint-is-offered-in-filing-mode-too` | `ctx.checkpoint` and `ctx.base` are on both arms, because pinning a tree is not a property of cell memory.       |
+| `checkpoint-is-refused-by-a-host-that-pins-nothing` | `ctx.base` is free and always there; a mint on a host with no store is a catchable refusal at the line that asked. |
 | `max-frames-stops-the-run`             | A run that never completes stops at its frame budget and reports `/harness/HarnessError`.                              |
 | `seat-unresolved-is-typed`             | A host with no model for the declared seat refuses before any model call, as `@smthrs/agent/Seat/SeatUnresolved`.      |
 
 Seven cases drive the agent through `AgentAction` — one typed step inside an
 ordinary flow, which is how a workflow author reaches it. The read-only-cap
-case, the sufficiency case, the two park cases and the three repl cases drive
-the `Agent` service directly inside a real flow execution, because
-`readOnlyCap`, `approvalChannel` and `cellMode` are `Agent.Options` fields that
-`AgentAction` does not forward.
+case, the sufficiency case, the two park cases and the `repl-` cases drive the
+`Agent` service directly inside a real flow execution, because `readOnlyCap`
+and `approvalChannel` are `Agent.Options` fields that `AgentAction` does not
+forward.
 
-The three `repl-` cases run the same production loop on the persistent-realm
-arm (`docs/specs/Concepts/Repl Realm.md`). They are not a second suite: the
-filing cases are unchanged and still gate the shipped default, and the repl
-cases gate the arm's own promises — a binding survives a frame, a print reaches
-the next turn, and the loop's discipline is armed identically on both
-surfaces.
+The `repl-` cases gate the realm's own promises — a binding survives a frame, a
+print reaches the next turn, a completion is decided by a call the cell just
+made, and the loop's discipline is armed the same way. They keep their names
+from the wave that measured the realm against the surface it replaced; that
+surface is gone (`docs/specs/Concepts/Repl Realm.md`), and the names are left
+alone so the committed baseline stays the record of what the agent used to
+do.
 
 Each case reduces its run to one `Observation`:
 

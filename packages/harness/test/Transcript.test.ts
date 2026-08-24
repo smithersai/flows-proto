@@ -142,7 +142,7 @@ describe("Transcript", () => {
   })
 
   it("consumes versioned cell evidence and rebuilds the cell-selected context", () => {
-    const source = Cell.source("return { intent: \"continue\", state: { step: 2 }, context: [] }")
+    const source = Cell.source("console.log(\"keep exactly this\")")
     const call = new Cell.Call({
       flowName: "fs/list",
       input: { path: "." },
@@ -158,10 +158,7 @@ describe("Transcript", () => {
         layers: ["composition-1"]
       })
     })
-    const transition = new Cell.Continue({
-      state: { step: 2 },
-      context: [new Cell.ContextEntry({ role: "user", text: "keep exactly this" })]
-    })
+    const transition = new Cell.Continue({})
     const reason = new EngineLike.SuspendReason({
       code: "waiting-input",
       message: "choose a branch"
@@ -210,11 +207,13 @@ describe("Transcript", () => {
     const projected = Result.getOrThrow(
       Transcript.projectStateResult(events.map((event, index) => entry(index + 1, event.eventType, event)))
     )
+    // The transcript grows: the compaction summary leads, the model's own reply
+    // follows, and the steer lands after it. A `continue` replaces nothing.
     expect(projected.messages.map(({ message }) => message)).toEqual([
-      ModelRequest.Message.user("keep exactly this"),
+      ModelRequest.Message.assistant("compacted", { stopReason: "stop" }),
+      ModelRequest.Message.assistant("cell source", { stopReason: "stop" }),
       ModelRequest.Message.user("then steer")
     ])
-    expect(projected.agentState).toEqual({ step: 2 })
     expect(projected.cell.produced).toEqual([source])
     expect(projected.cell.callsStarted).toEqual([call])
     expect(projected.cell.callsSettled).toHaveLength(1)
@@ -237,7 +236,7 @@ describe("Transcript", () => {
     })
     const complete = new AgentEvent.TransitionApplied({
       eventType: "flows.harness.transition-applied.v1",
-      transition: new Cell.Complete({ state: null, output: "done" })
+      transition: new Cell.Complete({ output: "done" })
     })
     expect(
       project([
@@ -257,7 +256,6 @@ describe("Transcript", () => {
 
     expect(state.messages).toEqual([])
     expect(state.replaced).toBeUndefined()
-    expect(state.agentState).toBeUndefined()
     expect(state.cell).toEqual({
       produced: [],
       callsStarted: [],
@@ -368,7 +366,7 @@ describe("Transcript", () => {
     ])
   })
 
-  it("clears the transcript only for a continue transition", () => {
+  it("keeps the transcript whatever the transition was", () => {
     const settled = entry(
       1,
       "flows.harness.model-settled.v1",
@@ -387,29 +385,21 @@ describe("Transcript", () => {
 
     const parked = project([
       settled,
-      applied(2, new Cell.Park({ state: null, reason: "waiting-event", message: "waiting on CI" }))
+      applied(2, new Cell.Park({ reason: "waiting-event", message: "waiting on CI" }))
     ])
-    const continued = project([
-      settled,
-      applied(
-        2,
-        new Cell.Continue({
-          state: null,
-          context: [new Cell.ContextEntry({ role: "assistant", text: "only this" })]
-        })
-      )
-    ])
+    const continued = project([settled, applied(2, new Cell.Continue({}))])
 
+    // No transition replaces the transcript: what the model said stays said,
+    // whichever way the frame ended.
     expect(parked).toEqual([ModelRequest.Message.assistant("kept", { stopReason: "stop" })])
-    // A `continue` carries the whole next context, so it replaces the prefix.
-    expect(continued).toEqual([ModelRequest.Message.assistant("only this", { stopReason: "stop" })])
+    expect(continued).toEqual([ModelRequest.Message.assistant("kept", { stopReason: "stop" })])
   })
 
   it("projects a cell that settled cleanly without adding a correction message", () => {
     const settled = new AgentEvent.CellSettled({
       eventType: "flows.harness.cell-settled.v1",
       cell: "cell-1",
-      outcome: new Cell.Settled({ transition: new Cell.Complete({ state: null, output: "done" }) })
+      outcome: new Cell.Settled({ transition: new Cell.Complete({ output: "done" }) })
     })
 
     const state = Result.getOrThrow(Transcript.projectStateResult([entry(1, settled.eventType, settled)]))

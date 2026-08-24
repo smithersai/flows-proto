@@ -1,11 +1,9 @@
 /**
  * The variables panel: what the realm holds, stated every frame.
  *
- * In REPL mode a run's memory is not a JSON document the cell filed — it is the
- * set of names the realm is holding, and the model can only act on what the
- * prompt says about them. `StateManifest` answers the same question for the
- * filing mode and this answers it for the realm, in the same shape and with the
- * same bounds, so a frame's prompt reads the same way whichever mode is armed.
+ * A run's memory is not a JSON document the cell filed — it is the set of names
+ * the realm is holding, and the model can only act on what the prompt says about
+ * them. This is what the prompt says.
  *
  * Every line is a name, its type, one *cheap* size, and when it was last bound.
  * Nothing here is serialized whole: a panel that stringified every global would
