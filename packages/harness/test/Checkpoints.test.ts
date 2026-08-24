@@ -471,6 +471,25 @@ describe("CellTurn checkpoints", () => {
     expect(settled).toContain("Make the change on the live tree")
   })
 
+  it("refuses a shell call that declares a write at a checkpoint, on the input alone", async () => {
+    // The other half of the write refusal, and the one a declaration table
+    // cannot see: `bash` declares no writes of its own, so a hermetic call that
+    // names some in its input is the only thing that says this call changes the
+    // tree. A checkpoint has nothing to change, and the run keeps going.
+    const { engine, events } = await drive({
+      cells: [
+        `const refusal = await ctx.call("bash", { mode: "hermetic", command: "sed -i s/a/b/ a.py", reads: [], writes: ["a.py"] }, { at: ctx.base })
+         return { intent: "complete", state: {}, output: JSON.stringify(refusal) }`
+      ]
+    })
+
+    expect(engine.recorder.calls).toEqual([])
+    const settled = settledText(events)
+    expect(settled).toContain("checkpoint_readonly")
+    expect(settled).toContain("Nothing was run")
+    expect(of(events, "resolved")).toHaveLength(1)
+  })
+
   it("refuses an at that is not a checkpoint, naming what it takes", async () => {
     const { engine, events } = await drive({
       cells: [
