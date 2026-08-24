@@ -25,6 +25,7 @@ import type { QuickJSContext, QuickJSHandle, QuickJSRuntime, QuickJSWASMModule }
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core"
 import * as Cell from "./Cell.ts"
 import type { HarnessError } from "./HarnessError.ts"
+import * as elide from "./internal/elide.ts"
 import * as printChannel from "./internal/printChannel.ts"
 import * as Sandbox from "./Sandbox.ts"
 import * as VariablesPanel from "./VariablesPanel.ts"
@@ -668,6 +669,11 @@ const printParts = Schema.decodeUnknownSync(
  * the reduction the host needs for itself — a value larger than a whole frame's
  * budget can never be shown whole, so only its two ends are kept, and the size
  * it had is carried beside them so the notice at frame close names the original.
+ *
+ * The two ends are cut through `elide`, which will not split a surrogate pair.
+ * They are joined with nothing between them, so a head ending in the first half
+ * of a pair and a tail starting with the second half would fuse into a character
+ * the cell never printed.
  */
 const printed = (encoded: string): printChannel.Statement => {
   const parts = printParts(JSON.parse(encoded))
@@ -675,7 +681,7 @@ const printed = (encoded: string): printChannel.Statement => {
   if (whole.length <= Sandbox.printFrameBytes) return { text: whole, bytes: whole.length }
   const edge = Math.floor(Sandbox.printFrameBytes / 2)
   return {
-    text: `${whole.slice(0, edge)}${whole.slice(whole.length - edge)}`,
+    text: `${elide.headSlice(whole, edge)}${elide.tailSlice(whole, edge)}`,
     bytes: whole.length
   }
 }

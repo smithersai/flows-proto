@@ -154,13 +154,44 @@ describe("QuickJSSandbox.openRealm", () => {
   })
 
   it("drops whole statements from the middle when a frame prints more than it can floor", async () => {
-    const kept = Math.floor(Sandbox.printFrameBytes / Sandbox.printStatementFloor)
+    // Sixty statements of four times the floor: no apportionment leaves each of
+    // them a share worth reading, so whole ones go from the middle and are
+    // counted rather than every one of them being cut to its own notice.
     const frames = await session([
-      `for (var index = 0; index < ${kept + 8}; index++) console.log("line " + index)`
+      `for (var index = 0; index < 60; index++) console.log(index + ":" + "w".repeat(${
+        Sandbox.printStatementFloor * 4
+      }) + ":" + index)`
     ])
-    expect(frames[0]!.prints).toContain("line 0")
-    expect(frames[0]!.prints).toContain(`line ${kept + 7}`)
-    expect(frames[0]!.prints).toContain("8 print statements elided from the middle of this frame")
+    expect(frames[0]!.prints.startsWith("0:")).toBe(true)
+    expect(frames[0]!.prints.endsWith(":59")).toBe(true)
+    expect(frames[0]!.prints).toContain("print statements elided from the middle of this frame")
+    expect(frames[0]!.prints.length).toBeLessThanOrEqual(Sandbox.printFrameBytes)
+  })
+
+  it("keeps every line of a frame that printed many short ones", async () => {
+    // The other half of the same rule: a count that does not depend on what the
+    // statements cost dropped a hundred and sixty-eight of these while the frame
+    // budget sat unspent.
+    const frames = await session([
+      `for (var index = 0; index < 200; index++) console.log("line " + index)`
+    ])
+    expect(frames[0]!.prints.split("\n")).toHaveLength(200)
+    expect(frames[0]!.prints).toContain("line 100")
+    expect(frames[0]!.prints).not.toContain("elided")
+  })
+
+  it("cuts a multibyte statement between characters, never through one", async () => {
+    // A cut through a surrogate pair does not shorten a value by a character, it
+    // replaces that character with half of one — and two ends joined without a
+    // marker can fuse two halves into a character nothing printed.
+    const frames = await session([
+      `console.log("A" + "\\u{1F600}".repeat(${Sandbox.printFrameBytes}) + "Z")`
+    ])
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(frames[0]!.prints))
+      .toBe(false)
+    expect(frames[0]!.prints.startsWith("A\u{1F600}")).toBe(true)
+    expect(frames[0]!.prints.endsWith("\u{1F600}Z")).toBe(true)
+    expect(frames[0]!.prints.length).toBeLessThanOrEqual(Sandbox.printFrameBytes)
   })
 
   it("resolves a flow call and hands the result back inside the same cell", async () => {

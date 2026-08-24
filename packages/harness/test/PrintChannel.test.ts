@@ -67,16 +67,39 @@ describe("printChannel.buffer", () => {
     }
   })
 
+  it("keeps every statement of a frame whose statements all fit", () => {
+    // The regression a fixed count of 32 caused: two hundred short lines were
+    // cut to thirty-two while fifteen of the frame's sixteen kilobytes went
+    // unspent, which is the failure the shared budget exists to end.
+    const frame = Array.from({ length: 200 }, (_, index) => statement(`line ${index}`))
+    const out = printChannel.buffer(frame, 0)
+    expect(out.split("\n")).toHaveLength(200)
+    expect(out).toContain("line 100")
+    expect(out).not.toContain("elided")
+    expect(out.length).toBeLessThanOrEqual(Sandbox.printFrameBytes)
+  })
+
+  it("shows a statement at or under the statement floor whole, however many there are", () => {
+    const frame = Array.from({ length: 5_000 }, () => statement("z".repeat(Sandbox.printStatementFloor)))
+    const out = printChannel.buffer(frame, 0)
+    expect(out).toContain("print statements elided from the middle of this frame")
+    // Whole statements went; the ones that stayed were not shortened, because a
+    // statement the floor covers is never worth replacing with a notice.
+    expect(out).not.toContain("bytes elided from the middle")
+    expect(out.length).toBeLessThanOrEqual(Sandbox.printFrameBytes)
+  })
+
   it("drops whole statements from the middle rather than cutting each to a notice", () => {
-    const capacity = Math.floor(Sandbox.printFrameBytes / Sandbox.printStatementFloor)
-    const out = printChannel.buffer(
-      Array.from({ length: capacity + 5 }, (_, index) => statement(`line ${index}`)),
-      0
-    )
-    expect(out).toContain("line 0")
-    expect(out).toContain(`line ${capacity + 4}`)
-    expect(out).toContain("5 print statements elided from the middle of this frame")
-    expect(out).not.toContain(`line ${Math.ceil(capacity / 2)}\n`)
+    const wide = "w".repeat(Sandbox.printStatementFloor * 4)
+    const frame = Array.from({ length: 80 }, (_, index) => statement(`${index}:${wide}:${index}`))
+    const out = printChannel.buffer(frame, 0)
+    const dropped = /… (\d+) print statements elided from the middle of this frame/.exec(out)
+    expect(dropped).not.toBeNull()
+    expect(Number(dropped![1])).toBeGreaterThan(0)
+    // The two ends of the frame are what survive, as they do inside a statement.
+    expect(out.startsWith("0:")).toBe(true)
+    expect(out.endsWith(":79")).toBe(true)
+    expect(out.length).toBeLessThanOrEqual(Sandbox.printFrameBytes)
   })
 
   it("states the statements the host never copied out, with or without others", () => {
@@ -86,13 +109,31 @@ describe("printChannel.buffer", () => {
   })
 
   it("states both losses when a frame overran the count and the retention alike", () => {
-    const capacity = Math.floor(Sandbox.printFrameBytes / Sandbox.printStatementFloor)
+    const wide = "w".repeat(Sandbox.printStatementFloor * 4)
     const out = printChannel.buffer(
-      Array.from({ length: capacity + 2 }, (_, index) => statement(`line ${index}`)),
+      Array.from({ length: 80 }, (_, index) => statement(`${index}:${wide}:${index}`)),
       7
     )
-    expect(out).toContain("2 print statements elided from the middle of this frame")
+    expect(out).toContain("print statements elided from the middle of this frame")
     expect(out).toContain("7 further print statements were not kept")
+    expect(out.length).toBeLessThanOrEqual(Sandbox.printFrameBytes)
+  })
+
+  it("never delivers more than one frame's budget, whatever the shape", () => {
+    // The bound is the one property the channel may not break, so it is checked
+    // against the shapes that put pressure on each part of the sizing: one value
+    // far over the budget, values exactly at the statement floor and one either
+    // side of it, and frames of every count from one to thousands.
+    for (const bytes of [0, 1, 8, 511, 512, 513, 4_000, 16_384, 40_000, 500_000]) {
+      for (const count of [1, 2, 12, 32, 33, 200, 5_000]) {
+        for (const unread of [0, 4_000]) {
+          const frame = Array.from({ length: count }, () => statement("x".repeat(Math.min(bytes, 20_000))))
+            .map((held) => ({ text: held.text, bytes }))
+          expect(printChannel.buffer(frame, unread).length, `bytes=${bytes} count=${count} unread=${unread}`)
+            .toBeLessThanOrEqual(Sandbox.printFrameBytes)
+        }
+      }
+    }
   })
 
   it("keeps the head and tail of a value the host had already reduced", () => {
@@ -186,6 +227,60 @@ describe("printChannel.render", () => {
     const wide = "w".repeat(80)
     const rows = [record("a", 1, wide), record("b", 2, wide), record("c", 3, wide)]
     expect(printChannel.render({ first: rows, second: rows }).startsWith("{")).toBe(true)
+  })
+})
+
+describe("printChannel.capacity", () => {
+  it("keeps every statement a budget can carry at its own size", () => {
+    expect(printChannel.capacity(Array.from({ length: 200 }, () => statement("line")), Sandbox.printFrameBytes))
+      .toBe(200)
+  })
+
+  it("keeps fewer of the statements that cost the whole floor", () => {
+    const wide = Array.from({ length: 200 }, () => ({ text: "w", bytes: 40_000 }))
+    const kept = printChannel.capacity(wide, Sandbox.printFrameBytes)
+    expect(kept).toBeGreaterThan(20)
+    expect(kept).toBeLessThan(40)
+  })
+
+  it("keeps nothing a budget cannot afford at all", () => {
+    expect(printChannel.capacity([{ text: "", bytes: 40_000 }], 10)).toBe(0)
+  })
+})
+
+describe("elide cuts around a surrogate pair", () => {
+  const smile = "\u{1F600}"
+
+  it("gives back a unit rather than splitting a pair at the head", () => {
+    // "A😀😀": a cut at 2 would land between the halves of the first pair.
+    expect(elide.headSlice(`A${smile}${smile}`, 2)).toBe("A")
+    expect(elide.headSlice(`A${smile}${smile}`, 3)).toBe(`A${smile}`)
+    expect(elide.headSlice("plain", 3)).toBe("pla")
+    expect(elide.headSlice("plain", 0)).toBe("")
+    expect(elide.headSlice("plain", 99)).toBe("plain")
+  })
+
+  it("starts after a pair rather than inside it at the tail", () => {
+    expect(elide.tailSlice(`${smile}${smile}A`, 2)).toBe("A")
+    expect(elide.tailSlice(`${smile}${smile}A`, 3)).toBe(`${smile}A`)
+    expect(elide.tailSlice("plain", 3)).toBe("ain")
+    expect(elide.tailSlice("plain", 99)).toBe("plain")
+  })
+
+  it("leaves no half of a pair in a middle elision, and counts what it kept", () => {
+    const text = `${"a".repeat(9)}${smile.repeat(20)}${"z".repeat(9)}`
+    const out = elide.middleFrom(text, text.length, 21, printChannel.recall)
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(out)).toBe(false)
+    const kept = out.length - elide.noticeCost(text.length, printChannel.recall)
+    expect(Number(/… (\d+) of/.exec(out)![1])).toBe(text.length - Math.max(0, kept))
+    expect(out.length).toBeLessThanOrEqual(21 + elide.noticeCost(text.length, printChannel.recall))
+  })
+
+  it("keeps a head elision off a pair too, and says what it really dropped", () => {
+    const text = `${smile.repeat(10)}tail`
+    const out = elide.head(text, 5, "recall")
+    expect(out.startsWith(smile.repeat(2))).toBe(true)
+    expect(out).toContain(`+${text.length - 4}b`)
   })
 })
 

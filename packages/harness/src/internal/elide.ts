@@ -23,6 +23,46 @@
  */
 
 /**
+ * Whether this UTF-16 unit is the first half of a surrogate pair.
+ *
+ * A cut between the halves of a pair is the one cut a bound may not make. It
+ * does not shorten the value by a character, it replaces that character with a
+ * unit that is not one: `JSON.stringify` escapes it, a `TextEncoder` turns it
+ * into U+FFFD, and a model reading a Python traceback or a Chinese test name
+ * sees a broken glyph at every boundary this module draws. Worse, two ends
+ * joined without a marker can fuse a trailing high half onto a leading low half
+ * and invent a character that was never printed.
+ */
+const leading = (code: number): boolean => code >= 0xd800 && code <= 0xdbff
+
+/**
+ * The first `limit` units of `text`, stopping short of splitting a pair.
+ *
+ * A cut lands mid-pair when the unit before it leads one, so that cut moves back
+ * by one and the value loses one more unit than the caller asked it to. Every
+ * bound here is a ceiling, so giving back a unit is always allowed; taking one
+ * is not.
+ *
+ * @since 0.1.0
+ * @private
+ * @slop
+ */
+export const headSlice = (text: string, limit: number): string =>
+  text.slice(0, limit > 0 && limit < text.length && leading(text.charCodeAt(limit - 1)) ? limit - 1 : limit)
+
+/**
+ * The last `limit` units of `text`, starting after a pair rather than inside it.
+ *
+ * @since 0.1.0
+ * @private
+ * @slop
+ */
+export const tailSlice = (text: string, limit: number): string => {
+  const from = Math.max(0, text.length - limit)
+  return text.slice(from > 0 && leading(text.charCodeAt(from - 1)) ? from + 1 : from)
+}
+
+/**
  * Shortens an already-shortened text from the middle, counting against the
  * whole it came from.
  *
@@ -38,6 +78,10 @@
  * here keeps both ends, so slicing the ends of a reduced value is the same as
  * slicing the ends of the value it came from.
  *
+ * The count is what the two ends actually left behind rather than `whole -
+ * limit`, because a cut that stopped short of a surrogate pair keeps a unit or
+ * two fewer than the limit allowed and the notice names the real number.
+ *
  * @since 0.1.0
  * @private
  * @slop
@@ -45,9 +89,11 @@
 export const middleFrom = (text: string, whole: number, limit: number, recall: string): string => {
   if (whole <= limit) return text
   const edge = Math.floor(limit / 2)
-  return `${text.slice(0, edge)}\n… ${whole - limit} of ${whole} bytes elided from the middle. ${recall} …\n${
-    text.slice(text.length - edge)
-  }`
+  const head = headSlice(text, edge)
+  const tail = tailSlice(text, edge)
+  return `${head}\n… ${
+    whole - head.length - tail.length
+  } of ${whole} bytes elided from the middle. ${recall} …\n${tail}`
 }
 
 /**
@@ -89,5 +135,8 @@ export const middle = (text: string, limit: number, recall: string): string =>
  * @private
  * @slop
  */
-export const head = (text: string, limit: number, recall: string): string =>
-  text.length <= limit ? text : `${text.slice(0, limit)}… [+${text.length - limit}b, ${recall}]`
+export const head = (text: string, limit: number, recall: string): string => {
+  if (text.length <= limit) return text
+  const kept = headSlice(text, limit)
+  return `${kept}… [+${text.length - kept.length}b, ${recall}]`
+}
