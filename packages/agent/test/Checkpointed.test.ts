@@ -56,7 +56,9 @@ const store = (asked: Array<string>, options: { readonly guest?: string } = {}):
         return use({
           id,
           host: `/work/repo/.flows-checkpoints/${id}`,
-          guest: options.guest ?? `/work/repo/.flows-checkpoints/${id}`
+          guest: options.guest ?? `/work/repo/.flows-checkpoints/${id}`,
+          root: "/work/repo",
+          guestRoot: options.guest === undefined ? "/work/repo" : "/testbed"
         })
       })
   })
@@ -132,6 +134,39 @@ describe("Checkpointed.checkpointed", () => {
     expect(result.code).toBe("checkpoint_unsupported")
     expect(result.message).toContain("/testbed/mod.py")
     expect(result.message).toContain("relative to the repository root")
+  })
+
+  it("refuses a path that climbs out of the checkpoint, and runs nothing", async () => {
+    // The escape is one `..` wider than the checkpoint's own directory, and
+    // what it reaches is the live tree — the one tree a reading taken at a
+    // checkpoint may never come from. A rewritten path would have been journaled
+    // under the checkpoint the cell named, and the call key folds that in, so
+    // the live reading would replay as a pinned one for the rest of the run.
+    const seen: Array<Cell.Call> = []
+    const result = await run(
+      Checkpointed.checkpointed(store([]), recording(seen)),
+      call("read", { path: "../../mod.py" }, "cp-1-0")
+    )
+
+    expect(seen).toEqual([])
+    expect(result.outcome).toBe("failure")
+    expect(result.code).toBe("checkpoint_unsupported")
+    expect(result.message).toContain("../../mod.py")
+    expect(result.message).toContain("climbs back out of the checkpoint")
+  })
+
+  it("keeps the subdirectory a shell call named, on the side of the mount it named it from", async () => {
+    // A check declared in `tests/` that silently ran at the repository top comes
+    // back failing because the script is not there, and a cell reads that as
+    // "the baseline fails". A checkpoint that manufactures a failing baseline is
+    // worse than no checkpoint at all.
+    const seen: Array<Cell.Call> = []
+    await run(
+      Checkpointed.checkpointed(store([], { guest: "/testbed/.flows-checkpoints/base" }), recording(seen)),
+      call("bash", { mode: "unhermetic", command: "./runtests.py", cwd: "tests", container: "swebench-1" }, "base")
+    )
+
+    expect(seen[0]?.input).toMatchObject({ cwd: "/testbed/.flows-checkpoints/base/tests" })
   })
 
   it("answers a store that cannot hand the tree back as a refusal, not a failed run", async () => {

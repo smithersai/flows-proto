@@ -18,12 +18,20 @@
  * while the cell believed it was reading a pinned one, and a fails-before proof
  * built on that reading would be a proof of nothing.
  *
- * The live tree is never touched. That is not a property of the flows being
- * careful — it is a property of where they run: the call is pointed at a
- * detached worktree, so even a shell command that writes without declaring it
- * writes into the scratch checkout, which is removed when the call ends. The
- * declared-write refusal in the controller is the honest half of the same rule
- * stated where the model can read it.
+ * A relocated call reaches the pinned tree and nothing else. That is not a
+ * property of the flows being careful — it is a property of where they are
+ * pointed: a shell call runs inside the detached worktree, so even a write it
+ * never declared lands in the scratch checkout, which is removed when the call
+ * ends; and a reader whose path climbs out of that checkout with `..` is
+ * refused by {@link outside} rather than rewritten, because such a path is the
+ * live tree under another name. The declared-write refusal in the controller is
+ * the honest half of the same rule, stated where the model can read it.
+ *
+ * The one thing this cannot promise is a shell command that names an absolute
+ * path or its own `..` inside the command text. A checkpoint is where a call
+ * runs, not a sandbox, and `bash` may write anywhere the run can write with or
+ * without one. Confinement is `WorkspaceSandbox`'s job and it composes
+ * independently.
  *
  * Governing design: `docs/specs/Concepts/Checkpoints.md`.
  *
@@ -67,6 +75,22 @@ export const absolute = (flow: string, path: string): Cell.CallResult =>
   )
 
 /**
+ * The refusal a path that climbs out of the checkpoint answers with.
+ *
+ * Rewriting it would point the call back at the live tree while the cell
+ * believed it was reading a pinned one — the one reading a checkpoint exists to
+ * make impossible — so the call is refused instead of quietly relocated.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const outside = (flow: string, path: string): Cell.CallResult =>
+  refused(
+    "checkpoint_unsupported",
+    `Flow ${flow} was given ${path}, which climbs back out of the checkpoint into the live tree, so nothing ran. A path taken at a checkpoint is relative to the repository root and stays inside it. Name it that way, or drop at to read the live tree on purpose.`
+  )
+
+/**
  * Runs one cell call against the checkpoint it names, or against the live tree
  * when it names none.
  *
@@ -85,6 +109,7 @@ export const checkpointed = (
       const relocated = Checkpoints.relocate(call.flowName, call.input, materialized)
       if (relocated._tag === "UnsupportedFlow") return Effect.succeed(unsupported(call.flowName))
       if (relocated._tag === "AbsolutePath") return Effect.succeed(absolute(call.flowName, relocated.path))
+      if (relocated._tag === "OutsideTree") return Effect.succeed(outside(call.flowName, relocated.path))
       // The journaled call keeps the input the cell wrote and the `at` that
       // says which tree; only the input handed to the flow is rewritten. A
       // reader of the journal sees the question, not the scratch path this

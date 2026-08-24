@@ -347,7 +347,7 @@ describe("FlowEngineLike.make", () => {
           Checkpoints.Checkpoints,
           Checkpoints.make({
             capture: (id) => Effect.succeed(new Checkpoints.Snapshot({ id, ref: `refs/flows/checkpoints/${id}` })),
-            materialize: (_id, use) => use({ id: "x", host: "/h", guest: "/g" })
+            materialize: (_id, use) => use({ id: "x", host: "/h/x", guest: "/g/x", root: "/h", guestRoot: "/g" })
           })
         )
       )
@@ -1059,6 +1059,57 @@ describe("FlowEngineLike.record", () => {
     // re-executed it and the drain did not run a second time.
     expect(outcome._tag).toBe("suspended")
     expect(drains).toEqual(["drain"])
+  })
+
+  it("hands a resumed frame the tree it pinned, not the one now standing", async () => {
+    // The kill-and-restore question, asked of the thing a checkpoint is: a
+    // handle names a tree, so a run that parks holding one and comes back must
+    // be handed that tree and not whatever the workspace has become. The store
+    // below records a different ref every time it is asked, so a second capture
+    // is visible in the answer rather than merely counted.
+    const pinned: Array<string> = []
+    let park = true
+    const outcome = await drive(
+      Effect.gen(function*() {
+        const port = yield* FlowEngineLike.make({ model: countingModel([]), route: staticRoute() }).pipe(
+          Effect.provideService(
+            Checkpoints.Checkpoints,
+            Checkpoints.make({
+              capture: (id) =>
+                Effect.sync(() => {
+                  pinned.push(id)
+                  return new Checkpoints.Snapshot({ id, ref: `tree-${pinned.length}` })
+                }),
+              materialize: (id, use) => use({ id, host: `/h/${id}`, guest: `/h/${id}`, root: "/h", guestRoot: "/h" })
+            })
+          )
+        )
+        // Exactly what `CellTurn.pin` builds: the mint rides a journaled
+        // boundary keyed on the cell digest and the ordinal, which is the pair
+        // a re-executed cell re-derives.
+        const held = yield* port.record({
+          name: "checkpoint",
+          identity: { session: "session-1", frame: 0, boundary: "cell-digest:0" },
+          success: Schema.Option(EngineLike.Snapshot),
+          execute: port.capture({
+            id: "cp-0-0",
+            identity: { session: "session-1", frame: 0, boundary: "cell-digest" }
+          })
+        })
+        if (park) {
+          park = false
+          yield* port.suspend(new EngineLike.SuspendReason({ code: "engine", message: "killed" }))
+        }
+        return held
+      }),
+      { resume: true }
+    )
+
+    // One capture, and the resumed attempt is served the tree the first one
+    // pinned. Without the journaled boundary the second attempt would pin the
+    // workspace as it stands now and the handle would silently change meaning.
+    expect(pinned).toEqual(["cp-0-0"])
+    expect(completed(outcome)).toEqual(Option.some(new EngineLike.Snapshot({ id: "cp-0-0", ref: "tree-1" })))
   })
 
   it("reports a boundary whose identity has no canonical form as a typed harness failure", async () => {

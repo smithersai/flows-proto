@@ -60,13 +60,16 @@
  * ## What can be pointed at a checkpoint, and what cannot
  *
  * {@link relocate} is the closed answer. `bash` names *where it runs*, so it is
- * relocated by its `cwd`. `read`, `ls`, `grep` and `glob` name *what they
- * touch* relative to the workspace root, so they are relocated by prefixing
- * that root — and only when the path they name is relative, because an absolute
- * path in these runs is a container path and the host cannot rebase one. Every
- * other flow answers `checkpoint_unsupported` through the harness, including
- * `test`, which already has `against: "base"` for exactly this question and
- * would otherwise have two mechanisms that can disagree.
+ * relocated by its `cwd` — into the checkpoint, and into the same subdirectory
+ * of it the call asked for, because a check declared in `tests/` that silently
+ * ran at the top would come back failing for a reason nobody chose. `read`,
+ * `ls`, `grep` and `glob` name *what they touch* relative to the workspace
+ * root, so they are relocated by prefixing that root — and only when the path
+ * they name stays inside the tree, because an absolute path in these runs is a
+ * container path the host cannot rebase and a `..` path is the live tree under
+ * another name. Every other flow answers `checkpoint_unsupported` through the
+ * harness, including `test`, which already has `against: "base"` for exactly
+ * this question and would otherwise have two mechanisms that can disagree.
  *
  * @since 0.1.0
  */
@@ -114,8 +117,19 @@ export const scratchDirectory = ".flows-checkpoints"
  * The commit object itself is unreferenced. It stays alive for the life of the
  * run — nothing in a run prunes — and `git worktree add --detach <sha>` checks
  * one out perfectly well, which is measured in `CheckpointsFixture.test.ts`. So
- * the tree is reachable by id and invisible to every command that reads
- * history.
+ * the tree is reachable by id and no command that walks refs can reach it:
+ * `git log`, `git log --all`, `git log -S` and `git show <ref>` all answer
+ * exactly as they did before the capture.
+ *
+ * Two commands still see it, and both are measured rather than argued in
+ * `CheckpointsFixture.test.ts`. `git fsck` reports it as a dangling commit,
+ * because that is what an unreferenced commit is; and while a checkpoint is
+ * checked out, `git log --all` includes the other worktree's detached `HEAD`,
+ * because `--all` spans worktrees unless `--single-worktree` says otherwise.
+ * Neither is reachable by a name that looks like project history, and the cell
+ * contract's environment section says outright that a dangling commit is this
+ * harness holding the agent's own tree — which is the half of the django-13346
+ * lesson that a store cannot enforce.
  *
  * @category constants
  * @since 0.1.0
@@ -144,6 +158,13 @@ export class Snapshot extends Schema.Class<Snapshot>("flows/std/Checkpoints/Snap
  * container is in play. They differ exactly as `TestRunner.Runner`'s `cwd` and
  * `root` differ, and for the same reason: one directory, two names.
  *
+ * `root` and `guestRoot` are the workspace itself under those same two names.
+ * They travel because a call that named a directory *inside* the workspace has
+ * to keep it: a check that runs in `tests/` and is pointed at a checkpoint must
+ * run in the checkpoint's `tests/`, not at its top. Silently dropping that
+ * subpath is how a baseline comes back failing for a reason nobody chose, which
+ * is the one failure a checkpoint exists to make impossible.
+ *
  * @category models
  * @since 0.1.0
  */
@@ -151,6 +172,10 @@ export interface Materialized {
   readonly id: string
   readonly host: string
   readonly guest: string
+  /** The workspace this checkpoint is a tree of, as this machine names it. */
+  readonly root: string
+  /** The workspace as a container names it; the same as {@link Materialized.root} when none does. */
+  readonly guestRoot: string
 }
 
 /**
@@ -382,19 +407,44 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
       }
       const commit = yield* spawn(commitOf(id))
       const host = `${root}/${scratchDirectory}/${id}`
+      const discard = Effect.ignore(spawn(git(root, ["worktree", "remove", "--force", host])))
       // The worktree is removed however the call ends: a run killed at its
       // wall-clock budget would otherwise leave a second checkout of the whole
       // repository inside the tree whose diff is the run's answer.
+      //
+      // It is removed on the way *in* as well, and that is not belt and braces.
+      // A release runs for an interruption and not for a `SIGKILL`, so a run
+      // killed outright leaves the checkout standing — and `worktree add`
+      // refuses a path that exists, so every later call at that id would answer
+      // `checkpoint_unavailable` for a handle the journal still says is good. A
+      // checkpoint has to survive the kill that its own scoping cannot catch.
+      //
+      // `worktree.useRelativePaths` makes the checkout's `.git` file point at
+      // the repository by a relative path. Without it that pointer is this
+      // machine's absolute path, which does not exist inside a container, and
+      // `git` run at the checkpoint through the mount answers "not a git
+      // repository" — for a directory that is one. Git before 2.48 does not
+      // know the key and ignores it, which costs that host nothing it had.
       return yield* Effect.acquireUseRelease(
-        spawn(git(root, ["worktree", "add", "--detach", "--force", host, commit])).pipe(
+        discard.pipe(
+          Effect.andThen(spawn(git(root, [
+            "-c",
+            "worktree.useRelativePaths=true",
+            "worktree",
+            "add",
+            "--detach",
+            "--force",
+            host,
+            commit
+          ]))),
           Effect.flatMap((added) =>
             added.exitCode === 0
               ? Effect.void
               : Effect.fail(failed(`Could not check out checkpoint ${id}: ${added.stderr.trim()}`))
           )
         ),
-        () => use({ id, host, guest: `${guestRoot}/${scratchDirectory}/${id}` }),
-        () => Effect.ignore(spawn(git(root, ["worktree", "remove", "--force", host])))
+        () => use({ id, host, guest: `${guestRoot}/${scratchDirectory}/${id}`, root, guestRoot }),
+        () => discard
       )
     })
 
@@ -443,20 +493,71 @@ export type Relocation =
   | { readonly _tag: "Relocated"; readonly input: Schema.Json }
   | { readonly _tag: "UnsupportedFlow" }
   | { readonly _tag: "AbsolutePath"; readonly path: string }
+  | { readonly _tag: "OutsideTree"; readonly path: string }
+
+/**
+ * Resolves `.` and `..` inside a relative path, or answers `undefined` when the
+ * path climbs out of whatever it would be joined under.
+ *
+ * This is the whole of the isolation the reader rule can enforce, and it is not
+ * optional. Prefixing blindly turns `../../mod.py` into
+ * `.flows-checkpoints/cp-1-0/../../mod.py`, which is a path back into the live
+ * tree — so the cell would read the work it is trying to take a baseline
+ * against, the journal would record that reading under the checkpoint it named,
+ * and the call key folds the checkpoint in, so the live reading would replay as
+ * a pinned one forever. A proof built on it is a proof of nothing, which is the
+ * exact failure this module exists to abolish.
+ */
+const contained = (path: string): string | undefined => {
+  const parts: Array<string> = []
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue
+    if (segment !== "..") {
+      parts.push(segment)
+      continue
+    }
+    if (parts.length === 0) return undefined
+    parts.pop()
+  }
+  return parts.join("/")
+}
+
+/**
+ * The part of `declared` that names a place inside `root`, or `undefined` when
+ * it names somewhere the checkpoint does not hold a copy of.
+ *
+ * A relative path is already workspace-relative. An absolute one is compared
+ * against the root on the side that issued it — a container call names the
+ * mount, a host call names this machine — because that is the only prefix the
+ * store can strip without guessing.
+ */
+const within = (root: string, declared: string): string | undefined => {
+  if (!declared.startsWith("/")) return contained(declared)
+  if (trimmed(declared) === root) return ""
+  return declared.startsWith(`${root}/`) ? contained(declared.slice(root.length + 1)) : undefined
+}
 
 /**
  * Rewrites one call's input so the call runs against a materialized checkpoint.
  *
- * Returns the rewritten input, or the reason there is none. A `bash` call takes
- * the checkpoint's directory as its working directory, from the *guest* side
- * when it names a container, because that is the path the container will be
- * given. A reader takes the checkpoint's workspace-relative directory as the
- * prefix of what it names, because these flows resolve their subject against
- * the workspace root and the checkpoint is a directory under it.
+ * Returns the rewritten input, or the reason there is none. A `bash` call runs
+ * in the checkpoint's directory — from the *guest* side when it names a
+ * container, because that is the path the container will be given — and keeps
+ * whatever subdirectory it asked for: a check declared in `tests/` runs in the
+ * checkpoint's `tests/`. A working directory the checkpoint holds no copy of,
+ * such as somewhere else on the machine, becomes the checkpoint's own top,
+ * because a tree is all this can offer and there is no subpath in it to keep.
  *
- * An absolute path is refused rather than rebased: in these runs an absolute
- * path is a container path, and the host cannot know which prefix of it names
- * the tree.
+ * A reader takes the checkpoint's workspace-relative directory as the prefix of
+ * what it names, because these flows resolve their subject against the
+ * workspace root and the checkpoint is a directory under it.
+ *
+ * Two paths are refused rather than rewritten, and both for the same reason —
+ * the host would otherwise hand back a reading of a tree the cell did not name.
+ * An absolute path in these runs is a container path, and the host cannot know
+ * which prefix of it names the tree. A relative path that climbs past the
+ * checkpoint with `..` names the live tree, exactly the tree the reading was
+ * taken to avoid.
  *
  * @category conversions
  * @since 0.1.0
@@ -477,13 +578,20 @@ export const relocate = (
     // call is given the host's. `bash` chooses which by naming a container, so
     // this reads the same field it does.
     const containerised = typeof record["container"] === "string" && record["container"] !== ""
-    return { _tag: "Relocated", input: { ...record, cwd: containerised ? materialized.guest : materialized.host } }
+    const base = containerised ? materialized.guest : materialized.host
+    const kept = typeof declared === "string" && declared !== ""
+      ? within(containerised ? materialized.guestRoot : materialized.root, declared)
+      : ""
+    return {
+      _tag: "Relocated",
+      input: { ...record, cwd: kept === undefined || kept === "" ? base : `${base}/${kept}` }
+    }
   }
   const relative = `${scratchDirectory}/${materialized.id}`
-  if (declared === undefined || declared === "" || declared === ".") {
-    return { _tag: "Relocated", input: { ...record, [rule.field]: relative } }
-  }
+  if (declared === undefined) return { _tag: "Relocated", input: { ...record, [rule.field]: relative } }
   if (typeof declared !== "string") return { _tag: "UnsupportedFlow" }
   if (declared.startsWith("/")) return { _tag: "AbsolutePath", path: declared }
-  return { _tag: "Relocated", input: { ...record, [rule.field]: `${relative}/${trimmed(declared)}` } }
+  const kept = contained(declared)
+  if (kept === undefined) return { _tag: "OutsideTree", path: declared }
+  return { _tag: "Relocated", input: { ...record, [rule.field]: kept === "" ? relative : `${relative}/${kept}` } }
 }
