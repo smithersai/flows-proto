@@ -71,6 +71,7 @@ import * as ModelRequest from "@smthrs/model/ModelRequest"
 import * as Route from "@smthrs/model/Route"
 import * as PersistedPlan from "@smthrs/plan/Plan"
 import * as StepKey from "@smthrs/plan/StepKey"
+import * as Checkpoints from "@smthrs/std/Checkpoints"
 import { Context, Crypto, Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import * as WorkspaceObservation from "./WorkspaceObservation.ts"
 import type * as WorkspaceSandbox from "./WorkspaceSandbox.ts"
@@ -230,6 +231,14 @@ export const callMaterial = (
     flowName: call.flowName,
     declaration: call.identity.declaration,
     input: call.input,
+    // The tree the call reads. A sealed call is content-addressed on what it
+    // asked, and "the same command against the tree this run opened on" is a
+    // different question from "the same command against the tree as it stands"
+    // — so without this the second of the two would replay the first's answer,
+    // which is precisely the reading the fails-before proof depends on. Absent
+    // spreads to nothing, so every key that existed before checkpoints is
+    // byte-identical.
+    ...(call.at === undefined ? {} : { at: call.at }),
     ...(Option.isSome(call.placement) ? { placement: call.placement.value } : {}),
     ...(call.effects.tier === "sealed" ? {} : {
       session: call.identity.session,
@@ -999,6 +1008,8 @@ const callKey = (
         declaration: call.identity.declaration,
         input: call.input,
         effects: call.effects,
+        // See `callMaterial`: the tree a call reads is part of what it asked.
+        ...(call.at === undefined ? {} : { at: call.at }),
         ...(Option.isSome(call.placement) ? { placement: call.placement.value } : {}),
         ...(call.effects.tier === "sealed" ? {} : {
           session: call.identity.session,
@@ -1229,12 +1240,42 @@ export const make = (
       onSome: (service) => Effect.asSome(service.observe)
     })
 
+    // Resolved once for the same reason the observer is: a composition either
+    // equips its runs with somewhere to pin a tree or it does not, and the
+    // controller reads the absence as a catchable refusal the cell can route
+    // around rather than as a failed run.
+    const store = yield* Effect.serviceOption(Checkpoints.Checkpoints)
+    const capture = Option.match(store, {
+      onNone: () =>
+      (
+        _request: EngineLike.CaptureRequest
+      ): Effect.Effect<Option.Option<EngineLike.Snapshot>, HarnessError.HarnessError> => Effect.succeed(Option.none()),
+      onSome: (checkpoints) => (request: EngineLike.CaptureRequest) =>
+        checkpoints.capture(request.id).pipe(
+          Effect.map((snapshot) => Option.some(new EngineLike.Snapshot({ id: snapshot.id, ref: snapshot.ref }))),
+          // A store that failed is reported to the cell as "nothing was
+          // pinned", because that is what happened and the cell can act on it.
+          // The reason the store gave is not thrown away: it is logged, so a
+          // run whose checkpoints never work says why in its own log rather
+          // than only in the shape of what it stopped doing.
+          Effect.catchCause((cause) =>
+            Effect.as(
+              Effect.annotateLogs(Effect.logWarning("A checkpoint could not be pinned", cause), {
+                checkpoint: request.id
+              }),
+              Option.none<EngineLike.Snapshot>()
+            )
+          )
+        )
+    })
+
     return EngineLike.make({
       sealStep,
       splice,
       call,
       record,
       observe,
+      capture,
       suspend: (reason) =>
         Effect.andThen(
           Effect.annotateLogs(Effect.logDebug("Harness parked the engine frame"), {

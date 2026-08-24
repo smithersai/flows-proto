@@ -47,6 +47,7 @@ import type * as Descriptor from "@smthrs/registry/Descriptor"
 import * as Discovery from "@smthrs/registry/Discovery"
 import * as Registry from "@smthrs/registry/Registry"
 import { Migrations as RunStoreMigrations, RunStore } from "@smthrs/run-store"
+import * as Checkpoints from "@smthrs/std/Checkpoints"
 import * as Container from "@smthrs/std/Container"
 import * as NativeSearch from "@smthrs/std/NativeSearch"
 import * as TestRunner from "@smthrs/std/TestRunner"
@@ -532,6 +533,28 @@ export const cellMode = (
  * @since 0.1.0
  * @slop
  */
+/**
+ * Where this host pins the trees a run checkpoints, and where a container sees
+ * them.
+ *
+ * The same two paths the test runner reads, for the same reason: a checkpoint
+ * is materialized as a directory under the repository, and a container reaches
+ * that directory through the mount it already has. `FLOWS_TEST_CWD` is the
+ * container's name for the repository when there is one, and the workspace root
+ * is the host's — so a host that declares neither still pins, and pins on one
+ * path under both names.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const checkpointStore = (
+  environment: Readonly<Record<string, string | undefined>>,
+  root: string
+): Checkpoints.GitOptions => {
+  const cwd = environment["FLOWS_TEST_CWD"]?.trim()
+  return { root, ...(cwd === undefined || cwd === "" ? {} : { cwd }) }
+}
+
 export const testRunner = (
   environment: Readonly<Record<string, string | undefined>>,
   root: string
@@ -722,6 +745,12 @@ export const layerExecutor = (
       // platform rather than on `platform`, for the reasons `layerObserver`
       // states.
       layerObserver(root),
+      // Where a run's checkpoints live. Without it `ctx.checkpoint()` and
+      // `ctx.base` answer `checkpoint_unavailable` — honestly, and the run
+      // takes its readings on the live tree — so this is the difference
+      // between a run that can prove fails-before without reverting its own
+      // work and one that cannot.
+      Checkpoints.layerGit(checkpointStore(environment, root)),
       layerSeatResolver(environment).pipe(Layer.provide(dispatcher))
     ])
   )

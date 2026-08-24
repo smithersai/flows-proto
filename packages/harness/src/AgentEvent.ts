@@ -638,6 +638,32 @@ export class MutationObserved extends Schema.TaggedClass<MutationObserved>(
 }) {}
 
 /**
+ * One tree this run pinned, and the store's own name for it.
+ *
+ * Journaled at the mint rather than only at its use, because the two are
+ * frames apart by design: a run pins the tree it is about to change and reads
+ * against it later, and a journal that recorded only the reading could not say
+ * which tree it was a reading of. `ref` is the host's vocabulary and the
+ * controller never interprets it; a grader reconciles it against the store by
+ * hand. See `EngineLike` `Snapshot`.
+ *
+ * @category events
+ * @since 0.1.0
+ */
+export class CheckpointMinted extends Schema.TaggedClass<CheckpointMinted>(
+  "flows/harness/AgentEvent/CheckpointMinted"
+)("checkpoint-minted", {
+  eventType: Schema.Literal("flows.harness.checkpoint-minted.v1"),
+  /** The handle the cell holds, and what a later call names in its `at`. */
+  id: Schema.String,
+  /** What the host recorded, in the host's own vocabulary. */
+  ref: Schema.String,
+  /** The cell that minted it, and where in that cell. */
+  cell: Schema.String,
+  ordinal: Schema.Int
+}) {}
+
+/**
  * The durable reason a cell execution parked.
  *
  * @category events
@@ -758,6 +784,7 @@ export const AgentEvent = Schema.Union([
   CellSettled,
   TransitionApplied,
   MutationObserved,
+  CheckpointMinted,
   ReadOnlyDemanded,
   RepeatDemanded,
   NarrowedDemanded,

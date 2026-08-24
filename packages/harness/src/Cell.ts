@@ -539,6 +539,10 @@ export const CallFailureCode = Schema.Literals([
   "unimplemented",
   "timeout",
   "run_completed",
+  "checkpoint_unavailable",
+  "checkpoint_exhausted",
+  "checkpoint_readonly",
+  "checkpoint_unsupported",
   "flow_failed"
 ])
 
@@ -580,6 +584,13 @@ export const callFailureHint: Readonly<Record<CallFailureCode, string>> = Object
   invalid_input: "Fix the input against the flow's declared schema in ctx.flows and call it again in this cell.",
   unimplemented: "This host cannot run that flow. Choose another one from ctx.flows.",
   timeout: "Narrow the call — a smaller root, a tighter pattern, a shorter command — and issue it again in this cell.",
+  checkpoint_unavailable:
+    "This host pins no checkpoint you can run against. Drop at and take the reading on the live tree.",
+  checkpoint_exhausted: "Reuse a checkpoint you already hold, or ctx.base, instead of minting another one.",
+  checkpoint_readonly:
+    "A checkpoint is a read-only view of a tree that has already been. Drop at and make the change on the live tree.",
+  checkpoint_unsupported:
+    "This flow names what it touches rather than where it runs, so it cannot be pointed at a checkpoint. Drop at, or run the same work through a shell flow, which takes a working directory.",
   run_completed:
     "The run is over, so nothing after this line runs. If that was early, guard the ctx.done or ctx.park on the check that decides it.",
   flow_failed: "Read error.message: the flow itself says what went wrong, and it is usually fixable in this same cell."
@@ -645,8 +656,69 @@ export class Call extends Schema.Class<Call>("flows/harness/Cell/Call")({
   capabilities: Schema.Array(Schema.String),
   effects: Descriptor.EffectDeclaration,
   placement: Schema.Option(Descriptor.Placement),
-  identity: CallIdentity
+  identity: CallIdentity,
+  /**
+   * The checkpoint this call runs against, when the cell named one.
+   *
+   * Absent is the ordinary case and means the live workspace. Present names a
+   * tree the run already pinned, and the host materializes that tree somewhere
+   * of its own choosing and runs the call there. It is journaled on the call
+   * because it is the difference between a reading of the tree as it is and a
+   * reading of the tree as it was, and a grader that cannot tell those apart
+   * cannot grade a fails-before proof at all.
+   */
+  at: Schema.optional(Schema.String)
 }) {}
+
+/**
+ * The id naming the tree a run opened on, pinned for free and always present.
+ *
+ * The dominant use of a checkpoint is a fails-before proof, and the frame that
+ * wants one is almost never the frame that could have foreseen it: by the time
+ * a run knows which command reproduces the bug it has usually already edited.
+ * So this id exists without anybody minting it. A host resolves it to whatever
+ * it recorded as the run's opening tree — for the SWE-bench rig, the
+ * `refs/flows/capture-base` commit its own setup wrote — and a host with no
+ * such record answers `checkpoint_unavailable` like any other.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const baseCheckpoint = "base"
+
+/**
+ * The wire shape of the value `ctx.checkpoint()` resolves with.
+ *
+ * A handle is an opaque record rather than a bare string so a cell cannot pass
+ * an arbitrary string as `at` by accident, and so a future host can carry more
+ * beside the id without changing what a cell writes.
+ */
+const Handle = Schema.Struct({ checkpoint: Schema.NonEmptyString })
+
+/**
+ * Builds the handle a cell holds for one checkpoint.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const checkpoint = (id: string): Schema.Json => ({ checkpoint: id })
+
+/**
+ * Reads the checkpoint id out of whatever a cell passed as `at`.
+ *
+ * `undefined` means "that was not a checkpoint", which the boundary answers as
+ * an ordinary `invalid_input` failure rather than by guessing. It is
+ * deliberately strict: a handle is the only thing that names a tree, and a
+ * string that happens to look like an id would let a cell address a snapshot
+ * the run never took.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const checkpointOf = (value: Schema.Json): string | undefined => {
+  const decoded = Schema.decodeUnknownResult(Handle)(value)
+  return decoded._tag === "Success" ? decoded.success.checkpoint : undefined
+}
 
 /**
  * The settled outcome of one flow call.

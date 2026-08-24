@@ -99,24 +99,69 @@ const preludeHelpers = `${preludeIntrinsics}
     }
     visit(input)
     return stringify(input)
+  }
+  var settleEnvelope = function (settled) {
+    // A failed call RESOLVES with the failure envelope; only teardown throws.
+    // See Cell.callFailure for why.
+    if (settled.ok) return settled.value
+    if (settled.aborted) throw new Error(settled.failure.error.message)
+    return settled.failure
+  }
+  var dispatch = function (flow, input, at) { return bridge(flow, input, at).then(settleEnvelope) }
+  // The at option is whatever the cell wrote, so it is encoded defensively
+  // rather than strictly: a value JSON cannot hold travels as null and the
+  // boundary answers it as an ordinary invalid_input, instead of throwing out
+  // of a cell that has already paid for the calls before this line.
+  var encodeAt = function (value) {
+    try { return encode("ctx.call at", value === undefined ? null : value) } catch (error) { return "null" }
   }`
 
 /**
- * The `ctx.call` member. `guard` is the one line the REPL mode adds: nothing in
- * the filing mode can end a run part-way through a cell, because there the run
- * ends by returning.
+ * The handle `ctx.base` is bound to, rendered into both preludes as data.
+ *
+ * It is a constant rather than something the host mints, because the run's
+ * opening tree is not a thing anybody has to decide to keep: the host either
+ * recorded one or it did not, and a call against this id says which by
+ * succeeding or by answering `checkpoint_unavailable`.
+ */
+const baseHandle = Cell.checkpoint(Cell.baseCheckpoint)
+
+/**
+ * The name a queued mint carries, so an overrun reads as what it was.
+ *
+ * Nothing resolves it: a checkpoint is not a flow, it is not in the catalog,
+ * and no capability gates it. See `Sandbox` `Minter`.
+ */
+const checkpointFlow = "checkpoint"
+
+/** Reads the `at` the realm encoded; the empty string is "the cell passed none". */
+const decodedAt = (encoded: string): Schema.Json | undefined =>
+  encoded === "" ? undefined : Schema.decodeUnknownSync(Schema.Json)(JSON.parse(encoded))
+
+/**
+ * The `ctx.call`, `ctx.checkpoint` and `ctx.base` members. `guard` is the one
+ * line the REPL mode adds: nothing in the filing mode can end a run part-way
+ * through a cell, because there the run ends by returning.
  */
 const preludeCall = (guard: string): string =>
-  `    call: function (flow, input) {
+  `    call: function (flow, input, options) {
       if (typeof flow !== "string") return Deferred.reject(new Fault("ctx.call expects a flow name as its first argument"))
-${guard}      return bridge(flow, encode("ctx.call input", input === undefined ? null : input)).then(function (settled) {
-        // A failed call RESOLVES with the failure envelope; only teardown
-        // throws. See Cell.callFailure for why.
-        if (settled.ok) return settled.value
-        if (settled.aborted) throw new Error(settled.failure.error.message)
-        return settled.failure
-      })
-    },`
+${guard}      var encoded = encode("ctx.call input", input === undefined ? null : input)
+      var at = options === null || typeof options !== "object" ? undefined : options.at
+      if (at === undefined) return dispatch(flow, encoded, "")
+      // A handle the cell never awaited is a promise, and that spelling is the
+      // one the ruling wrote: \`const cp = ctx.checkpoint()\`. The pin lands where
+      // that line is, because the queue settles in issue order, so awaiting the
+      // handle later cannot move the tree it names. Both spellings are accepted.
+      if (at !== null && typeof at === "object" && typeof at.then === "function") {
+        return at.then(function (resolved) { return dispatch(flow, encoded, encodeAt(resolved)) })
+      }
+      return dispatch(flow, encoded, encodeAt(at))
+    },
+    checkpoint: function () {
+${guard}      return pin().then(settleEnvelope)
+    },
+    base: freeze(parse(${JSON.stringify(JSON.stringify(baseHandle))})),`
 
 /**
  * What a `ctx.call` issued after `ctx.done` or `ctx.park` resolves with.
@@ -142,8 +187,10 @@ const sealedCall = Cell.callFailure(
 const prelude = (catalog: string, state: string): string =>
   `(function () {
   var bridge = globalThis.__call
+  var pin = globalThis.__checkpoint
 ${preludeHelpers}
   delete globalThis.__call
+  delete globalThis.__checkpoint
   delete globalThis.Date
   delete Math.random
   globalThis.ctx = freezeValue({
@@ -183,10 +230,12 @@ ${preludeCall("")}
 const replPrelude = (catalog: string): string =>
   `(function () {
   var bridge = globalThis.__call
+  var pin = globalThis.__checkpoint
   var print = globalThis.__print
   var intent = globalThis.__intent
 ${preludeHelpers}
   delete globalThis.__call
+  delete globalThis.__checkpoint
   delete globalThis.__print
   delete globalThis.__intent
   delete globalThis.Date
@@ -488,9 +537,17 @@ const evaluate = (
     let ordinal = 0
     let settled: Cell.Outcome | undefined
 
-    const bridge = context.newFunction("__call", (flowHandle, inputHandle) => {
-      const flow = context.getString(flowHandle)
-      const encoded = context.getString(inputHandle)
+    const bind = (name: string, implementation: Parameters<QuickJSContext["newFunction"]>[1]): void => {
+      const handle = context.newFunction(name, implementation)
+      context.setProp(context.global, name, handle)
+      handle.dispose()
+    }
+    const queue = (
+      kind: "call" | "checkpoint",
+      flow: string,
+      input: Schema.Json,
+      at: Schema.Json | undefined
+    ): QuickJSHandle => {
       const deferred = context.newPromise()
       const reply = (payload: Schema.Json): void => {
         const handle = handleFromJson(context, defineDataProperty, payload)
@@ -504,7 +561,9 @@ const evaluate = (
       pending.push({
         ordinal: ordinal++,
         flow,
-        input: Schema.decodeUnknownSync(Schema.Json)(JSON.parse(encoded)),
+        input,
+        kind,
+        ...(at === undefined ? {} : { at }),
         settle: (result) =>
           reply(
             result.outcome === "success"
@@ -519,9 +578,15 @@ const evaluate = (
           })
       })
       return deferred.handle
-    })
-    context.setProp(context.global, "__call", bridge)
-    bridge.dispose()
+    }
+    bind("__call", (flowHandle, inputHandle, atHandle) =>
+      queue(
+        "call",
+        context.getString(flowHandle),
+        Schema.decodeUnknownSync(Schema.Json)(JSON.parse(context.getString(inputHandle))),
+        decodedAt(context.getString(atHandle))
+      ))
+    bind("__checkpoint", () => queue("checkpoint", checkpointFlow, null, undefined))
 
     const install = context.evalCode(
       // The state rides as a doubly-encoded JSON string literal so hostile
@@ -590,6 +655,7 @@ const evaluate = (
 
     return yield* Sandbox.driveCell({
       pending,
+      ...(evaluation.mint === undefined ? {} : { mint: evaluation.mint }),
       flush: () => poll(),
       finished: () => {
         poll()
@@ -980,9 +1046,12 @@ const openRealm = (
       handle.dispose()
     }
 
-    install("__call", (flowHandle, inputHandle) => {
-      const flow = context.getString(flowHandle)
-      const encoded = context.getString(inputHandle)
+    const queue = (
+      kind: "call" | "checkpoint",
+      flow: string,
+      input: Schema.Json,
+      at: Schema.Json | undefined
+    ): QuickJSHandle => {
       const deferred = context.newPromise()
       const reply = (payload: Schema.Json): void => {
         const handle = handleFromJson(context, defineDataProperty, payload)
@@ -996,7 +1065,9 @@ const openRealm = (
       pending.push({
         ordinal: ordinal++,
         flow,
-        input: Schema.decodeUnknownSync(Schema.Json)(JSON.parse(encoded)),
+        input,
+        kind,
+        ...(at === undefined ? {} : { at }),
         settle: (result) =>
           reply(
             result.outcome === "success"
@@ -1011,7 +1082,15 @@ const openRealm = (
           })
       })
       return deferred.handle
-    })
+    }
+    install("__call", (flowHandle, inputHandle, atHandle) =>
+      queue(
+        "call",
+        context.getString(flowHandle),
+        Schema.decodeUnknownSync(Schema.Json)(JSON.parse(context.getString(inputHandle))),
+        decodedAt(context.getString(atHandle))
+      ))
+    install("__checkpoint", () => queue("checkpoint", checkpointFlow, null, undefined))
     install("__print", (partsHandle) => {
       // What the model reads is bounded at frame close; what the host holds
       // while the cell is still running is bounded here, and it has to be a
@@ -1177,6 +1256,7 @@ const openRealm = (
 
         const outcome = yield* Sandbox.driveCell({
           pending,
+          ...(evaluation.mint === undefined ? {} : { mint: evaluation.mint }),
           flush: () => poll(),
           finished: () => {
             poll()

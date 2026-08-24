@@ -210,37 +210,45 @@ describe("cellPrompt", () => {
     expect(contract).toContain("undefined-name")
   })
 
-  it("makes the pre-edit baseline conditional on what it buys, never a precondition for writing", () => {
+  it("never makes the baseline a precondition for writing, and no longer has to relieve one", () => {
     // r91 shipped rule 8's unconditional form — "before the first write, run
     // the one targeted command that reproduces the report" — and five of the
     // 45 instances then spent a whole 1,200 s budget issuing zero mutation
     // calls, holding a correct diagnosis they were not allowed to act on. All
-    // five were resolved by the r90 baseline. `PROGRAM.md` §5.5 had already
-    // adopted the conditional version: a failing baseline is kept whenever it
-    // gates a same-cell complete and dropped otherwise. This is that version.
+    // five were resolved by the r90 baseline, whose conditional wording relieved
+    // the ordering with a sentence.
+    //
+    // Checkpoints relieve it with a mechanism instead (will, 2026-08-24): the
+    // baseline is taken *after* the edit, against `ctx.base`, so there is no
+    // ordering left to be conditional about. The escape clause went with it,
+    // because a sentence offering relief from a constraint the contract no
+    // longer imposes teaches a shape that is not the shape.
     const contract = contractText()
-    expect(contract).toContain("A baseline you have watched fail is what buys that")
-    expect(contract).toContain("hold one and this same cell may complete")
-    expect(contract).toContain("edit on the diagnosis you have and establish the proof afterwards")
+    expect(contract).toContain("A baseline you have watched fail is what buys a same-cell completion")
+    expect(contract).toContain("{ at: ctx.base }")
     // The unconditional demand is the thing that must not come back.
     expect(contract).not.toContain("Before the first write")
-    // And the relaxation says so in the words that mean it. "Not a licence to
-    // write" reads as "holding a baseline does not entitle you to write", which
-    // is a tighter rule than the one being replaced, not a looser one.
-    expect(contract).toContain("It is not a precondition for writing")
+    expect(contract).not.toContain("It is not a precondition for writing")
+    expect(contract).not.toContain("when the command will not bootstrap")
     expect(contract).not.toContain("licence")
   })
 
-  it("states one exception, and not the one that cannot be completed", () => {
-    // Rule 8 still ends at r90's demand — complete only once you have SEEN the
-    // identical command pass. An exception for "nothing in this tree can fail
-    // before your change and pass after it" names a case in which no such
-    // command exists, so a run that reads itself into that case can edit and
-    // then never complete: the budget-exhaustion spiral again, one sentence
-    // further down. The escape r91 paired it with (name the observable in
-    // `output` instead) is change #2 doctrine and was reverted with the rest.
+  it("states plainly that a run never reverts its own work to re-prove a baseline", () => {
+    // The failure this surface exists to kill, named in the teaching that
+    // replaces it. `sympy__sympy-13878` in the r95repl lane applied one
+    // byte-identical 4,789-character patch five times, four of those preceded by
+    // `git checkout -- sympy/stats/crv_types.py`, because a clean fails-before
+    // proof required reverting the work it was proving.
+    const repl = CellPrompt.make({}, {}, "repl").find((section) => section.id === "cell-contract")?.text ?? ""
+    for (const contract of [contractText(), repl]) {
+      expect(contract).toContain("NEVER undo your own edit to re-prove a baseline")
+      expect(contract).toContain("ctx.checkpoint()")
+      expect(contract).toContain("a checkpoint is read-only, so a flow that writes is refused at one")
+    }
+  })
+
+  it("still ends rule 8 at r90's demand", () => {
     const contract = contractText()
-    expect(contract).toContain("when the command will not bootstrap, edit on the diagnosis you have")
     expect(contract).not.toContain("nothing in this tree can fail before your change and pass after it")
     expect(contract).toContain("Complete only once you have SEEN that identical command pass")
   })
@@ -383,18 +391,28 @@ describe("cellPrompt", () => {
     // A one-line guard on the search's own failure envelope, so the fail-soft
     // rule is shown and not only stated.
     expect(contract).toContain("const hit = found.ok === false ? undefined : found.matches[0]")
-    expect(contract).toContain("const before = await ctx.call(check.flow, check.input)")
     // The anchor is a literal line a call returned, never in-cell surgery over
     // bytes the model has not seen.
     expect(contract).toContain("const anchor = hit.text")
     expect(contract).toContain(`const applied = await ctx.call("edit", { path: hit.file, oldString: anchor`)
     expect(contract).toContain("if (applied.ok === false) return {")
-    // Two independent readings in the one frame — the replayed check says the
-    // behaviour moved, the returned hunk says what moved — then the exit.
+    // The baseline comes after the edit and reads the tree the run opened on.
+    // That order is the ruling of 2026-08-24, and the example is where a model
+    // reads it: the frame proves fails-before without ever giving the edit back.
+    expect(contract).toContain("const before = await ctx.call(check.flow, check.input, { at: ctx.base })")
+    expect(contract.indexOf(`ctx.call("edit"`)).toBeLessThan(contract.indexOf("const before ="))
+    // Two independent readings in the one frame — the identical check on the
+    // changed tree says the behaviour moved, the returned hunk says what moved
+    // — then the exit.
     expect(contract).toContain("const after = await ctx.call(check.flow, check.input)")
     expect(contract).toContain("the applied hunk is:")
     expect(contract).toContain(`intent: "complete", state: { verification: check }`)
-    expect(contract).toContain("One frame: search, read, reproduce, edit, re-check, answer.")
+    expect(contract).toContain("One frame: search, read, edit, baseline at ctx.base, re-check, answer.")
+    // And the worked example never shows a run undoing its own work. Rule 3
+    // still names `git checkout` for the one case it is for — restoring a file
+    // somebody wrote a truncated capture over — which is not this.
+    const shown = [...contract.matchAll(/```cell\n([\s\S]*?)```/g)].map((match) => match[1]!).join("\n")
+    expect(shown).not.toMatch(/git (checkout|restore|stash|reset)/)
   })
 
   it("states the epoch fact with no environment supplied at all", () => {
@@ -498,9 +516,15 @@ describe("cellPrompt", () => {
     // instead, 9,715 characters, and lost three verdicts and $9.47 for the
     // difference. Changing the contract means changing this line, and
     // changing this line means a wave has to be run for it.
-    expect(contractText()).toHaveLength(9_193)
+    // It moved on 2026-08-24, on will's checkpoint ruling: the worked example
+    // now edits first and takes its baseline against `ctx.base` afterwards, and
+    // rule 8 names the surface that makes that possible. Net +162 characters,
+    // because the clause the checkpoint made meaningless — "when the command
+    // will not bootstrap, edit on the diagnosis you have" — came out with it.
+    // Moving these two numbers still means a wave has to be run for them.
+    expect(contractText()).toHaveLength(9_355)
     expect(Digest.digest(contractText()))
-      .toBe("25a1c933ad18e979fe4282848edee5987b61783f939ac72ff45fee2b6655e8c5")
+      .toBe("56e5a8e64a18b4d5d52d70ecc2ffa94a2ade6f808b1fde4d81d05e00c99cd6e6")
   })
 })
 
@@ -520,9 +544,11 @@ describe("the repl contract", () => {
     // after `sympy__sympy-13878` claimed in `output` that a suite exited 0 one
     // frame after its own guarded `ctx.done` had declined to fire because that
     // suite exited 1. Moving these two numbers means a wave has to be run.
-    expect(replText()).toHaveLength(8_312)
+    // It moved again on 2026-08-24, 8,312 → 8,517, on will's checkpoint ruling,
+    // for the same reason and by the same edit as the filing text.
+    expect(replText()).toHaveLength(8_517)
     expect(Digest.digest(replText()))
-      .toBe("7272668fa108fd06549308cbaab435c13debcee0f544d5ba583108a7809ec0a4")
+      .toBe("70d5375b63f722d12bcad4698b892e2e5041ded5a94ad269f8958ea640c4855e")
     expect(replText().length).toBeLessThan(contractText().length)
   })
 
@@ -546,9 +572,14 @@ describe("the repl contract", () => {
     // One cell, in order: the probe that must fail, the edit, the identical
     // probe replayed, and the completion behind a check of both exit codes.
     const fix = blocks[1]!
-    expect(fix.indexOf("const before")).toBeLessThan(fix.indexOf(`ctx.call("edit"`))
-    expect(fix.indexOf(`ctx.call("edit"`)).toBeLessThan(fix.indexOf("const after"))
+    // The order is the ruling. The edit lands first and the baseline is taken
+    // after it against `ctx.base`, because a checkpoint is a tree the run keeps
+    // rather than a tree the run goes back to — which is what stops a proof
+    // from costing the work it is proving.
+    expect(fix.indexOf(`ctx.call("edit"`)).toBeLessThan(fix.indexOf("const before"))
+    expect(fix.indexOf("const before")).toBeLessThan(fix.indexOf("const after"))
     expect(fix.indexOf("const after")).toBeLessThan(fix.indexOf("ctx.done("))
+    expect(fix).toContain("{ at: ctx.base }")
     expect(fix).toContain("if (before.exitCode !== 0 && after.exitCode === 0) ctx.done(")
   })
 

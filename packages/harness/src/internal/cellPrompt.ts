@@ -28,12 +28,25 @@
  * That conditional form is two clauses in two rules and nothing else: rule 8
  * offers a baseline as what buys a same-cell complete rather than demanding one
  * before the first write, and rule 6 asks for a repaired probe before you *rely*
- * on it rather than before you edit anything. Both are the same relaxation, and
- * the exception rule 8 states is one — a command that will not bootstrap. It
- * deliberately does not name the case where nothing in the tree can flip,
- * because completing still asks to have seen the identical command pass, and a
- * case that is named but cannot be completed is the demand this revert removes
- * wearing a different sentence.
+ * on it rather than before you edit anything. Both are the same relaxation.
+ *
+ * The exception rule 8 used to state — "when the command will not bootstrap,
+ * edit on the diagnosis you have and establish the proof afterwards" — is gone,
+ * and it is gone because the thing it was managing no longer exists. It existed
+ * to relieve an *ordering*: a baseline had to be taken before the edit, so a
+ * baseline that could not be taken yet blocked the edit. Checkpoints remove the
+ * ordering outright (will, 2026-08-24). The baseline is now taken after the
+ * edit, against `ctx.base`, so there is nothing left to make conditional and a
+ * sentence offering relief from a constraint the contract no longer imposes is
+ * teaching a shape that is not the shape.
+ *
+ * The same ruling is why the worked examples put the edit first and the
+ * baseline second. That ordering is the whole of the failure it kills: on
+ * `sympy__sympy-13878` the r95repl lane applied one byte-identical
+ * 4,789-character patch five times, four of those applications preceded by
+ * `git checkout -- sympy/stats/crv_types.py`, because a clean fails-before
+ * proof required reverting the very work it was meant to prove. Models imitate
+ * the example, and the example now shows a run that never gives its work back.
  *
  * The environment facts a host can compute (change 9) stay in full: they cost
  * the agent nothing to read and removed a whole class of archaeology.
@@ -99,17 +112,17 @@ const hit = found.ok === false ? undefined : found.matches[0]                  /
 if (hit === undefined) return { intent: "continue", state: { ...ctx.state, found }, render: ["found"], context: [{ role: "user", text: "No hit for the reported line." }] }
 const region = await ctx.call("read", { path: hit.file, offset: Math.max(1, hit.line - 20), limit: 40 })
 const check = { flow: "bash", input: { command: "run-tests tests/test_widen.py::test_keeps_unit" } }
-const before = await ctx.call(check.flow, check.input)         // must fail, and for the right reason
 const anchor = hit.text                                        // a line a call returned, copied whole, never typed from memory
 const applied = await ctx.call("edit", { path: hit.file, oldString: anchor, newString: anchor.replace("return value", "return widen(value)") })
 if (applied.ok === false) return { intent: "continue", state: { ...ctx.state, applied, region }, render: ["applied"], context: [{ role: "user", text: applied.error.message }] }
-const after = await ctx.call(check.flow, check.input)          // the identical command, replayed
+const before = await ctx.call(check.flow, check.input, { at: ctx.base })   // the tree this run opened on; your edit is untouched
+const after = await ctx.call(check.flow, check.input)          // the identical command, on the tree you changed
 return before.exitCode !== 0 && after.exitCode === 0
   ? { intent: "complete", state: { verification: check }, output: check.input.command + " failed before the edit and exits 0 after it; the applied hunk is:\\n" + applied.hunk, reason: "verified" }
   : { intent: "continue", state: { ...ctx.state, verification: check, after, applied }, render: ["after", "applied"], context: [{ role: "user", text: "Edit applied; the check still fails." }] }
 \`\`\`
 
-One frame: search, read, reproduce, edit, re-check, answer. The same work at one call per frame costs six model turns and learns nothing extra.
+One frame: search, read, edit, baseline at ctx.base, re-check, answer. The same work at one call per frame costs six model turns and learns nothing extra.
 
 The block is the body of an async function. Rules:
 
@@ -123,7 +136,7 @@ The block is the body of an async function. Rules:
 5. Your cell is re-executed from the top after a crash or a resume. Calls that already settled return their recorded results without running again, so keep cells deterministic: no wall-clock branching, no randomness, no hidden state outside \`state\`.
 6. The \`state\` you return is the next cell's \`ctx.state\`. Treat it as working memory: store what you learn — file excerpts you plan to edit, check output, decisions — and read it back instead of re-running calls. Every frame opens with a manifest of it — each key's type, size and the frame that wrote it, so you can tell a reading taken before your edit from one taken after — plus the whole JSON while it is small, plus in full whatever keys your last transition named in \`render\`. Every call this run has settled is listed for you as well, with what it asked, what came back, and a \`recall N\` marker while its bytes are still held. Read those instead of re-asking. Nothing is ever cut silently: where bytes are dropped the line says how many and how to get them back. A command becomes evidence only once you have SEEN it fail on the unmodified tree FOR THE RIGHT REASON, which is the bug itself. A command that fails because it names a test, file, module, environment, or program that does not exist reproduces nothing: it fails identically on a broken tree and on a fixed one, so it can never show you that you have won. Results carry \`invalidProbe\` when the flow can tell, but the reading is yours — repair such a probe, by listing the real names first, before you rely on it. Only a check that failed for the right reason is stored as \`verification: { flow, input, outcome }\`, and you then reuse its exact \`flow\` and \`input\` after edits rather than deriving or broadening another command.
 7. Act, then verify: read broadly in ONE cell, store findings in \`state\`, then commit to an edit. A run may be stopped for spending too many consecutive frames that write nothing, and when that budget is close the harness says so and requires either an edit or a \`justification\` on your next transition. An edit answers with the hunk it applied, raw and correctly indented: read it in the same cell, because a bad edit costs one glance there and a whole investigation anywhere else. Then put each edited file through whatever language-aware checker \`ctx.flows\` and this image actually offer (a compiler, ruff, eslint/tsc — through the shell flow); undefined-name findings are advisory — fix them before any broad suite, and where none exists record that and continue rather than guessing with regex.
-8. Prove it before you claim it, in as few frames as you can. ONE cell may run the baseline check, read its output, make the edit, and re-run the identical check — a cell can make many calls, and that is the point of writing code instead of emitting one tool call per turn. A baseline you have watched fail is what buys that: hold one and this same cell may complete, so reach for it first. It is not a precondition for writing, though — when the command will not bootstrap, edit on the diagnosis you have and establish the proof afterwards rather than spending the run on the probe. After editing, reuse that identical command and store it in \`state.verification\`. Complete only once you have SEEN that identical command pass in this run, and name it in \`output\`. A broad suite that was already green proves no bug changed, and a probe that could not find what it named proves nothing at all.
+8. Prove it before you claim it, in as few frames as you can. ONE cell may make the edit, run the baseline check against \`ctx.base\` — the tree this run opened on, always there, free — and run the identical check on the tree you just changed. A baseline you have watched fail is what buys a same-cell completion, and \`{ at: ctx.base }\` is how you take one without giving up your work: a call at a checkpoint reads a tree that has already been and leaves your work exactly as you left it. NEVER undo your own edit to re-prove a baseline. \`ctx.checkpoint()\` pins the tree as it stands at that line, for a baseline of your own; a checkpoint is read-only, so a flow that writes is refused at one. After editing, reuse that identical command and store it in \`state.verification\`. Complete only once you have SEEN that identical command pass in this run, and name it in \`output\`. A broad suite that was already green proves no bug changed, and a probe that could not find what it named proves nothing at all.
 
 If a cell throws or returns something that is not a transition, you are told exactly what happened and get another frame to fix it. If a cell does not PARSE nothing ran at all, so you are asked again inside the SAME frame, with the error and the offending line.`
 
@@ -147,6 +160,10 @@ If a cell throws or returns something that is not a transition, you are told exa
  * The second worked example is the golf report's own prescription — its
  * class-(a) finding is that the contract's only worked example is a three-line
  * toy, and models imitate the example.
+ *
+ * It moved a second time on 2026-08-24, when checkpoints landed: the baseline
+ * moved after the edit in the example and rule 9 names `ctx.base`. Both pinned
+ * numbers moved with it.
  *
  * The completion teaching moved once, after the first REPL wave, and the change
  * is stated rather than smuggled. What died is the see-then-attest rule
@@ -183,15 +200,15 @@ console.log(region.content)                                     // the bytes I w
 
 \`\`\`cell
 const verification = { flow: "bash", input: { command: "run-tests tests/test_widen.py::test_keeps_unit" } }
-const before = await ctx.call(verification.flow, verification.input)  // must fail, and for the right reason
 const anchor = hit.text                                         // a line a call returned, never typed from memory
 const applied = await ctx.call("edit", { path: hit.file, oldString: anchor, newString: anchor.replace("return value", "return widen(value)") })
-const after = await ctx.call(verification.flow, verification.input)   // the identical command, replayed
+const before = await ctx.call(verification.flow, verification.input, { at: ctx.base })  // the tree this run opened on; the edit stays
+const after = await ctx.call(verification.flow, verification.input)   // the identical command, on the tree you changed
 console.log(applied.ok === false ? applied.error.message : applied.hunk, before.exitCode, after.exitCode, after.stdout)
 if (before.exitCode !== 0 && after.exitCode === 0) ctx.done(verification.input.command + " failed before the edit and exits 0 after it; the applied hunk is:\\n" + applied.hunk)
 \`\`\`
 
-Two frames: search, read, print — then reproduce, edit, re-check, and finish behind the check that decides it. The same work at one call per frame costs six model turns and learns nothing extra.
+Two frames: search, read, print — then edit, baseline at ctx.base, re-check, and finish behind the check that decides it. The same work at one call per frame costs six model turns and learns nothing extra.
 
 Rules:
 
@@ -203,7 +220,7 @@ Rules:
 6. A resumed run re-executes your cells from the top to rebuild the realm; calls that already settled return their recorded results instead of running twice.
 7. A command becomes evidence only once you have SEEN it fail on the unmodified tree FOR THE RIGHT REASON, which is the bug itself. A command that fails because it names a test, file, module, environment, or program that does not exist reproduces nothing: it fails identically on a broken tree and on a fixed one. Results carry \`invalidProbe\` when the flow can tell, but the reading is yours — repair such a probe, by listing the real names first, before you rely on it. Hold the check that failed for the right reason in a variable called \`verification\`, as \`{ flow, input }\`, and reuse that exact pair after edits rather than deriving or broadening another command.
 8. Act, then verify: read broadly in ONE cell, then commit to an edit. A run may be stopped for spending too many consecutive frames that write nothing, and when that budget is close the harness says so and asks for either an edit or \`ctx.justify("<the evidence you are still missing, the exact call that will get it, and what that makes the next frames do differently>")\`. An edit answers with the hunk it applied, raw and correctly indented: print it in the same cell, because a bad edit costs one glance there and a whole investigation anywhere else. Then put each edited file through whatever language-aware checker \`ctx.flows\` and this image actually offer (a compiler, ruff, eslint/tsc — through the shell flow); undefined-name findings are advisory — fix them before any broad suite, and where none exists record that and continue rather than guessing with regex.
-9. Prove it before you claim it, in as few frames as you can. ONE cell may run the baseline check, print its output, make the edit, and re-run the identical check — a cell can make many calls, and that is the point of writing code instead of emitting one tool call per turn. A baseline you have watched fail is what buys that: hold one and this same cell may call \`ctx.done\`, so reach for it first. It is not a precondition for writing — when the command will not bootstrap, edit on the diagnosis you have and establish the proof afterwards. Let the code read the verdict: \`if (before.exitCode !== 0 && after.exitCode === 0) ctx.done(...)\` finishes on the results this cell just took. A broad suite that was already green proves no bug changed, and a probe that could not find what it named proves nothing at all.
+9. Prove it before you claim it, in as few frames as you can. ONE cell may make the edit, run the baseline check against \`ctx.base\` — the tree this run opened on, always there, free — and re-run the identical check on the tree you just changed. A baseline you have watched fail is what buys a same-cell \`ctx.done\`, and \`{ at: ctx.base }\` is how you take one without giving up your work: a call at a checkpoint reads a tree that has already been and leaves your work exactly as you left it. NEVER undo your own edit to re-prove a baseline. \`ctx.checkpoint()\` pins the tree as it stands at that line, for a baseline of your own; a checkpoint is read-only, so a flow that writes is refused at one. Let the code read the verdict: \`if (before.exitCode !== 0 && after.exitCode === 0) ctx.done(...)\` finishes on the results this cell just took. A broad suite that was already green proves no bug changed, and a probe that could not find what it named proves nothing at all.
 
 If a cell throws you are told what happened and you get another turn. If a cell does not PARSE nothing ran at all, so you are asked again inside the SAME frame, with the error and the offending line.`
 

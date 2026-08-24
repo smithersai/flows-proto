@@ -63,6 +63,7 @@ import type * as Registry from "@smthrs/registry/Registry"
 import { Context, Effect, Layer, Option, Stream } from "effect"
 import type * as Schedule from "effect/Schedule"
 import * as CellPlugin from "./CellPlugin.ts"
+import * as Checkpointed from "./Checkpointed.ts"
 import * as FlowEngineLike from "./FlowEngineLike.ts"
 import * as Seat from "./Seat.ts"
 
@@ -325,6 +326,7 @@ const withRequestPlugins = (
     call: engine.call,
     record: engine.record,
     observe: engine.observe,
+    capture: engine.capture,
     suspend: engine.suspend
   })
 
@@ -389,13 +391,20 @@ const runProduction: Service["run"] = (options) =>
           // stay shareable across runs of one composition while two
           // differently-authorized compositions can never alias.
           const envelope = (options.capabilityEnvelope ?? []).map(Capability.format)
+          // A call that names a checkpoint runs in a scratch checkout of that
+          // tree; one that names none runs exactly as it always has. The
+          // decorator is applied here rather than inside the resolver because a
+          // composition with nowhere to pin a tree must not be wrapped at all:
+          // then `at` is refused by the engine port's own `capture`, which is
+          // the one place that knows the host has no store.
+          const calls = yield* Checkpointed.decorate({
+            ...(options.authorize === undefined ? {} : { authorize: options.authorize }),
+            run: resolver.run
+          })
           const port = yield* FlowEngineLike.make({
             model: options.seat.model,
             route: options.seat.route,
-            calls: {
-              ...(options.authorize === undefined ? {} : { authorize: options.authorize }),
-              run: resolver.run
-            },
+            calls,
             layers,
             capabilities: { envelope },
             modelRetryPolicy: options.modelRetryPolicy
