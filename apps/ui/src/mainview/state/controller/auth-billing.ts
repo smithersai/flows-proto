@@ -155,10 +155,21 @@ export const createAuthBillingController = (
 	};
 
 	const adoptSession = async (session: ResolvedSession): Promise<void> => {
-		++ctx.accountEpoch;
+		const epoch = ++ctx.accountEpoch;
 		const previous = store.collections.identitySessions.get("identity");
 		if (session.state === "signed-in") {
 			finishSignedInSession(session, previous);
+			return;
+		}
+		if (session.state === "signed-out") {
+			/*
+			 * The server renderer resolves the session but never the consent copy,
+			 * so an adopted signed-out answer must make the same scopes read the
+			 * client-probe path makes. Adopting with a bare null told every
+			 * signed-out web visitor "the identity service isn't configured" on a
+			 * deployment where it is.
+			 */
+			await dispatchSignedOut(epoch);
 			return;
 		}
 		store.dispatch({

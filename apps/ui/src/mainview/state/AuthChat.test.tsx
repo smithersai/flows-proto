@@ -117,6 +117,31 @@ describe("auth is a conversation state — the chat is the only page", () => {
 		expect(host.querySelector("textarea")?.placeholder).toContain("Sign in with GitHub first");
 	});
 
+	test("an adopted signed-out session (the server-rendered web boot) still names the scopes", async () => {
+		/*
+		 * Live on canary: the Start build resolves the session on the server and
+		 * the client adopts it, so the scopes read the client-probe path makes
+		 * never ran — every signed-out web visitor read "The identity service
+		 * isn't configured on this deployment" on a deployment where it is.
+		 */
+		const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() });
+		const controller = createAppController(store, unavailableRepositories, silentAgent, {
+			...backend({
+				"/api/auth/scopes": json(200, {
+					scopes: [{ scope: "read:user", plain: "See your GitHub profile.", why: "Sign-in." }],
+				}),
+			}),
+		});
+		await controller.adoptSession({ state: "signed-out", login: null, allowlisted: false, admin: false });
+		await settled();
+
+		const { markup } = mount(controller);
+		const html = markup();
+		expect(html).toContain("Smithers is a design-partner preview — sign in with GitHub to continue.");
+		expect(html).toContain("See your GitHub profile.");
+		expect(html).not.toContain("The identity service isn't configured");
+	});
+
 	test("signed-out: an attempted send answers in the transcript, never the network", async () => {
 		const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() });
 		const controller = createAppController(store, unavailableRepositories, silentAgent, {
