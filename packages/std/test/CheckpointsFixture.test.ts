@@ -28,6 +28,14 @@ import * as TestRunner from "../src/TestRunner.ts"
 const git = (root: string, args: ReadonlyArray<string>): string =>
   execFileSync("git", ["-C", root, ...args], { encoding: "utf8" })
 
+/** Whether this machine's git knows `worktree.useRelativePaths`, which is 2.48 and later. */
+const relativePathsAvailable = (): boolean => {
+  const [major, minor] = (/(\d+)\.(\d+)/.exec(execFileSync("git", ["--version"], { encoding: "utf8" })) ?? [])
+    .slice(1)
+    .map(Number)
+  return major !== undefined && minor !== undefined && (major > 2 || (major === 2 && minor >= 48))
+}
+
 /** A repository holding one file, at one commit. */
 const repository = (): string => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "flows-checkpoint-")))
@@ -152,6 +160,149 @@ describe("Checkpoints over a real repository", () => {
     // It is named where a name is not history.
     expect(git(root, ["config", "--local", "--get", `${Checkpoints.configSection}.cp-0-0`]).trim())
       .toBe(snapshot.ref)
+  }, 60_000)
+
+  it("is reachable by fsck and by a checked-out worktree, which is what the contract says", async () => {
+    // The two commands that do see it, measured rather than assumed, because a
+    // claim of invisibility that is only nearly true is how django-13346 read
+    // its own snapshot back as upstream work. `fsck` reports an unreferenced
+    // commit because that is what one is; `--all` spans worktrees, so while a
+    // checkpoint is checked out its detached HEAD is one of the refs listed.
+    // Neither can be mistaken for project history by name, and the cell
+    // contract's environment section says outright what a dangling commit is.
+    const root = repository()
+    writeFileSync(join(root, "mod.py"), "value = 'the agent fix'\n")
+
+    const snapshot = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(root)
+      const pinned = yield* checkpoints.capture("cp-0-0")
+      const during = yield* checkpoints.materialize(
+        "cp-0-0",
+        () => Effect.sync(() => git(root, ["log", "--all", "--oneline"]))
+      )
+      expect(during).toContain(pinned.ref.slice(0, 7))
+      return pinned
+    }))
+
+    expect(git(root, ["fsck", "--no-progress"])).toContain(`dangling commit ${snapshot.ref}`)
+    // And with nothing checked out, the walk is back to project history alone.
+    expect(git(root, ["log", "--all", "--oneline"])).not.toContain(snapshot.ref.slice(0, 7))
+  }, 60_000)
+
+  it("holds three trees apart in one frame, and touches none of them", async () => {
+    // The shape the ruling buys, at full length: the run opens on one tree, the
+    // cell edits, pins what it has, and edits again. Three readings, three
+    // answers, and the live tree still holds the latest edit afterwards.
+    const root = repository()
+    git(root, ["update-ref", TestRunner.captureBase, "HEAD"])
+    writeFileSync(join(root, "mod.py"), "value = 'half'\n")
+
+    const seen = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(root)
+      yield* checkpoints.capture("cp-1-0")
+      writeFileSync(join(root, "mod.py"), "value = 'whole'\n")
+      const read = (id: string) =>
+        checkpoints.materialize(id, (found) => Effect.sync(() => readFileSync(join(found.host, "mod.py"), "utf8")))
+      return {
+        base: yield* read(Checkpoints.baseId),
+        pinned: yield* read("cp-1-0"),
+        live: readFileSync(join(root, "mod.py"), "utf8")
+      }
+    }))
+
+    expect(seen).toEqual({
+      base: "value = 'pristine'\n",
+      pinned: "value = 'half'\n",
+      live: "value = 'whole'\n"
+    })
+    expect(readFileSync(join(root, "mod.py"), "utf8")).toBe("value = 'whole'\n")
+    expect(git(root, ["status", "--porcelain"])).toBe(" M mod.py\n")
+  }, 60_000)
+
+  it("refuses the reader path that would have read the live tree instead", async () => {
+    // Measured rather than argued, because the escape is one `..` wide: the
+    // relocated path a blind prefix produces resolves to the live file, so the
+    // refusal is the only thing between a cell and a baseline of its own work.
+    const root = repository()
+    writeFileSync(join(root, "mod.py"), "value = 'fixed'\n")
+
+    const [refusal, wouldHaveRead] = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(root)
+      yield* checkpoints.capture("cp-1-0")
+      writeFileSync(join(root, "mod.py"), "value = 'later still'\n")
+      return yield* checkpoints.materialize("cp-1-0", (found) =>
+        Effect.sync(() => {
+          const blind = `${Checkpoints.scratchDirectory}/${found.id}/../../mod.py`
+          return [
+            Checkpoints.relocate("read", { path: "../../mod.py" }, found),
+            readFileSync(join(root, blind), "utf8")
+          ] as const
+        }))
+    }))
+
+    expect(refusal).toEqual({ _tag: "OutsideTree", path: "../../mod.py" })
+    // What the refusal is worth: the path it declined resolves to the live tree,
+    // which is the one tree a reading at a checkpoint must never come from.
+    expect(wouldHaveRead).toBe("value = 'later still'\n")
+  }, 60_000)
+
+  it("keeps a handle resolving after a kill left the checkout standing", async () => {
+    // A `SIGKILL` runs no release. The checkout survives, `worktree add` refuses
+    // a path that exists, and without clearing it on the way in every later call
+    // at that id would answer `checkpoint_unavailable` for a handle the journal
+    // still says is good.
+    const root = repository()
+    writeFileSync(join(root, "mod.py"), "value = 'fixed'\n")
+    const scratch = join(root, Checkpoints.scratchDirectory, "cp-1-0")
+
+    const read = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(root)
+      const snapshot = yield* checkpoints.capture("cp-1-0")
+      // The leftover, exactly as a killed run leaves it: the checkout and the
+      // administrative entry that makes a second `add` fatal.
+      git(root, ["worktree", "add", "--detach", "--force", scratch, snapshot.ref])
+      expect(() => git(root, ["worktree", "add", "--detach", "--force", scratch, snapshot.ref])).toThrow()
+      return yield* checkpoints.materialize(
+        "cp-1-0",
+        (found) => Effect.sync(() => readFileSync(join(found.host, "mod.py"), "utf8"))
+      )
+    }))
+
+    expect(read).toBe("value = 'fixed'\n")
+    expect(existsSync(scratch)).toBe(false)
+  }, 60_000)
+
+  it("points the checkout at the repository by a relative path, so a container can run git in it", async () => {
+    // The checkout's `.git` is a pointer. Written absolutely it names a path
+    // that exists on this machine and nowhere inside the container, so `git`
+    // run at the checkpoint through the mount answers "not a git repository"
+    // for a directory that is one — and a suite that shells out to git during
+    // collection fails for that and not for the code under test.
+    const root = repository()
+
+    const [pointer, backPointer] = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(root, { cwd: "/testbed" })
+      yield* checkpoints.capture("cp-1-0")
+      return yield* checkpoints.materialize("cp-1-0", (found) =>
+        Effect.sync(() =>
+          [
+            readFileSync(join(found.host, ".git"), "utf8").trim(),
+            readFileSync(join(root, ".git", "worktrees", "cp-1-0", "gitdir"), "utf8").trim()
+          ] as const
+        ))
+    }))
+
+    // `worktree.useRelativePaths` arrived in git 2.48. An older git does not
+    // know the key and writes the absolute pointer it always wrote, which costs
+    // that host exactly what it had before — so the assertion is on what this
+    // machine's git can do, not on which git this machine has.
+    if (relativePathsAvailable()) {
+      expect(pointer).toBe("gitdir: ../../.git/worktrees/cp-1-0")
+      expect(pointer).not.toContain(root)
+      expect(backPointer).not.toContain(root)
+    } else {
+      expect(pointer).toContain(root)
+    }
   }, 60_000)
 
   it("removes the checkout however the call ends", async () => {

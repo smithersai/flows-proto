@@ -64,8 +64,16 @@ const failureOf = <A>(exit: Exit.Exit<A, unknown>) =>
 const materialized: Checkpoints.Materialized = {
   id: "cp-0-1",
   host: "/work/repo/.flows-checkpoints/cp-0-1",
-  guest: "/testbed/.flows-checkpoints/cp-0-1"
+  guest: "/testbed/.flows-checkpoints/cp-0-1",
+  root: "/work/repo",
+  guestRoot: "/testbed"
 }
+
+/** The checkout of one id, as this store spells it. */
+const checkout = (id: string, commit: string) => [
+  `git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/${id}`,
+  `git -C /work/repo -c worktree.useRelativePaths=true worktree add --detach --force /work/repo/.flows-checkpoints/${id} ${commit}`
+]
 
 describe("Checkpoints.makeGit capture", () => {
   it("records the working tree without touching the index or the worktree", async () => {
@@ -168,13 +176,56 @@ describe("Checkpoints.makeGit materialize", () => {
       host: "/work/repo/.flows-checkpoints/cp-0-1",
       // No container declared, so the two names of the one directory are the
       // same name.
-      guest: "/work/repo/.flows-checkpoints/cp-0-1"
+      guest: "/work/repo/.flows-checkpoints/cp-0-1",
+      root: "/work/repo",
+      guestRoot: "/work/repo"
     })
     expect(spawns.map((argv) => argv.join(" "))).toEqual([
       "git -C /work/repo config --local --get flows-checkpoint.cp-0-1",
-      "git -C /work/repo worktree add --detach --force /work/repo/.flows-checkpoints/cp-0-1 abc123",
+      ...checkout("cp-0-1", "abc123"),
       "git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/cp-0-1"
     ])
+  })
+
+  it("clears a checkout a killed run left behind, so a handle keeps resolving", async () => {
+    // The release runs for an interruption and not for a `SIGKILL`. A run killed
+    // outright leaves the scratch checkout standing, `worktree add` refuses a
+    // path that exists, and every later call at that id would then answer
+    // `checkpoint_unavailable` for a handle the journal still says is good. So
+    // the checkout is cleared on the way in as well as on the way out.
+    const spawns: Array<ReadonlyArray<string>> = []
+    const read = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(spawns, [
+        ["config --local --get", { stdout: "abc123\n" }],
+        // What git says about the leftover: it removes it, and the add that
+        // would have failed against it succeeds.
+        ["worktree remove", { exitCode: 0 }]
+      ])
+      return yield* checkpoints.materialize("cp-0-1", (found) => Effect.succeed(found.host))
+    }))
+
+    expect(read).toBe("/work/repo/.flows-checkpoints/cp-0-1")
+    expect(spawns.map((argv) => argv.join(" ")).filter((line) => line.includes("worktree"))).toEqual([
+      ...checkout("cp-0-1", "abc123"),
+      "git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/cp-0-1"
+    ])
+  })
+
+  it("keeps clearing on the way in when nothing is there to clear", async () => {
+    // The common case: `worktree remove` fails because the path is not a
+    // worktree, and that failure is not the run's problem.
+    const spawns: Array<ReadonlyArray<string>> = []
+    const read = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(spawns, [
+        ["config --local --get", { stdout: "abc123\n" }],
+        // git's answer when the path is not a worktree, which is not the run's
+        // problem: the checkout it was going to clear was never there.
+        ["worktree remove", { exitCode: 128 }]
+      ])
+      return yield* checkpoints.materialize("cp-0-1", (found) => Effect.succeed(found.id))
+    }))
+
+    expect(read).toBe("cp-0-1")
   })
 
   it("removes the checkout when the call inside it fails", async () => {
@@ -227,7 +278,7 @@ describe("Checkpoints.makeGit materialize", () => {
     expect(spawns.map((argv) => argv.join(" "))).toEqual([
       "git -C /work/repo rev-parse --verify --quiet refs/flows/capture-base^{commit}",
       "git -C /work/repo rev-parse --verify --quiet HEAD^{commit}",
-      "git -C /work/repo worktree add --detach --force /work/repo/.flows-checkpoints/base head999",
+      ...checkout("base", "head999"),
       "git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/base"
     ])
   })
@@ -312,7 +363,7 @@ describe("Checkpoints.makeNoop", () => {
   it("builds a store from an implementation", async () => {
     const built = Checkpoints.make({
       capture: (id) => Effect.succeed(new Checkpoints.Snapshot({ id, ref: `custom/${id}` })),
-      materialize: (id, use) => use({ id, host: `/h/${id}`, guest: `/g/${id}` })
+      materialize: (id, use) => use({ id, host: `/h/${id}`, guest: `/g/${id}`, root: "/h", guestRoot: "/g" })
     })
 
     expect((await Effect.runPromise(built.capture("x"))).ref).toBe("custom/x")
@@ -354,6 +405,43 @@ describe("Checkpoints.relocate", () => {
       _tag: "Relocated",
       input: { command: "x", cwd: "/work/repo/.flows-checkpoints/cp-0-1" }
     })
+    // Including one that climbs out of the workspace: a checkpoint is a copy of
+    // the tree and holds no copy of anywhere else, so there is no subpath to
+    // keep and the tree itself is the whole of what can be offered.
+    expect(Checkpoints.relocate("bash", { command: "x", cwd: "../sibling" }, materialized)).toMatchObject({
+      input: { cwd: "/work/repo/.flows-checkpoints/cp-0-1" }
+    })
+  })
+
+  it("keeps the subdirectory a shell call named, on both sides of the mount", () => {
+    // The failure this closes is a false baseline. django's suite is run as
+    // `./runtests.py` from `tests/`; dropping that `tests/` runs it at the
+    // repository top, where the script does not exist, and the non-zero exit
+    // reads as "the check fails on the pinned tree" when nothing was checked at
+    // all. A checkpoint that manufactures a failing baseline is worse than no
+    // checkpoint.
+    expect(
+      Checkpoints.relocate("bash", { command: "./runtests.py", cwd: "tests" }, materialized)
+    ).toMatchObject({ input: { cwd: "/work/repo/.flows-checkpoints/cp-0-1/tests" } })
+    // The same directory named absolutely, from inside the container.
+    expect(
+      Checkpoints.relocate(
+        "bash",
+        { command: "./runtests.py", cwd: "/testbed/tests", container: "swebench-1" },
+        materialized
+      )
+    ).toMatchObject({ input: { cwd: "/testbed/.flows-checkpoints/cp-0-1/tests" } })
+    // And named absolutely on the host, which is the same question asked of the
+    // other of the two names.
+    expect(
+      Checkpoints.relocate("bash", { command: "x", cwd: "/work/repo/sympy/stats" }, materialized)
+    ).toMatchObject({ input: { cwd: "/work/repo/.flows-checkpoints/cp-0-1/sympy/stats" } })
+    // The workspace root itself names no subdirectory, under either name.
+    for (const cwd of ["/work/repo", "/work/repo/", ".", "./"]) {
+      expect(Checkpoints.relocate("bash", { command: "x", cwd }, materialized)).toMatchObject({
+        input: { cwd: "/work/repo/.flows-checkpoints/cp-0-1" }
+      })
+    }
   })
 
   it("treats an empty container name as no container", () => {
@@ -394,6 +482,25 @@ describe("Checkpoints.relocate", () => {
     expect(Checkpoints.relocate("read", { path: "/testbed/a.py" }, materialized)).toEqual({
       _tag: "AbsolutePath",
       path: "/testbed/a.py"
+    })
+  })
+
+  it("refuses a reader's path that climbs back out into the live tree", () => {
+    // `.flows-checkpoints/cp-0-1/../../mod.py` is `mod.py` in the live tree.
+    // Rewriting it would hand the cell the very work it took the reading to
+    // avoid, under the checkpoint's own name — and because the checkpoint is
+    // folded into the call key, that live reading would replay as a pinned one
+    // for the rest of the run.
+    for (const path of ["../../mod.py", "../..", "a/../../../mod.py", "./../../mod.py"]) {
+      expect(Checkpoints.relocate("read", { path }, materialized)).toEqual({ _tag: "OutsideTree", path })
+    }
+    expect(Checkpoints.relocate("grep", { pattern: "x", root: "../.." }, materialized)).toEqual({
+      _tag: "OutsideTree",
+      path: "../.."
+    })
+    // A `..` that stays inside is arithmetic, not an escape, and resolves.
+    expect(Checkpoints.relocate("read", { path: "sympy/../mod.py" }, materialized)).toMatchObject({
+      input: { path: ".flows-checkpoints/cp-0-1/mod.py" }
     })
   })
 
