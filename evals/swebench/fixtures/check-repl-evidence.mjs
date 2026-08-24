@@ -30,6 +30,16 @@
  *   added them would report the contract working as a defect.
  * - **a ReferenceError is the realm failing to hold a name**, told apart from
  *   every other throw.
+ * - **a guarded completion is structural**. `ctx.done` behind an `if` test, an
+ *   `else`, a `&&` or a `?` is guarded; the same text inside a string or a
+ *   comment is not, and an `if` block that closed before the completion does not
+ *   reach it. The reading can miss a real guard and cannot invent one.
+ * - **a call-free final frame is the see-then-attest shape**, and it is defined
+ *   the same way on both surfaces, because a filing cell has no `ctx.done` to
+ *   read and a last frame that called nothing is the same fact either way.
+ * - **a re-print is a line the frame before it already delivered**. Twenty
+ *   characters or more, trimmed, and against the immediately preceding frame
+ *   only, because that buffer is exactly what this turn was handed.
  *
  * Spends nothing, needs no docker, needs no dataset.
  */
@@ -38,7 +48,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { declared, readAll, readRun, referenced, strip, totals } from "../lib/repl-evidence.mjs"
+import { completions, declared, masked, readAll, readRun, referenced, strip, totals } from "../lib/repl-evidence.mjs"
 
 const temporary = mkdtempSync(join(tmpdir(), "flows-swebench-repl-"))
 
@@ -80,6 +90,10 @@ const continued = (state = null, context = []) => [
   { transition: { _tag: "continue", state, context } }
 ]
 const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _tag: "raised", name, message } }]
+const completed = (output = "green") => [
+  "control.agent.transition-applied",
+  { transition: { _tag: "complete", state: null, output } }
+]
 
 // ---------------------------------------------------------------------------
 // strip: an identifier inside data is not an identifier.
@@ -359,6 +373,151 @@ const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _t
 }
 
 // ---------------------------------------------------------------------------
+// masked: the same scan as strip, blanked in place.
+// ---------------------------------------------------------------------------
+{
+  const source = "const s = \"a {\"\nif (ok) { ctx.done({}) }\n"
+  assert.equal(masked(source).length, source.length, "every index survives")
+  assert.equal(masked(source).includes("{ ctx.done"), true, "code is untouched")
+  assert.equal(masked("const s = \"a {\"").includes("{"), false, "a brace inside a string is not structure")
+  assert.equal(masked("const s = `a\nb`\nconst t = 1").split("\n").length, 3, "a newline inside a literal survives")
+  assert.equal(masked("// if (ok) ctx.done()\nctx.park()").includes("if"), false, "a comment is not structure")
+}
+
+// ---------------------------------------------------------------------------
+// completions: guarded is structural, and it cannot be invented.
+// ---------------------------------------------------------------------------
+{
+  const one = (text) => {
+    const found = completions(text)
+    assert.equal(found.length, 1, `one completion in ${JSON.stringify(text)}`)
+    return found[0]
+  }
+  assert.equal(one("if (after.exitCode === 0) ctx.done({ summary: \"x\" })\n").guarded, true, "a brace-less if guards")
+  assert.equal(one("if (ok) {\n  ctx.done({})\n}\n").guarded, true, "an if block guards")
+  assert.equal(one("if (a) {\n  log()\n} else {\n  ctx.park({})\n}\n").guarded, true, "an else branch guards")
+  assert.equal(one("if (a) {\n  x()\n} else if (b) {\n  ctx.done({})\n}\n").guarded, true, "an else-if guards")
+  assert.equal(one("ok && ctx.done({})\n").guarded, true, "a short circuit guards")
+  assert.equal(one("ok ? ctx.done({}) : log()\n").guarded, true, "a ternary guards")
+  assert.equal(one("ctx.done({ summary: \"all green\" })\n").guarded, false, "a bare completion is nobody's claim")
+  assert.equal(
+    one("if (a) {\n  log()\n}\nctx.done({})\n").guarded,
+    false,
+    "an if that closed before the completion does not reach it"
+  )
+  assert.equal(
+    one("// if (ok) ctx.done()\nctx.done({})\n").guarded,
+    false,
+    "a guard inside a comment is not a guard"
+  )
+  assert.equal(
+    one("const note = \"if (ok) \"\nctx.done({})\n").guarded,
+    false,
+    "a guard inside a string is not a guard"
+  )
+  assert.equal(completions("verify(ok)\nctx.done({})\n")[0].guarded, false, "a call is not a test")
+  assert.deepEqual(completions("ctx.done({})\nctx.park({})\n").map((one) => one.kind), ["done", "park"])
+  assert.deepEqual(completions("ctx.call(\"bash\", {})\n"), [], "an ordinary call is not a completion")
+}
+
+// ---------------------------------------------------------------------------
+// A completion behind a check in the frame that ran it, against the
+// see-then-attest shape: a last frame that called nothing.
+// ---------------------------------------------------------------------------
+{
+  const path = journal("guarded-done", [
+    armed("repl"),
+    opened(),
+    ...call("edit", { path: "a.py" }),
+    ...call("bash", { command: "pytest" }),
+    produced("const after = await ctx.call(\"bash\", {})\nif (after.exitCode === 0) ctx.done({ summary: \"green\" })\n"),
+    printed("green"),
+    completed()
+  ])
+  const run = readRun(path)
+  assert.equal(run.guardedCompletions, 1)
+  assert.equal(run.unguardedCompletions, 0)
+  assert.equal(run.inCellCompletions, 1, "the completing frame watched something")
+  assert.equal(run.callFreeFinalFrame, false, "nothing was attested in a frame of its own")
+  assert.equal(run.finished.tag, "complete", "and that is the transition the run ended on")
+  assert.equal(run.finishedGuarded, true)
+  assert.equal(run.finishedWithCalls, true)
+}
+{
+  const path = journal("attested-done", [
+    armed("repl"),
+    opened(),
+    ...call("bash", { command: "pytest" }),
+    produced("const after = await ctx.call(\"bash\", {})\nconsole.log(after.exitCode)\n"),
+    printed("0"),
+    continued(),
+    opened(),
+    produced("ctx.done({ summary: \"the suite exited 0\" })\n"),
+    printed(""),
+    completed("the suite exited 0")
+  ])
+  const run = readRun(path)
+  assert.equal(run.guardedCompletions, 0)
+  assert.equal(run.unguardedCompletions, 1, "the claim is behind no check")
+  assert.equal(run.inCellCompletions, 0, "the completing frame called nothing")
+  assert.equal(run.callFreeFinalFrame, true, "which is the shape the count is for")
+  assert.equal(run.finishedGuarded, false, "and the completion that took was behind no check")
+  assert.equal(run.finishedWithCalls, false)
+}
+{
+  // Defined identically for the filing arm, which has no `ctx.done` at all: a
+  // last frame that called nothing is the same shape whatever surface wrote it.
+  const path = journal("filing-attest", [
+    armed("filing"),
+    opened(),
+    ...call("bash", { command: "pytest" }),
+    produced("return { _tag: \"continue\", state: { checked: true } }\n"),
+    continued({ checked: true }),
+    opened(),
+    produced("return { _tag: \"done\", summary: \"the suite exited 0\" }\n"),
+    completed("the suite exited 0")
+  ])
+  const run = readRun(path)
+  assert.equal(run.guardedCompletions, 0, "a filing cell has no ctx.done to guard")
+  assert.equal(run.unguardedCompletions, 0)
+  assert.equal(run.callFreeFinalFrame, true)
+}
+
+// ---------------------------------------------------------------------------
+// A re-print is a line the frame before it already delivered.
+// ---------------------------------------------------------------------------
+{
+  const long = "def parse(self, table_id=None, names=None, **kwargs):"
+  assert.ok(long.length >= 20)
+  const path = journal("reprint", [
+    armed("repl"),
+    opened(),
+    produced("console.log(a)\n"),
+    printed(`${long}\nok\n`),
+    continued(),
+    opened(),
+    produced("console.log(b)\n"),
+    printed(`  ${long}  \nfresh\n`),
+    continued(),
+    opened(),
+    produced("console.log(c)\n"),
+    printed("ok\nfresh\n"),
+    continued(),
+    opened(),
+    produced("console.log(d)\n"),
+    printed(`${long}\n`),
+    continued()
+  ])
+  const run = readRun(path)
+  assert.equal(
+    run.rePrintFrames,
+    1,
+    "only frame two repeats its predecessor: short lines never count, and frame four's"
+      + " match is two frames back"
+  )
+}
+
+// ---------------------------------------------------------------------------
 // readAll and totals fold a directory of runs.
 // ---------------------------------------------------------------------------
 {
@@ -366,18 +525,30 @@ const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _t
   assert.ok(Object.keys(all).length >= 7, "every synthesised journal is read")
   const sum = totals(all)
   assert.equal(sum.runs, Object.keys(all).length)
-  assert.equal(sum.modes.filing, 1)
+  assert.equal(sum.modes.filing, 2)
   assert.ok(sum.modes.repl >= 6)
+  assert.equal(sum.guardedCompletions, 1, "one journal completed behind a check")
+  assert.equal(sum.unguardedCompletions, 1, "one attested in a frame of its own")
+  assert.equal(
+    sum.callFreeFinalFrames,
+    Object.values(all).filter((run) => run.callFreeFinalFrame).length,
+    "the fold counts runs whose last frame called nothing, not frames"
+  )
+  assert.equal(all["guarded-done"].callFreeFinalFrame, false)
+  assert.equal(all["attested-done"].callFreeFinalFrame, true)
+  assert.equal(all["filing-attest"].callFreeFinalFrame, true, "the shape is read on either surface")
+  assert.equal(sum.rePrintFrames, 1)
   assert.equal(sum.runsWithCarry, 1, "only the carry journal carries")
   assert.equal(sum.runsRereading, 1, "only the repeats journal re-read")
   assert.equal(sum.repeats.information, 1)
   assert.equal(sum.repeats.check, 1)
   assert.equal(sum.repeats.other, 1)
-  assert.equal(sum.filedState, 2, "filing is summed across the arm")
+  assert.equal(sum.filedState, 3, "filing is summed across the arm: two filing journals, three filings")
 }
 
 rmSync(temporary, { recursive: true, force: true })
 console.log(
   "check-repl-evidence: a carried name is told from a redeclared one and from a name inside data,"
-    + " a re-read is told from a rule-7 re-check, and filing is read off the transition."
+    + " a re-read is told from a rule-7 re-check, filing is read off the transition, a guarded"
+    + " completion is told from a claim nobody checked, and a re-print is told from a short line."
 )
