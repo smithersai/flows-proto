@@ -185,6 +185,13 @@ const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _t
 
 // ---------------------------------------------------------------------------
 // A frame whose prints were cut says so in its own buffer, and is counted.
+//
+// The channel has had two shapes and both are read by the same code: the first
+// cut a statement at 4 KiB from the head and the whole buffer at 16 KiB from the
+// middle, the second shares the frame budget across statements, cuts each from
+// the middle, and drops whole statements when a frame prints more than the
+// budget can floor. A reading of an old lane and a reading of a new one have to
+// be the same reading, so every sentence either shape writes is fixed here.
 // ---------------------------------------------------------------------------
 {
   const path = journal("elided", [
@@ -199,12 +206,28 @@ const raised = (name, message) => ["control.agent.cell-settled", { outcome: { _t
     continued(),
     opened(),
     produced("const c = 3\n"),
+    printed("head… [+900b, print a narrower slice of this value; it is still bound in the realm]"),
+    continued(),
+    opened(),
+    produced("const d = 4\n"),
+    printed(
+      "head\n… 900 of 1000 bytes elided from the middle. print a narrower slice of this value; it is still bound in the realm …\ntail"
+    ),
+    continued(),
+    opened(),
+    produced("const e = 5\n"),
+    printed(
+      "head\n… 8 print statements elided from the middle of this frame; the values are still bound in the realm.\ntail"
+    ),
+    continued(),
+    opened(),
+    produced("const f = 6\n"),
     printed("all of it"),
     continued()
   ])
   const run = readRun(path)
-  assert.equal(run.elidedFrames, 2, "both sentences the sandbox writes are read")
-  assert.equal(run.printedFrames, 3)
+  assert.equal(run.elidedFrames, 5, "every sentence either shape of the channel writes is read")
+  assert.equal(run.printedFrames, 6)
 }
 
 // ---------------------------------------------------------------------------

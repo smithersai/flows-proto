@@ -25,7 +25,7 @@ import type { QuickJSContext, QuickJSHandle, QuickJSRuntime, QuickJSWASMModule }
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core"
 import * as Cell from "./Cell.ts"
 import type { HarnessError } from "./HarnessError.ts"
-import * as elide from "./internal/elide.ts"
+import * as printChannel from "./internal/printChannel.ts"
 import * as Sandbox from "./Sandbox.ts"
 import * as VariablesPanel from "./VariablesPanel.ts"
 
@@ -100,10 +100,15 @@ const preludeHelpers = `${preludeIntrinsics}
     return stringify(input)
   }`
 
-/** The `ctx.call` member, identical in both modes. */
-const preludeCall = `    call: function (flow, input) {
+/**
+ * The `ctx.call` member. `guard` is the one line the REPL mode adds: nothing in
+ * the filing mode can end a run part-way through a cell, because there the run
+ * ends by returning.
+ */
+const preludeCall = (guard: string): string =>
+  `    call: function (flow, input) {
       if (typeof flow !== "string") return Deferred.reject(new Fault("ctx.call expects a flow name as its first argument"))
-      return bridge(flow, encode("ctx.call input", input === undefined ? null : input)).then(function (settled) {
+${guard}      return bridge(flow, encode("ctx.call input", input === undefined ? null : input)).then(function (settled) {
         // A failed call RESOLVES with the failure envelope; only teardown
         // throws. See Cell.callFailure for why.
         if (settled.ok) return settled.value
@@ -111,6 +116,27 @@ const preludeCall = `    call: function (flow, input) {
         return settled.failure
       })
     },`
+
+/**
+ * What a `ctx.call` issued after `ctx.done` or `ctx.park` resolves with.
+ *
+ * A completion takes effect where it is called, so the calls a cell would have
+ * made after it do not run. They fail the way every other refused call fails —
+ * soft, with a code and a hint — because rule 3 promises a cell that a call
+ * resolves rather than throws, and a completion is not the place to break that
+ * promise: the guard shape the contract teaches puts `ctx.done` in the middle of
+ * a cell, and a throw there would discard the rest of a frame that had already
+ * finished the run.
+ */
+const sealedCall = Cell.callFailure(
+  new Cell.CallResult({
+    outcome: "failure",
+    value: null,
+    code: "run_completed",
+    message:
+      "This run was already completed: an earlier line of this cell called ctx.done or ctx.park, which takes effect where it is called, so no further flow call is dispatched."
+  })
+)
 
 const prelude = (catalog: string, state: string): string =>
   `(function () {
@@ -120,7 +146,7 @@ ${preludeHelpers}
   delete globalThis.Date
   delete Math.random
   globalThis.ctx = freezeValue({
-${preludeCall}
+${preludeCall("")}
     flows: freeze(${catalog}),
     state: freeze(parse(${state}))
   })
@@ -164,6 +190,14 @@ ${preludeHelpers}
   delete globalThis.__intent
   delete globalThis.Date
   delete Math.random
+  // The seal: once this frame has said how the run ends, it has ended, and the
+  // calls a cell would have made after that line are not dispatched. It lives
+  // here rather than on the host because ctx.call has to answer synchronously,
+  // and it is cleared per frame by the function this prelude returns — a park
+  // whose reason is refused is asked again inside the same frame, and a realm
+  // still sealed from the refused attempt would answer that retry with nothing.
+  var sealed = null
+  var sealedEnvelope = freeze(parse(${JSON.stringify(JSON.stringify(sealedCall))}))
   var unprintable = function (value, error) {
     var kind = isArray(value) ? "array" : typeof value
     var why = error !== null && typeof error === "object" && error.message ? error.message : render(error)
@@ -194,14 +228,25 @@ ${preludeHelpers}
   }
   host("console", freezeValue({ log: line, info: line, warn: line, error: line }))
   host("ctx", freezeValue({
-${preludeCall}
+${preludeCall(`      if (sealed !== null) return Deferred.resolve(sealed)\n`)}
     flows: freeze(${catalog}),
-    done: function (output) { intent("done", encode("ctx.done output", output === undefined ? null : output)) },
+    done: function (output) {
+      if (sealed !== null) return
+      var encoded = encode("ctx.done output", output === undefined ? null : output)
+      sealed = sealedEnvelope
+      intent("done", encoded)
+    },
     park: function (reason, message) {
-      intent("park", encode("ctx.park message", { reason: reason === undefined ? null : reason, message: message === undefined ? "" : message }))
+      if (sealed !== null) return
+      var encoded = encode("ctx.park message", { reason: reason === undefined ? null : reason, message: message === undefined ? "" : message })
+      sealed = sealedEnvelope
+      intent("park", encoded)
     },
     justify: function (text) { intent("justify", encode("ctx.justify text", text === undefined ? "" : text)) }
   }))
+  // Handed back to the host, which calls it as each frame opens. See the seal
+  // above for why the clearing is per frame rather than per run.
+  return function () { sealed = null }
 })()`
 
 const wrap = (text: string): string =>
@@ -615,15 +660,24 @@ const printParts = Schema.decodeUnknownSync(
 )
 
 /**
- * Renders one `console.log` call as the single line it contributes.
+ * Renders one `console.log` call as the statement it contributes.
+ *
+ * The statement is *not* bounded here beyond what the host is willing to hold:
+ * a frame's statements share one budget and the share each one gets is not known
+ * until the frame closes, so the reduction happens there. What happens here is
+ * the reduction the host needs for itself — a value larger than a whole frame's
+ * budget can never be shown whole, so only its two ends are kept, and the size
+ * it had is carried beside them so the notice at frame close names the original.
  */
-const printed = (encoded: string): string => {
+const printed = (encoded: string): printChannel.Statement => {
   const parts = printParts(JSON.parse(encoded))
-  return elide.head(
-    parts.map((part) => "text" in part ? part.text : Cell.renderText(part.json)).join(" "),
-    Sandbox.printStatementBytes,
-    "print a narrower slice of this value; it is still bound in the realm"
-  )
+  const whole = parts.map((part) => "text" in part ? part.text : printChannel.render(part.json)).join(" ")
+  if (whole.length <= Sandbox.printFrameBytes) return { text: whole, bytes: whole.length }
+  const edge = Math.floor(Sandbox.printFrameBytes / 2)
+  return {
+    text: `${whole.slice(0, edge)}${whole.slice(whole.length - edge)}`,
+    bytes: whole.length
+  }
 }
 
 /**
@@ -857,7 +911,7 @@ const openRealm = (
     let exhausted: Cell.Rejected | undefined
     let pending: Array<Sandbox.PendingCall> = []
     let ordinal = 0
-    let lines: Array<string> = []
+    let lines: Array<printChannel.Statement> = []
     let retained = 0
     let unread = 0
     let recorded: Recorded | undefined
@@ -970,7 +1024,7 @@ const openRealm = (
         return context.undefined
       }
       const line = printed(context.getString(partsHandle))
-      retained = retained + line.length + 1
+      retained = retained + line.text.length + 1
       lines.push(line)
       return context.undefined
     })
@@ -995,7 +1049,11 @@ const openRealm = (
         cause: failure
       })
     }
-    installed.value.dispose()
+    // What the prelude evaluated to: the function that clears the completion
+    // seal. The host holds it as a handle rather than as a global, so no cell
+    // can reach it and no cell can shadow it.
+    const openFrame = installed.value
+    yield* Effect.addFinalizer(() => Effect.sync(() => openFrame.dispose()))
 
     // The names a fresh realm already holds, snapshotted after the prelude so
     // `ctx` and `console` are part of the baseline rather than part of the
@@ -1036,29 +1094,21 @@ const openRealm = (
         unread = 0
         recorded = undefined
         justification = undefined
+        // The realm's own per-frame state: the seal a completion set. A frame
+        // whose transition the harness refused is asked again inside the same
+        // frame, so the retry has to open on an unsealed realm.
+        context.unwrapResult(context.callFunction(openFrame, context.undefined)).dispose()
 
         // Whatever the frame produced, the prints are delivered with it and the
         // panel is read after it, so the answer is assembled in one place. A
         // frame that printed past the retention ceiling says so as its last
         // line, because a buffer that simply stopped would read as a cell that
         // simply stopped printing.
-        const frameOf = (outcome: Cell.Outcome): Sandbox.RealmFrame => {
-          const written = unread === 0
-            ? lines
-            : [
-              ...lines,
-              `… ${unread} further print statements were not kept: this frame printed more than the harness holds.`
-            ]
-          return {
-            outcome,
-            prints: written.length === 0 ? "" : elide.middle(
-              written.join("\n"),
-              Sandbox.printFrameBytes,
-              "print less next time, or read the value back from the name it is still bound to"
-            ),
-            bindings
-          }
-        }
+        const frameOf = (outcome: Cell.Outcome): Sandbox.RealmFrame => ({
+          outcome,
+          prints: printChannel.buffer(lines, unread),
+          bindings
+        })
 
         // The run's memory budget, judged against what the realm's own names
         // weigh rather than against a heap counter that cannot see them. A

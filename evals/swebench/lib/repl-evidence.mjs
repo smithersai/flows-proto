@@ -473,12 +473,20 @@ export const readRun = (databasePath) => {
   }
 
   const printed = prints.filter((print) => print.text.length > 0)
-  // A frame that printed past what the harness keeps says so in its own buffer,
-  // in one of two sentences the sandbox writes. Counting them is how a report
-  // can say whether the print channel was ever the binding constraint, rather
-  // than assuming a 16 KiB ceiling nobody reached was doing work.
+  // A frame that printed more than the harness delivers says so in its own
+  // buffer, in one of the sentences the sandbox writes. Counting them is how a
+  // report can say whether the print channel was ever the binding constraint,
+  // rather than assuming a 16 KiB ceiling nobody reached was doing work.
+  //
+  // Four sentences, because the channel has had two shapes. Under the first, a
+  // statement was cut at 4 KiB from the head and the whole buffer at 16 KiB from
+  // the middle; under the second the statements share the frame budget, each is
+  // cut from the middle, and a frame with more statements than the budget can
+  // floor drops whole statements. Every one of them is matched here so a
+  // reading of an old lane and a reading of a new one are the same reading.
   const elidedFrames = prints.filter((print) =>
-    /further print statements were not kept|print less next time/.test(print.text)
+    /further print statements were not kept|print less next time|print statements elided from the middle of this frame|bytes elided from the middle|print a narrower slice of this value/
+      .test(print.text)
   ).length
   const printBytes = prints.reduce((total, print) => total + print.text.length, 0)
   const printLines = prints.reduce(

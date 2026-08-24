@@ -538,6 +538,7 @@ export const CallFailureCode = Schema.Literals([
   "invalid_input",
   "unimplemented",
   "timeout",
+  "run_completed",
   "flow_failed"
 ])
 
@@ -579,6 +580,8 @@ export const callFailureHint: Readonly<Record<CallFailureCode, string>> = Object
   invalid_input: "Fix the input against the flow's declared schema in ctx.flows and call it again in this cell.",
   unimplemented: "This host cannot run that flow. Choose another one from ctx.flows.",
   timeout: "Narrow the call — a smaller root, a tighter pattern, a shorter command — and issue it again in this cell.",
+  run_completed:
+    "The run is over, so nothing after this line runs. If that was early, guard the ctx.done or ctx.park on the check that decides it.",
   flow_failed: "Read error.message: the flow itself says what went wrong, and it is usually fixable in this same cell."
 })
 

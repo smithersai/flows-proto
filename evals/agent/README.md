@@ -36,7 +36,7 @@ Two flags:
 
 ## What it measures
 
-Eleven cases. Each one is a whole agent run: the real cell loop, the real QuickJS
+Seventeen cases. Each one is a whole agent run: the real cell loop, the real QuickJS
 sandbox, the real registry-backed call bridge, and the real structured-output
 boundary, executing over `FlowEngine.layerMemory` — the engine's in-process
 volatile runtime, not the durable SQLite one a deployed host uses. Three things
@@ -59,6 +59,9 @@ loop and its seams, not durability and not a real catalog.
 | `park-every-frame-still-hits-the-read-only-cap` | A run that answers every refusal with another park stops at twice its read-only cap instead of spending the frame budget. |
 | `repl-realm-carries-a-binding-across-frames` | In repl mode a cell's top-level name is still bound in the next cell, and the run finishes with `ctx.done`.        |
 | `repl-print-reaches-the-next-frame`    | What a repl cell prints opens the next frame, so `console.log` is the whole of the context channel.                    |
+| `repl-completion-behind-a-guard`       | One repl cell reproduces, writes, re-checks and completes behind a check of the exit codes it just took.               |
+| `repl-guard-that-does-not-fire-carries-on` | The identical cell against an already-green baseline does not complete: the guard is the whole difference.        |
+| `repl-completion-stops-the-calls-after-it` | `ctx.done` takes effect where it is called, and the calls after it fail soft as `run_completed` without running.  |
 | `repl-read-only-cap-takes-ctx-justify` | The read-only cap is armed in repl mode too, and `ctx.justify` is the answer that buys quiet frames.                   |
 | `max-frames-stops-the-run`             | A run that never completes stops at its frame budget and reports `/harness/HarnessError`.                              |
 | `seat-unresolved-is-typed`             | A host with no model for the declared seat refuses before any model call, as `@smthrs/agent/Seat/SeatUnresolved`.      |
@@ -104,9 +107,9 @@ loop that suspended quietly cannot pass by ending some other way.
 | File            | What it is                                                                                                           |
 | --------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `subject.ts`    | The composition under evaluation: the scripted provider, the seat seam, the host, and the two ways to run the agent. |
-| `suite.ts`      | The eleven scenarios, their declared expectations, the two scorers, and the case executor.                            |
+| `suite.ts`      | The seventeen scenarios, their declared expectations, the two scorers, and the case executor.                            |
 | `run.ts`        | The entry point: runs the suite, compares it to the baseline, applies the gate, sets the exit code.                  |
-| `baseline.json` | The committed baseline, in `@smthrs/evals` `Baseline` v1 form. Twenty-two records: eleven cases times two scorers.          |
+| `baseline.json` | The committed baseline, in `@smthrs/evals` `Baseline` v1 form. Thirty-four records: seventeen cases times two scorers.          |
 | `tsconfig.json` | Typechecks the suite: `npx tsc -p evals/agent`. Nothing else references it.                                          |
 
 `baseline.json` is written by `Baseline.write`, which emits canonical

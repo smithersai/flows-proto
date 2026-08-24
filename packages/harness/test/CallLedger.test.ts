@@ -4,6 +4,7 @@
  * These cases fix what a line says and what it never says: a line names the
  * call and the shape of its result, and it carries no payload at all.
  */
+import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import * as CallLedger from "../src/CallLedger.ts"
 
@@ -19,6 +20,13 @@ const settlement = (
   value: value as never,
   ...(message === undefined ? {} : { message })
 })
+
+const wrote = (
+  flow: string,
+  input: unknown,
+  value: unknown = null,
+  message?: string
+): CallLedger.Settlement => ({ ...settlement(flow, input, value, message), mutates: true })
 
 describe("CallLedger.subject", () => {
   it("names the first term of the input that names a target", () => {
@@ -137,5 +145,109 @@ describe("CallLedger.render", () => {
       `Calls this run has settled (${CallLedger.bound + 2}), oldest first; the 2 oldest are not listed`
     )
     expect(rendered).toContain("3. read f2/a")
+  })
+
+  it("says nothing about writes for a run that has made none", () => {
+    const ledger = CallLedger.remember([], [settlement("read", { path: "a/b.py" }, { content: "x" })])
+    expect(CallLedger.render(ledger)).not.toContain("WROTE")
+  })
+})
+
+describe("CallLedger and the writes a run has already made", () => {
+  const patch = "*** Begin Patch\n" + "d".repeat(4_949)
+  const applied = { modified: ["sympy/stats/crv_types.py"], output: "Success." }
+
+  it("marks a write, names its target and states the bytes it carried", () => {
+    // The target comes off the result here: a patch names its files in its own
+    // text, so the input is one opaque blob and the paths come back in
+    // `modified`. A line naming this call by the patch's first hundred bytes
+    // would say nothing the next line could be matched against.
+    const ledger = CallLedger.remember([], [wrote("apply_patch", { input: patch }, applied)])
+
+    expect(ledger[0]?.mutates).toBe(true)
+    expect(ledger[0]?.payloadBytes).toBe(4_965)
+    expect(CallLedger.render(ledger)).toContain("1. apply_patch sympy/stats/crv_types.py — WROTE 4965b, ok:")
+  })
+
+  it("points a repeated write back at the write it repeats", () => {
+    // The `sympy__sympy-13878` shape, in miniature: the identical patch applied
+    // in a later frame, after a revert, returning `Success` both times. Nothing
+    // is refused; the second line simply says what it is.
+    const first = CallLedger.remember([], [wrote("apply_patch", { input: patch }, applied)])
+    const second = CallLedger.remember(first, [
+      wrote("bash", { command: "git checkout -- sympy/stats/crv_types.py" }, { exitCode: 0 }),
+      wrote("apply_patch", { input: patch }, applied)
+    ])
+    const rendered = CallLedger.render(second, false) ?? ""
+
+    expect(rendered).toContain(
+      "3. apply_patch sympy/stats/crv_types.py — WROTE 4965b, ok — the same write as 1, which succeeded"
+    )
+    expect(rendered).toContain("1. apply_patch sympy/stats/crv_types.py — WROTE 4965b, ok:")
+    expect(rendered).toContain("A line marked `WROTE` changed the tree")
+  })
+
+  it("names the first attempt even when it failed, so a retry reads as one", () => {
+    const ledger = CallLedger.remember([], [
+      wrote("edit", { path: "a/b.py", newString: "widen" }, null, "oldString does not occur"),
+      wrote("edit", { path: "a/b.py", newString: "widen" }, { hunk: "+widen" })
+    ])
+    expect(CallLedger.render(ledger)).toContain("the same write as 1, which failed")
+  })
+
+  it("does not call two different writes to one file the same write", () => {
+    const ledger = CallLedger.remember([], [
+      wrote("edit", { newString: "one", path: "a/b.py" }, { hunk: "+one" }),
+      wrote("edit", { newString: "two", path: "a/b.py" }, { hunk: "+two" })
+    ])
+    expect(CallLedger.render(ledger)).not.toContain("the same write as")
+  })
+
+  it("does not mark a repeated read, because a repeated read is a different failure", () => {
+    // Rule 7 asks a run to replay the check that failed for the right reason, so
+    // a repeat there is compliance. Marking it would charge the contract's own
+    // instruction as a mistake.
+    const ledger = CallLedger.remember([], [
+      settlement("bash", { command: "run-tests test_a" }, { exitCode: 1 }),
+      settlement("bash", { command: "run-tests test_a" }, { exitCode: 0 })
+    ])
+    expect(CallLedger.render(ledger)).not.toContain("the same write as")
+    expect(CallLedger.render(ledger)).not.toContain("WROTE")
+  })
+
+  it("survives the journal round trip a resumed run rebuilds it from", () => {
+    const entry = CallLedger.remember([], [wrote("write", { content: "hello world", path: "a/b.py" })])[0]!
+    const decoded = Schema.decodeUnknownSync(CallLedger.Entry)(JSON.parse(JSON.stringify(entry)))
+    expect(decoded.mutates).toBe(true)
+    expect(decoded.payloadBytes).toBe(11)
+    expect(decoded.signature).toBe(entry.signature)
+  })
+
+  it("decodes a line journaled before writes were recorded at all", () => {
+    const decoded = Schema.decodeUnknownSync(CallLedger.Entry)({
+      ordinal: 1,
+      flow: "read",
+      subject: "a/b.py",
+      ok: true,
+      digest: "content=1b",
+      bytes: 14
+    })
+    expect(decoded.mutates).toBe(false)
+    expect(decoded.payloadBytes).toBe(0)
+    expect(decoded.signature).toBe("")
+  })
+})
+
+describe("CallLedger.payload", () => {
+  it("reports the longest string the input carries, in UTF-8 bytes", () => {
+    expect(CallLedger.payload({ content: "héllo", path: "a/b.py" })).toBe(6)
+    expect(CallLedger.payload({ hunks: [{ text: "abc" }, { text: "abcdefg" }] })).toBe(7)
+    expect(CallLedger.payload("plain")).toBe(5)
+  })
+
+  it("reports nothing for an input with no bytes to carry", () => {
+    expect(CallLedger.payload({ path: 7, force: true })).toBe(0)
+    expect(CallLedger.payload(null)).toBe(0)
+    expect(CallLedger.payload(12)).toBe(0)
   })
 })
