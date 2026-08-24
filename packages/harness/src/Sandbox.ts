@@ -202,30 +202,54 @@ export const defaultLimits = Object.freeze({
 export const minimumMemoryBytes = 1024 * 1024
 
 /**
- * How much of one `console.log` statement reaches the next model turn.
- *
- * Head-elided, and the recall it names is the variable itself: the value is
- * still bound in the realm, so the way to see more of it is to print a narrower
- * slice rather than to fetch it again. This is the whole reason the REPL mode
- * can afford a small print budget where the filing mode needed a large `recall`
- * one — nothing here is the only copy.
- *
- * @category constants
- * @since 0.1.0
- */
-export const printStatementBytes = 4096
-
-/**
  * How much of one frame's whole print buffer reaches the next model turn.
  *
- * Middle-elided with the dropped byte count stated, because the head and the
- * tail of a log are where it identifies itself. Sized against the `recall`
- * budget it replaces, and delivered once rather than re-rendered every frame.
+ * This is the only ceiling on the channel. A frame's statements *share* it:
+ * each is middle-elided to the share it is apportioned, and a statement short
+ * of its share hands the remainder back to the statements that are over theirs.
+ *
+ * They used to cap independently at 4 KiB each, head-first, and the r95repl
+ * lane priced that: 197 of its 357 printing frames had a statement cut, 191 of
+ * them while this frame budget sat mostly unspent, and 3.06 MB went to
+ * per-statement caps against 6 frames that ever reached this one. The
+ * `sympy__sympy-13878` run fused one `console.log` of 38,928 bytes; it was
+ * shown the first 4,096 and lost the tail, which held the result of a
+ * three-minute test suite the frame had already paid for. It ran that suite
+ * again four frames later. Sharing the budget shows that frame 16 KiB from both
+ * ends instead of 4 KiB from the head, and moves no ceiling: 16 KiB was the
+ * most a frame could ever deliver before, and it is the most now.
+ *
+ * Every elision is from the middle with the dropped byte count stated, because
+ * the head and the tail of a log are where it identifies itself, and the notices
+ * are reserved out of this budget before any of it is apportioned — so the
+ * assembled buffer is bounded outright and nothing has to shorten it a second
+ * time. Sized against the `recall` budget it replaces, and delivered once rather
+ * than re-rendered every frame.
  *
  * @category constants
  * @since 0.1.0
  */
 export const printFrameBytes = 16 * 1024
+
+/**
+ * The smallest share of {@link printFrameBytes} one print statement is given.
+ *
+ * A share below this is all notice and no value — a middle elision of 80 bytes
+ * says less than the sentence explaining it — so a frame that printed more
+ * statements than the budget can floor drops whole statements from the middle
+ * and states how many, rather than cutting every one of them to nothing. That
+ * is the same shape the frame bound already had, applied a statement at a time
+ * so nothing is cut mid-line.
+ *
+ * It is the floor on how many statements are *kept*, applied before the elision
+ * notices are reserved, so the share a kept statement finally receives is
+ * somewhat under it.
+ *
+ * @category constants
+ * @since 0.1.0
+ * @slop
+ */
+export const printStatementFloor = 512
 
 /**
  * How much of one frame's print buffer the host keeps while the cell still runs.
@@ -239,6 +263,12 @@ export const printFrameBytes = 16 * 1024
  * budget is far past any honest use and still a fixed ceiling: past it the
  * payload is not read at all, and the count of what went unread is stated in the
  * buffer rather than dropped in silence.
+ *
+ * A statement is held at no more than {@link printFrameBytes} — the two ends of
+ * it, with the size it had — because a whole frame's budget is the most any one
+ * statement could ever be shown. So this ceiling holds at least sixteen
+ * statements whatever a cell prints, and a cell that prints many small values
+ * reaches it only after hundreds of them.
  *
  * @category constants
  * @since 0.1.0

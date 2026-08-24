@@ -23,6 +23,49 @@
  */
 
 /**
+ * Shortens an already-shortened text from the middle, counting against the
+ * whole it came from.
+ *
+ * A value can be bounded twice: once where the host copies it out of the
+ * sandbox, and again where the frame apportions its print budget across the
+ * statements that share it. Counting the second reduction against what survived
+ * the first would report a value as smaller than it is — the exact dishonesty
+ * this module exists to abolish — so `whole` is stated by the caller, which is
+ * the only place that still knows it, and the notice always names the original
+ * size.
+ *
+ * `text` must be the head and tail of the original, in order: every reduction
+ * here keeps both ends, so slicing the ends of a reduced value is the same as
+ * slicing the ends of the value it came from.
+ *
+ * @since 0.1.0
+ * @private
+ * @slop
+ */
+export const middleFrom = (text: string, whole: number, limit: number, recall: string): string => {
+  if (whole <= limit) return text
+  const edge = Math.floor(limit / 2)
+  return `${text.slice(0, edge)}\n… ${whole - limit} of ${whole} bytes elided from the middle. ${recall} …\n${
+    text.slice(text.length - edge)
+  }`
+}
+
+/**
+ * The most one {@link middleFrom} notice can cost, for a value of this size.
+ *
+ * A caller apportioning one budget across several values has to reserve the
+ * notices before it can hand out the rest, or it hands out bytes the notices
+ * then take back and something downstream cuts the notice in half. The bound is
+ * exact: the dropped count is never larger than the whole, so the notice for a
+ * value shortened to nothing is the longest notice that value can produce.
+ *
+ * @since 0.1.0
+ * @private
+ * @slop
+ */
+export const noticeCost = (whole: number, recall: string): number => middleFrom("", whole, 0, recall).length
+
+/**
  * Shortens text from the middle, keeping both ends.
  *
  * The two ends are where a file excerpt, a diff, or a test log identifies
@@ -33,13 +76,8 @@
  * @private
  * @slop
  */
-export const middle = (text: string, limit: number, recall: string): string => {
-  if (text.length <= limit) return text
-  const edge = Math.floor(limit / 2)
-  return `${text.slice(0, edge)}\n… ${
-    text.length - limit
-  } of ${text.length} bytes elided from the middle. ${recall} …\n${text.slice(text.length - edge)}`
-}
+export const middle = (text: string, limit: number, recall: string): string =>
+  middleFrom(text, text.length, limit, recall)
 
 /**
  * Shortens text from the end, keeping the head.

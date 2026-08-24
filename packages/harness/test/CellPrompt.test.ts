@@ -512,10 +512,44 @@ describe("the repl contract", () => {
     // change is the most expensive kind this harness has: r91 grew the filing
     // contract from 8,197 to 11,312 characters and lost five verdicts for it.
     // So the REPL text gets the same treatment the filing text gets — a pinned
-    // length, so that changing it is a decision somebody made rather than
-    // something that happened.
-    expect(replText()).toHaveLength(7_711)
+    // length and a pinned digest, so that changing it is a decision somebody
+    // made rather than something that happened.
+    //
+    // It moved once, 7,711 → 8,312, on will's ruling of 2026-08-23: the
+    // completion rule was rewritten from see-then-attest to the guarded shape,
+    // after `sympy__sympy-13878` claimed in `output` that a suite exited 0 one
+    // frame after its own guarded `ctx.done` had declined to fire because that
+    // suite exited 1. Moving these two numbers means a wave has to be run.
+    expect(replText()).toHaveLength(8_312)
+    expect(Digest.digest(replText()))
+      .toBe("7272668fa108fd06549308cbaab435c13debcee0f544d5ba583108a7809ec0a4")
     expect(replText().length).toBeLessThan(contractText().length)
+  })
+
+  it("encourages the guard shape and leaves the unguarded completion legal", () => {
+    // The whole of the ruling, read off the rendered text: the shape is shown
+    // in code, the mechanism that makes it safe is stated, and the bare call is
+    // named as a claim rather than refused.
+    const text = replText()
+    expect(text).toContain("if (after.exitCode === 0) ctx.done(...)")
+    expect(text).toContain(`{ ok: false, error: { code: "run_completed" } }`)
+    expect(text).toContain("A bare `ctx.done` is allowed")
+    expect(text).toContain("a claim nobody checked")
+    // The rule that died. A contract that still asked for it would be asking
+    // for a memory of a result in the same breath as offering the check.
+    expect(text).not.toContain("Complete only once you have SEEN")
+  })
+
+  it("shows the guard in the worked example rather than only describing it", () => {
+    const blocks = [...replText().matchAll(/```cell\n([\s\S]*?)```/g)].map((match) => match[1]!)
+    expect(blocks).toHaveLength(2)
+    // One cell, in order: the probe that must fail, the edit, the identical
+    // probe replayed, and the completion behind a check of both exit codes.
+    const fix = blocks[1]!
+    expect(fix.indexOf("const before")).toBeLessThan(fix.indexOf(`ctx.call("edit"`))
+    expect(fix.indexOf(`ctx.call("edit"`)).toBeLessThan(fix.indexOf("const after"))
+    expect(fix.indexOf("const after")).toBeLessThan(fix.indexOf("ctx.done("))
+    expect(fix).toContain("if (before.exitCode !== 0 && after.exitCode === 0) ctx.done(")
   })
 
   it("teaches none of the filing mode's mechanics", () => {

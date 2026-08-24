@@ -405,6 +405,133 @@ describe("CellTurn in repl mode", () => {
   })
 })
 
+describe("CellTurn repl completion, behind the check that decides it", () => {
+  /**
+   * The guard shape the contract teaches, run end to end.
+   *
+   * One cell: the probe that must fail, the write, the identical probe replayed,
+   * and `ctx.done` behind a check of both. The engine double answers the second
+   * probe differently from the first because the write happened in between,
+   * which is the whole point — the completion is decided by a result the cell
+   * just took rather than by what the model remembers about it.
+   */
+  const proving = (report: (path: string) => number): EngineLike.EngineLike => {
+    let written = false
+    return EngineLike.make({
+      sealStep: () => Stream.empty,
+      splice: () => Stream.empty,
+      call: (call) =>
+        Effect.sync(() => {
+          if (call.flowName === "fs/write") {
+            written = true
+            return new Cell.CallResult({ outcome: "success", value: { ok: true, wrote: 12 } })
+          }
+          return new Cell.CallResult({
+            outcome: "success",
+            value: { exitCode: written ? report("after") : report("before") }
+          })
+        }),
+      record: (boundary) => boundary.execute,
+      observe: Effect.succeed(Option.none()),
+      suspend: (reason) => Effect.fail(new HarnessError({ code: "suspended", message: reason.message, cause: reason }))
+    })
+  }
+
+  const guarded = `const verification = { flow: "fs/list", input: { path: "tests/test_widen.py" } }\n` +
+    `const before = await ctx.call(verification.flow, verification.input)\n` +
+    `const applied = await ctx.call("fs/write", { path: "src/widen.ts", content: "widen(value)" })\n` +
+    `const after = await ctx.call(verification.flow, verification.input)\n` +
+    `console.log("exit", before.exitCode, after.exitCode)\n` +
+    `if (before.exitCode !== 0 && after.exitCode === 0) ctx.done("tests/test_widen.py failed before the write and exits 0 after it")`
+
+  const drive = async (
+    script: ScriptedModel.Script,
+    engine: EngineLike.EngineLike
+  ): Promise<Run> => {
+    const model = ScriptedModel.make(script)
+    const events: Array<AgentEvent.AgentEvent> = []
+    const outcome = await CellTurn.run({ state: state({ maxFrames: 4 }), flows }).pipe(
+      Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+      Effect.provide(
+        EngineLike.layer(
+          EngineLike.make({ ...engine, sealStep: (step) => model.model.stream(step.request) })
+        )
+      ),
+      Effect.provide(QuickJSSandbox.layer),
+      Effect.provide(Steering.layerNoop()),
+      Effect.result,
+      Effect.runPromise
+    )
+    return { events, model, failure: outcome._tag === "Failure" ? outcome.failure : undefined }
+  }
+
+  it("completes in the cell that took the check, when the check passes", async () => {
+    const { events } = await drive([emits(guarded)], proving((phase) => phase === "before" ? 1 : 0))
+
+    expect(of(events, "transition-applied")[0]?.transition._tag).toBe("complete")
+    const resolved = of(events, "resolved")[0]?.message.content[0]
+    expect(resolved?.type === "text" ? resolved.text : "").toContain("failed before the write and exits 0 after it")
+    expect(of(events, "cell-printed")[0]?.text).toBe("exit 1 0")
+  })
+
+  it("carries on, in the same cell, when the check does not pass", async () => {
+    // Nothing else about the cell changes. The guard is the whole difference
+    // between a run that answers and a run that gets another frame, which is
+    // what makes it worth teaching over an attestation.
+    const { events } = await drive(
+      [emits(guarded), emits(`ctx.done("gave up")`)],
+      proving(() => 1)
+    )
+
+    expect(of(events, "transition-applied")[0]?.transition._tag).toBe("continue")
+    expect(of(events, "cell-printed")[0]?.text).toBe("exit 1 1")
+  })
+
+  it("stops dispatching the calls after a completion and says why in the print", async () => {
+    const { events } = await drive(
+      [emits(
+        `ctx.done("early")\nconst extra = await ctx.call("fs/write", { path: "a", content: "b" })\nconsole.log(extra.ok, extra.error.code)`
+      )],
+      proving(() => 0)
+    )
+
+    expect(of(events, "transition-applied")[0]?.transition._tag).toBe("complete")
+    expect(of(events, "cell-printed")[0]?.text).toBe("false run_completed")
+    // The call never reached the boundary, so it is not in the run's record of
+    // what it asked: a call that did not run is not a call.
+    expect(of(events, "cell-call-settled")).toHaveLength(0)
+  })
+})
+
+describe("CellTurn repl and a write the run has already made", () => {
+  it("shows the second application of one patch as the write it repeats", async () => {
+    // `sympy__sympy-13878`, in the shape the loop can reproduce: apply, revert,
+    // apply the identical thing again. Both succeed, nothing is refused, and the
+    // frame that follows opens with a ledger that says the second is the first.
+    const patch = `*** Begin Patch\n${"d".repeat(200)}`
+    const { model } = await run({
+      script: [
+        emits(`var applied = await ctx.call("fs/write", { content: ${JSON.stringify(patch)}, path: "crv_types.py" })`),
+        emits(`var again = await ctx.call("fs/write", { content: ${JSON.stringify(patch)}, path: "crv_types.py" })`),
+        emits("ctx.done('ok')")
+      ],
+      state: state({ maxFrames: 4 })
+    })
+
+    const block = frameBlock(model.recorder.requests[2])
+    expect(block).toContain("1. fs/write crv_types.py — WROTE 216b, ok")
+    expect(block).toContain("2. fs/write crv_types.py — WROTE 216b, ok — the same write as 1, which succeeded")
+    expect(block).toContain("A line marked `WROTE` changed the tree")
+  })
+
+  it("says nothing about writes to a run that has only read", async () => {
+    const { model } = await run({
+      script: [emits(`var listed = await ctx.call("fs/list", { path: "." })`), emits("ctx.done('ok')")]
+    })
+    expect(frameBlock(model.recorder.requests[1])).not.toContain("WROTE")
+  })
+})
+
 describe("CellTurn repl durability", () => {
   /**
    * Five cells that bind, print, call and derive — every mechanism the realm

@@ -17,12 +17,26 @@
  * can see what it has already asked without asking again. It carries no
  * payloads: a line says `stdout=4096b`, never the four kilobytes.
  *
+ * A call that *writes* gets two things more, because a repeated write is a
+ * different failure from a repeated read. The line says so and says how many
+ * bytes the call carried, and a write whose flow and input a earlier write
+ * already settled names that earlier one. The r95repl lane is why:
+ * `sympy__sympy-13878` applied one 4,965-byte patch five times across five
+ * frames, reverting the file between each, and nothing in the run's own record
+ * of itself said that the second application was the first one again. It spent
+ * 649 seconds and $1.20, the slowest instance in an arm whose median was 121 s.
+ * This is visibility and not a gate: re-applying is sometimes exactly right —
+ * the run had genuinely reverted the tree — and the exact-match refusal the
+ * truncated-write guard already carries is what stands between a run and a
+ * destructive repeat.
+ *
  * It is a sibling of `NarrowedCheck` and `TruncatedOutput`: run-scoped
  * controller state, bounded, journal-derivable, and interpreting nothing about
  * any flow, tool, or repository.
  *
  * @since 0.1.0
  */
+import * as Digest from "@smthrs/core/Digest"
 import * as CanonicalJson from "@smthrs/model/CanonicalJson"
 import { Effect, Schema } from "effect"
 import * as elide from "./internal/elide.ts"
@@ -139,6 +153,48 @@ export class Entry extends Schema.Class<Entry>("flows/harness/CallLedger/Entry")
     Schema.withDecodingDefaultKey(Effect.succeed(0))
   ),
   /**
+   * Whether this call reached the engine declaring that it changes the tree.
+   *
+   * A mutation is the one kind of call whose repetition is never compliance.
+   * Re-issuing a read costs bytes; re-issuing the check that failed is what rule
+   * 7 asks for; re-applying a hunk means the run either lost its own edit or
+   * undid it, and either way it is about to make a change it has already made.
+   * So the line says which calls wrote, and {@link render} points a repeated
+   * write back at the write it repeats.
+   */
+  mutates: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(Effect.succeed(false)),
+    Schema.withDecodingDefaultKey(Effect.succeed(false))
+  ),
+  /**
+   * The bytes this call carried into the tree, for a call that declares a write.
+   *
+   * It is the longest string in the call's input — a `write`'s content, an
+   * `edit`'s replacement, a patch — measured the same flow-agnostic way
+   * `TruncatedOutput` measures a payload, and it is **not** a measured delta of
+   * the workspace. The harness has no per-call delta to report: its one honest
+   * measurement is `EngineLike.observe`, which covers a whole frame and counts
+   * paths rather than bytes. Stating the payload says what the call was, which
+   * is what makes two applications of one 4,965-byte patch legible as the same
+   * act; claiming a delta would say what the tree did, which this number does
+   * not know.
+   */
+  payloadBytes: NonNegativeSafeInt.pipe(
+    Schema.withConstructorDefault(Effect.succeed(0)),
+    Schema.withDecodingDefaultKey(Effect.succeed(0))
+  ),
+  /**
+   * The digest of this call's flow and input together.
+   *
+   * Held rather than rendered: it is what lets a later identical write name the
+   * earlier one, and it is a digest so the ledger stays small enough to live in
+   * journaled controller state.
+   */
+  signature: Schema.String.pipe(
+    Schema.withConstructorDefault(Effect.succeed("")),
+    Schema.withDecodingDefaultKey(Effect.succeed(""))
+  ),
+  /**
    * What came back, verbatim, while the run can still afford to carry it.
    *
    * Absent means the bytes are gone from controller state — the result was over
@@ -185,10 +241,23 @@ export type Ledger = typeof Ledger.Type
  * @since 0.1.0
  * @slop
  */
-export const subject = (input: Schema.Json): string => {
-  const found = NarrowedCheck.lex(input).find(NarrowedCheck.names)
-  return clip(found ?? CanonicalJson.stringify(input), width)
-}
+export const subject = (input: Schema.Json): string => clip(target(input) ?? CanonicalJson.stringify(input), width)
+
+/**
+ * The first term of a value that names a target, or nothing.
+ *
+ * Split out of {@link subject} because a write's target is not always in its
+ * input. A patch names its files inside its own text and its input is one opaque
+ * blob, so the only place the path appears in a form anything can read is the
+ * result — `modified: ["sympy/stats/crv_types.py"]`. A line that named a
+ * 4,965-byte patch by its first hundred bytes said nothing a reader could match
+ * against the next one.
+ *
+ * @category conversions
+ * @since 0.1.0
+ * @slop
+ */
+export const target = (value: Schema.Json): string | undefined => NarrowedCheck.lex(value).find(NarrowedCheck.names)
 
 const scalar = (value: unknown): string => {
   if (typeof value === "string") return `${value.length}b`
@@ -220,6 +289,28 @@ export const digest = (value: Schema.Json): string => {
   return clip([...named, ...(rest > 0 ? [`+${rest} more`] : [])].join(" "), width)
 }
 
+const encoder = new TextEncoder()
+
+/**
+ * The bytes one call carried into the tree: the longest string in its input.
+ *
+ * Flow-agnostic on purpose, and the same walk `TruncatedOutput` uses to find the
+ * payload of a call it has never heard of. A `write` carries its content, an
+ * `edit` its replacement, `apply_patch` its patch, and every one of them is the
+ * longest string the input holds. A mutating call with no string at all — a
+ * revert that names only a path — carries nothing and says zero.
+ *
+ * @category conversions
+ * @since 0.1.0
+ * @slop
+ */
+export const payload = (input: Schema.Json): number => {
+  if (typeof input === "string") return encoder.encode(input).byteLength
+  if (Array.isArray(input)) return input.reduce<number>((widest, item) => Math.max(widest, payload(item)), 0)
+  if (input === null || typeof input !== "object") return 0
+  return Object.values(input).reduce<number>((widest, item) => Math.max(widest, payload(item)), 0)
+}
+
 /**
  * One settled call, as the controller observed it.
  *
@@ -233,6 +324,8 @@ export interface Settlement {
   readonly ok: boolean
   readonly value: Schema.Json
   readonly message?: string | undefined
+  /** Whether the call reached the engine declaring a write; see {@link Entry.mutates}. */
+  readonly mutates?: boolean | undefined
 }
 
 /**
@@ -265,13 +358,21 @@ export const entry = (ordinal: number, call: Settlement, retainResult = true): E
   // `undefined`, and canonical JSON refuses it. The ledger reports what the
   // cell saw, which for such a call is `null`.
   const whole = CanonicalJson.stringify(call.ok ? call.value ?? null : { failed: call.message ?? "failed" })
+  const mutates = call.mutates === true
   return new Entry({
     ordinal,
     flow: clip(call.flow, width),
-    subject: subject(call.input),
+    // A write whose input names nothing is named by what came back, because a
+    // patch carries its paths in its own text and hands them back as a list.
+    subject: mutates && target(call.input) === undefined && target(call.value) !== undefined
+      ? clip(target(call.value)!, width)
+      : subject(call.input),
     ok: call.ok,
     digest: call.ok ? digest(call.value) : clip(call.message ?? "failed", width),
     bytes: whole.length,
+    mutates,
+    payloadBytes: mutates ? payload(call.input) : 0,
+    signature: mutates ? Digest.digest(CanonicalJson.stringify([call.flow, call.input])) : "",
     retained: retainResult && whole.length <= recallEntryBytes ? whole : undefined
   })
 }
@@ -362,11 +463,28 @@ export const render = (ledger: Ledger, recallable = true): string | undefined =>
   const heading = elided === 0
     ? `Calls this run has settled (${total}), oldest first. You have already asked these — read them here instead of asking again:`
     : `Calls this run has settled (${total}), oldest first; the ${elided} oldest are not listed. You have already asked these — read them here instead of asking again:`
-  const lines = ledger.map((line) =>
-    `${line.ordinal}. ${line.flow} ${line.subject} — ${line.ok ? "ok" : "FAILED"}: ${line.digest} (${line.bytes}b${
-      line.retained === undefined ? "" : `, recall ${line.ordinal}`
-    })`
-  )
+  // Where each write's signature was first settled, so a repeat can name it.
+  // First rather than most recent: the run wants the call it has already made,
+  // and the earliest one is the one every later copy repeats.
+  const first = new Map<string, Entry>()
+  for (const line of ledger) {
+    if (line.mutates && !first.has(line.signature)) first.set(line.signature, line)
+  }
+  const lines = ledger.map((line) => {
+    const repeated = line.mutates ? first.get(line.signature) : undefined
+    const again = repeated === undefined || repeated.ordinal === line.ordinal
+      ? ""
+      : ` — the same write as ${repeated.ordinal}, which ${repeated.ok ? "succeeded" : "failed"}`
+    const wrote = line.mutates ? `WROTE ${line.payloadBytes}b, ` : ""
+    return `${line.ordinal}. ${line.flow} ${line.subject} — ${wrote}${
+      line.ok ? "ok" : "FAILED"
+    }${again}: ${line.digest} (${line.bytes}b${line.retained === undefined ? "" : `, recall ${line.ordinal}`})`
+  })
+  // Only where the run has actually written something: teaching about a marker
+  // nothing on the page carries costs a frame's worth of reading for nothing.
+  const writes = first.size === 0
+    ? ""
+    : "\nA line marked `WROTE` changed the tree, with the bytes it carried. One that names an earlier write made a change this run had already made: read what happened after the first one before making it a third time."
   // The recall trailer is teaching about a mechanic, so it is printed only
   // where the mechanic exists. A REPL run holds its results under the names its
   // own cells gave them, and telling it to ask for bytes nobody kept would cost
@@ -374,7 +492,7 @@ export const render = (ledger: Ledger, recallable = true): string | undefined =>
   const trailer = recallable
     ? "\nA line marked `recall N` still holds its whole result: put N in the `recall` array of your next transition and the harness prints it in the next prompt. That is free; issuing the call again is not."
     : "\nThese are an index, not the results: what each call returned is still under the name your cell bound it to. Read the name; do not issue the call again."
-  return `${heading}\n${lines.join("\n")}${trailer}`
+  return `${heading}\n${lines.join("\n")}${trailer}${writes}`
 }
 
 /**

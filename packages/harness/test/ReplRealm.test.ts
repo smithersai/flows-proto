@@ -120,19 +120,47 @@ describe("QuickJSSandbox.openRealm", () => {
     expect(frames[0]!.prints.split("\n")[2]).toBe("Symbol(tag)")
   })
 
-  it("bounds one print statement and names the recall as the variable", async () => {
+  it("gives one lone statement the whole frame budget, from both ends", async () => {
+    // The bug this closes, in its smallest form. The old per-statement cap cut
+    // this at 4 KiB of head and the frame budget went unspent; a fused print
+    // whose head is a warning banner therefore lost its own verdict line.
     const frames = await session([
-      `const wide = "x".repeat(${Sandbox.printStatementBytes + 100})\nconsole.log(wide)`
+      `const wide = "HEAD" + "x".repeat(${Sandbox.printFrameBytes * 2}) + "TAIL"\nconsole.log(wide)`
     ])
     expect(frames[0]!.prints).toContain("still bound in the realm")
-    expect(frames[0]!.prints.length).toBeLessThan(Sandbox.printStatementBytes + 200)
+    expect(frames[0]!.prints.startsWith("HEAD")).toBe(true)
+    expect(frames[0]!.prints.endsWith("TAIL")).toBe(true)
+    expect(frames[0]!.prints).toContain(`of ${Sandbox.printFrameBytes * 2 + 8} bytes elided`)
+    expect(frames[0]!.prints.length).toBeLessThan(Sandbox.printFrameBytes + 300)
+  })
+
+  it("leaves a short statement whole while its long sibling pays for the budget", async () => {
+    const frames = await session([
+      `const wide = "z".repeat(${
+        Sandbox.printFrameBytes * 2
+      })\nconsole.log("the short line survives")\nconsole.log(wide)`
+    ])
+    expect(frames[0]!.prints.split("\n")[0]).toBe("the short line survives")
+    expect(frames[0]!.prints).toContain("still bound in the realm")
+    expect(frames[0]!.prints.length).toBeLessThan(Sandbox.printFrameBytes + 300)
   })
 
   it("bounds a whole frame's print buffer from the middle", async () => {
     const frames = await session([
-      `for (let index = 0; index < 12; index++) console.log("y".repeat(${Sandbox.printStatementBytes - 1}))`
+      `for (let index = 0; index < 12; index++) console.log("y".repeat(${Sandbox.printFrameBytes / 4}))`
     ])
     expect(frames[0]!.prints).toContain("elided from the middle")
+    expect(frames[0]!.prints.length).toBeLessThan(Sandbox.printFrameBytes + 300)
+  })
+
+  it("drops whole statements from the middle when a frame prints more than it can floor", async () => {
+    const kept = Math.floor(Sandbox.printFrameBytes / Sandbox.printStatementFloor)
+    const frames = await session([
+      `for (var index = 0; index < ${kept + 8}; index++) console.log("line " + index)`
+    ])
+    expect(frames[0]!.prints).toContain("line 0")
+    expect(frames[0]!.prints).toContain(`line ${kept + 7}`)
+    expect(frames[0]!.prints).toContain("8 print statements elided from the middle of this frame")
   })
 
   it("resolves a flow call and hands the result back inside the same cell", async () => {
@@ -151,11 +179,61 @@ describe("QuickJSSandbox.openRealm", () => {
       .toBe("the check passes")
   })
 
-  it("lets the last intent call win", async () => {
+  it("lets the first intent call win, because it took effect where it was called", async () => {
     const frames = await session(["ctx.done('first')\nctx.done('second')"])
     const outcome = frames[0]!.outcome
     expect(outcome._tag === "settled" && outcome.transition._tag === "complete" && outcome.transition.output)
-      .toBe("second")
+      .toBe("first")
+  })
+
+  it("stops dispatching calls once a cell has completed, and says why", async () => {
+    // The guard shape the contract teaches puts `ctx.done` in the middle of a
+    // cell. What follows it must not run — the run is over — and must not throw,
+    // because a throw would discard a frame that had already finished the run.
+    const frames = await session([
+      "ctx.done('the check passes')\nconst after = await ctx.call('echo', { ask: 1 })\nconsole.log(after.ok, after.error.code)"
+    ])
+    const outcome = frames[0]!.outcome
+    expect(outcome._tag === "settled" && outcome.transition._tag).toBe("complete")
+    expect(frames[0]!.prints).toBe("false run_completed")
+  })
+
+  it("stops dispatching calls after a park too", async () => {
+    const frames = await session([
+      "ctx.park('waiting-input', 'which branch?')\nconst after = await ctx.call('echo', { ask: 1 })\nconsole.log(after.error.hint)"
+    ])
+    expect(frames[0]!.outcome._tag === "settled" && frames[0]!.outcome.transition._tag).toBe("park")
+    expect(frames[0]!.prints).toContain("guard the ctx.done or ctx.park")
+  })
+
+  it("runs the rest of a completed cell's own code out harmlessly", async () => {
+    const frames = await session([
+      "const tally = [1, 2, 3]\nif (tally.length === 3) ctx.done('three')\nconst doubled = tally.map(n => n * 2)\nconsole.log(doubled)"
+    ])
+    const outcome = frames[0]!.outcome
+    expect(outcome._tag === "settled" && outcome.transition._tag === "complete" && outcome.transition.output)
+      .toBe("three")
+    expect(frames[0]!.prints).toBe("[2,4,6]")
+  })
+
+  it("clears the seal for the retry of a frame whose park was refused", async () => {
+    // A park with a reason outside the three is rejected and the SAME frame is
+    // asked again. A realm still sealed from the refused attempt would answer
+    // that retry with `run_completed` for every call it made.
+    const frames = await session([
+      "ctx.park('tea-break', 'later')\nawait ctx.call('echo', { ask: 1 })",
+      "const answer = await ctx.call('echo', { ask: 2 })\nconsole.log(answer)"
+    ])
+    expect(frames[0]!.outcome._tag).toBe("rejected")
+    expect(frames[1]!.prints).toBe(`{"seen":{"ask":2}}`)
+  })
+
+  it("does not seal a completion the realm refused to encode", async () => {
+    const frames = await session([
+      "try { ctx.done(function () {}) } catch (error) { console.log('refused') }\nconst answer = await ctx.call('echo', { ask: 3 })\nconsole.log(answer.seen.ask)"
+    ])
+    expect(frames[0]!.outcome._tag === "settled" && frames[0]!.outcome.transition._tag).toBe("continue")
+    expect(frames[0]!.prints).toBe("refused\n3")
   })
 
   it("settles a park from ctx.park", async () => {
@@ -653,16 +731,57 @@ describe("the REPL contract's worked example", () => {
     // The recon cell settles, binds every name the second cell reads, and prints
     // the bytes the edit is chosen from.
     expect(frames[0]!.outcome._tag).toBe("settled")
-    expect(frames[0]!.bindings.map((binding) => binding.name))
-      .toEqual(["found", "hit", "region", "verification", "before"])
+    expect(frames[0]!.bindings.map((binding) => binding.name)).toEqual(["found", "hit", "region"])
     expect(frames[0]!.prints).toContain("return value")
 
-    // The fix-and-prove cell reads those names, replays the identical check and
-    // finishes the run in the same frame.
+    // The fix-and-prove cell is the guard shape end to end: probe fails, edit
+    // lands, the identical probe passes, and the completion is behind a check of
+    // the two exit codes rather than in front of them.
     const finished = frames[1]!.outcome
     expect(finished._tag === "settled" && finished.transition._tag).toBe("complete")
     expect(finished._tag === "settled" && finished.transition._tag === "complete" && finished.transition.output)
       .toContain("failed before the edit and exits 0 after it")
     expect(frames[1]!.prints).toContain("+  return widen(value)")
+    expect(frames[1]!.prints).toContain("1 0")
+  })
+
+  it("does not complete when the guard's check fails", async () => {
+    // The same second cell, against a tree the edit does not fix. The guard is
+    // the whole difference between a run that answers and a run that carries on,
+    // and nothing else in the cell changes.
+    const contract = CellPrompt.make(shown, {}, "repl").find((section) => section.id === "cell-contract")?.text ?? ""
+    const blocks = [...contract.matchAll(/```cell\n([\s\S]*?)```/g)].map((match) => match[1]!)
+    const stubbed: Sandbox.Handler = (invocation) =>
+      Effect.sync(() =>
+        new Cell.CallResult({
+          outcome: "success",
+          value: ((): unknown => {
+            switch (invocation.flow) {
+              case "grep":
+                return { ok: true, matches: [{ file: "src/units/widen.ts", line: 42, text: "  return value" }] }
+              case "read":
+                return { content: "line one\n  return value\nline three" }
+              case "bash":
+                return { stdout: "1 failed", exitCode: 1 }
+              default:
+                return { ok: true, hunk: "-  return value\n+  return widen(value)" }
+            }
+          })() as never
+        })
+      )
+
+    const frames = await Effect.gen(function*() {
+      const sandbox = yield* QuickJSSandbox.make
+      const realm = yield* sandbox.openRealm!({ flows: shown })
+      const out: Array<Sandbox.RealmFrame> = []
+      for (const [index, text] of blocks.entries()) {
+        out.push(yield* realm.evaluate({ cell: Cell.source(text), frame: index, call: stubbed }))
+      }
+      return out
+    }).pipe(Effect.scoped, Effect.runPromise)
+
+    const carried = frames[1]!.outcome
+    expect(carried._tag === "settled" && carried.transition._tag).toBe("continue")
+    expect(frames[1]!.prints).toContain("1 1")
   })
 })

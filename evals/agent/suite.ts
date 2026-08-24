@@ -1,5 +1,5 @@
 /**
- * The fixed suite: eleven scenarios that put the flows agent through the
+ * The fixed suite: seventeen scenarios that put the flows agent through the
  * behaviours a host depends on, and the two scorers that grade them.
  *
  * Each scenario is a whole agent run against a scripted provider, so a case is
@@ -363,6 +363,93 @@ const scenarios: Readonly<Record<string, Scenario>> = {
       })
     },
     expected: answered("read my own print", 2)
+  },
+
+  "repl-completion-behind-a-guard": {
+    summary:
+      "One repl cell reproduces the failure, writes, replays the identical check and completes behind a check of both exit codes — the shape the contract teaches, in the frame that took the evidence.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // The completion is decided by results this cell just took, not by
+        // anything the model remembers about them. One model call for the whole
+        // task is what the guard buys.
+        //
+        // The re-check names `only: "one"` rather than repeating the baseline's
+        // input verbatim because this suite's engine is the real one: `check`
+        // is hermetic and sealed, so a second call with an identical input is
+        // served from its durable boundary instead of run, which is the
+        // property `read-only-cap-stops-a-reading-run` pins. Rule 7's
+        // identical-command discipline is proved against a real unhermetic
+        // command in `packages/harness/test/ReplTurn.test.ts`; what this case
+        // proves is the guard.
+        respond: () =>
+          `const before = await ctx.call("check", { command: "verify a/b.py" })
+           await ctx.call("apply", { path: "a/b.py" })
+           const after = await ctx.call("check", { command: "verify a/b.py", only: "one" })
+           if (before.exitCode !== 0 && after.exitCode === 0) ctx.done("verify a/b.py failed before the write and exits 0 after it")`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.checkSource(recorder)]
+      })
+    },
+    expected: answered("verify a/b.py failed before the write and exits 0 after it", 1, [
+      "check",
+      "apply",
+      "check:one"
+    ])
+  },
+
+  "repl-guard-that-does-not-fire-carries-on": {
+    summary:
+      "The identical cell against a check that was green to begin with does not complete: the guard is the whole difference between answering and getting another frame.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // `only: "green"` names a check nothing in this tree can fail, so the
+        // baseline passes and the guard reads false. A run that completed here
+        // would be claiming a change nobody watched happen.
+        respond: (_prompt, index) =>
+          index === 0
+            ? `const verification = { flow: "check", input: { command: "verify a/b.py", only: "green" } }
+               const before = await ctx.call(verification.flow, verification.input)
+               await ctx.call("apply", { path: "a/b.py" })
+               const after = await ctx.call(verification.flow, verification.input)
+               if (before.exitCode !== 0 && after.exitCode === 0) ctx.done("proved it")`
+            : `ctx.done("the baseline was already green")`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.checkSource(recorder)]
+      })
+    },
+    // Two `check:green` calls, one handler run: the second names the identical
+    // input, so the engine serves it from the boundary the first one settled.
+    expected: answered("the baseline was already green", 2, ["check:green", "apply"])
+  },
+
+  "repl-completion-stops-the-calls-after-it": {
+    summary:
+      "ctx.done takes effect where it is called: the flow calls a cell would have made after it never reach the boundary, and they fail soft rather than throwing.",
+    run: () => {
+      const recorder = Subject.makeRecorder()
+      return Subject.runAgent({
+        recorder,
+        // The output is built from the refused call's own code, so the case
+        // cannot pass by ending some other way: a loop that dispatched the call
+        // anyway would record `probe:after-done`, and one that threw would never
+        // reach the completion at all.
+        respond: () =>
+          `ctx.done("sealed")
+           const after = await ctx.call("probe", { note: "after-done" })
+           ctx.done("never " + after.error.code)`,
+        maxFrames: 4,
+        cellMode: "repl",
+        flows: [Subject.probeSource(recorder)]
+      })
+    },
+    expected: answered("sealed", 1)
   },
 
   "repl-read-only-cap-takes-ctx-justify": {
