@@ -196,10 +196,15 @@ export class Snapshot extends Schema.Class<Snapshot>("flows/harness/EngineLike/S
 /**
  * A request to pin the workspace as it stands right now.
  *
- * `identity` travels with it so a store can namespace what it writes by the run
- * that wrote it: two runs over one workspace mint `id` values from the same
- * frame-and-ordinal counter, and a store that keyed on the id alone would hand
- * the second run the first run's tree.
+ * `identity` travels with it so a store *can* namespace what it writes by the
+ * run that wrote it: two runs over one workspace mint `id` values from the same
+ * frame-and-ordinal counter, so a store that keys on the id alone hands the
+ * second run the first run's tree. `@smthrs/std/Checkpoints`'s git store keys
+ * on the id alone and is right to: it also materializes at one path per id, as
+ * `TestRun`'s baseline worktree does, so two concurrent runs over one workspace
+ * collide on the checkout before they collide on the name. One workspace holds
+ * one run — that is the assumption the whole workspace layer already makes, and
+ * this field is what a store that stops making it would namespace by.
  *
  * @category models
  * @since 0.1.0
