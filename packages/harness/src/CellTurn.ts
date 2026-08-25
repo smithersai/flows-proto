@@ -827,6 +827,27 @@ export const teach = (
   })
 }
 
+/**
+ * The distinct terms of everything the harness itself put in front of the run.
+ *
+ * The prefix zone is exactly that text — the cell contract, the flow catalog,
+ * memory, and the task — and nothing else: transcript, observations, and
+ * compaction summaries all land in the tail, so no term a model wrote can
+ * reach this set. `NarrowedCheck.findOnly` reads it as the vocabulary the run
+ * was taught, which no completion may be bounced for repeating: a run that
+ * invokes the runner its task prescribes, with the flag its task prescribes,
+ * added no condition of its own. Prefix parts that carry no text — a tool
+ * declaration, a structured message — teach no terms.
+ */
+const taughtTerms = (window: ContextWindow.ContextWindow): ReadonlyArray<string> =>
+  NarrowedCheck.terms(
+    window.segments
+      .filter((segment) => segment.zone === "prefix")
+      .flatMap((segment) => segment.content)
+      .map((part) => "text" in part && typeof part.text === "string" ? part.text : "")
+      .join("\n")
+  )
+
 const modelIdFromSeat = (seat: string): string => {
   const separator = seat.indexOf(":")
   return separator < 0 ? seat : seat.slice(separator + 1)
@@ -2392,7 +2413,9 @@ const frame = (
       //    never saw;
       // 4. `NarrowedCheck.findOnly`: the check this frame ended on is the run's
       //    only reading of what it names — nothing broader was ever taken, so
-      //    there was no broader check for (3) to find.
+      //    there was no broader check for (3) to find — and it carries a
+      //    condition the run itself added, one taught neither by the prefix
+      //    this harness wrote nor by the run's own other checks.
       //
       // The last two share one cap. They are two readings of one question —
       // whether the evidence covers what it looks like it covers — and a run
@@ -2443,7 +2466,8 @@ const frame = (
         ? NarrowedCheck.findOnly({
           ledger: checks,
           before: state.checks.map((entry) => entry.signature),
-          frame: frameChecks
+          frame: frameChecks,
+          taught: taughtTerms(contextWindow)
         })
         : undefined
       if (unmoved !== undefined) {

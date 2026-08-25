@@ -33,6 +33,16 @@
  * through one driver so a detector that starts asking something new of a run
  * that resolved has to explain itself against ten real journals.
  *
+ * The third fixture is the r97 full-bench wave — 45 journals, distilled by
+ * `evals/swebench/lib/r97-narrow-only-journals.mjs` — and it is the file the
+ * narrow-only demand's precision was measured on: five firings, of which
+ * three were wrong, each answered by the identical completion re-issued with
+ * a sentence saying the check carried no filter. It carries two things the
+ * older fixtures predate: the task text each run was handed, because the
+ * demand now reads taught terms off it, and per-call checkpoint marks,
+ * because a reading pinned to `ctx.base` never enters the live ledger and a
+ * replay that folded one in found narrowings the wave never saw.
+ *
  * The replay drives the detectors directly rather than the loop, for the same
  * reason `NarrowedCheck.test.ts` does: the loop needs a model, a sandbox and an
  * engine, and none of those decide anything here.
@@ -43,6 +53,7 @@ import * as NarrowedCheck from "../src/NarrowedCheck.ts"
 import * as UnmovedTree from "../src/UnmovedTree.ts"
 import * as UnresolvedFailure from "../src/UnresolvedFailure.ts"
 import journals from "./fixtures/completionJournals.json" with { type: "json" }
+import r97 from "./fixtures/r97Journals.json" with { type: "json" }
 import waveTen from "./fixtures/wave10Journals.json" with { type: "json" }
 
 type Journal = typeof journals.journals[number]
@@ -65,8 +76,13 @@ interface Fired {
  * out is everything that cannot change a demand — the model, the sandbox, the
  * frame budget, and the caps, which are replayed armed at one because that is
  * the shipped default and the question here is what the detectors see.
+ *
+ * `taught` is what the loop lexes off the run's own prefix. The two older
+ * fixtures predate its capture and replay with none, which is the harsher
+ * world for the narrow-only demand: every excuse it grants is one these
+ * replays do without.
  */
-const replay = (journal: Journal): ReadonlyArray<Fired> => {
+const replay = (journal: Journal, taught: ReadonlyArray<string> = []): ReadonlyArray<Fired> => {
   let ledger: ReadonlyArray<NarrowedCheck.Check> = []
   const seqOf = new Map<string, number>()
   const fired: Array<Fired> = []
@@ -74,7 +90,10 @@ const replay = (journal: Journal): ReadonlyArray<Fired> => {
     // A partial or absent walk records no digest, exactly as the loop does.
     const digest = frame.basis === "observed" ? frame.digest : ""
     const checks = frame.calls.flatMap((call) => {
-      if (!call.ok || call.mutates) return []
+      // A reading pinned to a checkpoint is a reading of a tree that is not
+      // this workspace, so it never enters the live ledger; see
+      // `NarrowedCheck.Check` `digest`. Only the r97 fixture records the mark.
+      if (!call.ok || call.mutates || ("checkpointed" in call && call.checkpointed === true)) return []
       const signature = `${call.flow}:${JSON.stringify(call.input)}`
       const recorded = NarrowedCheck.check({
         flow: call.flow,
@@ -103,7 +122,12 @@ const replay = (journal: Journal): ReadonlyArray<Fired> => {
       // what it skipped, so it is only consulted once the other three have
       // found nothing to name. It shares the narrowing cap with the third.
       const narrowOnly = unmoved === undefined && unresolved === undefined && narrowing === undefined
-        ? NarrowedCheck.findOnly({ ledger: whole, before: ledger.map((entry) => entry.signature), frame: checks })
+        ? NarrowedCheck.findOnly({
+          ledger: whole,
+          before: ledger.map((entry) => entry.signature),
+          frame: checks,
+          taught
+        })
         : undefined
       if (unmoved !== undefined) fired.push({ demand: "unmoved-tree", seq, names: [] })
       else if (unresolved !== undefined) {
@@ -264,5 +288,104 @@ describe("the completion demands over the wave that armed them", () => {
       // is not one either.
       targets: ["/opt/miniconda3/envs/testbed/bin/python", "testing/test_collection.py"]
     }])
+  })
+})
+
+/**
+ * The same four detectors, replayed over the r97 full-bench wave.
+ *
+ * Forty-five journals, and the wave the narrow-only demand's precision was
+ * measured on. It fired five times. Twice it was right: `psf__requests-1766`
+ * and `psf__requests-2317` each completed on `pytest -rA test_requests.py -k
+ * <phrase>`, a filtered reading of a file the run held no other reading of.
+ * Three times it was wrong: `astropy__astropy-14365`, `pydata__xarray-7233`
+ * and `pydata__xarray-7393` each completed on `<interpreter> -m pytest -rA
+ * <whole test module>` — the exact command shape their task text prescribes,
+ * with no filter of any kind — and each answered the demand by re-issuing the
+ * identical completion with a sentence saying so. Three wasted full-context
+ * frames, no information.
+ *
+ * What separates the five in the record is the phrase the run itself added.
+ * Every non-target term of the three wrong completions is the task text's own
+ * vocabulary (`pytest`, `-rA`, the container, `unhermetic`), the input's own
+ * shape (`command`, `timeoutMs`, `120000`), or phrasing the run's other
+ * checks already carry (`-m`, off `-m py_compile`); the two right ones each
+ * carry `-k` and its argument, found nowhere else in the run and taught by
+ * nothing. `findOnly` condition 2 is that separation, and this suite is the
+ * measurement it must keep answering to.
+ */
+describe("the completion demands over the r97 wave", () => {
+  const wave = r97.journals as ReadonlyArray<Journal & { readonly prompt: string }>
+  const demanded = new Map<string, ReadonlyArray<Fired>>([
+    // The two filtered completions the demand exists for, at the exact
+    // `transition-applied` the wave bounced them on.
+    ["psf__requests-1766", [{
+      demand: "narrow-only",
+      seq: 168,
+      // Seq 164: `pytest -rA test_requests.py -k digest`, exit 0. `digest` is
+      // vocabulary the run's own greps carry; `-k` alone is the phrase it
+      // added, and one unexcused condition is enough.
+      names: [164],
+      targets: ["/opt/miniconda3/envs/testbed/bin/python", "test_requests.py"]
+    }]],
+    ["psf__requests-2317", [{
+      demand: "narrow-only",
+      seq: 244,
+      // Seq 240: `pytest -rA test_requests.py -k unicode_method_name`, exit 0.
+      names: [240],
+      targets: ["/opt/miniconda3/envs/testbed/bin/python", "test_requests.py"]
+    }]],
+    // The demands the other three detectors issued, unchanged: nothing about
+    // condition 2 may move a demand that was never narrow-only's to issue.
+    ["astropy__astropy-14369", [{ demand: "unresolved-failure", seq: 368, names: [294, 331] }]],
+    ["astropy__astropy-8707", [{ demand: "narrowed-check", seq: 399, names: [319, 395] }]],
+    ["django__django-14351", [{ demand: "unresolved-failure", seq: 548, names: [412, 540] }]],
+    ["django__django-15569", [{ demand: "unresolved-failure", seq: 232, names: [195, 224] }]],
+    ["pytest-dev__pytest-6197", [{ demand: "unresolved-failure", seq: 365, names: [337, 361] }]],
+    ["sphinx-doc__sphinx-7757", [{ demand: "narrowed-check", seq: 243, names: [104, 221] }]],
+    ["sympy__sympy-13878", [{ demand: "unresolved-failure", seq: 508, names: [427, 493] }]]
+  ])
+  const falsePositives = [
+    "astropy__astropy-14365",
+    "pydata__xarray-7233",
+    "pydata__xarray-7393"
+  ]
+
+  it.each(wave.filter((journal) => !demanded.has(journal.instance) && !falsePositives.includes(journal.instance)))(
+    "demands nothing of $instance, as the wave itself did not",
+    (journal) => {
+      expect(replay(journal, NarrowedCheck.terms(journal.prompt))).toEqual([])
+    }
+  )
+
+  it.each(wave.filter((journal) => falsePositives.includes(journal.instance)))(
+    "no longer bounces $instance, which ran the taught command whole",
+    (journal) => {
+      expect(replay(journal, NarrowedCheck.terms(journal.prompt))).toEqual([])
+    }
+  )
+
+  it.each(wave.filter((journal) => demanded.has(journal.instance)))(
+    "still demands of $instance exactly what the wave demanded",
+    (journal) => {
+      expect(replay(journal, NarrowedCheck.terms(journal.prompt))).toEqual(demanded.get(journal.instance))
+    }
+  )
+
+  it("fires on all five again when the taught text is withheld", () => {
+    // The excuse is load-bearing, in both directions: strip the task text and
+    // the three wrong demands come back — `pytest` and `-rA` become phrases
+    // nothing accounts for — while the two right ones never needed it.
+    const bounced = wave
+      .filter((journal) => replay(journal, []).some((fired) => fired.demand === "narrow-only"))
+      .map((journal) => journal.instance)
+
+    expect(bounced).toEqual([
+      "astropy__astropy-14365",
+      "psf__requests-1766",
+      "psf__requests-2317",
+      "pydata__xarray-7233",
+      "pydata__xarray-7393"
+    ])
   })
 })

@@ -181,6 +181,48 @@ export const lex = (input: Schema.Json): ReadonlyArray<string> =>
  */
 export const terms = (input: Schema.Json): ReadonlyArray<string> => [...new Set(lex(input))].sort()
 
+/** A term that is only digits: a magnitude, never a name. */
+const numeral = /^[0-9]+$/
+
+/** Every key name the input document carries, at any depth. */
+const structure = (input: Schema.Json, into: Set<string>): Set<string> => {
+  if (Array.isArray(input)) { for (const item of input) structure(item, into) }
+  else if (input !== null && typeof input === "object") {
+    for (const [key, item] of Object.entries(input)) {
+      into.add(key)
+      structure(item, into)
+    }
+  }
+  return into
+}
+
+/**
+ * The terms of one call input that could be conditions its author added.
+ *
+ * The whole document is lexed, so three kinds of term come out of the lexer
+ * that are part of how the call is *written* rather than a constraint on what
+ * it covers, and each is removed here:
+ *
+ * - a term that names a target ({@link targeting}) is what the call is about,
+ *   not a condition on it;
+ * - a term that is a key of the input document itself is the call's shape —
+ *   `command`, `timeoutMs` — which the author fills in, not adds;
+ * - a term that is only digits is a magnitude — a timeout, a limit, an offset
+ *   — and a condition that subsets a check names cases rather than counting
+ *   them. The flag carrying such a number is still read as a condition, so a
+ *   stop-early flag does not hide behind its argument.
+ *
+ * All three exclusions err in one direction: a term wrongly removed here can
+ * suppress a demand and can never invent one.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const conditions = (input: Schema.Json): ReadonlyArray<string> => {
+  const keys = structure(input, new Set())
+  return terms(input).filter((term) => !targeting(term) && !keys.has(term) && !numeral.test(term))
+}
+
 /**
  * One check this run has run, and the tree it ran over.
  *
@@ -204,6 +246,20 @@ export class Check extends Schema.Class<Check>("flows/harness/NarrowedCheck/Chec
   signature: Schema.String,
   /** The distinct terms of the call's input, sorted; see {@link terms}. */
   terms: Schema.Array(Schema.String),
+  /**
+   * The subset of {@link Check.terms} that could be conditions the call's
+   * author added; see {@link conditions}.
+   *
+   * Stored rather than recomputed because it is a fact about the input
+   * document — its key names — and the ledger keeps terms, not documents.
+   * Defaults empty, so an entry journaled before the field decodes; the only
+   * reader is {@link findOnly}, where an empty set means the check carries no
+   * added condition, which suppresses a demand and never invents one.
+   */
+  conditions: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<string>>([])),
+    Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<string>>([]))
+  ),
   /**
    * Content address of the workspace the frame that ran this check closed on.
    *
@@ -304,6 +360,7 @@ export const check = (options: {
     flow: options.flow,
     signature: options.signature,
     terms: collected,
+    conditions: conditions(options.input),
     digest: options.digest,
     label: clip(CanonicalJson.stringify(options.input), labelWidth),
     failing: options.failing ?? false,
@@ -442,15 +499,24 @@ export interface Only {
  *
  * The harness cannot see that a filter is a filter without learning one test
  * runner's flags, so it does not try. It asks the question the record can
- * answer: is this reading the only one this run has of what it names.
+ * answer: is this reading the only one this run has of what it names, and does
+ * it carry a phrase this run alone put there.
  *
  * Five conditions, each read off the run's own record:
  *
  * 1. the completing frame ran at least one check, and the subject is its
  *    *last* one — the reading the completion stands closest to, as
  *    `UnresolvedFailure` reads its own ledger;
- * 2. that check names at least one subject ({@link names}) and carries at least
- *    one term that is not a target, so there is something to remove;
+ * 2. that check names at least one subject ({@link names}) and carries at
+ *    least one condition ({@link conditions}) the run itself added: a term
+ *    that is not in the text the run was handed (`taught`) and not in any
+ *    other check the run has made. A term the harness taught the run — the
+ *    runner its task names, a flag the task prescribes, an envelope value its
+ *    own example shows — is the run doing as it was told, and a term the run
+ *    uses in its other checks is how this run phrases a question. Neither is
+ *    a condition this check put on its subjects, and a check whose every
+ *    non-target term is accounted for one of those two ways carries nothing
+ *    the demand could ask to see removed;
  * 3. the run never ran this exact call before this frame. A call replayed from
  *    an earlier frame is the run's own baseline re-run byte for byte, which is
  *    the discipline the contract asks for and the opposite of the failure here;
@@ -480,6 +546,23 @@ export interface Only {
  * instance to a filter, naming the command that carried it, and says nothing to
  * the other fourteen.
  *
+ * Condition 2's second half was measured in, not reasoned in. The r97 wave
+ * fired this demand five times: twice on completions standing on a `-k`
+ * filter — the failure the module exists to catch — and three times on runs
+ * whose last check ran a whole test module exactly as their task text
+ * prescribed, `<interpreter> -m <runner> <flag> <file>`. Each of those three
+ * answered the demand by re-issuing the identical completion with a sentence
+ * saying the check carried no filter, and each was accepted: the demand
+ * taught the harness nothing and cost a correct run one full-context frame.
+ * What separates the five in the record is exactly condition 2: every
+ * non-target term of the three was taught by the run's own prompt, part of
+ * the input's own shape, or already in the run's other checks, and the two
+ * that deserved the demand each carried a filter phrase found nowhere else in
+ * the run. The residual errors both suppress: a run whose task text happens
+ * to contain a term it later uses as a filter, or whose earlier checks
+ * carried the same filter flag over other subjects, completes unasked — and a
+ * demand this module does not issue costs nothing.
+ *
  * @category conversions
  * @since 0.1.0
  */
@@ -490,18 +573,30 @@ export const findOnly = (options: {
   readonly before: ReadonlyArray<string>
   /** Checks this frame ran, in the order they settled. */
   readonly frame: ReadonlyArray<Check>
+  /**
+   * The distinct terms of the text the run was handed — its teaching, its
+   * catalog, its task — as {@link terms} lexes it.
+   *
+   * The prefix of the run's own context window is that text and nothing else:
+   * nothing model-authored lands there, so a run cannot teach itself a term
+   * by using it.
+   */
+  readonly taught: ReadonlyArray<string>
 }): Only | undefined => {
   const later = options.frame[options.frame.length - 1]
   if (later === undefined) return undefined
   const targets = later.terms.filter(names)
   if (targets.length === 0) return undefined
-  if (!later.terms.some((term) => !targeting(term))) return undefined
+  if (later.conditions.length === 0) return undefined
   if (options.before.includes(later.signature)) return undefined
   const others = options.ledger.filter((entry) => entry.signature !== later.signature)
   const covered = others.some((entry) => targets.every((target) => entry.terms.includes(target)))
   if (covered) return undefined
   const known = targets.every((target) => others.some((entry) => entry.terms.includes(target)))
   if (!known) return undefined
+  const excused = new Set(options.taught)
+  for (const entry of others) for (const term of entry.terms) excused.add(term)
+  if (!later.conditions.some((term) => !excused.has(term))) return undefined
   return { later, targets }
 }
 

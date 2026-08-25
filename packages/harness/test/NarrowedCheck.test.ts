@@ -192,6 +192,25 @@ describe("NarrowedCheck.names", () => {
   })
 })
 
+describe("NarrowedCheck.conditions", () => {
+  it("keeps the value-terms and drops targets, the input's own keys, and magnitudes", () => {
+    // The three exclusions are about how a call is written: `command` and
+    // `timeoutMs` are the input's shape, `120000` is a quantity, and the
+    // paths are what the call is about. `-q` is the one term left that could
+    // be a condition somebody added.
+    expect(NarrowedCheck.conditions({
+      command: "/bin/python -q a/b.py",
+      mode: "unhermetic",
+      timeoutMs: 120000
+    })).toEqual(["-q", "unhermetic"])
+  })
+
+  it("reads keys at any depth, and an input that is no object has none", () => {
+    expect(NarrowedCheck.conditions({ nested: [{ flag: "flag" }] })).toEqual([])
+    expect(NarrowedCheck.conditions("run the suite")).toEqual(["run", "suite", "the"])
+  })
+})
+
 describe("NarrowedCheck.findOnly", () => {
   const target = "testing/test_collection.py"
   // The shape the wave lost on: one filtered reading of one file, and a
@@ -200,8 +219,11 @@ describe("NarrowedCheck.findOnly", () => {
   const searched = ran("grep", { pattern: "one", globs: [target] }, "tree-1")
   const compiled = ran("bash", command("/bin/python -m compile src/a.py"), "tree-2")
 
-  const found = (frame: ReadonlyArray<NarrowedCheck.Check>, ledger: ReadonlyArray<NarrowedCheck.Check>) =>
-    NarrowedCheck.findOnly({ ledger, before: [], frame })
+  const found = (
+    frame: ReadonlyArray<NarrowedCheck.Check>,
+    ledger: ReadonlyArray<NarrowedCheck.Check>,
+    taught: ReadonlyArray<string> = []
+  ) => NarrowedCheck.findOnly({ ledger, before: [], frame, taught })
 
   it("names the frame's last check when the run holds no other reading of its subjects", () => {
     const only = found([compiled, filtered], [searched, compiled, filtered])
@@ -236,7 +258,8 @@ describe("NarrowedCheck.findOnly", () => {
       NarrowedCheck.findOnly({
         ledger: [searched, compiled, filtered],
         before: [filtered.signature],
-        frame: [filtered]
+        frame: [filtered],
+        taught: []
       })
     ).toBeUndefined()
   })
@@ -267,20 +290,54 @@ describe("NarrowedCheck.findOnly", () => {
     expect(found([single], [single])).toBeUndefined()
   })
 
-  it("does name a check that carries no condition at all, and that is the price", () => {
+  it("does name an unconditioned check whose phrasing is the run's own, and that is the price", () => {
     // The other side of the floor, stated so a reader is not surprised by it.
     // The harness cannot read a flag, so it cannot tell this unfiltered run of
-    // one file from the filtered run of one file above; what it can see is that
-    // the run has never read the interpreter and the file together. The demand
-    // costs such a run one frame, it is capped at one, and the second answer —
-    // "it carries no condition and the reading is already whole" — is accepted
-    // exactly as written. Every weaker condition tried against three graded
-    // waves fired on one or both of the two best rounds this harness scored.
+    // one file from the filtered run of one file above; what it can see is
+    // that the run has never read the interpreter and the file together, and
+    // that `-m` and `check` are phrasing this run was neither taught nor used
+    // anywhere else. The demand costs such a run one frame, it is capped at
+    // one, and the second answer — "it carries no condition and the reading is
+    // already whole" — is accepted exactly as written. Every weaker condition
+    // tried against three graded waves fired on one or both of the two best
+    // rounds this harness scored.
     const probe = ran("bash", command("/bin/python -c import a"), "tree-1")
     const read = ran("read", { path: "a/b.py" }, "tree-1")
     const whole = ran("bash", command("/bin/python -m check a/b.py"), "tree-2")
 
     expect(found([whole], [probe, read, whole])?.targets).toEqual(["/bin/python", "a/b.py"])
+  })
+
+  it("says nothing when every condition the check carries was taught to the run", () => {
+    // The r97 false positives, in miniature: the task text says "runs its
+    // tests with `check -rA`", the run does exactly that over a module it has
+    // read, and `-m` is how its own other commands reach the interpreter. A
+    // run doing as it was told has added nothing a demand could ask to see
+    // removed — and each of the three runs this fired on answered by
+    // re-issuing the identical completion, so the demand bought one wasted
+    // full-context frame and no information.
+    const read = ran("read", { path: target }, "tree-1")
+    const whole = ran("bash", command(`/bin/python -m check -rA ${target}`), "tree-2")
+    const taught = NarrowedCheck.terms("This repository runs its tests with `check -rA`.")
+
+    expect(found([compiled, whole], [read, compiled, whole], taught)).toBeUndefined()
+    // The same completion with a filter phrase of the run's own still fires:
+    // `-k` and its argument are in neither the taught text nor any other
+    // check, which is exactly what separates the two shapes in the record.
+    expect(found([compiled, filtered], [read, compiled, filtered], taught)?.targets)
+      .toEqual(["/bin/python", target])
+  })
+
+  it("says nothing when the check is its subjects plus its own shape", () => {
+    // Keys and magnitudes are how the call is written, not conditions on what
+    // it covers: an input carrying only paths, its own key names, and a
+    // timeout has nothing a demand could ask to see removed, however the run
+    // came to hold its subjects.
+    const read = ran("read", { path: target }, "tree-1")
+    const versioned = ran("bash", { command: "/bin/python --version" }, "tree-1")
+    const shaped = ran("bash", { command: `/bin/python ${target}`, timeoutMs: 120000 }, "tree-2")
+
+    expect(found([shaped], [read, versioned, shaped])).toBeUndefined()
   })
 })
 

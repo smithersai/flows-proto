@@ -2154,7 +2154,10 @@ describe("CellTurn narrow-only verification", () => {
   const completing = (
     cells: ReadonlyArray<string>,
     calls: ReadonlyArray<ScriptedEngine.CallStep>,
-    overrides: { readonly narrowingCap?: number } = {}
+    overrides: {
+      readonly narrowingCap?: number
+      readonly contextWindow?: ContextWindow.ContextWindow
+    } = {}
   ) =>
     run({
       state: CellTurn.make({
@@ -2170,7 +2173,7 @@ describe("CellTurn narrow-only verification", () => {
           })
         }),
         placement: Option.none(),
-        contextWindow: window,
+        contextWindow: overrides.contextWindow ?? window,
         maxFrames: cells.length,
         repeatCap: 0,
         ...(overrides.narrowingCap === undefined ? {} : { narrowingCap: overrides.narrowingCap })
@@ -2218,6 +2221,44 @@ describe("CellTurn narrow-only verification", () => {
     ])
     expect(of(events, "resolved")[0]?.message.content).toEqual([
       expect.objectContaining({ text: "answered" })
+    ])
+  })
+
+  it("leaves a completion alone when its own prompt taught every condition it carries", async () => {
+    // The r97 false positives, at the loop level: the same shape the first
+    // case bounces goes unasked when `check` and `-k one` are the prefix's own
+    // words — a run doing as it was told added no condition of its own. The
+    // prefix's structured message carries no text and teaches nothing.
+    const { events, model } = await completing(
+      [
+        running("look at tests/a.py"),
+        running("look at src/b.py"),
+        fixing("check src/b.py tests/a.py -k one", "as taught"),
+        `ctx.done("unreached")`
+      ],
+      [ok(), ok(), ok("a.py=fixed"), ok()],
+      {
+        contextWindow: ContextWindow.make({
+          modelId: "test-model",
+          segments: [
+            {
+              kind: "system",
+              zone: "prefix",
+              content: [
+                ModelRequest.SystemPart.make({ text: "Verify with `check <files> -k one`." }),
+                ModelRequest.Message.user("a structured part with no text of its own")
+              ]
+            },
+            { kind: "transcript", zone: "tail", content: [ModelRequest.Message.user("start")] }
+          ]
+        })
+      }
+    )
+
+    expect(of(events, "narrow-only-demanded")).toEqual([])
+    expect(JSON.stringify(model.recorder.requests)).not.toContain("Only reading")
+    expect(of(events, "resolved")[0]?.message.content).toEqual([
+      expect.objectContaining({ text: "as taught" })
     ])
   })
 
