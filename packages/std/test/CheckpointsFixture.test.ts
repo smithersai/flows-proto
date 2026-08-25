@@ -305,6 +305,46 @@ describe("Checkpoints over a real repository", () => {
     }
   }, 60_000)
 
+  it("leaves the repository format exactly as it found it, because an older git refuses the stamp", async () => {
+    // Git 2.48+ records the first relative checkout in the repository itself:
+    // `extensions.relativeWorktrees = true` and `core.repositoryformatversion`
+    // raised to 1. Removing the worktree takes neither back, and a pre-2.48 git
+    // opening a repository with an extension it does not know refuses the whole
+    // repository. The benchmark testbeds run exactly such a git against this
+    // directory through a bind mount — measured on the r97 wave, 15 of 45 runs
+    // lost every in-container `git status`/`git diff` from the first
+    // `{ at: ctx.base }` call onward. The store must therefore repair the
+    // format before the relocated call runs, not merely before it returns.
+    const root = repository()
+    const versionBefore = git(root, ["config", "--local", "--get", "core.repositoryformatversion"]).trim()
+    const marker = (): string => {
+      try {
+        return git(root, ["config", "--local", "--get", "extensions.relativeWorktrees"]).trim()
+      } catch {
+        return "unset"
+      }
+    }
+
+    const during = await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(root)
+      yield* checkpoints.capture("cp-2-0")
+      return yield* checkpoints.materialize("cp-2-0", () =>
+        Effect.sync(() => ({
+          // What an in-container git sees WHILE the checkpoint is checked out:
+          // the call this checkout exists for runs in this window.
+          marker: marker(),
+          version: git(root, ["config", "--local", "--get", "core.repositoryformatversion"]).trim()
+        })))
+    }))
+
+    expect(during.marker).toBe("unset")
+    expect(during.version).toBe(versionBefore)
+    // And after the checkout is gone, the same: nothing this store did to the
+    // repository's format survives the call, on any git version.
+    expect(marker()).toBe("unset")
+    expect(git(root, ["config", "--local", "--get", "core.repositoryformatversion"]).trim()).toBe(versionBefore)
+  }, 60_000)
+
   it("removes the checkout however the call ends", async () => {
     const root = repository()
     const scratch = join(root, Checkpoints.scratchDirectory, "cp-0-0")

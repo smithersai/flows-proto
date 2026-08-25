@@ -21,7 +21,7 @@ interface Response {
 /** Records every argv and answers each from a table keyed by a fragment. */
 const host = (
   spawns: Array<ReadonlyArray<string>>,
-  responses: ReadonlyArray<readonly [string, Response]>
+  responses: ReadonlyArray<readonly [string, Response | (() => Response)]>
 ) =>
   Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(ChildProcessSpawner.makeNoop({
     spawn: (command) =>
@@ -30,7 +30,8 @@ const host = (
         const argv = [standard.command, ...standard.args]
         spawns.push(argv)
         const line = argv.join(" ")
-        const found = responses.find(([fragment]) => line.includes(fragment))?.[1] ?? {}
+        const scripted = responses.find(([fragment]) => line.includes(fragment))?.[1] ?? {}
+        const found = typeof scripted === "function" ? scripted() : scripted
         const encode = (text: string) => Stream.make(new TextEncoder().encode(text))
         const stdout = encode(found.stdout ?? "")
         const stderr = encode("")
@@ -52,7 +53,7 @@ const host = (
 
 const store = (
   spawns: Array<ReadonlyArray<string>>,
-  responses: ReadonlyArray<readonly [string, Response]>,
+  responses: ReadonlyArray<readonly [string, Response | (() => Response)]>,
   options: Checkpoints.GitOptions = { root: "/work/repo" }
 ) => Effect.provide(Checkpoints.makeGit(options), host(spawns, responses))
 
@@ -73,6 +74,15 @@ const materialized: Checkpoints.Materialized = {
 const checkout = (id: string, commit: string) => [
   `git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/${id}`,
   `git -C /work/repo -c worktree.useRelativePaths=true worktree add --detach --force /work/repo/.flows-checkpoints/${id} ${commit}`
+]
+
+/**
+ * The repository-format read taken before every checkout, so the store can
+ * restore exactly what stood if the checkout stamps the repository.
+ */
+const formatRead = [
+  "git -C /work/repo config --local --get core.repositoryformatversion",
+  "git -C /work/repo config --local --get extensions.relativeWorktrees"
 ]
 
 describe("Checkpoints.makeGit capture", () => {
@@ -180,9 +190,50 @@ describe("Checkpoints.makeGit materialize", () => {
       root: "/work/repo",
       guestRoot: "/work/repo"
     })
+    // The scripted host answers every unmatched command with exit 0, so the
+    // format read reports the marker as already present — a repository that
+    // legitimately uses relative worktrees — and the store rightly leaves the
+    // format alone.
     expect(spawns.map((argv) => argv.join(" "))).toEqual([
       "git -C /work/repo config --local --get flows-checkpoint.cp-0-1",
+      ...formatRead,
       ...checkout("cp-0-1", "abc123"),
+      "git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/cp-0-1"
+    ])
+  })
+
+  it("removes the format stamp its own checkout wrote, before the call runs", async () => {
+    // Git 2.48+ records the first relative checkout in the repository itself:
+    // `extensions.relativeWorktrees = true`, `core.repositoryformatversion`
+    // raised to 1. A pre-2.48 git that then opens the repository refuses it
+    // whole — which on the r97 wave cost 15 of 45 benchmark runs every
+    // in-container `git status` and `git diff` from the first `{ at: ctx.base }`
+    // call onward. The repair must land before the relocated call, because the
+    // call is the thing that runs git through the mount.
+    const spawns: Array<ReadonlyArray<string>> = []
+    let markerReads = 0
+    await Effect.runPromise(Effect.gen(function*() {
+      const checkpoints = yield* store(spawns, [
+        ["config --local --get flows-checkpoint", { stdout: "abc123\n" }],
+        ["--get core.repositoryformatversion", { stdout: "0\n" }],
+        // Absent before the checkout, present after it: exactly what a
+        // git 2.48+ relative `worktree add` leaves behind.
+        ["--get extensions.relativeWorktrees", () => ({ exitCode: markerReads++ === 0 ? 1 : 0, stdout: "true\n" })]
+      ])
+      return yield* checkpoints.materialize(
+        "cp-0-1",
+        () => Effect.sync(() => spawns.push(["<the relocated call runs here>"]))
+      )
+    }))
+
+    expect(spawns.map((argv) => argv.join(" "))).toEqual([
+      "git -C /work/repo config --local --get flows-checkpoint.cp-0-1",
+      ...formatRead,
+      ...checkout("cp-0-1", "abc123"),
+      "git -C /work/repo config --local --get extensions.relativeWorktrees",
+      "git -C /work/repo config --local --unset extensions.relativeWorktrees",
+      "git -C /work/repo config --local core.repositoryformatversion 0",
+      "<the relocated call runs here>",
       "git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/cp-0-1"
     ])
   })
@@ -278,6 +329,7 @@ describe("Checkpoints.makeGit materialize", () => {
     expect(spawns.map((argv) => argv.join(" "))).toEqual([
       "git -C /work/repo rev-parse --verify --quiet refs/flows/capture-base^{commit}",
       "git -C /work/repo rev-parse --verify --quiet HEAD^{commit}",
+      ...formatRead,
       ...checkout("base", "head999"),
       "git -C /work/repo worktree remove --force /work/repo/.flows-checkpoints/base"
     ])
