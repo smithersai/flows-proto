@@ -44,8 +44,6 @@ you tested. A row you could not reach is a finding, not a blank.
       with real repos, issues, and PRs.
 - [ ] **0.5** Provision a third account parked at `$0` balance, or the
       `CHECKLIST_ZERO_BALANCE_BEARER` cookie, for the zero-balance rows.
-- [ ] **0.6** `[gap]` Reserve a fresh login for the recommendation rows.
-      Dismissing a recommendation suppresses it for 7 days and there is no
       reset route (`live-store-reset.ts` clears browser storage only), so a
       second pass on the same account grades nothing.
 - [ ] **0.7** Test in both light and dark mode, and in at least one non-default
@@ -162,8 +160,8 @@ you tested. A row you could not reach is a finding, not a blank.
 - [ ] **5.1** `/` opens the menu with the recommended flow first, and bare `/`
       + Enter runs it. `[auto C-2]`
 - [ ] **5.2** The recommendation order changes with state: typing →
-      `chat.stop`; signed out → `auth.sign-in`; a waiting recommendation →
-      `reco.accept` first; off the chat surface → `chat` first.
+      `chat.stop`; signed out → `auth.sign-in`; never-chosen → `repos.watch`
+      first; off the chat surface → `chat` first.
 - [ ] **5.3** ArrowDown / ArrowUp move the highlight and wrap around; Enter
       runs the highlighted flow; Escape closes the menu without clearing the
       draft.
@@ -178,7 +176,7 @@ you tested. A row you could not reach is a finding, not a blank.
       `approval.approve`, …) never appear in the menu but still run when typed.
 - [ ] **5.8** `/stop` (alias) executes `chat.stop`.
 - [ ] **5.9** A slash token that is not a registered flow goes to the agent as
-      a prompt. Try `/hello there`, `/not-a-flow`, `/`, and `/ ` (slash space).
+      a prompt. Try `/hello there`, `/not-a-flow`, `/`, and `/` (slash space).
 - [ ] **5.10** `/name <args>` only parses as a flow when the flow declares an
       args hint. `/clear now` should be a prompt; `/browser https://…` should
       be a flow.
@@ -243,10 +241,8 @@ Run the flow, read the card, resize the window, switch theme, and reload.
       reaches `/api/approvals/decision`
 - [ ] **8.3** `status`
 - [ ] **8.4** `balance` (`/billing.balance`)
-- [ ] **8.5** `reco` — see §9
 - [ ] **8.6** `grant-confirm` — confirm and cancel
 - [ ] **8.7** `request-queue` — approve an entry
-- [ ] **8.8** `reco-log`
 - [ ] **8.9** `admin-health`
 - [ ] **8.10** `repo-chooser`
 - [ ] **8.11** `connect`
@@ -271,26 +267,8 @@ Run the flow, read the card, resize the window, switch theme, and reload.
 
 ## §9 Recommendations
 
-- [ ] **9.1** One recommendation card carries proposes / why-now /
-      what-happens / accept-edit-dismiss. `[auto A-8]`
-- [ ] **9.2** Dismiss is one key, and the same recommendation does not return
-      unchanged. `[auto A-9]` `[gap]` Use a fresh login; a dismissal suppresses
-      for 7 days with no reset route.
-- [ ] **9.3** Escape dismisses the recommendation from the composer (focus
-      elsewhere) and from the card itself (focus on it) — one keypress, same
-      flow, both times.
-- [ ] **9.4** `reco.accept` runs the proposed work and the card moves to
-      "acted".
-- [ ] **9.5** `reco.edit` lets you change the proposal before it runs, and the
-      edited version is what runs.
-- [ ] **9.6** `reco.refresh` re-reads the recommendation.
-- [ ] **9.7** Feedback reaches `/api/reco/feedback` and shows up in
-      `/admin.feedback`.
-- [ ] **9.8** A first-run recommendation appears for a fresh account
-      (`/api/reco/first-run`) and is about that account's repos. The persona
-      path grades the never-chosen chooser/product behavior as
-      `verified-via-mock`; a live GitHub recommendation remains optional and
-      separate.
+Removed 2026-08-24 with the recommendations feature. The repo-chooser (§8.10)
+is the whole first-run surface now.
 
 ## §10 World surface
 
@@ -319,7 +297,6 @@ Run the flow, read the card, resize the window, switch theme, and reload.
 > the web surface**, not failures: grade them on the Electrobun build (§27) and
 > record them as N/A for web. 11.1, 11.2 and 11.6 DO apply to web — 11.6 is a
 > real failure there (the empty state names no next step).
-
 
 - [ ] **11.1** `/connect` opens the pane and lists connectors with the right
       state.
@@ -548,8 +525,7 @@ Run the flow, read the card, resize the window, switch theme, and reload.
       unreachable control.
 - [ ] **21.3** Focus is always visible.
 - [ ] **21.4** Escape has one meaning per context and the precedence is right:
-      stop turn while typing → minimize maximized card → dismiss
-      recommendation → close menu.
+      stop turn while typing → minimize maximized card → close menu.
 - [ ] **21.5** Cmd/Ctrl+Shift+D toggles the devtools panel for admins and is a
       no-op for everyone else.
 - [ ] **21.6** Screen-reader pass over the chat, one card, and the composer:
@@ -595,7 +571,7 @@ Run the flow, read the card, resize the window, switch theme, and reload.
       the alpha ships without client error reporting; if it does, confirm no
       user-visible surface swallows an error silently.
 - [ ] **24.2** Every upstream the UI calls, forced to fail: agent turn,
-      identity, billing, reco, notifications, github import, workflow rpc.
+      identity, billing, notifications, github import, workflow rpc.
       Each produces a named, actionable message.
 - [ ] **24.3** A 429 from the model provider surfaces as a rate-limit message,
       not a generic failure.
@@ -618,7 +594,6 @@ Run the flow, read the card, resize the window, switch theme, and reload.
       `admin.grant.confirm` credits exactly once; `admin.grant.cancel` credits
       nothing.
 - [ ] **25.5** Grant the same amount twice and confirm no double credit.
-- [ ] **25.6** `/admin.feedback` shows the recommendation feedback log.
 - [ ] **25.7** `/admin.health` reports service health, charges, and queue depth,
       and the numbers are real.
 - [ ] **25.8** Every admin flow from a non-admin account: unregistered, not
@@ -689,7 +664,7 @@ Do this last, in one sitting, with fresh eyes.
 - [ ] **29.2** `[gap]` `apps-deploy.yml` runs no tests before deploying. Fix or
       accept explicitly.
 - [ ] **29.3** `[gap]` The nine backing Cloudflare Workers (identity, billing,
-      chat, recommendations, connectors-catalog, cron, status, sync, webhooks)
+      chat, connectors-catalog, cron, status, sync, webhooks)
       live in `~/flows/ui/workers/` on branch `wave5-billing-bridge` with
       uncommitted edits, and are not in the release repo.
       `apps-deploy.yml` deploys only `smithers-mvp-web`. Land them or write
@@ -697,12 +672,9 @@ Do this last, in one sitting, with fresh eyes.
 - [ ] **29.4** `[gap]` U9: the vite root is a literal, the root `dev` script is
       missing, and four Playwright `live-*.ts` scripts under `scripts/` are
       unrunnable and untypechecked.
-- [ ] **29.5** `[gap]` Add a reset door for recommendation dismissals
-      (`DELETE /api/reco/admin/dismissals`) so the checklist can be re-run on
       one account.
 - [ ] **29.6** The deployed origin serves the commit you tested. Re-run the
       automated checklist against it after the deploy, not before.
-
 
 ---
 
@@ -752,10 +724,6 @@ passes when the success path is right **and** the failure path is honest.
 - [ ] **A.38** `/auth.request-access` — Request access to Smithers _(user-only, needs signed-in)_
 - [ ] **A.39** `/toast.dismiss` `<toastId>` — Dismiss a toast notification _(hidden, user-only)_
 - [ ] **A.40** `/billing.balance` — Show your balance _(needs signed-in)_
-- [ ] **A.41** `/reco.accept` `[cardId]` — Accept the current recommendation
-- [ ] **A.42** `/reco.edit` `[cardId]` — Edit the current recommendation before running it
-- [ ] **A.43** `/reco.dismiss` `[cardId]` — Dismiss the current recommendation
-- [ ] **A.44** `/reco.refresh` — Read the recommendation again _(needs signed-in)_
 - [ ] **A.45** `/repos.import` `[owner/repo]` — Import a GitHub repository into Smithers Cloud _(needs signed-in)_
 - [ ] **A.46** `/issues.list` `[open|closed|all] [owner/repo]` — List a repository's issues _(needs signed-in)_
 - [ ] **A.47** `/issues.view` `<number> [owner/repo]` — Open an issue with its comments _(needs signed-in)_
@@ -798,43 +766,40 @@ passes when the success path is right **and** the failure path is honest.
 - [ ] **A.84** `/admin.grant.cancel` `<cardId>` — Cancel a pending balance grant _(hidden)_
 - [ ] **A.85** `/admin.requests` — Show the request-access queue
 - [ ] **A.86** `/admin.queue.approve` `<login>` — Approve a request-access queue entry _(hidden)_
-- [ ] **A.87** `/admin.feedback` — Show the recommendation feedback log
 - [ ] **A.88** `/admin.health` — What failed overnight? Service health, charges, queue depth
 
 ---
 
 ## Appendix B — card kinds by the flow that produces them
 
-| Card kind | Reached by |
-| --- | --- |
-| `plan` | agent turn |
-| `approval` | a run pausing on approval |
-| `status` | agent turn |
-| `balance` | `/billing.balance`, balance chip |
-| `reco` | recommendation seam, `/reco.refresh` |
-| `grant-confirm` | `/admin.grant` |
-| `request-queue` | `/admin.requests` |
-| `reco-log` | `/admin.feedback` |
-| `admin-health` | `/admin.health` |
-| `repo-chooser` | `/repos.watch` |
-| `connect` | `/connect` |
-| `world` | `/world` |
-| `browser` | `/browser <url>` |
-| `flow-run` | `/flow.run` |
-| `workflow-list` | `/flow.list` |
-| `workflow-repo` | `/flow.repo.choose` |
-| `issue-list` | `/issues.list` |
-| `issue` | `/issues.view` |
-| `pr-list` | `/prs.list` |
-| `pr` | `/prs.view` |
-| `keys` | `/keys.list` |
-| `notifications` | `/notifications.list` |
-| `env` | `/env.view` |
-| `repo-import` | `/repos.import` |
-| `branches` | `/branches.list` |
-| `file-list` | `/files.list` |
-| `file` | `/files.read` |
-| `theme-picker` | `/theme` |
+| Card kind       | Reached by                           |
+| --------------- | ------------------------------------ |
+| `plan`          | agent turn                           |
+| `approval`      | a run pausing on approval            |
+| `status`        | agent turn                           |
+| `balance`       | `/billing.balance`, balance chip     |
+| `grant-confirm` | `/admin.grant`                       |
+| `request-queue` | `/admin.requests`                    |
+| `admin-health`  | `/admin.health`                      |
+| `repo-chooser`  | `/repos.watch`                       |
+| `connect`       | `/connect`                           |
+| `world`         | `/world`                             |
+| `browser`       | `/browser <url>`                     |
+| `flow-run`      | `/flow.run`                          |
+| `workflow-list` | `/flow.list`                         |
+| `workflow-repo` | `/flow.repo.choose`                  |
+| `issue-list`    | `/issues.list`                       |
+| `issue`         | `/issues.view`                       |
+| `pr-list`       | `/prs.list`                          |
+| `pr`            | `/prs.view`                          |
+| `keys`          | `/keys.list`                         |
+| `notifications` | `/notifications.list`                |
+| `env`           | `/env.view`                          |
+| `repo-import`   | `/repos.import`                      |
+| `branches`      | `/branches.list`                     |
+| `file-list`     | `/files.list`                        |
+| `file`          | `/files.read`                        |
+| `theme-picker`  | `/theme`                             |
 
 ---
 
@@ -847,10 +812,8 @@ report a closed one as a finding.
 
 1. ~~The deployed canary predates the `command`→`flow` rename.~~ Redeployed;
    live bundle is `assets/index-BHHXuMoZ.js` and carries `data-flow`.
-2. ~~Recommendation rows A-8/A-9 self-poison with no reset door.~~ Closed by
-   `1dd856f1` "stop A-8 and A-9 poisoning the account they grade". The door is
-   `DELETE /api/admin/reco-dismissals?login=<login>` (admin-gated) and the
-   surfaces lane used it successfully.
+2. ~~Recommendation rows A-8/A-9 self-poison with no reset door.~~ Obsolete:
+   the rows and the door left with the recommendations feature on 2026-08-24.
 3. ~~U9: untyped `scripts/`, vite root literal, no root `dev`.~~ Closed by
    `12018780`.
 4. ~~U10: no exact-name precedence in slash dispatch.~~ Closed by `12018780`

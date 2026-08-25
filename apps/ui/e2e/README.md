@@ -26,7 +26,7 @@ The typed personas in `Personas.ts` are an explicit, hermetic exception only
 for states a real account cannot reliably return to: first-ever sign-in,
 zero or 200+ repositories, and a $0 balance. Suites apply one whole persona
 with `stack.signInAs(persona)`; they must not assemble identity, billing, and
-recommendation state independently.
+watched-repos state independently.
 
 Evidence from a persona run must say `verified-via-mock`. It grades only the
 product-behaviour half of a checklist row and never counts as live GitHub
@@ -39,24 +39,24 @@ The runner discovers suites from the filesystem, so there is no registry to edit
 and no file two lanes both touch.
 
 ```ts
-import { defineSuite } from "../Suite.ts";
-import { openClient } from "../Client.ts";
+import { openClient } from "../Client.ts"
+import { defineSuite } from "../Suite.ts"
 
 export default defineSuite({
-	id: "E1.9",
-	title: "sign-out and session expiry are conversation states",
-	run: async ({ origin, stack, report }) => {
-		const cookie = await stack.signedInCookie();
-		const client = await openClient({ origin, cookie });
-		await client.controller.loadSession();
-		report.equals(
-			client.store.collections.identitySessions.get("identity")?.state,
-			"signed-in",
-			"the client did not record the signed-in session",
-		);
-		report.ok("a signed-in cookie resolves to the signed-in conversation state.");
-	},
-});
+  id: "E1.9",
+  title: "sign-out and session expiry are conversation states",
+  run: async ({ origin, stack, report }) => {
+    const cookie = await stack.signedInCookie()
+    const client = await openClient({ origin, cookie })
+    await client.controller.loadSession()
+    report.equals(
+      client.store.collections.identitySessions.get("identity")?.state,
+      "signed-in",
+      "the client did not record the signed-in session"
+    )
+    report.ok("a signed-in cookie resolves to the signed-in conversation state.")
+  }
+})
 ```
 
 Fields: `id`, `title`, `run`, and optionally `phase` (default `"B"`), `order`
@@ -64,10 +64,10 @@ Fields: `id`, `title`, `run`, and optionally `phase` (default `"B"`), `order`
 
 ## The two phases
 
-| Phase | Boot | Use it for |
-| --- | --- | --- |
-| `A` | every backend seam sealed empty | the honest 501s, the isolation headers, the cross-origin 403 |
-| `B` | every seam pointed at a double | everything else |
+| Phase | Boot                            | Use it for                                                   |
+| ----- | ------------------------------- | ------------------------------------------------------------ |
+| `A`   | every backend seam sealed empty | the honest 501s, the isolation headers, the cross-origin 403 |
+| `B`   | every seam pointed at a double  | everything else                                              |
 
 The stack boots **once per phase** and every suite in that phase shares it, so
 fourteen suites cost the two wrangler boots and one vite build that
@@ -77,7 +77,7 @@ selected suite is never booted.
 ## Isolation between suites
 
 The runner calls `stack.reset()` before each suite. Reset recreates the
-identity, billing and reco doubles (a drained balance, a flipped allowlist, an
+identity, billing and gateway doubles (a drained balance, a flipped allowlist, an
 armed degrade mode and a stale watched selection all disappear with them),
 clears every front override, resets the chat and model doubles, puts the gateway
 back to capacity/lively/cloud-repo, and forgets the memoized cookie.
@@ -89,8 +89,6 @@ Two things reset does **not** undo:
   so a recreated gateway would be resumed on a dead port. Its counters
   accumulate within a phase: assert deltas off `GET /stub/relay-state`, and
   provision under a repo name unique to your suite (`will/e2e-<lane>`).
-- **The reco double's feedback log has no clear control.** Assert on the last
-  entry, never on the log length.
 
 ## Adding routes, faults and delays: the front
 
@@ -99,13 +97,14 @@ Every double sits behind a `Front`, a reverse proxy the Worker's
 ever edits `scripts/stub-backends.ts` — a file every other suite shares.
 
 ```ts
-stack.fronts.identity.handle("POST", "/api/auth/native/start", () =>
-	Response.json({ handoffId: "h-1", authorizeUrl: "https://github.test/login" }),
-);
-stack.fronts.identity.failOnce("POST", "/api/identity/validate", 401);
-stack.fronts.gateway.dropOnce("GET", "/api/gateways/*");   // a network drop
-stack.fronts.reco.delay("/api/reco/first-run", 800);       // until cleared
-stack.fronts.billing.requests();                            // what reached the double
+stack.fronts.identity.handle(
+  "POST",
+  "/api/auth/native/start",
+  () => Response.json({ handoffId: "h-1", authorizeUrl: "https://github.test/login" })
+)
+stack.fronts.identity.failOnce("POST", "/api/identity/validate", 401)
+stack.fronts.gateway.dropOnce("GET", "/api/gateways/*") // a network drop
+stack.fronts.billing.requests() // what reached the double
 ```
 
 A registered path matches exactly, or by prefix when it ends with `*`. A handler
@@ -124,11 +123,11 @@ exists, then the last one repeats, so a two-element array is exactly the
 tool-loop shape.
 
 ```ts
-stack.chat.script({ frames: [{ type: "delta", kind: "text", text: "hi" }, { type: "done" }] });
-stack.chat.script({ status: 500, body: "upstream on fire" });   // a failed turn
-stack.chat.script(toolLoopScript({ callId: "c1", name: "world.new-note" }, (out) => `done: ${out}`));
-stack.chat.slow();                                              // 32 deltas at 250ms — killable
-stack.chat.requests();                                          // what the Worker forwarded
+stack.chat.script({ frames: [{ type: "delta", kind: "text", text: "hi" }, { type: "done" }] })
+stack.chat.script({ status: 500, body: "upstream on fire" }) // a failed turn
+stack.chat.script(toolLoopScript({ callId: "c1", name: "world.new-note" }, (out) => `done: ${out}`))
+stack.chat.slow() // 32 deltas at 250ms — killable
+stack.chat.requests() // what the Worker forwarded
 ```
 
 `stack.chat` also stands in for the model relay's upstream. `/api/model/stream`
@@ -163,11 +162,11 @@ no Playwright, no download. When the machine has no Chrome the runner prints
 `skip: <id> — <reason>` and counts the suite as skipped, never as passed.
 
 ```ts
-const session = await browser.open(cookie);
-await session.viewport(390, 844);
-await session.media("prefers-reduced-motion", "reduce");
-const text = await session.page.text();
-session.consoleErrors();
+const session = await browser.open(cookie)
+await session.viewport(390, 844)
+await session.media("prefers-reduced-motion", "reduce")
+const text = await session.page.text()
+session.consoleErrors()
 ```
 
 `session.page` is the checklist's `ProbePage`, so the predicates in

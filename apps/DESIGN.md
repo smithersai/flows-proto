@@ -35,8 +35,8 @@ Single source: `src/mainview/styles/tokens.css`. The `@smthrs/ui` library resolv
 - Composer is fixed at the bottom, glass, always visible; suggestion pills live directly above it. When the auth state gates chatting (signed-out / not allowlisted), the composer stays visible and honestly gated: its placeholder names the one needed step and an attempted send resolves to a calm one-line Smithers reply carrying that step's action.
 - **The 300ms toast law (2026-08-09):** background work not settled within 300ms shows a toast on the one shared corner stack stating what is running, resolving into the result when done; work under 300ms never flashes. Toasts are notifications, not state mutations; a failure toast is honest and stays until dismissed.
 - **Chat is complimentary during the alpha (2026-08-09):** no per-turn dollar line on chat turns; a $0 balance never pauses the composer or the chat (the pause discipline applies only to non-complimentary paid work); the dollar balance chip stays.
-- **Watched repos are chosen, never defaulted (2026-08-09):** the first signed-in run asks ONE question — a repo-chooser card in the transcript (never a wizard page) — and the digest reads only the chosen set. Changing the set is "just ask": `repos.watch` is one command with three invocations (card confirm, slash, agent tool). `via` is recorded on every write.
-- **Pills and buttons are command bindings (2026-08-09; amended 2026-08-19):** a suggestion pill never carries a prompt string for the model; it invokes its command directly. The state-derived row stays derived (the one grounded recommendation, or the genuinely-next step) — an empty row is correct, an app-fabricated one is a violation. **Amended (will, 2026-08-19):** the AGENT may propose the follow-ups it predicts after its answer, through one structured channel (`suggestions.propose`), and one of those may be a canned QUESTION — the words the user would type next ("What is a flow"). It stays a binding: a question pill invokes `send` with that text, so the click submits the user's own message through the composer's own path, and a flow pill invokes a registered flow. The set belongs to the latest answer only, is validated at the controller boundary (a question is never a slash invocation; a flow must be one the human can invoke), caps at three, and composes with the state-derived pills rather than replacing them. The composer shows NO standing status chrome; broken states speak at the moment they happen.
+- **Watched repos are chosen, never defaulted (2026-08-09):** the first signed-in run asks ONE question — a repo-chooser card in the transcript (never a wizard page) — and repo work reads only the chosen set. Changing the set is "just ask": `repos.watch` is one command with three invocations (card confirm, slash, agent tool). `via` is recorded on every write.
+- **Pills and buttons are command bindings (2026-08-09):** a suggestion pill never carries a prompt string for the model; it invokes its command directly. The pill row is derived (the genuinely-next step) — an empty row is correct, a fabricated one is a violation. The composer shows NO standing status chrome; broken states speak at the moment they happen.
 - **The trigger axis (2026-08-09):** browser-mechanics commands (`auth.*`, `reset`, `theme`, `chat.stop`, `send`, maximize/minimize) are `trigger: user` — absent from the agent's tool catalog and uncallable by it, with an honest tool-result error naming the visible alternative. The agent's invocation of a surface command renders the EMBEDDED card; maximizing is the user's explicit act alone. The bare reset is admin-only dev tooling; users get `/clear`, which sweeps the transcript into world notes before clearing and clears nothing on a failed sweep. Tool acts render as at most one compact Smithers-side line — raw payloads never enter the transcript; the full stream lives in the admin-only dev-tools panel.
 - **Sign-in IS the GitHub connector (2026-08-09):** a valid session means connected; the connect surface (extension-store rows: icon, name, one line, one action) and the agent context derive connection truth from the session + the watched set, never from the legacy local-connector store.
 
@@ -47,6 +47,7 @@ Anatomy per Smithers message, top→bottom: author label → optional collapsed 
 Message schema (v3): `role: "user" | "smithers"`, `text`, `reasoning?`, `status: "complete" | "failed" | "interrupted"`, `statusDetail?`, `createdAt`, `ordinal`.
 
 States:
+
 - [x] First-run: exactly one genuine Smithers greeting + suggestion pills (fake seeds removed D1).
 - [x] Zero-message: `ChatTranscript empty` → EmptyState (Sparkles icon, "Nothing here yet").
 - [x] Streaming: text and reasoning deltas append live; Reasoning open while streaming, collapsed when done.
@@ -58,6 +59,7 @@ States:
 - [ ] Day dividers / compact grouping via library `Marker` / `CompactGroup` (post-demo).
 
 Composer:
+
 - [x] Enter send / Shift+Enter newline / Escape stop; autogrow 160px; draft persisted via dispatch.
 - [ ] Send/stop glyphs → lucide `ArrowUp` / `Square` — **blocked on a library gap**: `ChatComposer` hardcodes the text glyphs; `@smthrs/ui` needs ReactNode send/stop labels (queued for engineering, smithers repo).
 - [x] `/` command menu v0 (D2): `/connect`, `/world`, `/plan`, `/reset` — keyboard-complete (arrows/Enter/Esc); the composer toolbar buttons route through the same command registry, so button/slash parity holds structurally.
@@ -206,8 +208,7 @@ type AgentEvent = {
   source: { runId: string; turnId: string; sequence: number }
 }
 
-const AgentEventView = ({ event }: { event: AgentEvent }) =>
-  rendererRegistry.for(event.provider).render(event)
+const AgentEventView = ({ event }: { event: AgentEvent }) => rendererRegistry.for(event.provider).render(event)
 ```
 
 The execution path has two different durable boundaries and must never collapse them:
@@ -220,36 +221,37 @@ const invocation = flowRegistry.resolve(binding, {
   invocationId,
   workspaceId,
   branchId,
-  frameId,
+  frameId
 })
 
 // Native bridge: one Flow request, no direct controller mutation.
 const run = await native.flows.invoke(invocation)
 
 // Flow body: durable orchestration occurs OUTSIDE Journal.transact.
-const result = yield* flowRuntime.execute(invocation, function* () {
+const result = yield * flowRuntime.execute(invocation, function*() {
   yield* appTransitions.commit({ type: "connector.requested", actor })
 
   const remote = yield* githubConnectActivity({
     request: invocation.input,
-    idempotencyKey: invocation.invocationId,
+    idempotencyKey: invocation.invocationId
   })
 
   return yield* appTransitions.commit({
     type: "connector.connected",
     actor,
-    remote,
+    remote
   })
 })
 
 // State transition host: storage work only.
-const commitTransition = (transition: FluxIntent) => Journal.transact(
-  Effect.gen(function* () {
-    const revision = yield* appState.apply(transition)
-    yield* journal.emitDurable(toJournalEvent(transition, revision))
-    return yield* appState.projectionBatch(revision)
-  }),
-)
+const commitTransition = (transition: FluxIntent) =>
+  Journal.transact(
+    Effect.gen(function*() {
+      const revision = yield* appState.apply(transition)
+      yield* journal.emitDurable(toJournalEvent(transition, revision))
+      return yield* appState.projectionBatch(revision)
+    })
+  )
 
 // Renderer: consume only a committed transition acknowledgement.
 const projectionBatch = await native.projections.next(run.id)
@@ -273,7 +275,7 @@ const turn = await flowRuntime.call("smithers/turn", input)
 // The model writes one Smithers script per frame.
 const frame = await harness.cell({
   context: await worldview.snapshot(input.workspaceId, input.branchId),
-  sources: await flowRegistry.sources(input.scope),
+  sources: await flowRegistry.sources(input.scope)
 })
 
 // Tools, MCP, connectors, approvals, memory, and native child agents are

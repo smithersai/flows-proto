@@ -48,11 +48,10 @@
 		{ "tag": "v3", "new_sqlite_classes": ["TurnRateLimiter", "ClientErrorLog"] }
 	],
 	"vars": {
-		// Wave 7 canary upstreams. identity/reco live on workers.dev until will
-		// proxies their stale Vercel CNAMEs; billing is on its public hostname.
+		// Wave 7 canary upstreams. identity lives on workers.dev until will
+		// proxies its stale Vercel CNAME; billing is on its public hostname.
 		"IDENTITY_UPSTREAM_URL": "https://smithers-cloud-identity.willcory10.workers.dev",
 		"BILLING_UPSTREAM_URL": "https://billing.smithers.sh",
-		"RECO_UPSTREAM_URL": "https://smithers-cloud-reco.willcory10.workers.dev",
 		// Wave 11: Smithers Cloud (jjhub) API — the per-user gateway provision route
 		// (POST /api/repos/{owner}/{repo}/gateway) lives here; the Cloud token comes
 		// from the identity worker's /api/identity/cloud-token door (wave-11b).
@@ -94,12 +93,8 @@
 		//   GATEWAY_UPSTREAM_URL     — the engine gateway; /v1/rpc/*, /v1/api/*, /workflows/* and POST /api/approvals/decision
 		//   GATEWAY_AUTH_TOKEN       — service-token auth branch for the gateway seam
 		//   GATEWAY_SESSION_USER_ID / _ROLE / _SCOPES — trusted-proxy placeholder session until the identity seam feeds it
-		// Wave 3b:
-		//   RECO_UPSTREAM_URL        — the recommendations worker; proxies /api/reco/* (it validates the forwarded
-		//                              cookie against identity itself; list this Worker's origin in its ALLOWED_ORIGINS)
 		//   IDENTITY_ADMIN_TOKEN     — identity's ADMIN_SERVICE_TOKEN, spent by POST /api/admin/allowlist and GET /api/admin/requests
 		//   BILLING_ADMIN_TOKEN      — billing's ADMIN_SERVICE_TOKEN, spent by POST /api/admin/grant
-		//   RECO_ADMIN_TOKEN         — reco's ADMIN_SERVICE_TOKEN, spent by GET /api/admin/feedback
 		// Every /api/admin/* route first validates the session as admin:true through identity;
 		// anyone else gets the canonical unknown-route 404, byte-identical (never 403).
 	}

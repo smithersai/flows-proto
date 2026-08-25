@@ -14,8 +14,8 @@
  * protocol (scripts/headless-page.ts); the §D balance rows and the §E billing
  * upstream rows are HTTP. A row reports `not-testable-yet` only for a named,
  * specific reason — a missing auth env var, no browser on this machine, or a
- * fact the target's own state does not contain (an empty watched set, no
- * recommendation to dismiss) — never as a blanket deferral.
+ * fact the target's own state does not contain (an empty watched set) —
+ * never as a blanket deferral.
  *
  * --dry-run makes zero network calls and launches no browser: it proves the
  * row catalog, the CLI wiring, and the report writer all work without any
@@ -29,64 +29,65 @@
  * src/launch-checklist/ and are covered by bun tests there; this file is the
  * process shell (clock, filesystem, browser, exit code).
  */
-import { mkdirSync, writeFileSync } from "node:fs";
-import { HELP, NO_TARGET_ERROR, parseArgs, reportDir } from "../src/launch-checklist/Cli.ts";
-import { NO_BROWSER_REQUESTED_REASON } from "../src/launch-checklist/BrowserLaunch.ts";
-import { ROWS } from "../src/launch-checklist/Rows.ts";
-import { buildReport, exitCodeFor, renderMarkdown, runChecklist } from "../src/launch-checklist/Runner.ts";
-import { BrowserUnavailableError, type ProbePage } from "../src/launch-checklist/Types.ts";
-import { createHeadlessBrowser } from "./headless-page.ts";
+import { mkdirSync, writeFileSync } from "node:fs"
+import { NO_BROWSER_REQUESTED_REASON } from "../src/launch-checklist/BrowserLaunch.ts"
+import { HELP, NO_TARGET_ERROR, parseArgs, reportDir } from "../src/launch-checklist/Cli.ts"
+import { ROWS } from "../src/launch-checklist/Rows.ts"
+import { buildReport, exitCodeFor, renderMarkdown, runChecklist } from "../src/launch-checklist/Runner.ts"
+import { BrowserUnavailableError, type ProbePage } from "../src/launch-checklist/Types.ts"
+import { createHeadlessBrowser } from "./headless-page.ts"
 
-const args = parseArgs(process.argv.slice(2));
+const args = parseArgs(process.argv.slice(2))
 if (args.help) {
-	console.log(HELP);
-	process.exit(0);
+  console.log(HELP)
+  process.exit(0)
 }
 
-const target = args.target ?? process.env.CHECKLIST_TARGET;
+const target = args.target ?? process.env.CHECKLIST_TARGET
 if (!args.dryRun && (target === undefined || target === "")) {
-	console.error(`${NO_TARGET_ERROR}\n`);
-	console.error(HELP);
-	process.exit(1);
+  console.error(`${NO_TARGET_ERROR}\n`)
+  console.error(HELP)
+  process.exit(1)
 }
 
-const mode: "dry-run" | "run" = args.dryRun ? "dry-run" : "run";
-const browser =
-	mode === "dry-run" || args.noBrowser
-		? undefined
-		: createHeadlessBrowser({ target: target as string, explicitBinary: args.browserPath, env: process.env });
+const mode: "dry-run" | "run" = args.dryRun ? "dry-run" : "run"
+const browser = mode === "dry-run" || args.noBrowser
+  ? undefined
+  : createHeadlessBrowser({ target: target as string, explicitBinary: args.browserPath, env: process.env })
 
 const page = (cookie: string | undefined): Promise<ProbePage> =>
-	browser === undefined ? Promise.reject(new BrowserUnavailableError(NO_BROWSER_REQUESTED_REASON)) : browser.page(cookie);
+  browser === undefined
+    ? Promise.reject(new BrowserUnavailableError(NO_BROWSER_REQUESTED_REASON))
+    : browser.page(cookie)
 
 const results = await runChecklist({
-	rows: ROWS,
-	mode,
-	context: {
-		target: target ?? "",
-		env: process.env,
-		page,
-		fetch: (url, init) => fetch(url, init),
-		now: () => Date.now(),
-		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-	},
-});
+  rows: ROWS,
+  mode,
+  context: {
+    target: target ?? "",
+    env: process.env,
+    page,
+    fetch: (url, init) => fetch(url, init),
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  }
+})
 
-await browser?.close();
+await browser?.close()
 
-const generatedAt = new Date().toISOString();
-const report = buildReport(mode, target, generatedAt, results);
-const outDir = reportDir(args, generatedAt);
-mkdirSync(outDir, { recursive: true });
-writeFileSync(`${outDir}/launch-checklist-report.json`, JSON.stringify(report, null, 2));
-writeFileSync(`${outDir}/launch-checklist-report.md`, renderMarkdown(report));
+const generatedAt = new Date().toISOString()
+const report = buildReport(mode, target, generatedAt, results)
+const outDir = reportDir(args, generatedAt)
+mkdirSync(outDir, { recursive: true })
+writeFileSync(`${outDir}/launch-checklist-report.json`, JSON.stringify(report, null, 2))
+writeFileSync(`${outDir}/launch-checklist-report.md`, renderMarkdown(report))
 
 for (const row of report.rows) {
-	const marker = row.status === "pass" ? "ok" : row.status === "fail" ? "FAIL" : row.status.toUpperCase();
-	console.log(`${marker}: [${row.id}] ${row.title}`);
+  const marker = row.status === "pass" ? "ok" : row.status === "fail" ? "FAIL" : row.status.toUpperCase()
+  console.log(`${marker}: [${row.id}] ${row.title}`)
 }
 console.log(
-	`\nLAUNCH CHECKLIST (${mode}): ${report.totals.fail} fail · ${report.totals.pass} pass · ${report.totals.notTestableYet} not-testable-yet · ${report.totals.skippedDryRun} skipped-dry-run — report in ${outDir}`,
-);
+  `\nLAUNCH CHECKLIST (${mode}): ${report.totals.fail} fail · ${report.totals.pass} pass · ${report.totals.notTestableYet} not-testable-yet · ${report.totals.skippedDryRun} skipped-dry-run — report in ${outDir}`
+)
 
-process.exit(exitCodeFor(report.totals, mode));
+process.exit(exitCodeFor(report.totals, mode))

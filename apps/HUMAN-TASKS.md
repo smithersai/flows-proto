@@ -14,12 +14,12 @@ audit: `~/Desktop/flows-alpha-readiness-2026-08-16/ui-readiness.md`.
 Two independent verifiers audited `origin/main` against the U1–U8 definitions
 of done and the alpha bar, with no shared context.
 
-| Round | Panelist | Verdict | Note |
-| --- | --- | --- | --- |
-| 1 | codex `gpt-5.6-sol` | NOT-READY | One failure: U7's runner deferred the browser-backed checklist rows as `not-testable-yet`, and `pnpm run checklist` did not exist at the repository root. |
-| 1 | claude `fable` | PRODUCTION-READY | — |
-| 2 | codex `gpt-5.6-sol` | PRODUCTION-READY | Re-audited at `d9655726`. |
-| 2 | claude `fable` | PRODUCTION-READY | Re-audited at `955dcee7`. |
+| Round | Panelist            | Verdict          | Note                                                                                                                                                      |
+| ----- | ------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | codex `gpt-5.6-sol` | NOT-READY        | One failure: U7's runner deferred the browser-backed checklist rows as `not-testable-yet`, and `pnpm run checklist` did not exist at the repository root. |
+| 1     | claude `fable`      | PRODUCTION-READY | —                                                                                                                                                         |
+| 2     | codex `gpt-5.6-sol` | PRODUCTION-READY | Re-audited at `d9655726`.                                                                                                                                 |
+| 2     | claude `fable`      | PRODUCTION-READY | Re-audited at `955dcee7`.                                                                                                                                 |
 
 Round 1's failure spawned a fix lane, which rewrote the checklist runner so all
 32 rows carry a real probe (headless Chrome over the DevTools protocol for the
@@ -280,15 +280,10 @@ The run writes `launch-checklist-report.json` and `.md` under
 is `fail`. A `not-testable-yet` row always carries a named reason; read them
 rather than treating them as passes.
 
-**A-8 and A-9 reset themselves now.** They used to poison the account: A-9
-dismisses a recommendation by design, reco suppresses a dismissed
-recommendation for seven days, so the next run had nothing to grade and
-reported a defect that was not one (`apps/WAVE14-RECEIPT.md`, "Honest gaps").
-Both rows now lift the account's dismissals first through the admin-gated
-`DELETE /api/admin/reco-dismissals?login=`. That means **the checklist session
-should be an admin account**; a non-admin session still runs, but the rows
-record "not an admin" in their evidence and the old self-poisoning applies.
-Set `CHECKLIST_LOGIN` if the session seam does not name the account.
+**A-8 and A-9 are gone.** The recommendation card (the first-run digest and
+the one ranked recommendation) was deleted with the recommendations feature
+on 2026-08-24, and those rows went with it. The watched-repos chooser is the
+whole first-run surface now.
 
 **Final go/no-go.** Ship when:
 
