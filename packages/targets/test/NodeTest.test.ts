@@ -106,14 +106,15 @@ describe("NodeTest", () => {
     expect(() => declare({ name: "suite", paths: [] })).toThrow()
     expect(() => declare({ name: "entrypoint" })).toThrow()
     expect(() => declare({ name: "shell", command: "node --test a.mjs" })).toThrow()
-    // A field the chosen form does not have never reaches the argv, so it
+    // A field the chosen form does not have is a rejected declaration, so it
     // cannot smuggle an interpreter flag past the runner union.
-    const smuggled = declare({
-      name: "test-runner",
-      tests: [Input.file("a.mjs")],
-      args: ["--experimental-loader", "./evil.mjs"]
-    })
-    expect(NodeTest.runArgv(attrsOf<NodeTest.Attrs>(smuggled))).toEqual(["node", "--test", "a.mjs"])
+    expect(() =>
+      declare({
+        name: "test-runner",
+        tests: [Input.file("a.mjs")],
+        args: ["--experimental-loader", "./evil.mjs"]
+      })
+    ).toThrow(/excess property/)
   })
 
   it("participates in the test verb alone", () => {

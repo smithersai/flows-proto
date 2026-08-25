@@ -73,6 +73,25 @@ export const parse = (value: string, currentPackage: string): Pattern => {
 export const format = (packagePath: string, target: string): string => `//${normalizePackage(packagePath)}:${target}`
 
 /**
+ * Computes the current package path, or undefined for a directory outside
+ * the workspace.
+ *
+ * Absolute `//...` labels and patterns never need a current package, so an
+ * outside directory is not an error here; only resolving a `:name`-relative
+ * label requires one, and the caller reports that case.
+ *
+ * @category constructors
+ * @since 0.1.0
+ * @slop
+ */
+export const currentPackageOrUndefined = (workspaceRoot: string, cwd: string): string | undefined => {
+  const relative = NodePath.relative(workspaceRoot, cwd)
+  if (relative === "" || relative === ".") return ""
+  if (relative.startsWith("..") || NodePath.isAbsolute(relative)) return undefined
+  return normalizePackage(relative)
+}
+
+/**
  * Computes the current package path and refuses directories outside the
  * workspace.
  *
@@ -81,10 +100,9 @@ export const format = (packagePath: string, target: string): string => `//${norm
  * @slop
  */
 export const currentPackage = (workspaceRoot: string, cwd: string): string => {
-  const relative = NodePath.relative(workspaceRoot, cwd)
-  if (relative === "" || relative === ".") return ""
-  if (relative.startsWith("..") || NodePath.isAbsolute(relative)) {
+  const found = currentPackageOrUndefined(workspaceRoot, cwd)
+  if (found === undefined) {
     throw new Error(`current directory is outside workspace: ${cwd}`)
   }
-  return normalizePackage(relative)
+  return found
 }

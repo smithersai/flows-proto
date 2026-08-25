@@ -62,7 +62,13 @@ export type File = typeof File.Type
  * @since 0.1.0
  */
 export const GitDiff = Schema.TaggedStruct("GitDiff", {
-  base: Schema.NonEmptyString
+  base: Schema.NonEmptyString,
+  /** Glob patterns the diff is narrowed to before it becomes key material. */
+  paths: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+  /** Glob patterns restricting the diff to added files. */
+  added: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+  /** A regular expression source; only added lines matching it count. */
+  addedLines: Schema.optional(Schema.NonEmptyString)
 })
 
 /**
@@ -133,10 +139,29 @@ export interface FileDigest {
  * @category constructors
  * @since 0.1.0
  */
-export const glob = (
-  pattern: string,
+export function glob(pattern: string, options?: { readonly exclude?: ReadonlyArray<string> }): Glob
+export function glob(patterns: ReadonlyArray<string>): ReadonlyArray<Glob>
+export function glob(
+  pattern: string | ReadonlyArray<string>,
   options: { readonly exclude?: ReadonlyArray<string> } = {}
-): Glob => Glob.make({ pattern, exclude: [...(options.exclude ?? [])] })
+): Glob | ReadonlyArray<Glob> {
+  if (typeof pattern === "string") {
+    return Glob.make({ pattern, exclude: [...(options.exclude ?? [])] })
+  }
+  // The array form is the PACKAGE.ts spelling: positive patterns plus
+  // `!`-prefixed excludes shared by every positive pattern. It returns one
+  // declared glob per positive pattern so the existing single-pattern
+  // expansion applies unchanged.
+  const positives: Array<string> = []
+  const excludes: Array<string> = []
+  for (const entry of pattern) {
+    if (typeof entry !== "string") throw new TypeError("glob patterns must be strings")
+    if (entry.startsWith("!")) excludes.push(entry.slice(1))
+    else positives.push(entry)
+  }
+  if (positives.length === 0) throw new Error("glob requires at least one positive pattern")
+  return positives.map((positive) => Glob.make({ pattern: positive, exclude: [...excludes] }))
+}
 
 /**
  * Creates a declared file input without reading it.
@@ -166,7 +191,38 @@ export const file = (path: string): File => File.make({ path })
  * @category constructors
  * @since 0.1.0
  */
-export const gitDiff = (base: string): GitDiff => GitDiff.make({ base: validateGitBase(base) })
+export const gitDiff = (
+  options?: string | {
+    readonly base?: string
+    readonly paths?: ReadonlyArray<string>
+    readonly added?: ReadonlyArray<string>
+    readonly addedLines?: string
+  }
+): GitDiff => {
+  if (options === undefined) return GitDiff.make({ base: "HEAD" })
+  if (typeof options === "string") return GitDiff.make({ base: validateGitBase(options) })
+  return GitDiff.make({
+    base: validateGitBase(options.base ?? "HEAD"),
+    ...(options.paths === undefined ? {} : { paths: [...options.paths] }),
+    ...(options.added === undefined ? {} : { added: [...options.added] }),
+    ...(options.addedLines === undefined ? {} : { addedLines: options.addedLines })
+  })
+}
+
+/**
+ * Payload input declarations, `S.Input.String`, `S.Input.Optional`, and
+ * `S.Input.Literals`. Defined in `Reference.ts`; re-exported here so the
+ * `Smithers.Input` namespace carries the PACKAGE.ts spellings.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export {
+  inputLiterals as Literals,
+  inputOptional as Optional,
+  InputSpec as Spec,
+  inputString as String
+} from "./Reference.ts"
 
 /**
  * Creates a workspace-membership input without reading the filesystem.

@@ -3,12 +3,17 @@
  *
  * @since 0.1.0
  */
+import * as Config from "@smthrs/targets/Config"
+import * as Target from "@smthrs/targets/Target"
 import { Cli, z } from "incur"
 import * as NodePath from "node:path"
 import * as Diagnostic from "./Diagnostic.ts"
 import { runInstall } from "./engine.ts"
 import * as Executor from "./Executor.ts"
 import * as GraphOutput from "./GraphOutput.ts"
+import * as PackageDiscovery from "./PackageDiscovery.ts"
+import * as PackageIndex from "./PackageIndex.ts"
+import * as PackageLoader from "./PackageLoader.ts"
 import * as Planner from "./Planner.ts"
 import * as Query from "./Query.ts"
 import {
@@ -129,10 +134,111 @@ const openWorkspace = async (
   }
 }
 
+/**
+ * Opens the PACKAGE.ts index when the resolved workspace is in package mode:
+ * the nearest ancestor of the workspace flag holding `.smithers/WORKSPACE.ts`
+ * or a root `WORKSPACE.ts` decides. A BUILD.ts workspace has neither and
+ * returns undefined, so BUILD mode is untouched.
+ */
+const openPackageIndex = async (
+  flags: WorkspaceFlags,
+  runtime: RuntimeConfig = {}
+): Promise<PackageIndex.PackageIndex | undefined> => {
+  runtime.signal?.throwIfAborted()
+  const root = await PackageDiscovery.findWorkspaceRoot(NodePath.resolve(flags.workspace))
+  if (root === undefined) return undefined
+  // The flag wins; otherwise the WORKSPACE-declared cache directory must
+  // reach the prune set before the package walk, or a workspace with a
+  // non-default cache directory would index its own cache artifacts. The
+  // probe evaluates only WORKSPACE.ts and is forgiving — on failure the
+  // full load reports the real diagnostic under the default prune.
+  let cacheDirectory = flags.cacheDir === undefined ? undefined : Config.normalizeCacheDirectory(flags.cacheDir)
+  if (cacheDirectory === undefined) {
+    const workspaceFile = await PackageDiscovery.workspaceFileOf(root)
+    if (workspaceFile !== undefined) {
+      cacheDirectory = await PackageLoader.probeCacheDirectory(root, workspaceFile)
+    }
+  }
+  const discovery = await PackageDiscovery.discover(root, { cacheDirectory, signal: runtime.signal })
+  const loaded = await PackageLoader.load(discovery)
+  return PackageIndex.PackageIndex.make(loaded, process.cwd())
+}
+
+/** Package-mode `query`: the same listing shape BUILD mode prints. */
+const packageQuery = (index: PackageIndex.PackageIndex, expression: string): unknown => {
+  const dependencyMatch = expression.match(/^deps\((.+)\)$/)
+  if (dependencyMatch?.[1] !== undefined) {
+    const rows = index.resolve(dependencyMatch[1].trim())
+    if (rows.length !== 1) throw new Error("deps() requires one exact or default target")
+    const root = rows[0]!
+    const closure = new Set<string>()
+    const stack = [root.target]
+    const seen = new Set<Target.AnyTarget>()
+    while (stack.length > 0) {
+      const current = stack.pop()!
+      if (seen.has(current)) continue
+      seen.add(current)
+      const label = index.labelOf(current)
+      if (label !== undefined && label !== root.label) closure.add(label)
+      for (const dependency of Target.metadata(current).dependencies) stack.push(dependency)
+    }
+    return {
+      query: expression,
+      root: root.label,
+      dependencies: [...closure].sort(),
+      edges: index.edges(rows)
+    }
+  }
+  return {
+    query: expression,
+    targets: index.resolve(expression).map((row) => ({
+      label: row.label,
+      target: Target.metadata(row.target).target,
+      kinds: Target.metadata(row.target).kinds
+    }))
+  }
+}
+
+/** Package-mode `graph`: labeled nodes plus classified edges. */
+const packageGraph = (index: PackageIndex.PackageIndex, pattern: string): unknown => {
+  const rows = index.resolve(pattern)
+  const edges = index.edges(rows)
+  const lines = rows.map((row) => {
+    const own = edges.filter((edge) => edge.from === row.label)
+    return own.length === 0
+      ? row.label
+      : `${row.label}\n${own.map((edge) => `  -${edge.kind}-> ${edge.to}`).join("\n")}`
+  })
+  return {
+    pattern,
+    format: "text",
+    graph: lines.join("\n"),
+    roots: rows.map((row) => row.label),
+    targets: rows.map((row) => ({ label: row.label, target: Target.metadata(row.target).target })),
+    edges,
+    warnings: []
+  }
+}
+
 /** The plan printed by `ci --plan`: all CI verb plans merged over one pattern. */
 interface CiPlan extends Executor.MergedPlan {
   readonly verb: "ci"
   readonly pattern: string
+}
+
+/**
+ * Refuses execution verbs in package mode: W1 routes only `query` and
+ * `graph` through the PackageIndex, and every package-mode target's
+ * implementation is the typed NotImplemented stub. Failing here is the
+ * no-fake-green rule at the CLI boundary.
+ */
+const refusePackageMode = async (flags: WorkspaceFlags, verb: string): Promise<void> => {
+  const root = await PackageDiscovery.findWorkspaceRoot(NodePath.resolve(flags.workspace))
+  if (root !== undefined) {
+    throw new Error(
+      `NotImplemented: ${verb} does not execute PACKAGE.ts targets yet; query and graph are the package-mode surface`
+    )
+  }
 }
 
 /** Plans one verb and executes it unless `--plan` asked for the inert print. */
@@ -142,6 +248,7 @@ const runVerb = async (
   flags: ExecutionFlags,
   config: RuntimeConfig
 ): Promise<Planner.Plan | Executor.Summary> => {
+  await refusePackageMode(flags, verb)
   const { remoteCache, workspace } = await openWorkspace(flags, config, !flags.plan)
   const plan = await Planner.make(workspace, verb, pattern)
   if (flags.plan) return plan
@@ -178,6 +285,7 @@ const runCi = async (
   flags: ExecutionFlags,
   config: RuntimeConfig
 ): Promise<CiPlan | Executor.Summary> => {
+  await refusePackageMode(flags, "ci")
   const { remoteCache, workspace } = await openWorkspace(flags, config, !flags.plan)
   const plans: Array<Planner.Plan> = []
   const refusals: Array<unknown> = []
@@ -234,6 +342,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       alias: { workspace: "w" },
       async run(context) {
         try {
+          await refusePackageMode(context.options, "install")
           const prepared = await prepare(context.options, config)
           return await runInstall(prepared.root, {
             cacheDirectory: prepared.cacheDirectory,
@@ -397,6 +506,8 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       alias: { workspace: "w" },
       async run(context) {
         try {
+          const index = await openPackageIndex(context.options, config)
+          if (index !== undefined) return packageQuery(index, context.args.expr)
           const { workspace } = await openWorkspace(context.options, config, false)
           return await Query.run(workspace, context.args.expr)
         } catch (cause) {
@@ -413,6 +524,8 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       alias: { workspace: "w", mermaid: "m" },
       async run(context) {
         try {
+          const index = await openPackageIndex(context.options, config)
+          if (index !== undefined) return packageGraph(index, context.args.pattern)
           const { workspace } = await openWorkspace(context.options, config, false)
           const plan = await Planner.make(workspace, "graph", context.args.pattern)
           return {

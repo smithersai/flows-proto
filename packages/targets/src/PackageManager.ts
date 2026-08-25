@@ -32,6 +32,8 @@
  * @since 0.1.0
  */
 import * as Schema from "effect/Schema"
+import * as Input from "./Input.ts"
+import * as Reference from "./Reference.ts"
 import * as Runtime from "./Runtime.ts"
 
 /**
@@ -242,6 +244,89 @@ export const BunPackages = (options: {
     executable: executableFor("bun", options.executable),
     runtime: options.runtime
   })
+
+/**
+ * Schema for the audit policy a WORKSPACE.ts Yarn declaration may carry.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const YarnAudit = Schema.Struct({
+  severity: Schema.NonEmptyString,
+  recursive: Schema.optional(Schema.Boolean)
+})
+
+/**
+ * Schema for the WORKSPACE.ts Yarn package-manager declaration.
+ *
+ * Unlike the BUILD.ts variants above, the Artsy workspace form pins the
+ * manager through the repository's own manifest and lockfile rather than an
+ * enumerated version, so its identity is content, not a version literal.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const YarnDeclaration = Schema.TaggedStruct("YarnPackageManager", {
+  manifest: Input.File,
+  lockfile: Input.File,
+  audit: Schema.optional(YarnAudit),
+  version: Schema.optional(Schema.NonEmptyString)
+})
+
+/**
+ * One WORKSPACE.ts Yarn package-manager declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type YarnDeclaration = typeof YarnDeclaration.Type
+
+/**
+ * Checks whether a value is a WORKSPACE.ts Yarn declaration.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
+export const isYarnDeclaration: (value: unknown) => value is YarnDeclaration = Schema.is(YarnDeclaration)
+
+/**
+ * Declares Yarn as the workspace package manager, WORKSPACE.ts form.
+ *
+ * @example
+ * ```ts
+ * import { Smithers as S } from "@smthrs/targets"
+ *
+ * const packageManager = S.PackageManager.Yarn({
+ *   manifest: S.file("//package.json"),
+ *   lockfile: S.file("//yarn.lock"),
+ *   audit: { severity: "critical", recursive: true }
+ * })
+ * ```
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const Yarn = (options: {
+  readonly manifest: Input.File
+  readonly lockfile: Input.File
+  readonly audit?: { readonly severity: string; readonly recursive?: boolean } | undefined
+  readonly version?: string | undefined
+}): YarnDeclaration =>
+  YarnDeclaration.make({
+    manifest: options.manifest,
+    lockfile: options.lockfile,
+    ...(options.audit === undefined ? {} : { audit: { ...options.audit } }),
+    ...(options.version === undefined ? {} : { version: usable(options.version, "yarn version") })
+  })
+
+/**
+ * The workspace package manager's own binary as an inert tool reference,
+ * `S.PackageManager.bin`.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const bin: Reference.PackageManagerBin = Reference.packageManagerBin
 
 /**
  * Checks whether a value is a declared package manager.

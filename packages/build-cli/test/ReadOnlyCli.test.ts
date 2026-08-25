@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { makeCli } from "../src/Cli.ts"
 
 const targets = NodePath.resolve(import.meta.dirname, "../../targets/src/Smithers.ts")
+const config = NodePath.resolve(import.meta.dirname, "../../targets/src/Config.ts")
 let root: string
 
 const run = async (args: ReadonlyArray<string>): Promise<number> => {
@@ -22,7 +23,8 @@ beforeEach(async () => {
   await Fs.writeFile(NodePath.join(root, "input.txt"), "input\n")
   await Fs.writeFile(
     NodePath.join(root, "BUILD.ts"),
-    `import { file, ToolBuild, Workspace } from ${JSON.stringify(targets)}\n` +
+    `import { file, ToolBuild } from ${JSON.stringify(targets)}\n` +
+      `import { Workspace } from ${JSON.stringify(config)}\n` +
       `export const workspace = Workspace({ cacheDirectory: "state/cache", gitignored: true })\n` +
       `export const build = ToolBuild({\n` +
       `  tool: "node", command: "node", args: ["--version"],\n` +

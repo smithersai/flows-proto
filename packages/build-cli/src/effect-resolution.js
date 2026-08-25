@@ -39,7 +39,16 @@ const buildModuleParameter = "smithers-build-module"
 const isBuildModule = (url) => {
   if (!url.startsWith("file:")) return false
   const parsed = new URL(url)
-  return parsed.searchParams.get(buildModuleParameter) === "1" || parsed.pathname.endsWith("/BUILD.ts")
+  if (parsed.searchParams.get(buildModuleParameter) === "1") return true
+  const pathname = parsed.pathname
+  // BUILD.ts is the legacy authoring surface; PACKAGE.ts, WORKSPACE.ts, and
+  // the .smithers/*.ts siblings WORKSPACE.ts imports are the routed one.
+  // All are authored as ES modules regardless of the host repository's
+  // package.json `type`, so their format is pinned here.
+  return pathname.endsWith("/BUILD.ts") ||
+    pathname.endsWith("/PACKAGE.ts") ||
+    pathname.endsWith("/WORKSPACE.ts") ||
+    (pathname.includes("/.smithers/") && pathname.endsWith(".ts"))
 }
 
 /**

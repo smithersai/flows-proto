@@ -581,7 +581,11 @@ const sourceSite = (): SourceSite | undefined => {
     } catch {
       continue
     }
-    if (NodePath.basename(file) !== "BUILD.ts") continue
+    // BUILD.ts is the legacy authoring surface; PACKAGE.ts and WORKSPACE.ts
+    // are the routed one. The site is diagnostic context only — package-mode
+    // labels come exclusively from the package index, never from this stack.
+    const basename = NodePath.basename(file)
+    if (basename !== "BUILD.ts" && basename !== "PACKAGE.ts" && basename !== "WORKSPACE.ts") continue
     const positive = (value: unknown): number | undefined =>
       typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined
     return { path: NodePath.resolve(file), line: positive(site.lineNumber), column: positive(site.columnNumber) }
@@ -653,6 +657,19 @@ export const declarationRejected = (id: string, site: SourceSite | undefined, ca
 }
 
 /**
+ * Every target constructor validates attrs with excess properties as errors.
+ *
+ * `Schema.Struct.make` strips unknown keys by default, so a misspelled attr
+ * (`gate` for `gates`, `approvals` for `approval`) would construct a green
+ * target with the edge or safety attr silently absent. Declaration input is
+ * author-written and there is no other guard in the pipeline (PACKAGE.ts is
+ * loaded without typechecking), so an unknown key is a rejected declaration,
+ * never a dropped one. The option applies recursively, so a nested struct
+ * such as `readiness` rejects unknown keys too.
+ */
+const strictMake = { parseOptions: { onExcessProperty: "error" } } as const
+
+/**
  * Creates a target whose attrs are the Flow payload schema and whose
  * implementation is the Flow's required pure plan-time body.
  *
@@ -698,7 +715,7 @@ export const make = <
     const site = sourceSite()
     let attrs: Attrs["Type"]
     try {
-      attrs = options.attrs.make(attrsInput)
+      attrs = options.attrs.make(attrsInput, strictMake)
     } catch (cause) {
       throw declarationRejected(id, site, cause)
     }
@@ -736,7 +753,7 @@ export const make = <
       }
       let mapped: Attrs["Type"]
       try {
-        mapped = options.attrs.make(candidate)
+        mapped = options.attrs.make(candidate, strictMake)
       } catch (cause) {
         throw declarationRejected(`${id} (${kind})`, site, cause)
       }
