@@ -18,86 +18,90 @@
  *
  *   bun apps/ui/canary-repros/github/14.5.ts
  */
-import { BASE, ensureSignedIn, open, report } from "./_lib";
+import { BASE, ensureSignedIn, open, report } from "./_lib"
 
-const REPO = process.env.CANARY_DISPOSABLE_REPO ?? "";
-const number = Number(process.env.CANARY_FIXTURE_LANDING_NUMBER ?? "");
-const title = process.env.CANARY_FIXTURE_LANDING_TITLE ?? "";
+const REPO = process.env.CANARY_DISPOSABLE_REPO ?? ""
+const number = Number(process.env.CANARY_FIXTURE_LANDING_NUMBER ?? "")
+const title = process.env.CANARY_FIXTURE_LANDING_TITLE ?? ""
 if (REPO === "" || !Number.isSafeInteger(number) || number <= 0 || title === "") {
-	throw new Error("CANARY_DISPOSABLE_REPO, CANARY_FIXTURE_LANDING_NUMBER, and CANARY_FIXTURE_LANDING_TITLE are required");
+  throw new Error(
+    "CANARY_DISPOSABLE_REPO, CANARY_FIXTURE_LANDING_NUMBER, and CANARY_FIXTURE_LANDING_TITLE are required"
+  )
 }
-const { context, page } = await open();
-await ensureSignedIn(page);
+const { context, page } = await open()
+await ensureSignedIn(page)
 
-const ghHeaders = process.env.GH_TOKEN ? { authorization: `Bearer ${process.env.GH_TOKEN}` } : {};
+const ghHeaders = process.env.GH_TOKEN ? { authorization: `Bearer ${process.env.GH_TOKEN}` } : {}
 const ghHeadBefore = await fetch(`https://api.github.com/repos/${REPO}/commits/HEAD`, { headers: ghHeaders })
-	.then(async (r) => (r.ok ? ((await r.json()) as { sha: string }).sha : "unreadable"))
-	.catch(() => "unreadable");
+  .then(async (r) => (r.ok ? ((await r.json()) as { sha: string }).sha : "unreadable"))
+  .catch(() => "unreadable")
 const ghPullsBefore = await fetch(`https://api.github.com/repos/${REPO}/pulls?state=open`, { headers: ghHeaders })
-	.then(async (r) => (r.ok ? ((await r.json()) as unknown[]).length : -1))
-	.catch(() => -1);
-console.log(`github before: head=${ghHeadBefore.slice(0, 8)} openPulls=${ghPullsBefore}`);
+  .then(async (r) => (r.ok ? ((await r.json()) as unknown[]).length : -1))
+  .catch(() => -1)
+console.log(`github before: head=${ghHeadBefore.slice(0, 8)} openPulls=${ghPullsBefore}`)
 if (ghHeadBefore === "unreadable" || ghPullsBefore < 0) {
-	throw new Error("GitHub is unreadable; refusing to run an irreversible landing without the confirmation baseline");
+  throw new Error("GitHub is unreadable; refusing to run an irreversible landing without the confirmation baseline")
 }
 
 const api = (path: string, method = "GET", body?: unknown): Promise<{ status: number; body: string }> =>
-	page.evaluate(
-		async ([p, m, b]: [string, string, unknown]) => {
-			const response = await fetch(
-				p,
-				b === null
-					? { method: m }
-					: { method: m, headers: { "content-type": "application/json" }, body: JSON.stringify(b) },
-			);
-			return { status: response.status, body: await response.text() };
-		},
-		[path, method, body ?? null] as [string, string, unknown],
-	);
+  page.evaluate(
+    async ([p, m, b]: [string, string, unknown]) => {
+      const response = await fetch(
+        p,
+        b === null
+          ? { method: m }
+          : { method: m, headers: { "content-type": "application/json" }, body: JSON.stringify(b) }
+      )
+      return { status: response.status, body: await response.text() }
+    },
+    [path, method, body ?? null] as [string, string, unknown]
+  )
 
-const fixtureResponse = await api(`/api/repos/${REPO}/landings/${number}`);
-if (fixtureResponse.status !== 200) throw new Error(`fixture landing could not be read: HTTP ${fixtureResponse.status}`);
-const fixture = JSON.parse(fixtureResponse.body) as { title?: string; state?: string };
+const fixtureResponse = await api(`/api/repos/${REPO}/landings/${number}`)
+if (fixtureResponse.status !== 200) throw new Error(`fixture landing could not be read: HTTP ${fixtureResponse.status}`)
+const fixture = JSON.parse(fixtureResponse.body) as { title?: string; state?: string }
 if (fixture.title !== title || fixture.state !== "open") {
-	throw new Error(`fixture fence failed: expected open "${title}", got ${JSON.stringify(fixture)}`);
+  throw new Error(`fixture fence failed: expected open "${title}", got ${JSON.stringify(fixture)}`)
 }
-console.log(`landing under test: ${REPO}#${number} "${title}"`);
+console.log(`landing under test: ${REPO}#${number} "${title}"`)
 
-const composer = page.locator("textarea").last();
-await composer.click();
-await composer.fill(`/prs.land ${number} ${REPO}`);
-await page.waitForTimeout(400);
-await page.keyboard.press("Enter");
-await page.waitForTimeout(18_000);
+const composer = page.locator("textarea").last()
+await composer.click()
+await composer.fill(`/prs.land ${number} ${REPO}`)
+await page.waitForTimeout(400)
+await page.keyboard.press("Enter")
+await page.waitForTimeout(18_000)
 
-const card = await page.locator('[data-kind="pr"]').last().innerText();
-console.log(`card: ${card.replace(/\n+/g, " | ").slice(0, 300)}`);
-console.log(`platform landing: ${(await api(`/api/repos/${REPO}/landings/${number}`)).body.trim()}`);
+const card = await page.locator("[data-kind=\"pr\"]").last().innerText()
+console.log(`card: ${card.replace(/\n+/g, " | ").slice(0, 300)}`)
+console.log(`platform landing: ${(await api(`/api/repos/${REPO}/landings/${number}`)).body.trim()}`)
 
 const ghHeadAfter = await fetch(`https://api.github.com/repos/${REPO}/commits/HEAD`, { headers: ghHeaders })
-	.then(async (r) => (r.ok ? ((await r.json()) as { sha: string }).sha : "unreadable"))
-	.catch(() => "unreadable");
+  .then(async (r) => (r.ok ? ((await r.json()) as { sha: string }).sha : "unreadable"))
+  .catch(() => "unreadable")
 const ghPull = await fetch(
-	`https://api.github.com/search/issues?q=${encodeURIComponent(`repo:${REPO} "${title}" in:title type:pr`)}`,
-	{ headers: ghHeaders },
+  `https://api.github.com/search/issues?q=${encodeURIComponent(`repo:${REPO} "${title}" in:title type:pr`)}`,
+  { headers: ghHeaders }
 )
-	.then(async (r) => (r.ok ? (((await r.json()) as { total_count?: number }).total_count ?? 0) : -1))
-	.catch(() => -1);
-console.log(`github after: head=${ghHeadAfter.slice(0, 8)} pullsTitled="${title}"=${ghPull}`);
+  .then(async (r) => (r.ok ? (((await r.json()) as { total_count?: number }).total_count ?? 0) : -1))
+  .catch(() => -1)
+console.log(`github after: head=${ghHeadAfter.slice(0, 8)} pullsTitled="${title}"=${ghPull}`)
 
-const failures: Array<string> = [];
+const failures: Array<string> = []
 /* The card must not claim a merge. */
-if (/\bMERGED\b/i.test(card)) failures.push("the card claimed MERGED rather than the queue state");
+if (/\bMERGED\b/i.test(card)) failures.push("the card claimed MERGED rather than the queue state")
 /* And the pull request it just landed must be findable on GitHub. */
 if (ghHeadAfter === "unreadable" || ghPull < 0) {
-	failures.push("GitHub became unreadable after landing; confirmation was not completed");
+  failures.push("GitHub became unreadable after landing; confirmation was not completed")
 } else if (ghPull === 0) {
-	failures.push(
-		`the pull request the card landed ("${title}", card shows #${number}) does not exist on github.com/${REPO}; GitHub's default-branch head is unchanged at ${ghHeadAfter.slice(0, 8)} — the landing happened only in the jjhub mirror`,
-	);
+  failures.push(
+    `the pull request the card landed ("${title}", card shows #${number}) does not exist on github.com/${REPO}; GitHub's default-branch head is unchanged at ${
+      ghHeadAfter.slice(0, 8)
+    } — the landing happened only in the jjhub mirror`
+  )
 }
 
-await page.screenshot({ path: "/tmp/canary-github-14.5.png", fullPage: true });
-console.log(`origin: ${BASE}; screenshot: /tmp/canary-github-14.5.png`);
-await context.close();
-report(failures);
+await page.screenshot({ path: "/tmp/canary-github-14.5.png", fullPage: true })
+console.log(`origin: ${BASE}; screenshot: /tmp/canary-github-14.5.png`)
+await context.close()
+report(failures)

@@ -1,9 +1,9 @@
-import { createCliRenderer } from "@opentui/core";
-import { createRoot } from "@opentui/react";
-import { TranscriptStore } from "./state/Transcript";
-import { ChatController } from "./state/ChatController";
-import { resolveTransport } from "./agent/transport";
-import { App } from "./ui/App";
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+import { resolveTransport } from "./agent/transport"
+import { ChatController } from "./state/ChatController"
+import { TranscriptStore } from "./state/Transcript"
+import { App } from "./ui/App"
 
 /*
  * smithers-tui entry: a terminal clone of the Smithers MVP chat app.
@@ -18,12 +18,12 @@ import { App } from "./ui/App";
  * owns the terminal; Ctrl+C exits through the renderer so the alternate
  * screen and raw mode are always restored.
  */
-const store = new TranscriptStore();
+const store = new TranscriptStore()
 // The transport publishes into the controller; the controller owns the
 // transport. Bind the publish callback first to break the cycle.
-let controller: ChatController;
-const { transport, describe } = resolveTransport((frame) => controller.publish(frame));
-controller = new ChatController(store, transport);
+let controller: ChatController
+const { transport, describe } = resolveTransport((frame) => controller.publish(frame))
+controller = new ChatController(store, transport)
 
-const renderer = await createCliRenderer({ exitOnCtrlC: true });
-createRoot(renderer).render(<App controller={controller} describe={describe} />);
+const renderer = await createCliRenderer({ exitOnCtrlC: true })
+createRoot(renderer).render(<App controller={controller} describe={describe} />)

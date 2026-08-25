@@ -21,76 +21,79 @@
  *
  *   bun apps/ui/canary-repros/cards/7.8.ts
  */
-import { chromium } from "playwright";
+import { chromium } from "playwright"
 
-const BASE = process.env.CANARY_URL ?? "https://canary.smithers.sh";
-const PROFILE = process.env.CARDS_PROFILE ?? "/tmp/canary-cards-profile";
-const REPO = "codeplanesmithers/canary-sandbox";
+const BASE = process.env.CANARY_URL ?? "https://canary.smithers.sh"
+const PROFILE = process.env.CARDS_PROFILE ?? "/tmp/canary-cards-profile"
+const REPO = "codeplanesmithers/canary-sandbox"
 
 const context = await chromium.launchPersistentContext(PROFILE, {
-	headless: true,
-	viewport: { width: 1280, height: 900 },
-});
-const page = context.pages()[0] ?? (await context.newPage());
-await page.goto(BASE, { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(4000);
+  headless: true,
+  viewport: { width: 1280, height: 900 }
+})
+const page = context.pages()[0] ?? (await context.newPage())
+await page.goto(BASE, { waitUntil: "domcontentloaded" })
+await page.waitForTimeout(4000)
 
 for (const flow of [`/files.read big.txt ${REPO}`, `/files.read blob.bin ${REPO}`]) {
-	const composer = page.locator("textarea").first();
-	await composer.click();
-	await composer.fill("");
-	await page.keyboard.type(flow, { delay: 8 });
-	await page.keyboard.press("Enter");
-	await page.waitForTimeout(9000);
+  const composer = page.locator("textarea").first()
+  await composer.click()
+  await composer.fill("")
+  await page.keyboard.type(flow, { delay: 8 })
+  await page.keyboard.press("Enter")
+  await page.waitForTimeout(9000)
 }
 
-const measured = await page.$$eval('[data-kind="file"]', (cards) =>
-	cards.map((card) => {
-		const body = card.querySelector(".smithers-card-body") as HTMLElement;
-		const pre = card.querySelector("pre") as HTMLElement | null;
-		const cardBox = card.getBoundingClientRect();
-		const preBox = pre?.getBoundingClientRect();
-		return {
-			title: (card.querySelector(".smithers-card-title") as HTMLElement).innerText,
-			cardHeight: Math.round(cardBox.height),
-			cardRight: Math.round(cardBox.right),
-			bodyOverflowY: getComputedStyle(body).overflowY,
-			bodyMaxHeight: getComputedStyle(body).maxHeight,
-			bodyScrollsInside: body.scrollHeight > body.clientHeight + 1,
-			preOverflow: pre === null ? null : getComputedStyle(pre).overflow,
-			preScrollWidth: pre?.scrollWidth ?? 0,
-			preClientWidth: pre?.clientWidth ?? 0,
-			/* How far the laid-out text runs past the card's own right border. */
-			textPastCardRight: preBox === undefined ? 0 : Math.round(preBox.left + (pre?.scrollWidth ?? 0) - cardBox.right),
-		};
-	}),
-);
+const measured = await page.$$eval("[data-kind=\"file\"]", (cards) =>
+  cards.map((card) => {
+    const body = card.querySelector(".smithers-card-body") as HTMLElement
+    const pre = card.querySelector("pre") as HTMLElement | null
+    const cardBox = card.getBoundingClientRect()
+    const preBox = pre?.getBoundingClientRect()
+    return {
+      title: (card.querySelector(".smithers-card-title") as HTMLElement).innerText,
+      cardHeight: Math.round(cardBox.height),
+      cardRight: Math.round(cardBox.right),
+      bodyOverflowY: getComputedStyle(body).overflowY,
+      bodyMaxHeight: getComputedStyle(body).maxHeight,
+      bodyScrollsInside: body.scrollHeight > body.clientHeight + 1,
+      preOverflow: pre === null ? null : getComputedStyle(pre).overflow,
+      preScrollWidth: pre?.scrollWidth ?? 0,
+      preClientWidth: pre?.clientWidth ?? 0,
+      /* How far the laid-out text runs past the card's own right border. */
+      textPastCardRight: preBox === undefined ? 0 : Math.round(preBox.left + (pre?.scrollWidth ?? 0) - cardBox.right)
+    }
+  }))
 
-for (const row of measured) console.log(JSON.stringify(row));
+for (const row of measured) console.log(JSON.stringify(row))
 
 const documentScroll = await page.evaluate(() => ({
-	scrollWidth: document.documentElement.scrollWidth,
-	clientWidth: document.documentElement.clientWidth,
-}));
-console.log(`document: ${JSON.stringify(documentScroll)}`);
+  scrollWidth: document.documentElement.scrollWidth,
+  clientWidth: document.documentElement.clientWidth
+}))
+console.log(`document: ${JSON.stringify(documentScroll)}`)
 
-await page.screenshot({ path: "/tmp/canary-cards-7.8-overflow.png", fullPage: true });
-await context.close();
+await page.screenshot({ path: "/tmp/canary-cards-7.8-overflow.png", fullPage: true })
+await context.close()
 
-const overflowing = measured.filter((row) => row.preScrollWidth > row.preClientWidth + 1 && row.preOverflow === "visible");
-const noInnerScroll = measured.filter((row) => row.bodyMaxHeight === "none" && !row.bodyScrollsInside && row.cardHeight > 1200);
+const overflowing = measured.filter((row) =>
+  row.preScrollWidth > row.preClientWidth + 1 && row.preOverflow === "visible"
+)
+const noInnerScroll = measured.filter((row) =>
+  row.bodyMaxHeight === "none" && !row.bodyScrollsInside && row.cardHeight > 1200
+)
 
 if (measured.length !== 2) {
-	console.error(`SETUP 7.8: expected exactly two fenced file cards, rendered ${measured.length}.`);
-	process.exit(2);
+  console.error(`SETUP 7.8: expected exactly two fenced file cards, rendered ${measured.length}.`)
+  process.exit(2)
 }
 if (overflowing.length > 0 || noInnerScroll.length > 0) {
-	console.error(
-		`FAIL 7.8: ${overflowing.length} file card(s) overflow their box horizontally with overflow:visible and no scroller` +
-			(noInnerScroll.length > 0
-				? `; ${noInnerScroll.length} card(s) grow past 1200px instead of scrolling inside the card`
-				: ""),
-	);
-	process.exit(1);
+  console.error(
+    `FAIL 7.8: ${overflowing.length} file card(s) overflow their box horizontally with overflow:visible and no scroller` +
+      (noInnerScroll.length > 0
+        ? `; ${noInnerScroll.length} card(s) grow past 1200px instead of scrolling inside the card`
+        : "")
+  )
+  process.exit(1)
 }
-console.log("PASS 7.8: long card content scrolls inside the card.");
+console.log("PASS 7.8: long card content scrolls inside the card.")

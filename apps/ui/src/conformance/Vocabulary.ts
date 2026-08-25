@@ -5,38 +5,38 @@
  * is hand-listed: a hand-listed expectation goes stale at exactly the rename
  * this pin exists to catch, so it would reintroduce the defect one level up.
  */
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { StorageApi } from "@tanstack/db";
-import ts from "typescript";
-import type { Card } from "smithers-shared/Cards";
-import { CardSchema } from "smithers-shared/Cards";
-import { adminFlows, baseFlows, type CommandActions } from "../mainview/flows/Flows";
-import type { NativeAgent, NativeRepositories } from "../mainview/native/NativeBridge";
-import { nameOf } from "../mainview/flows/registry";
-import { createAppController } from "../mainview/state/AppController";
-import { createAppStore } from "../mainview/state/AppStore";
-import { DOTTED_IDENTIFIER, extractLiterals, ID_PREFIX, segmentsOf, sourceFiles } from "./Literals";
+import type { StorageApi } from "@tanstack/db"
+import { readdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import type { Card } from "smithers-shared/Cards"
+import { CardSchema } from "smithers-shared/Cards"
+import ts from "typescript"
+import { adminFlows, baseFlows, type CommandActions } from "../mainview/flows/Flows"
+import { nameOf } from "../mainview/flows/registry"
+import type { NativeAgent, NativeRepositories } from "../mainview/native/NativeBridge"
+import { createAppController } from "../mainview/state/AppController"
+import { createAppStore } from "../mainview/state/AppStore"
+import { DOTTED_IDENTIFIER, extractLiterals, ID_PREFIX, segmentsOf, sourceFiles } from "./Literals"
 
-const from = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
+const from = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url))
 
 /** `apps/ui`. */
-export const UI_APP = from("../../");
+export const UI_APP = from("../../")
 /** `apps/ui/src`. */
-export const UI_SRC = from("../");
+export const UI_SRC = from("../")
 /** `apps/ui/scripts` — the standalone e2e and live-check runners. */
-export const SCRIPTS = from("../../scripts");
+export const SCRIPTS = from("../../scripts")
 /** `apps/ui/e2e` — the hermetic harness and its suites. */
-export const E2E = from("../../e2e");
+export const E2E = from("../../e2e")
 /** `apps/ui/src/launch-checklist` — the canary checklist's probes and rows. */
-export const LAUNCH_CHECKLIST = from("../launch-checklist");
+export const LAUNCH_CHECKLIST = from("../launch-checklist")
 /** This directory. */
-export const CONFORMANCE = from(".");
+export const CONFORMANCE = from(".")
 /** `apps/shared/src` — the wire model both halves of the app share. */
-export const SHARED_SRC = from("../../../shared/src");
+export const SHARED_SRC = from("../../../shared/src")
 /** The shipped component library the app renders through. */
-export const COMPONENT_LIBRARY = from("../../node_modules/@smthrs/ui/src");
+export const COMPONENT_LIBRARY = from("../../node_modules/@smthrs/ui/src")
 
 /**
  * Product source: everything the app is built from, minus the trees under
@@ -45,16 +45,16 @@ export const COMPONENT_LIBRARY = from("../../node_modules/@smthrs/ui/src");
  * mentions it".
  */
 export const productSourceFiles = (): ReadonlyArray<string> =>
-	[
-		// The app's own top-level config (electrobun.config.ts, vite.config.ts)
-		// declares product identity, the macOS bundle id included, so it counts
-		// as product source for "does the app own this name".
-		...readdirSync(UI_APP, { withFileTypes: true })
-			.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
-			.map((entry) => join(UI_APP, entry.name)),
-		...sourceFiles(UI_SRC),
-		...sourceFiles(SHARED_SRC),
-	].filter((file) => !file.startsWith(LAUNCH_CHECKLIST) && !file.startsWith(CONFORMANCE));
+  [
+    // The app's own top-level config (electrobun.config.ts, vite.config.ts)
+    // declares product identity, the macOS bundle id included, so it counts
+    // as product source for "does the app own this name".
+    ...readdirSync(UI_APP, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+      .map((entry) => join(UI_APP, entry.name)),
+    ...sourceFiles(UI_SRC),
+    ...sourceFiles(SHARED_SRC)
+  ].filter((file) => !file.startsWith(LAUNCH_CHECKLIST) && !file.startsWith(CONFORMANCE))
 
 /**
  * The words card kinds and card-id prefixes are built from. A runner's own id
@@ -62,12 +62,12 @@ export const productSourceFiles = (): ReadonlyArray<string> =>
  * least one.
  */
 export const idVocabularySegments = (): ReadonlySet<string> => {
-	const segments = new Set<string>();
-	for (const name of [...cardKinds(), ...cardIdPrefixes()]) {
-		for (const segment of segmentsOf(name)) segments.add(segment);
-	}
-	return segments;
-};
+  const segments = new Set<string>()
+  for (const name of [...cardKinds(), ...cardIdPrefixes()]) {
+    for (const segment of segmentsOf(name)) segments.add(segment)
+  }
+  return segments
+}
 
 /*
  * Card kinds, straight off the discriminated union the wire model declares.
@@ -75,16 +75,16 @@ export const idVocabularySegments = (): ReadonlySet<string> => {
  * compile-time union are the same declaration read two ways; the type-level
  * assertion below refuses to compile if that ever stops being true.
  */
-type DerivedCardKind = (typeof CardSchema.options)[number]["shape"]["kind"]["value"];
+type DerivedCardKind = (typeof CardSchema.options)[number]["shape"]["kind"]["value"]
 const _derivedKindsAreExactlyCardKinds: DerivedCardKind extends Card["kind"]
-	? Card["kind"] extends DerivedCardKind ? true
-	: never
-	: never = true;
-void _derivedKindsAreExactlyCardKinds;
+  ? Card["kind"] extends DerivedCardKind ? true
+  : never
+  : never = true
+void _derivedKindsAreExactlyCardKinds
 
 /** Every card kind the wire model declares. */
 export const cardKinds = (): ReadonlySet<Card["kind"]> =>
-	new Set(CardSchema.options.map((option) => option.shape.kind.value));
+  new Set(CardSchema.options.map((option) => option.shape.kind.value))
 
 /**
  * The property names every card in the wire model carries besides `kind`.
@@ -96,13 +96,13 @@ export const cardKinds = (): ReadonlySet<Card["kind"]> =>
  * cannot drift from the model the way a hand-written list would.
  */
 export const cardObjectFields = (): ReadonlySet<string> => {
-	const shared = CardSchema.options.map((option) => new Set(Object.keys(option.shape)));
-	const [first, ...rest] = shared;
-	if (first === undefined) return new Set();
-	return new Set(
-		[...first].filter((field) => field !== "kind" && rest.every((option) => option.has(field))),
-	);
-};
+  const shared = CardSchema.options.map((option) => new Set(Object.keys(option.shape)))
+  const [first, ...rest] = shared
+  if (first === undefined) return new Set()
+  return new Set(
+    [...first].filter((field) => field !== "kind" && rest.every((option) => option.has(field)))
+  )
+}
 
 /*
  * Flow names, twice over.
@@ -114,43 +114,42 @@ export const cardObjectFields = (): ReadonlySet<string> => {
  * DOM contains. The manifest is the stronger source; the declarations are the
  * superset a suite driving an admin session may legitimately assert against.
  */
-const declarationStub = (): CommandActions =>
-	new Proxy({}, { get: () => () => undefined }) as unknown as CommandActions;
+const declarationStub = (): CommandActions => new Proxy({}, { get: () => () => undefined }) as unknown as CommandActions
 
 export const declaredFlowNames = (): ReadonlySet<string> =>
-	new Set([...baseFlows(declarationStub()), ...adminFlows(declarationStub())].map(nameOf));
+  new Set([...baseFlows(declarationStub()), ...adminFlows(declarationStub())].map(nameOf))
 
 const memoryStorage = (): StorageApi => {
-	const data = new Map<string, string>();
-	return {
-		getItem: (key) => data.get(key) ?? null,
-		setItem: (key, value) => void data.set(key, value),
-		removeItem: (key) => void data.delete(key),
-	};
-};
+  const data = new Map<string, string>()
+  return {
+    getItem: (key) => data.get(key) ?? null,
+    setItem: (key, value) => void data.set(key, value),
+    removeItem: (key) => void data.delete(key)
+  }
+}
 
 const absentAgent: NativeAgent = {
-	available: false,
-	startTurn: async () => ({ status: "error", message: "no native agent in the conformance pin" }),
-	cancelTurn: async () => {},
-	subscribe: () => () => {},
-};
+  available: false,
+  startTurn: async () => ({ status: "error", message: "no native agent in the conformance pin" }),
+  cancelTurn: async () => {},
+  subscribe: () => () => {}
+}
 
 const absentRepositories: NativeRepositories = {
-	available: false,
-	pickLocalRepository: async () => ({
-		status: "error",
-		code: "native-required",
-		message: "no native bridge in the conformance pin",
-	}),
-};
+  available: false,
+  pickLocalRepository: async () => ({
+    status: "error",
+    code: "native-required",
+    message: "no native bridge in the conformance pin"
+  })
+}
 
 /** The command manifest `App.tsx` renders into `data-flows`, read the same way. */
 export const manifestFlowNames = async (): Promise<ReadonlySet<string>> => {
-	const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() });
-	const controller = createAppController(store, absentRepositories, absentAgent);
-	return new Set(controller.commands.all().map((command) => command.name));
-};
+  const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
+  const controller = createAppController(store, absentRepositories, absentAgent)
+  return new Set(controller.commands.all().map((command) => command.name))
+}
 
 /**
  * Every `data-*` attribute the rendered DOM can carry. There are three ways to
@@ -161,46 +160,46 @@ export const manifestFlowNames = async (): Promise<ReadonlySet<string>> => {
  * `data-command` selectors did after the rename.
  */
 export const emittedDataAttributes = (): ReadonlySet<string> => {
-	const emitted = new Set<string>();
-	for (const file of [...sourceFiles(UI_SRC), ...sourceFiles(COMPONENT_LIBRARY)]) {
-		const parsed = ts.createSourceFile(
-			file,
-			readFileSync(file, "utf8"),
-			ts.ScriptTarget.ESNext,
-			true,
-			file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-		);
-		const visit = (node: ts.Node): void => {
-			if (ts.isJsxAttribute(node)) {
-				// TypeScript keeps a hyphenated JSX attribute name as an
-				// identifier node, so the source text is the attribute name.
-				const name = node.name.getText(parsed);
-				if (name.startsWith("data-")) emitted.add(name);
-			}
-			if (
-				ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-				&& node.expression.name.text === "setAttribute"
-			) {
-				const first = node.arguments[0];
-				if (first !== undefined && ts.isStringLiteral(first) && first.text.startsWith("data-")) {
-					emitted.add(first.text);
-				}
-			}
-			// `element.dataset.toastStatus = x` renders as `data-toast-status`.
-			if (
-				ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-				&& ts.isPropertyAccessExpression(node.left)
-				&& ts.isPropertyAccessExpression(node.left.expression)
-				&& node.left.expression.name.text === "dataset"
-			) {
-				emitted.add(`data-${node.left.name.text.replace(/[A-Z]/g, (upper) => `-${upper.toLowerCase()}`)}`);
-			}
-			ts.forEachChild(node, visit);
-		};
-		visit(parsed);
-	}
-	return emitted;
-};
+  const emitted = new Set<string>()
+  for (const file of [...sourceFiles(UI_SRC), ...sourceFiles(COMPONENT_LIBRARY)]) {
+    const parsed = ts.createSourceFile(
+      file,
+      readFileSync(file, "utf8"),
+      ts.ScriptTarget.ESNext,
+      true,
+      file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+    )
+    const visit = (node: ts.Node): void => {
+      if (ts.isJsxAttribute(node)) {
+        // TypeScript keeps a hyphenated JSX attribute name as an
+        // identifier node, so the source text is the attribute name.
+        const name = node.name.getText(parsed)
+        if (name.startsWith("data-")) emitted.add(name)
+      }
+      if (
+        ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === "setAttribute"
+      ) {
+        const first = node.arguments[0]
+        if (first !== undefined && ts.isStringLiteral(first) && first.text.startsWith("data-")) {
+          emitted.add(first.text)
+        }
+      }
+      // `element.dataset.toastStatus = x` renders as `data-toast-status`.
+      if (
+        ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && ts.isPropertyAccessExpression(node.left)
+        && ts.isPropertyAccessExpression(node.left.expression)
+        && node.left.expression.name.text === "dataset"
+      ) {
+        emitted.add(`data-${node.left.name.text.replace(/[A-Z]/g, (upper) => `-${upper.toLowerCase()}`)}`)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(parsed)
+  }
+  return emitted
+}
 
 /**
  * The `data-*` attributes a suite stamps onto the page itself.
@@ -215,19 +214,19 @@ export const emittedDataAttributes = (): ReadonlySet<string> => {
  * strings, where there is no AST to walk.
  */
 export const stampedDataAttributes = (trees: ReadonlyArray<string>): ReadonlySet<string> => {
-	const stamped = new Set<string>();
-	const write = /(?:setAttribute\(\s*\\?["']|dataset\.)([A-Za-z][\w-]*)/g;
-	for (const file of trees.flatMap((tree) => [...sourceFiles(tree)])) {
-		for (const match of readFileSync(file, "utf8").matchAll(write)) {
-			const name = match[1] ?? "";
-			const attribute = name.startsWith("data-")
-				? name
-				: `data-${name.replace(/[A-Z]/g, (upper) => `-${upper.toLowerCase()}`)}`;
-			if (name.startsWith("data-") || !name.includes("-")) stamped.add(attribute);
-		}
-	}
-	return stamped;
-};
+  const stamped = new Set<string>()
+  const write = /(?:setAttribute\(\s*\\?["']|dataset\.)([A-Za-z][\w-]*)/g
+  for (const file of trees.flatMap((tree) => [...sourceFiles(tree)])) {
+    for (const match of readFileSync(file, "utf8").matchAll(write)) {
+      const name = match[1] ?? ""
+      const attribute = name.startsWith("data-")
+        ? name
+        : `data-${name.replace(/[A-Z]/g, (upper) => `-${upper.toLowerCase()}`)}`
+      if (name.startsWith("data-") || !name.includes("-")) stamped.add(attribute)
+    }
+  }
+  return stamped
+}
 
 /**
  * Every dotted identifier the product source spells as a literal: flow names,
@@ -236,14 +235,14 @@ export const stampedDataAttributes = (trees: ReadonlyArray<string>): ReadonlySet
  * after the rename.
  */
 export const productDottedIdentifiers = (): ReadonlySet<string> => {
-	const owned = new Set<string>();
-	for (const file of productSourceFiles()) {
-		for (const literal of extractLiterals(file, readFileSync(file, "utf8"))) {
-			if (literal.form === "string" && DOTTED_IDENTIFIER.test(literal.value)) owned.add(literal.value);
-		}
-	}
-	return owned;
-};
+  const owned = new Set<string>()
+  for (const file of productSourceFiles()) {
+    for (const literal of extractLiterals(file, readFileSync(file, "utf8"))) {
+      if (literal.form === "string" && DOTTED_IDENTIFIER.test(literal.value)) owned.add(literal.value)
+    }
+  }
+  return owned
+}
 
 /**
  * The card-id prefixes the app builds. A card id is assembled as
@@ -251,11 +250,11 @@ export const productDottedIdentifiers = (): ReadonlySet<string> => {
  * of a template in product source.
  */
 export const cardIdPrefixes = (): ReadonlySet<string> => {
-	const prefixes = new Set<string>();
-	for (const file of productSourceFiles()) {
-		for (const literal of extractLiterals(file, readFileSync(file, "utf8"))) {
-			if (literal.form === "template-head" && ID_PREFIX.test(literal.value)) prefixes.add(literal.value);
-		}
-	}
-	return prefixes;
-};
+  const prefixes = new Set<string>()
+  for (const file of productSourceFiles()) {
+    for (const literal of extractLiterals(file, readFileSync(file, "utf8"))) {
+      if (literal.form === "template-head" && ID_PREFIX.test(literal.value)) prefixes.add(literal.value)
+    }
+  }
+  return prefixes
+}

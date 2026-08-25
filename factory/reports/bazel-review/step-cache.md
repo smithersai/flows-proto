@@ -9,13 +9,13 @@ the package itself cites it, `reference/bazel/.../lib/remote`.
 `step-cache` is not a Skyframe evaluator. It is the durable content-addressed
 result store: a head table (`flows_step_cache`), an append-only provenance
 ledger (`flows_step_cache_recorded`), a two-tier local/remote composition, and
-a dumb-HTTP remote tier. The Skyframe areas that live *outside* this package —
+a dumb-HTTP remote tier. The Skyframe areas that live _outside_ this package —
 node dirtying and change pruning, dependency bookkeeping, cycle detection,
 error bubbling, partial re-evaluation — are implemented by its consumers
 (`engine-store/src/internal/ActionPersistence.ts` does the Skyframe-style
 dirty check at lines 788–795 and Skyframe-style invalidation at 958–979) and
 are out of scope here. This review holds the package to the invariants that
-*do* land in a memoizing store: version/provenance discipline, reuse
+_do_ land in a memoizing store: version/provenance discipline, reuse
 correctness, invalidation soundness, atomicity under interruption, and the
 inconsistency-surfacing posture of `GraphInconsistencyReceiver`.
 
@@ -34,11 +34,11 @@ satisfied (`src/CacheStore.ts:320–349`): the caller cannot distinguish "exact
 recorded bytes" from "whatever the head holds today".
 
 **Why the fallback is hit in practice.** The one fenced consumer is time-travel
-replay, which fences every cache-carrying journal entry with its *own*
+replay, which fences every cache-carrying journal entry with its _own_
 coordinates: `cache.get(cacheKey, { recordedBy: { runId: options.runId,
 eventSeq: entry.seq } })` (`time-travel/src/internal/Replay.ts:112`). Only the
 `recorded` provenance record's seq equals the entry's `recordedEventSeq`
-(`ActionPersistence.ts:629–646`). Every *other* cache-carrying record — the
+(`ActionPersistence.ts:629–646`). Every _other_ cache-carrying record — the
 sealed-tier attempt lifecycle records that carry `cacheKey`
 (`ActionPersistence.ts:762`) and any frame whose run reused a row recorded by
 another run — misses the ledger and replays the head.
@@ -48,7 +48,7 @@ under an unchanged digest: the stale-read-set path evicts and lets the
 re-execution "record cleanly under the same key"
 (`ActionPersistence.ts:958–979`), and corruption quarantine does the same
 (`ActionPersistence.ts:893–913`). After either, replaying an old hit-frame
-serves the *new* result. The projection silently diverges from what the run
+serves the _new_ result. The projection silently diverges from what the run
 observed. Note the durable pointer needed to do this right already exists: the
 verified-hit record journals the recorder's `recordedRunId`/`recordedEventSeq`
 (`ActionPersistence.ts:826–835`), but `Replay.ts:52` decodes only `cacheKey`
@@ -63,7 +63,7 @@ reference) fails replay on nondeterminism rather than diverging silently.
 
 **Fix shape.** Either (a) make `get` report which source answered
 (`ledger | head`) so replay can fail closed or journal the divergence, or
-(b) fail/flag the fenced read when the ledger misses *and* the head's
+(b) fail/flag the fenced read when the ledger misses _and_ the head's
 `(recordedRunId, recordedEventSeq)` differs from the fence, and fix
 `Replay.ts` to fence with the journalled recorder provenance where the record
 carries one. Today's shape is (silent fallback) the worst of both.
@@ -77,15 +77,15 @@ sibling's concurrent `put` (`Conflict`), and the code re-reads the durable
 local row to serve it — but drops the caller's `options`:
 
 ```ts
-const durable = yield* local.get(keyDigest)          // src/CombinedCacheStore.ts:90
+const durable = yield * local.get(keyDigest) // src/CombinedCacheStore.ts:90
 ```
 
 The write-back's ledger insert is unconditional and commits even when the head
 insert conflicts (`src/CacheStore.ts:360–372`: ledger lands "first and
 unconditionally", `ON CONFLICT ... DO NOTHING`, and a `Conflict` outcome is a
-committed value, not a failure). So at line 90 the local *ledger* already holds
+committed value, not a failure). So at line 90 the local _ledger_ already holds
 the exact recorded row the fence names; passing `options` through would serve
-it. Instead a fenced caller — a replay — is handed the sibling's *different*
+it. Instead a fenced caller — a replay — is handed the sibling's _different_
 result. This is precisely the "cache collision the caller cannot detect" the
 adjacent comment (lines 87–89) says the branch exists to prevent, inflicted on
 the one caller class that stated its provenance.
@@ -106,7 +106,7 @@ unaffected because without `recordedBy` the two calls are identical.
 `CombinedCacheStore.get` forwards the fence and documents that "each tier
 answers with its recorded version when it holds one and its head otherwise"
 (`src/CombinedCacheStore.ts:72–76`). That claim is false for the remote tier: a
-fenced replay that misses locally is served the remote *head* — any version,
+fenced replay that misses locally is served the remote _head_ — any version,
 any provenance — and (per Finding 2's mechanics) it is then written back
 locally as if it were the recorded evidence.
 
@@ -114,7 +114,7 @@ The asymmetry is already solved elsewhere in the same file: `evict` rides its
 fence as `recordedRunId`/`recordedEventSeq` URL params so the server can CAS
 (`src/RemoteCacheStore.ts:163–174`). `get` should send the same params and the
 protocol should define the recorded-version read (or the remote tier should be
-excluded from fenced lookups so the fence degrades *visibly*, per Finding 1's
+excluded from fenced lookups so the fence degrades _visibly_, per Finding 1's
 fix).
 
 **Counterpart.** Bazel's remote action cache never claims version pinning — but
@@ -127,18 +127,18 @@ it silent.
 ## Finding 4 — MEDIUM: the remote `Conflict` signal is undecidable — non-canonical body plus per-writer provenance fields
 
 **Our code.** `RemoteCacheStore.put` delegates the `ExistingSame`/`Conflict`
-decision to the server ("`409` … it held a *different* one",
+decision to the server ("`409` … it held a _different_ one",
 `src/RemoteCacheStore.ts:70–75, 149–151`) but gives the server no basis to
 decide it correctly:
 
 1. The body is `bodyJsonUnsafe(encoded)` (`src/RemoteCacheStore.ts:147`) —
-   `JSON.stringify` key order. The module canonical-*checks* `result` and
+   `JSON.stringify` key order. The module canonical-_checks_ `result` and
    `meta` (lines 143–144) and then discards the canonical text. A server that
    compares bytes sees two structurally equal results built in different key
    orders as different — the exact spurious-`Conflict` bug the local store
    fixed by canonicalizing on the way in (`src/CacheStore.ts:200–216`).
 2. The body embeds `createdAtMs`, `recordedRunId`, `recordedEventSeq`, which
-   differ for every writer. Two machines recording the *identical result*
+   differ for every writer. Two machines recording the _identical result_
    therefore always produce different bytes, so any byte-comparing server
    answers `409` for the routine benign race.
 
@@ -156,7 +156,7 @@ strict `Inconsistency` verdict and fails the run
 divergence that does not exist, which is verbatim the failure mode the
 canonicalization comment says was already fixed once.
 
-**Skyframe counterpart.** Change pruning compares *values* structurally, never
+**Skyframe counterpart.** Change pruning compares _values_ structurally, never
 serialization accidents or metadata:
 `DirtyBuildingState.unchangedFromLastBuild` (`DirtyBuildingState.java:214–219`,
 `getLastBuildValue().equals(newValue)`) and
@@ -200,11 +200,11 @@ not in every caller.
 
 **Our code.** A head row whose JSON no longer decodes fails every `get` with
 `decode_failed` (`src/CacheStore.ts:285–300`), and the durable test pins that
-this blocks the lookup *before* the remote tier and the write-back that would
+this blocks the lookup _before_ the remote tier and the write-back that would
 heal it (`test/CacheStoreDurable.test.ts:194–258` — deliberately, to avoid
 masking). But no caller ever evicts on `decode_failed`: the engine's
-quarantine (journal + fenced evict, issue #164) runs only for *measured
-artifact* corruption after a successful decode
+quarantine (journal + fenced evict, issue #164) runs only for _measured
+artifact_ corruption after a successful decode
 (`ActionPersistence.ts:893–913`). A row-level poison therefore fails the key
 on every future dispatch forever — the exact permanent-poison shape issue #164
 was raised to eliminate for inline evidence. Mitigation: the schema's

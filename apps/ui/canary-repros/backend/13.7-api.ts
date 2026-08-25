@@ -19,51 +19,51 @@
  *     | head -1 | base64 -d)
  *   bun apps/ui/canary-repros/backend/13.7-api.ts
  */
-const API = process.env.CANARY_API_BASE_URL ?? "https://api.jjhub.tech";
-const TOKEN = process.env.CANARY_API_TOKEN ?? "";
+const API = process.env.CANARY_API_BASE_URL ?? "https://api.jjhub.tech"
+const TOKEN = process.env.CANARY_API_TOKEN ?? ""
 if (TOKEN === "") {
-	console.error("CANARY_API_TOKEN is required");
-	process.exit(2);
+  console.error("CANARY_API_TOKEN is required")
+  process.exit(2)
 }
-const auth = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+const auth = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }
 
-const readBack = await fetch(`${API}/api/repos/octocat/Hello-World`, { headers: auth });
-const repo = (await readBack.json()) as { full_name?: string };
-console.log(`GET /api/repos/octocat/Hello-World -> ${readBack.status} full_name=${repo.full_name ?? "<none>"}`);
+const readBack = await fetch(`${API}/api/repos/octocat/Hello-World`, { headers: auth })
+const repo = (await readBack.json()) as { full_name?: string }
+console.log(`GET /api/repos/octocat/Hello-World -> ${readBack.status} full_name=${repo.full_name ?? "<none>"}`)
 if (readBack.status !== 200) {
-	console.error("not-reachable: this account has no imported mirror of octocat/Hello-World");
-	process.exit(2);
+  console.error("not-reachable: this account has no imported mirror of octocat/Hello-World")
+  process.exit(2)
 }
 
-const stamp = new Date().toISOString();
+const stamp = new Date().toISOString()
 const created = await fetch(`${API}/api/repos/octocat/Hello-World/issues`, {
-	method: "POST",
-	headers: auth,
-	body: JSON.stringify({ title: `13.7 mirror-alias probe ${stamp}`, body: "written by the 13.7 repro" }),
-});
-const body = await created.text();
-console.log(`POST /api/repos/octocat/Hello-World/issues -> ${created.status}`);
-console.log(body.slice(0, 400));
+  method: "POST",
+  headers: auth,
+  body: JSON.stringify({ title: `13.7 mirror-alias probe ${stamp}`, body: "written by the 13.7 repro" })
+})
+const body = await created.text()
+console.log(`POST /api/repos/octocat/Hello-World/issues -> ${created.status}`)
+console.log(body.slice(0, 400))
 
 if (created.status === 201) {
-	const issue = JSON.parse(body) as { number: number };
-	// Leave no open noise behind in the mirror.
-	await fetch(`${API}/api/repos/${repo.full_name}/issues/${issue.number}`, {
-		method: "PATCH",
-		headers: auth,
-		body: JSON.stringify({ state: "closed" }),
-	});
-	console.error(
-		`FAIL: the platform accepted an issue on octocat/Hello-World and filed it as ${repo.full_name}#${issue.number}. ` +
-			"github.com/octocat/Hello-World has no such issue.",
-	);
-	process.exit(1);
+  const issue = JSON.parse(body) as { number: number }
+  // Leave no open noise behind in the mirror.
+  await fetch(`${API}/api/repos/${repo.full_name}/issues/${issue.number}`, {
+    method: "PATCH",
+    headers: auth,
+    body: JSON.stringify({ state: "closed" })
+  })
+  console.error(
+    `FAIL: the platform accepted an issue on octocat/Hello-World and filed it as ${repo.full_name}#${issue.number}. ` +
+      "github.com/octocat/Hello-World has no such issue."
+  )
+  process.exit(1)
 }
 
 if (created.status === 409 && body.includes("never reach github.com")) {
-	console.log("PASS — the write is refused by name, and both halves of the alias are stated.");
-	process.exit(0);
+  console.log("PASS — the write is refused by name, and both halves of the alias are stated.")
+  process.exit(0)
 }
 
-console.error(`FAIL: unexpected answer ${created.status} — expected 409 naming the mirror.`);
-process.exit(1);
+console.error(`FAIL: unexpected answer ${created.status} — expected 409 naming the mirror.`)
+process.exit(1)

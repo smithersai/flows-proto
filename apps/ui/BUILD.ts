@@ -31,7 +31,7 @@ const buildConfigs = [
   Smithers.file("vite.config.ts"),
   Smithers.file("vite.start.config.ts"),
   Smithers.file("tailwind.config.js"),
-  Smithers.file("postcss.config.js"),
+  Smithers.file("postcss.config.js")
 ]
 
 /** The worker the e2e suites boot under `wrangler dev`. */

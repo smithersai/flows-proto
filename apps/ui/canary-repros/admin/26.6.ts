@@ -20,51 +20,53 @@
  *
  * Fixture: the session must be admin (identity worker ADMIN_LOGINS).
  */
-import { open, session, run, body } from "./_lib";
+import { body, open, run, session } from "./_lib"
 
-const { context, page, requests } = await open();
-const who = await session(page);
+const { context, page, requests } = await open()
+const who = await session(page)
 if (who.admin !== true) {
-	console.error("SETUP: the session is not admin — add the login to the identity worker's ADMIN_LOGINS.");
-	await context.close();
-	process.exit(2);
+  console.error("SETUP: the session is not admin — add the login to the identity worker's ADMIN_LOGINS.")
+  await context.close()
+  process.exit(2)
 }
 
-const cardsBefore = await page.locator("section.smithers-card").count();
-const messagesBefore = await page.locator("[data-role]").count();
-await run(page, "/debug.grants.reset", 7000);
-const cardsAfter = await page.locator("section.smithers-card").count();
-const messagesAfter = await page.locator("[data-role]").count();
-console.log(`after /debug.grants.reset — cards ${cardsBefore} -> ${cardsAfter}, messages ${messagesBefore} -> ${messagesAfter}`);
+const cardsBefore = await page.locator("section.smithers-card").count()
+const messagesBefore = await page.locator("[data-role]").count()
+await run(page, "/debug.grants.reset", 7000)
+const cardsAfter = await page.locator("section.smithers-card").count()
+const messagesAfter = await page.locator("[data-role]").count()
+console.log(
+  `after /debug.grants.reset — cards ${cardsBefore} -> ${cardsAfter}, messages ${messagesBefore} -> ${messagesAfter}`
+)
 
 // The next tool-calling turn. There is one backend and it owns the grants.
-const before = await body(page);
-const mark = requests.length;
-const composer = page.locator("textarea.sui-chat-composer-input");
-await composer.click();
-await composer.fill("List the repositories you are watching.");
-await page.keyboard.press("Enter");
-await page.waitForTimeout(35_000);
-const after = await body(page);
-const delta = (after.startsWith(before) ? after.slice(before.length) : after.slice(-800)).replace(/\s+/g, " ");
-console.log("next turn:", delta.slice(0, 320));
-console.log("http>=400 during the turn:", JSON.stringify(requests.slice(mark)));
-await page.screenshot({ path: "/tmp/canary-26.6.png", fullPage: true });
-console.log("screenshot: /tmp/canary-26.6.png");
-await context.close();
+const before = await body(page)
+const mark = requests.length
+const composer = page.locator("textarea.sui-chat-composer-input")
+await composer.click()
+await composer.fill("List the repositories you are watching.")
+await page.keyboard.press("Enter")
+await page.waitForTimeout(35_000)
+const after = await body(page)
+const delta = (after.startsWith(before) ? after.slice(before.length) : after.slice(-800)).replace(/\s+/g, " ")
+console.log("next turn:", delta.slice(0, 320))
+console.log("http>=400 during the turn:", JSON.stringify(requests.slice(mark)))
+await page.screenshot({ path: "/tmp/canary-26.6.png", fullPage: true })
+console.log("screenshot: /tmp/canary-26.6.png")
+await context.close()
 
-const failures: Array<string> = [];
+const failures: Array<string> = []
 if (cardsAfter === cardsBefore && messagesAfter === messagesBefore) {
-	failures.push("/debug.grants.reset rendered nothing — no confirmation that the grants were revoked.");
+  failures.push("/debug.grants.reset rendered nothing — no confirmation that the grants were revoked.")
 }
 if (requests.slice(mark).some((entry) => entry.startsWith("501"))) {
-	failures.push(
-		"the next tool call could not be observed: the chain backend 501s on /api/model/stream, so no grant is ever re-asked. See 26.1.md.",
-	);
+  failures.push(
+    "the next tool call could not be observed: the chain backend 501s on /api/model/stream, so no grant is ever re-asked. See 26.1.md."
+  )
 }
 if (failures.length === 0) {
-	console.log("PASS — the reset confirms and the next tool call re-asks.");
-	process.exit(0);
+  console.log("PASS — the reset confirms and the next tool call re-asks.")
+  process.exit(0)
 }
-for (const failure of failures) console.error(`FAIL: ${failure}`);
-process.exit(1);
+for (const failure of failures) console.error(`FAIL: ${failure}`)
+process.exit(1)

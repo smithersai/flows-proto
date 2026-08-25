@@ -1,8 +1,8 @@
-import { useSyncExternalStore } from "react";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import type { ChatController } from "../state/ChatController";
-import { Transcript } from "./Transcript";
-import { Composer } from "./Composer";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react"
+import { useSyncExternalStore } from "react"
+import type { ChatController } from "../state/ChatController"
+import { Composer } from "./Composer"
+import { Transcript } from "./Transcript"
 
 /*
  * The app shell: transcript over composer over a one-line status bar, sized
@@ -12,34 +12,34 @@ import { Composer } from "./Composer";
  * region flexShrink=0. Deviations: no routes, dialogs, toasts, or sidebar.
  */
 export const App = ({
-	controller,
-	describe,
+  controller,
+  describe
 }: {
-	readonly controller: ChatController;
-	readonly describe: string;
+  readonly controller: ChatController
+  readonly describe: string
 }) => {
-	const { width, height } = useTerminalDimensions();
-	useSyncExternalStore(controller.store.subscribe, controller.store.getVersion);
+  const { width, height } = useTerminalDimensions()
+  useSyncExternalStore(controller.store.subscribe, controller.store.getVersion)
 
-	useKeyboard((key) => {
-		if (key.name === "escape") controller.cancelActive();
-	});
+  useKeyboard((key) => {
+    if (key.name === "escape") controller.cancelActive()
+  })
 
-	return (
-		<box width={width} height={height} flexDirection="column">
-			<Transcript store={controller.store} />
-			<Composer
-				phase={controller.store.phase()}
-				value={controller.store.draft()}
-				inputKey={controller.store.draftRevision()}
-				onInput={controller.store.setDraft}
-				onSubmit={(text) => {
-					void controller.submit(text);
-				}}
-			/>
-			<box flexShrink={0} height={1} paddingLeft={1}>
-				<text fg="#565f89">{`${describe} · Enter sends · Esc cancels · Ctrl+C exits`}</text>
-			</box>
-		</box>
-	);
-};
+  return (
+    <box width={width} height={height} flexDirection="column">
+      <Transcript store={controller.store} />
+      <Composer
+        phase={controller.store.phase()}
+        value={controller.store.draft()}
+        inputKey={controller.store.draftRevision()}
+        onInput={controller.store.setDraft}
+        onSubmit={(text) => {
+          void controller.submit(text)
+        }}
+      />
+      <box flexShrink={0} height={1} paddingLeft={1}>
+        <text fg="#565f89">{`${describe} · Enter sends · Esc cancels · Ctrl+C exits`}</text>
+      </box>
+    </box>
+  )
+}

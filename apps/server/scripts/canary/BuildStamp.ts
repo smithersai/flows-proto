@@ -21,25 +21,25 @@
  * `/api/*`, `/v1/*` and `/workflows/*`, so this path needs no Worker route and
  * no credential to read.
  */
-export const BUILD_STAMP_PATH = "/__build.json";
+export const BUILD_STAMP_PATH = "/__build.json"
 
 /** The corroborating meta tag on the served HTML. */
-export const BUILD_STAMP_META = "smithers-build-sha";
+export const BUILD_STAMP_META = "smithers-build-sha"
 
 /** What a deployment says about itself. Mirrors the vite plugin's emit. */
 export interface BuildStamp {
-	readonly worker: string;
-	readonly gitSha: string;
-	readonly builtAt: string;
+  readonly worker: string
+  readonly gitSha: string
+  readonly builtAt: string
 }
 
 /** A fetched response reduced to what the verdicts need. */
 export interface FetchedStamp {
-	readonly status: number;
-	readonly body: string;
+  readonly status: number
+  readonly body: string
 }
 
-const SHA_PATTERN = /^(?:[0-9a-f]{7,40}|unknown)$/i;
+const SHA_PATTERN = /^(?:[0-9a-f]{7,40}|unknown)$/i
 
 /**
  * The stamp, or a sentence naming why there is none. A missing stamp is never
@@ -47,38 +47,40 @@ const SHA_PATTERN = /^(?:[0-9a-f]{7,40}|unknown)$/i;
  * exactly as loudly as one that says the wrong thing.
  */
 export const parseBuildStamp = (fetched: FetchedStamp): BuildStamp | string => {
-	if (fetched.status === 404) {
-		return `GET ${BUILD_STAMP_PATH} answered 404: this deployment's bundle carries no build stamp, so it predates the stamp and cannot state what it is`;
-	}
-	if (fetched.status !== 200) {
-		return `GET ${BUILD_STAMP_PATH} answered HTTP ${fetched.status}`;
-	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(fetched.body);
-	} catch {
-		/*
-		 * The SPA fallback answers HTML for an unknown path on some asset
-		 * configurations, so a 200 is not by itself evidence of a stamp.
-		 */
-		return `GET ${BUILD_STAMP_PATH} answered 200 with a body that is not JSON: ${fetched.body.replace(/\s+/g, " ").trim().slice(0, 80)}`;
-	}
-	const stamp = parsed as { gitSha?: unknown; builtAt?: unknown; worker?: unknown };
-	if (typeof stamp.gitSha !== "string" || typeof stamp.builtAt !== "string") {
-		return `GET ${BUILD_STAMP_PATH} answered 200 with a body that is not a build stamp`;
-	}
-	if (!SHA_PATTERN.test(stamp.gitSha)) {
-		return `the deployment's build stamp names "${stamp.gitSha}", which is not a git sha`;
-	}
-	if (stamp.gitSha.toLowerCase() === "unknown") {
-		return 'the deployment\'s build stamp says "unknown": it was built outside a git checkout, so nothing can be verified against it';
-	}
-	return {
-		worker: typeof stamp.worker === "string" ? stamp.worker : "unknown",
-		gitSha: stamp.gitSha,
-		builtAt: stamp.builtAt,
-	};
-};
+  if (fetched.status === 404) {
+    return `GET ${BUILD_STAMP_PATH} answered 404: this deployment's bundle carries no build stamp, so it predates the stamp and cannot state what it is`
+  }
+  if (fetched.status !== 200) {
+    return `GET ${BUILD_STAMP_PATH} answered HTTP ${fetched.status}`
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fetched.body)
+  } catch {
+    /*
+     * The SPA fallback answers HTML for an unknown path on some asset
+     * configurations, so a 200 is not by itself evidence of a stamp.
+     */
+    return `GET ${BUILD_STAMP_PATH} answered 200 with a body that is not JSON: ${
+      fetched.body.replace(/\s+/g, " ").trim().slice(0, 80)
+    }`
+  }
+  const stamp = parsed as { gitSha?: unknown; builtAt?: unknown; worker?: unknown }
+  if (typeof stamp.gitSha !== "string" || typeof stamp.builtAt !== "string") {
+    return `GET ${BUILD_STAMP_PATH} answered 200 with a body that is not a build stamp`
+  }
+  if (!SHA_PATTERN.test(stamp.gitSha)) {
+    return `the deployment's build stamp names "${stamp.gitSha}", which is not a git sha`
+  }
+  if (stamp.gitSha.toLowerCase() === "unknown") {
+    return "the deployment's build stamp says \"unknown\": it was built outside a git checkout, so nothing can be verified against it"
+  }
+  return {
+    worker: typeof stamp.worker === "string" ? stamp.worker : "unknown",
+    gitSha: stamp.gitSha,
+    builtAt: stamp.builtAt
+  }
+}
 
 /**
  * The sha the served HTML claims, or null when the HTML carries no stamp.
@@ -86,14 +88,14 @@ export const parseBuildStamp = (fetched: FetchedStamp): BuildStamp | string => {
  * attribute order and quoting style do not change the answer.
  */
 export const buildShaFromHtml = (html: string): string | null => {
-	const tag = new RegExp(`<meta[^>]*name=["']${BUILD_STAMP_META}["'][^>]*>`, "i").exec(html)?.[0];
-	if (tag === undefined) return null;
-	return /content=["']([^"']*)["']/i.exec(tag)?.[1] ?? null;
-};
+  const tag = new RegExp(`<meta[^>]*name=["']${BUILD_STAMP_META}["'][^>]*>`, "i").exec(html)?.[0]
+  if (tag === undefined) return null
+  return /content=["']([^"']*)["']/i.exec(tag)?.[1] ?? null
+}
 
 export interface Verdict {
-	readonly ok: boolean;
-	readonly detail: string;
+  readonly ok: boolean
+  readonly detail: string
 }
 
 /**
@@ -108,18 +110,19 @@ export interface Verdict {
  * chunks `index.html` names, so a deploy that published `index.html` and
  * `/__build.json` but not the chunks they reference is out of scope.
  */
-export const HTML_AGREEMENT_COVERAGE = `compares the served index.html with the served ${BUILD_STAMP_PATH} and fails either direction of disagreement, including HTML that carries no stamp at all; it does not fetch the hashed chunks index.html names, so a deploy that published index.html and ${BUILD_STAMP_PATH} but not the chunks they reference is out of scope`;
+export const HTML_AGREEMENT_COVERAGE =
+  `compares the served index.html with the served ${BUILD_STAMP_PATH} and fails either direction of disagreement, including HTML that carries no stamp at all; it does not fetch the hashed chunks index.html names, so a deploy that published index.html and ${BUILD_STAMP_PATH} but not the chunks they reference is out of scope`
 
 /** A check that can also decline to grade, because its input was unreadable. */
 export interface Graded {
-	readonly status: "ok" | "FAIL" | "skip";
-	readonly detail: string;
+  readonly status: "ok" | "FAIL" | "skip"
+  readonly detail: string
 }
 
 /** The served HTML, reduced to what the agreement verdict needs. */
 export interface FetchedHtml {
-	readonly status: number;
-	readonly metaSha: string | null;
+  readonly status: number
+  readonly metaSha: string | null
 }
 
 /**
@@ -147,34 +150,41 @@ export interface FetchedHtml {
  * `GET /` for a 200.
  */
 export const htmlAgreementVerdict = (
-	stamp: BuildStamp,
-	html: FetchedHtml,
-	allowUnstampedHtml: boolean,
+  stamp: BuildStamp,
+  html: FetchedHtml,
+  allowUnstampedHtml: boolean
 ): Graded => {
-	if (html.status < 200 || html.status > 299) {
-		return {
-			status: "skip",
-			detail: `GET / answered HTTP ${html.status}, so the served HTML could not be compared with ${BUILD_STAMP_PATH} (the uptime probe grades root availability)`,
-		};
-	}
-	if (html.metaSha === null) {
-		const cause = `the served HTML carries no <meta name="${BUILD_STAMP_META}"> tag, but ${BUILD_STAMP_PATH} names ${stamp.gitSha}: one build emits both, so the HTML predates the stamp while the assets do not`;
-		if (allowUnstampedHtml) {
-			return { status: "skip", detail: `${cause}. Graded as unverified because --allow-unstamped-html was passed` };
-		}
-		return { status: "FAIL", detail: `${cause}. That is a half-published deploy, and index.html is the half that names the chunks the browser runs` };
-	}
-	if (html.metaSha !== stamp.gitSha) {
-		return {
-			status: "FAIL",
-			detail: `the served HTML claims ${html.metaSha} but ${BUILD_STAMP_PATH} claims ${stamp.gitSha}: the HTML and the assets are from different builds`,
-		};
-	}
-	return {
-		status: "ok",
-		detail: `the HTML and ${BUILD_STAMP_PATH} both name ${stamp.gitSha}`,
-	};
-};
+  if (html.status < 200 || html.status > 299) {
+    return {
+      status: "skip",
+      detail:
+        `GET / answered HTTP ${html.status}, so the served HTML could not be compared with ${BUILD_STAMP_PATH} (the uptime probe grades root availability)`
+    }
+  }
+  if (html.metaSha === null) {
+    const cause =
+      `the served HTML carries no <meta name="${BUILD_STAMP_META}"> tag, but ${BUILD_STAMP_PATH} names ${stamp.gitSha}: one build emits both, so the HTML predates the stamp while the assets do not`
+    if (allowUnstampedHtml) {
+      return { status: "skip", detail: `${cause}. Graded as unverified because --allow-unstamped-html was passed` }
+    }
+    return {
+      status: "FAIL",
+      detail:
+        `${cause}. That is a half-published deploy, and index.html is the half that names the chunks the browser runs`
+    }
+  }
+  if (html.metaSha !== stamp.gitSha) {
+    return {
+      status: "FAIL",
+      detail:
+        `the served HTML claims ${html.metaSha} but ${BUILD_STAMP_PATH} claims ${stamp.gitSha}: the HTML and the assets are from different builds`
+    }
+  }
+  return {
+    status: "ok",
+    detail: `the HTML and ${BUILD_STAMP_PATH} both name ${stamp.gitSha}`
+  }
+}
 
 /**
  * Does the deployment serve the sha it is supposed to?
@@ -195,39 +205,41 @@ export const htmlAgreementVerdict = (
  * as a skipped check by the caller, never as a pass.
  */
 export const buildShaVerdict = (
-	stamp: BuildStamp,
-	expectedSha: string | undefined,
-	metaSha: string | null,
-	commitsBehind: number | undefined,
-	maxDrift: number,
+  stamp: BuildStamp,
+  expectedSha: string | undefined,
+  metaSha: string | null,
+  commitsBehind: number | undefined,
+  maxDrift: number
 ): Verdict => {
-	if (metaSha !== null && metaSha !== stamp.gitSha) {
-		return {
-			ok: false,
-			detail: `the served HTML claims ${metaSha} but ${BUILD_STAMP_PATH} claims ${stamp.gitSha}: the HTML and the assets are from different builds`,
-		};
-	}
-	if (expectedSha !== undefined && expectedSha !== stamp.gitSha) {
-		return {
-			ok: false,
-			detail: `the deployment serves ${stamp.gitSha}, the receipt claims ${expectedSha}${
-				commitsBehind === undefined ? "" : ` (${commitsBehind} commit(s) behind origin/main)`
-			}`,
-		};
-	}
-	if (commitsBehind !== undefined && commitsBehind > maxDrift) {
-		return {
-			ok: false,
-			detail: `the deployment serves ${stamp.gitSha}, which is ${commitsBehind} commit(s) behind origin/main (drift budget ${maxDrift})`,
-		};
-	}
-	return {
-		ok: true,
-		detail: `the deployment serves ${stamp.gitSha}, built ${stamp.builtAt}${
-			commitsBehind === undefined ? "" : ` (${commitsBehind} commit(s) behind origin/main)`
-		}`,
-	};
-};
+  if (metaSha !== null && metaSha !== stamp.gitSha) {
+    return {
+      ok: false,
+      detail:
+        `the served HTML claims ${metaSha} but ${BUILD_STAMP_PATH} claims ${stamp.gitSha}: the HTML and the assets are from different builds`
+    }
+  }
+  if (expectedSha !== undefined && expectedSha !== stamp.gitSha) {
+    return {
+      ok: false,
+      detail: `the deployment serves ${stamp.gitSha}, the receipt claims ${expectedSha}${
+        commitsBehind === undefined ? "" : ` (${commitsBehind} commit(s) behind origin/main)`
+      }`
+    }
+  }
+  if (commitsBehind !== undefined && commitsBehind > maxDrift) {
+    return {
+      ok: false,
+      detail:
+        `the deployment serves ${stamp.gitSha}, which is ${commitsBehind} commit(s) behind origin/main (drift budget ${maxDrift})`
+    }
+  }
+  return {
+    ok: true,
+    detail: `the deployment serves ${stamp.gitSha}, built ${stamp.builtAt}${
+      commitsBehind === undefined ? "" : ` (${commitsBehind} commit(s) behind origin/main)`
+    }`
+  }
+}
 
 /**
  * What a deploy receipt claims about the live deployment. A dry-run receipt is
@@ -235,31 +247,31 @@ export const buildShaVerdict = (
  * is serving traffic.
  */
 export type ReceiptClaim =
-	| { readonly kind: "sha"; readonly gitSha: string; readonly gitDirty: boolean }
-	| { readonly kind: "none"; readonly reason: string };
+  | { readonly kind: "sha"; readonly gitSha: string; readonly gitDirty: boolean }
+  | { readonly kind: "none"; readonly reason: string }
 
 export const expectedShaFromReceipt = (receiptJson: string): ReceiptClaim => {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(receiptJson);
-	} catch {
-		return { kind: "none", reason: "the deploy receipt is not JSON" };
-	}
-	const receipt = parsed as { gitSha?: unknown; dryRun?: unknown; gitDirty?: unknown };
-	if (receipt.dryRun === true) {
-		return {
-			kind: "none",
-			reason: "the latest deploy receipt is a dry run: it published nothing, so it makes no claim about the deployment",
-		};
-	}
-	if (typeof receipt.gitSha !== "string" || !SHA_PATTERN.test(receipt.gitSha)) {
-		return { kind: "none", reason: "the deploy receipt records no usable gitSha" };
-	}
-	return { kind: "sha", gitSha: receipt.gitSha, gitDirty: receipt.gitDirty === true };
-};
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(receiptJson)
+  } catch {
+    return { kind: "none", reason: "the deploy receipt is not JSON" }
+  }
+  const receipt = parsed as { gitSha?: unknown; dryRun?: unknown; gitDirty?: unknown }
+  if (receipt.dryRun === true) {
+    return {
+      kind: "none",
+      reason: "the latest deploy receipt is a dry run: it published nothing, so it makes no claim about the deployment"
+    }
+  }
+  if (typeof receipt.gitSha !== "string" || !SHA_PATTERN.test(receipt.gitSha)) {
+    return { kind: "none", reason: "the deploy receipt records no usable gitSha" }
+  }
+  return { kind: "sha", gitSha: receipt.gitSha, gitDirty: receipt.gitDirty === true }
+}
 
 /** Is the boolean flag `--name` present? */
-export const hasFlag = (argv: ReadonlyArray<string>, name: string): boolean => argv.includes(name);
+export const hasFlag = (argv: ReadonlyArray<string>, name: string): boolean => argv.includes(name)
 
 /**
  * The value of `--name`, or undefined. A flag whose value is missing or is
@@ -267,21 +279,21 @@ export const hasFlag = (argv: ReadonlyArray<string>, name: string): boolean => a
  * grade the deployment against the string "--max-drift".
  */
 export const flagValue = (argv: ReadonlyArray<string>, name: string): string | undefined => {
-	const at = argv.indexOf(name);
-	if (at === -1) return undefined;
-	const value = argv[at + 1];
-	return value === undefined || value.startsWith("--") ? undefined : value;
-};
+  const at = argv.indexOf(name)
+  if (at === -1) return undefined
+  const value = argv[at + 1]
+  return value === undefined || value.startsWith("--") ? undefined : value
+}
 
 /**
  * The origin to probe: the first positional argument, then $CANARY_URL, then
  * the canary itself. A trailing slash is dropped so paths concatenate cleanly.
  */
 export const resolveOrigin = (
-	argv: ReadonlyArray<string>,
-	env: { readonly CANARY_URL?: string | undefined },
+  argv: ReadonlyArray<string>,
+  env: { readonly CANARY_URL?: string | undefined }
 ): string => {
-	const positional = argv[0] !== undefined && !argv[0].startsWith("--") ? argv[0] : undefined;
-	const origin = positional ?? env.CANARY_URL ?? "https://canary.smithers.sh";
-	return origin.endsWith("/") ? origin.slice(0, -1) : origin;
-};
+  const positional = argv[0] !== undefined && !argv[0].startsWith("--") ? argv[0] : undefined
+  const origin = positional ?? env.CANARY_URL ?? "https://canary.smithers.sh"
+  return origin.endsWith("/") ? origin.slice(0, -1) : origin
+}

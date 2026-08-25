@@ -19,10 +19,10 @@
  * Run:  bun backend-canary-auth.ts
  * Exits non-zero while the API host is not the accepted key-auth domain.
  */
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
 
-const API = process.env.CANARY_API_BASE_URL ?? "https://api.jjhub.tech";
-const BOGUS_NONCE = "00000000000000000000000000000000";
+const API = process.env.CANARY_API_BASE_URL ?? "https://api.jjhub.tech"
+const BOGUS_NONCE = "00000000000000000000000000000000"
 
 function message(domain: string, uri: string, address: string, nonce: string): string {
   return [
@@ -35,37 +35,37 @@ function message(domain: string, uri: string, address: string, nonce: string): s
     "Version: 1",
     "Chain ID: 1",
     `Nonce: ${nonce}`,
-    `Issued At: ${new Date().toISOString()}`,
-  ].join("\n");
+    `Issued At: ${new Date().toISOString()}`
+  ].join("\n")
 }
 
 async function verify(domain: string, uri: string): Promise<{ status: number; body: string }> {
-  const account = privateKeyToAccount(generatePrivateKey());
-  const signed = message(domain, uri, account.address, BOGUS_NONCE);
-  const signature = await account.signMessage({ message: signed });
+  const account = privateKeyToAccount(generatePrivateKey())
+  const signed = message(domain, uri, account.address, BOGUS_NONCE)
+  const signature = await account.signMessage({ message: signed })
   const response = await fetch(`${API}/api/auth/key/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: signed, signature }),
-  });
-  return { status: response.status, body: (await response.text()).trim() };
+    body: JSON.stringify({ message: signed, signature })
+  })
+  return { status: response.status, body: (await response.text()).trim() }
 }
 
-const apiHost = new URL(API).host;
-const asApiHost = await verify(apiHost, API);
-const asSignInDomain = await verify("smithers.sh", "https://smithers.sh");
+const apiHost = new URL(API).host
+const asApiHost = await verify(apiHost, API)
+const asSignInDomain = await verify("smithers.sh", "https://smithers.sh")
 
-console.log(`domain=${apiHost} -> ${asApiHost.status} ${asApiHost.body}`);
-console.log(`domain=smithers.sh -> ${asSignInDomain.status} ${asSignInDomain.body}`);
+console.log(`domain=${apiHost} -> ${asApiHost.status} ${asApiHost.body}`)
+console.log(`domain=smithers.sh -> ${asSignInDomain.status} ${asSignInDomain.body}`)
 
-const rejectsApiHost = asApiHost.body.includes("invalid signature");
-const acceptsSignInDomain = asSignInDomain.body.includes("nonce");
+const rejectsApiHost = asApiHost.body.includes("invalid signature")
+const acceptsSignInDomain = asSignInDomain.body.includes("nonce")
 
 if (rejectsApiHost && acceptsSignInDomain) {
   console.error(
-    `\nBUG PRESENT: the API accepts signatures over "smithers.sh" but the canary signs "${apiHost}".`,
-  );
-  process.exit(1);
+    `\nBUG PRESENT: the API accepts signatures over "smithers.sh" but the canary signs "${apiHost}".`
+  )
+  process.exit(1)
 }
 
-console.log("\nNo mismatch: the API accepts the domain the canary derives from its API base URL.");
+console.log("\nNo mismatch: the API accepts the domain the canary derives from its API base URL.")

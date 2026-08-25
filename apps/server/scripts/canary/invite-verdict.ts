@@ -24,8 +24,8 @@
  */
 
 export interface Verdict {
-	readonly ok: boolean;
-	readonly detail: string;
+  readonly ok: boolean
+  readonly detail: string
 }
 
 /**
@@ -33,7 +33,7 @@ export interface Verdict {
  * a roster entry that cannot be a GitHub login is a configuration mistake
  * worth refusing before any network call.
  */
-export const LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+export const LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
 
 /**
  * The designated probe identity. It is deliberately a FIXED login, not a
@@ -42,13 +42,13 @@ export const LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
  * not a real GitHub account, so admitting it grants nobody access — the
  * OAuth callback can never mint a session for a login GitHub will not issue.
  */
-export const DEFAULT_PROBE_LOGIN = "canary-invite-probe";
+export const DEFAULT_PROBE_LOGIN = "canary-invite-probe"
 
 /** The read-back door, as a path template. Overridable because it is unverified. */
-export const DEFAULT_READ_PATH = "/api/identity/allowlist/{login}";
+export const DEFAULT_READ_PATH = "/api/identity/allowlist/{login}"
 
 /** The audit attribution written with every probe invite. */
-export const PROBE_REQUESTER = "canary-invite-probe";
+export const PROBE_REQUESTER = "canary-invite-probe"
 
 /*
  * Split a comma- or newline-separated roster, dropping blanks and `#`
@@ -57,19 +57,21 @@ export const PROBE_REQUESTER = "canary-invite-probe";
  * seed-allowlist.mjs reads its --file the same way.
  */
 export const parseLogins = (raw: string | undefined): ReadonlyArray<string> => {
-	if (raw === undefined) return [];
-	return raw
-		.split(/[,\n]/)
-		.map((entry) => entry.trim())
-		.filter((entry) => entry.length > 0 && !entry.startsWith("#"));
-};
+  if (raw === undefined) return []
+  return raw
+    .split(/[,\n]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && !entry.startsWith("#"))
+}
 
 /** The roster entries that cannot be GitHub logins. */
 export const invalidLogins = (logins: ReadonlyArray<string>): ReadonlyArray<string> =>
-	logins.filter((login) => !LOGIN_PATTERN.test(login));
+  logins.filter((login) => !LOGIN_PATTERN.test(login))
 
 export const readPathFor = (template: string, login: string): string =>
-	template.includes("{login}") ? template.replaceAll("{login}", encodeURIComponent(login)) : `${template}${encodeURIComponent(login)}`;
+  template.includes("{login}")
+    ? template.replaceAll("{login}", encodeURIComponent(login))
+    : `${template}${encodeURIComponent(login)}`
 
 /**
  * What one read-back answered. `known` is the only state that says anything
@@ -77,63 +79,67 @@ export const readPathFor = (template: string, login: string): string =>
  * know, which is a failed check rather than a `false`.
  */
 export type AllowlistRead =
-	| { readonly state: "known"; readonly allowlisted: boolean }
-	| { readonly state: "unreadable"; readonly detail: string };
+  | { readonly state: "known"; readonly allowlisted: boolean }
+  | { readonly state: "unreadable"; readonly detail: string }
 
-const preview = (body: string): string => body.trim().replace(/\s+/g, " ").slice(0, 160);
+const preview = (body: string): string => body.trim().replace(/\s+/g, " ").slice(0, 160)
 
 export const parseAllowlistRead = (status: number, body: string): AllowlistRead => {
-	if (status === 404 || status === 405) {
-		return {
-			state: "unreadable",
-			detail: `HTTP ${status} — nothing answered the read-back door at this path, so this is NOT evidence the login is off the allowlist. Point --read-path at the identity worker's per-login allowlist route.`,
-		};
-	}
-	if (status === 401 || status === 403) {
-		return {
-			state: "unreadable",
-			detail: `HTTP ${status} — the read credential was refused. Set IDENTITY_SERVICE_TOKEN (or IDENTITY_ADMIN_TOKEN) to a token the identity worker accepts.`,
-		};
-	}
-	if (status !== 200) {
-		return { state: "unreadable", detail: `HTTP ${status} ${preview(body)}` };
-	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(body) as unknown;
-	} catch {
-		return { state: "unreadable", detail: `HTTP 200 but the body is not JSON: ${preview(body)}` };
-	}
-	const allowlisted = (parsed as { allowlisted?: unknown } | null)?.allowlisted;
-	if (typeof allowlisted !== "boolean") {
-		return {
-			state: "unreadable",
-			detail: `HTTP 200 but the body carries no boolean "allowlisted" field: ${preview(body)}`,
-		};
-	}
-	return { state: "known", allowlisted };
-};
+  if (status === 404 || status === 405) {
+    return {
+      state: "unreadable",
+      detail:
+        `HTTP ${status} — nothing answered the read-back door at this path, so this is NOT evidence the login is off the allowlist. Point --read-path at the identity worker's per-login allowlist route.`
+    }
+  }
+  if (status === 401 || status === 403) {
+    return {
+      state: "unreadable",
+      detail:
+        `HTTP ${status} — the read credential was refused. Set IDENTITY_SERVICE_TOKEN (or IDENTITY_ADMIN_TOKEN) to a token the identity worker accepts.`
+    }
+  }
+  if (status !== 200) {
+    return { state: "unreadable", detail: `HTTP ${status} ${preview(body)}` }
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body) as unknown
+  } catch {
+    return { state: "unreadable", detail: `HTTP 200 but the body is not JSON: ${preview(body)}` }
+  }
+  const allowlisted = (parsed as { allowlisted?: unknown } | null)?.allowlisted
+  if (typeof allowlisted !== "boolean") {
+    return {
+      state: "unreadable",
+      detail: `HTTP 200 but the body carries no boolean "allowlisted" field: ${preview(body)}`
+    }
+  }
+  return { state: "known", allowlisted }
+}
 
 /** Assert one login's allowlist state. An unreadable answer always fails. */
 export const allowlistStateVerdict = (login: string, expected: boolean, read: AllowlistRead): Verdict => {
-	if (read.state === "unreadable") return { ok: false, detail: `${login}: ${read.detail}` };
-	return {
-		ok: read.allowlisted === expected,
-		detail: `${login}: allowlisted=${read.allowlisted}, expected ${expected}`,
-	};
-};
+  if (read.state === "unreadable") return { ok: false, detail: `${login}: ${read.detail}` }
+  return {
+    ok: read.allowlisted === expected,
+    detail: `${login}: allowlisted=${read.allowlisted}, expected ${expected}`
+  }
+}
 
 /** The identity admin write door's answer to one invite. */
 export const inviteWriteVerdict = (status: number, body: string): Verdict => {
-	if (status >= 200 && status < 300) return { ok: true, detail: `HTTP ${status} ${preview(body)}` };
-	if (body.includes("requester_required") || body.includes("timestamp_required")) {
-		return {
-			ok: false,
-			detail: `HTTP ${status} ${preview(body)} — the write was refused as unattributed; the probe must send requester and timestamp.`,
-		};
-	}
-	return { ok: false, detail: `HTTP ${status} ${preview(body)}` };
-};
+  if (status >= 200 && status < 300) return { ok: true, detail: `HTTP ${status} ${preview(body)}` }
+  if (body.includes("requester_required") || body.includes("timestamp_required")) {
+    return {
+      ok: false,
+      detail: `HTTP ${status} ${
+        preview(body)
+      } — the write was refused as unattributed; the probe must send requester and timestamp.`
+    }
+  }
+  return { ok: false, detail: `HTTP ${status} ${preview(body)}` }
+}
 
 /**
  * The invite is attributed in the identity worker's audit log — where one is
@@ -143,26 +149,27 @@ export const inviteWriteVerdict = (status: number, body: string): Verdict => {
  * upstream refuses an unattributed call, it simply cannot be read back.
  */
 export type AuditOutcome =
-	| { readonly state: "ok"; readonly detail: string }
-	| { readonly state: "fail"; readonly detail: string }
-	| { readonly state: "unavailable"; readonly detail: string };
+  | { readonly state: "ok"; readonly detail: string }
+  | { readonly state: "fail"; readonly detail: string }
+  | { readonly state: "unavailable"; readonly detail: string }
 
 export const auditOutcome = (status: number, body: string, login: string, requester: string): AuditOutcome => {
-	if (status === 404 || status === 405) {
-		return {
-			state: "unavailable",
-			detail: `HTTP ${status} — this deployment exposes no admin audit read-back, so the attribution written with the invite cannot be read back. The write door still refuses unattributed calls.`,
-		};
-	}
-	if (status !== 200) return { state: "fail", detail: `HTTP ${status} ${preview(body)}` };
-	const named = body.includes(login) && body.includes(requester);
-	return {
-		state: named ? "ok" : "fail",
-		detail: named
-			? `the audit log names ${login} and requester ${requester}`
-			: `the audit log does not name both ${login} and requester ${requester}: ${preview(body)}`,
-	};
-};
+  if (status === 404 || status === 405) {
+    return {
+      state: "unavailable",
+      detail:
+        `HTTP ${status} — this deployment exposes no admin audit read-back, so the attribution written with the invite cannot be read back. The write door still refuses unattributed calls.`
+    }
+  }
+  if (status !== 200) return { state: "fail", detail: `HTTP ${status} ${preview(body)}` }
+  const named = body.includes(login) && body.includes(requester)
+  return {
+    state: named ? "ok" : "fail",
+    detail: named
+      ? `the audit log names ${login} and requester ${requester}`
+      : `the audit log does not name both ${login} and requester ${requester}: ${preview(body)}`
+  }
+}
 
 /**
  * The flag that lets a local run without production credentials end green.
@@ -170,7 +177,7 @@ export const auditOutcome = (status: number, body: string, login: string, reques
  * would carry the word "inconclusive" in the workflow file where a reviewer
  * reads it. `inviteRunSummary` refuses it under CI regardless.
  */
-export const ALLOW_INCONCLUSIVE_FLAG = "--allow-inconclusive";
+export const ALLOW_INCONCLUSIVE_FLAG = "--allow-inconclusive"
 
 /**
  * Is this a CI run? GitHub Actions sets CI=true on every step, as does every
@@ -178,14 +185,14 @@ export const ALLOW_INCONCLUSIVE_FLAG = "--allow-inconclusive";
  * to refuse the local escape hatch there.
  */
 export const isCi = (env: { readonly [key: string]: string | undefined }): boolean => {
-	const raw = env.CI?.trim().toLowerCase();
-	if (raw === undefined || raw === "") return false;
-	return raw !== "0" && raw !== "false";
-};
+  const raw = env.CI?.trim().toLowerCase()
+  if (raw === undefined || raw === "") return false
+  return raw !== "0" && raw !== "false"
+}
 
 export interface RunSummary {
-	readonly exitCode: number;
-	readonly line: string;
+  readonly exitCode: number
+  readonly line: string
 }
 
 /**
@@ -201,39 +208,36 @@ export interface RunSummary {
  * everywhere, including a CI step wired up before its secrets exist, is red.
  */
 export const inviteRunSummary = (counts: {
-	readonly passed: number;
-	readonly failures: number;
-	readonly skipped: number;
-	readonly allowInconclusive: boolean;
-	readonly ci: boolean;
+  readonly passed: number
+  readonly failures: number
+  readonly skipped: number
+  readonly allowInconclusive: boolean
+  readonly ci: boolean
 }): RunSummary => {
-	const { passed, failures, skipped, allowInconclusive, ci } = counts;
-	if (failures > 0) {
-		return {
-			exitCode: 1,
-			line: `CN-23 INVITE PROBE FAILED: ${failures} check(s), ${passed} passed, ${skipped} skipped.`,
-		};
-	}
-	if (passed === 0) {
-		if (allowInconclusive && !ci) {
-			return {
-				exitCode: 0,
-				line:
-					`CN-23 INVITE PROBE INCONCLUSIVE: nothing was verified, ${skipped} skipped. ` +
-					`${ALLOW_INCONCLUSIVE_FLAG} accepted that for this local run; under CI it is refused.`,
-			};
-		}
-		const refusal =
-			allowInconclusive && ci
-				? ` ${ALLOW_INCONCLUSIVE_FLAG} is refused under CI: a CI step must never report success for an assertion it did not make.`
-				: "";
-		return {
-			exitCode: 1,
-			line:
-				`CN-23 ASSERTED NOTHING: 0 checks ran, ${skipped} skipped.${refusal}` +
-				" Set IDENTITY_SERVICE_TOKEN and CANARY_ALLOWLIST_LOGINS (add IDENTITY_ADMIN_TOKEN and --admit-probe-login for the write half)" +
-				`, or pass ${ALLOW_INCONCLUSIVE_FLAG} to accept a local run that verifies nothing.`,
-		};
-	}
-	return { exitCode: 0, line: `CN-23 INVITE PROBE PASS: ${passed} check(s), 0 failures, ${skipped} skipped.` };
-};
+  const { passed, failures, skipped, allowInconclusive, ci } = counts
+  if (failures > 0) {
+    return {
+      exitCode: 1,
+      line: `CN-23 INVITE PROBE FAILED: ${failures} check(s), ${passed} passed, ${skipped} skipped.`
+    }
+  }
+  if (passed === 0) {
+    if (allowInconclusive && !ci) {
+      return {
+        exitCode: 0,
+        line: `CN-23 INVITE PROBE INCONCLUSIVE: nothing was verified, ${skipped} skipped. ` +
+          `${ALLOW_INCONCLUSIVE_FLAG} accepted that for this local run; under CI it is refused.`
+      }
+    }
+    const refusal = allowInconclusive && ci
+      ? ` ${ALLOW_INCONCLUSIVE_FLAG} is refused under CI: a CI step must never report success for an assertion it did not make.`
+      : ""
+    return {
+      exitCode: 1,
+      line: `CN-23 ASSERTED NOTHING: 0 checks ran, ${skipped} skipped.${refusal}` +
+        " Set IDENTITY_SERVICE_TOKEN and CANARY_ALLOWLIST_LOGINS (add IDENTITY_ADMIN_TOKEN and --admit-probe-login for the write half)" +
+        `, or pass ${ALLOW_INCONCLUSIVE_FLAG} to accept a local run that verifies nothing.`
+    }
+  }
+  return { exitCode: 0, line: `CN-23 INVITE PROBE PASS: ${passed} check(s), 0 failures, ${skipped} skipped.` }
+}

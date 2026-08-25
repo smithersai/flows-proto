@@ -36,7 +36,7 @@ The chain:
    ```ts
    return readErrorMessage(response, `Listing issues for ${repo} failed (${response.status})`)
    ```
-2. That string is the flow handler's **return value**, so the Effect *succeeds*.
+2. That string is the flow handler's **return value**, so the Effect _succeeds_.
    `Commands.ts:149-154`:
    ```ts
    const result = settled.success
@@ -83,6 +83,7 @@ is more precise. There are TWO discard points, and this is the bigger one:
   open**, and the menu matches a **BARE name**.
 
 Consequences, exactly as measured:
+
 - `/issues.view` (bare) toasts an honest refusal — the menu was open, so the
   button path ran.
 - `/issues.view 999999 owner/repo` (with arguments) renders **absolutely
@@ -106,13 +107,15 @@ just hide from the user; they actively cause the model to lie.
 ## 2. Row 4.6 — `/retry` duplicates the user message
 
 `AppController.retryLastTurn`:
+
 ```ts
 const prompt = [...store.collections.messages.values()]
   .filter((m) => m.role === "user")
   .sort((l, r) => r.ordinal - l.ordinal)[0]?.text
-if (prompt !== undefined) send(prompt)   // send() APPENDS a new user message
+if (prompt !== undefined) send(prompt) // send() APPENDS a new user message
 ```
-Retry re-*sends* rather than re-*runs*, so each retry appends another user
+
+Retry re-_sends_ rather than re-_runs_, so each retry appends another user
 bubble. The chat lane measured `[data-role="user"]` going 1 → 2 → 3.
 It must re-run the last turn without appending a second user message.
 
@@ -122,12 +125,14 @@ It must re-run the last turn without appending a second user message.
 
 Introduced by `12018780` ("name the flow you typed"), whose exact-name
 precedence is correct and must be preserved. In `registry.ts`:
+
 ```ts
 const nameRank = (command, query) => { if (query === "") return 0; ... }
 const kept = (item) => item.recommended || nameRank(item.flow, query) <= 1
 const survivors = ordered.filter(kept)
 const room = Math.max(SLASH_MENU_CAP, survivors.length) - survivors.length
 ```
+
 On a bare `/`, `query === ""` so `nameRank` returns 0 for **every** command,
 `kept` is true for all 65, `room` computes to `max(8,65) - 65 = 0`, and
 `SLASH_MENU_CAP` is bypassed entirely. Live counts confirm the math: `/` → 65
@@ -149,10 +154,12 @@ CSS bugs or just consequences of the height.
 ## 4. Row 10.8 — World content never reaches the model
 
 `AppController.agentRuntimeContext()` includes only:
+
 ```ts
 selectedWorldDocument: selected?.path ?? null,
 ```
-The **path**, never the **body**, and only for the *selected* note. The model is
+
+The **path**, never the **body**, and only for the _selected_ note. The model is
 told which note is open and nothing about what any note says. Proven end to end:
 a note containing `zarquon-mimsy-7741` persisted (10.5 passes), then the model
 could not answer what the codeword was.
@@ -209,6 +216,7 @@ The money lane found the whole feature dead at the routing layer, not the UI:
 
 So five checklist rows describe a capability that has no working route. Decide
 which this is before "fixing" it:
+
 1. the feature is meant to ship for the alpha and the Worker route/upstream is
    simply missing or misconfigured — then wire it and the UI surfaces follow; or
 2. the feature is deliberately post-alpha — then the flows (`keys.list`,

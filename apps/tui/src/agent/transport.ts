@@ -1,7 +1,7 @@
-import type { AgentTurnFrame } from "smithers-shared/NativeAgent";
-import { createCloudAgent } from "./CloudAgent";
-import { createWebAgent } from "./WebAgent";
-import type { TuiTransport } from "../state/ChatController";
+import type { AgentTurnFrame } from "smithers-shared/NativeAgent"
+import type { TuiTransport } from "../state/ChatController"
+import { createCloudAgent } from "./CloudAgent"
+import { createWebAgent } from "./WebAgent"
 
 /*
  * Transport resolution. The default matches the native app's bun side: the
@@ -15,49 +15,49 @@ import type { TuiTransport } from "../state/ChatController";
  */
 
 export interface ResolvedTransport {
-	readonly transport: TuiTransport;
-	/** One line describing where turns go, rendered in the status bar. */
-	readonly describe: string;
+  readonly transport: TuiTransport
+  /** One line describing where turns go, rendered in the status bar. */
+  readonly describe: string
 }
 
-const DEFAULT_WORKER_ORIGIN = "http://localhost:8787";
+const DEFAULT_WORKER_ORIGIN = "http://localhost:8787"
 
 const originFlag = (argv: ReadonlyArray<string>): string | undefined => {
-	const index = argv.indexOf("--origin");
-	if (index === -1) return undefined;
-	return argv[index + 1]?.trim() || undefined;
-};
+  const index = argv.indexOf("--origin")
+  if (index === -1) return undefined
+  return argv[index + 1]?.trim() || undefined
+}
 
 export const resolveTransport = (
-	publish: (frame: AgentTurnFrame) => void,
-	argv: ReadonlyArray<string> = process.argv.slice(2),
-	env: NodeJS.ProcessEnv = process.env,
+  publish: (frame: AgentTurnFrame) => void,
+  argv: ReadonlyArray<string> = process.argv.slice(2),
+  env: NodeJS.ProcessEnv = process.env
 ): ResolvedTransport => {
-	const workerOrigin = originFlag(argv) ?? env.SMITHERS_TUI_ORIGIN?.trim();
-	if (workerOrigin !== undefined && workerOrigin !== "") {
-		return {
-			transport: createWebAgent(publish, {
-				baseUrl: workerOrigin,
-				...(env.SMITHERS_TUI_COOKIE === undefined ? {} : { cookie: env.SMITHERS_TUI_COOKIE }),
-			}),
-			describe: `worker ${workerOrigin}`,
-		};
-	}
-	if (argv.includes("--worker")) {
-		return {
-			transport: createWebAgent(publish, {
-				baseUrl: DEFAULT_WORKER_ORIGIN,
-				...(env.SMITHERS_TUI_COOKIE === undefined ? {} : { cookie: env.SMITHERS_TUI_COOKIE }),
-			}),
-			describe: `worker ${DEFAULT_WORKER_ORIGIN}`,
-		};
-	}
-	const chatUrl = env.SMITHERS_CHAT_URL?.trim() || "https://chat.smithers.sh/chat";
-	return {
-		transport: createCloudAgent(publish, {
-			chatUrl: env.SMITHERS_CHAT_URL,
-			origin: env.SMITHERS_CHAT_ORIGIN,
-		}),
-		describe: `chat upstream ${chatUrl}`,
-	};
-};
+  const workerOrigin = originFlag(argv) ?? env.SMITHERS_TUI_ORIGIN?.trim()
+  if (workerOrigin !== undefined && workerOrigin !== "") {
+    return {
+      transport: createWebAgent(publish, {
+        baseUrl: workerOrigin,
+        ...(env.SMITHERS_TUI_COOKIE === undefined ? {} : { cookie: env.SMITHERS_TUI_COOKIE })
+      }),
+      describe: `worker ${workerOrigin}`
+    }
+  }
+  if (argv.includes("--worker")) {
+    return {
+      transport: createWebAgent(publish, {
+        baseUrl: DEFAULT_WORKER_ORIGIN,
+        ...(env.SMITHERS_TUI_COOKIE === undefined ? {} : { cookie: env.SMITHERS_TUI_COOKIE })
+      }),
+      describe: `worker ${DEFAULT_WORKER_ORIGIN}`
+    }
+  }
+  const chatUrl = env.SMITHERS_CHAT_URL?.trim() || "https://chat.smithers.sh/chat"
+  return {
+    transport: createCloudAgent(publish, {
+      chatUrl: env.SMITHERS_CHAT_URL,
+      origin: env.SMITHERS_CHAT_ORIGIN
+    }),
+    describe: `chat upstream ${chatUrl}`
+  }
+}

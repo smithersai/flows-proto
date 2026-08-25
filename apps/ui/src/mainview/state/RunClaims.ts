@@ -18,10 +18,10 @@
  * failure. Nothing here touches the store or the DOM, so the rule is unit-pinned.
  */
 
-import { ASK_HONEST_LINES, type ImpossibleAskClass } from "./Instructions";
+import { ASK_HONEST_LINES, type ImpossibleAskClass } from "./Instructions"
 
 /** The commands that launch a run on the user's workspace. */
-export const RUN_LAUNCH_COMMANDS: ReadonlyArray<string> = ["flow.create", "flow.run"];
+export const RUN_LAUNCH_COMMANDS: ReadonlyArray<string> = ["flow.create", "flow.run"]
 
 /**
  * The command a model tool call would launch a run with, if any. The model
@@ -29,17 +29,17 @@ export const RUN_LAUNCH_COMMANDS: ReadonlyArray<string> = ["flow.create", "flow.
  * inside its JSON arguments; a direct command name is accepted too.
  */
 export const runLaunchCommandOf = (toolName: string, toolArguments: string): string | undefined => {
-	if (RUN_LAUNCH_COMMANDS.includes(toolName)) return toolName;
-	if (toolName !== "commands") return undefined;
-	let parsed: { action?: unknown; name?: unknown };
-	try {
-		parsed = JSON.parse(toolArguments) as typeof parsed;
-	} catch {
-		return undefined;
-	}
-	if (parsed.action !== "execute" || typeof parsed.name !== "string") return undefined;
-	return RUN_LAUNCH_COMMANDS.includes(parsed.name) ? parsed.name : undefined;
-};
+  if (RUN_LAUNCH_COMMANDS.includes(toolName)) return toolName
+  if (toolName !== "commands") return undefined
+  let parsed: { action?: unknown; name?: unknown }
+  try {
+    parsed = JSON.parse(toolArguments) as typeof parsed
+  } catch {
+    return undefined
+  }
+  if (parsed.action !== "execute" || typeof parsed.name !== "string") return undefined
+  return RUN_LAUNCH_COMMANDS.includes(parsed.name) ? parsed.name : undefined
+}
 
 /**
  * A tool result that did NOT launch anything (an honest refusal, an unknown
@@ -47,10 +47,10 @@ export const runLaunchCommandOf = (toolName: string, toolArguments: string): str
  * misdescribe. Only a real launch arms the substitution.
  */
 export const toolResultLaunchedRun = (result: string): boolean =>
-	!result.startsWith("failed:") && !result.startsWith("unknown-") && /\brun-started\b/.test(result);
+  !result.startsWith("failed:") && !result.startsWith("unknown-") && /\brun-started\b/.test(result)
 
 /** What the run is called, in the vocabulary a claim would use. */
-const RUN_SUBJECT = /\b(workflow|workflows|run|runs|flow|flows|automation|pipeline|job|it|that|this|they|everything)\b/i;
+const RUN_SUBJECT = /\b(workflow|workflows|run|runs|flow|flows|automation|pipeline|job|it|that|this|they|everything)\b/i
 
 /**
  * The state vocabulary a claim rides on. Any of these beside a run subject is a
@@ -58,7 +58,7 @@ const RUN_SUBJECT = /\b(workflow|workflows|run|runs|flow|flows|automation|pipeli
  * done shortly"), which are claims about the future the card alone can make.
  */
 const RUN_STATE =
-	/\b(created|creating|creation|made|built|building|generated|set ?up|added|saved|written|wrote|exists|ready|live|deployed|published|installed|running|ran|started|starting|launched|kicked off|underway|in progress|finished|finishing|complete|completed|completing|done|succeeded|success|failed|failing|working|now|already|shortly|soon)\b/i;
+  /\b(created|creating|creation|made|built|building|generated|set ?up|added|saved|written|wrote|exists|ready|live|deployed|published|installed|running|ran|started|starting|launched|kicked off|underway|in progress|finished|finishing|complete|completed|completing|done|succeeded|success|failed|failing|working|now|already|shortly|soon)\b/i
 
 /**
  * Does this prose make a claim about the state of a run? Deliberately broad: the
@@ -66,10 +66,10 @@ const RUN_STATE =
  * can read beside a truthful card; the cost of missing one is a lie on screen.
  */
 export const claimsRunState = (text: string): boolean => {
-	const prose = text.trim();
-	if (prose === "") return false;
-	return RUN_SUBJECT.test(prose) && RUN_STATE.test(prose);
-};
+  const prose = text.trim()
+  if (prose === "") return false
+  return RUN_SUBJECT.test(prose) && RUN_STATE.test(prose)
+}
 
 /**
  * The one thing the client is willing to say about a launch, per command.
@@ -83,9 +83,9 @@ export const claimsRunState = (text: string): boolean => {
  * one about its own layout, so it names the card instead of pointing at it.
  */
 export const deterministicRunLine = (command: string): string =>
-	command === "flow.create"
-		? "I started a create-workflow run — the run card shows its real progress."
-		: "I started that run — the run card shows its real progress.";
+  command === "flow.create"
+    ? "I started a create-workflow run — the run card shows its real progress."
+    : "I started that run — the run card shows its real progress."
 
 /*
  * Wave 13 §F — capability theater, caught where detection is honest.
@@ -123,13 +123,13 @@ export const deterministicRunLine = (command: string): string =>
  * laundering spoke as "we can set up a workflow that…", and a plural offer
  * launders exactly like a singular one.
  */
-const CURLY_APOSTROPHES = /[‘’ʼʹ‛´`]/g;
+const CURLY_APOSTROPHES = /[‘’ʼʹ‛´`]/g
 
 /** The model's prose with typographic apostrophes folded to the ASCII one. */
-const normalizeApostrophes = (text: string): string => text.replace(CURLY_APOSTROPHES, "'");
+const normalizeApostrophes = (text: string): string => text.replace(CURLY_APOSTROPHES, "'")
 
 const OFFER_PHRASE =
-	/\b(i can(?!'?t\b| ?not\b)|i'll|i will|i could|i'm going to|i am going to|i'm setting up|i am setting up|i've set up|i have set up|i'm able to|i am able to|let me|shall i|want me to|would you like me to|we can(?!'?t\b| ?not\b)|we'll|we will|we could|we're going to|we are going to|we're able to|we are able to)\b/i;
+  /\b(i can(?!'?t\b| ?not\b)|i'll|i will|i could|i'm going to|i am going to|i'm setting up|i am setting up|i've set up|i have set up|i'm able to|i am able to|let me|shall i|want me to|would you like me to|we can(?!'?t\b| ?not\b)|we'll|we will|we could|we're going to|we are going to|we're able to|we are able to)\b/i
 /*
  * The named can't-yets, in the model's own vocabulary — the same class the
  * generated capability section spells out (Instructions.ts NAMED_CANT_YETS),
@@ -138,7 +138,7 @@ const OFFER_PHRASE =
  * repository (§F-4, §F-5).
  */
 const IMPOSSIBLE_EFFECT =
-	/\b(e-?mails?|slack|sms|text messages?|whatsapp|tweet|your (laptop|machine|computer|hard drive|home directory|file system|filesystem)|local (file|files|filesystem)|push(es|ed|ing)? (it |them |straight |right |directly )*to (the )?(main|master|branch)|pull request|pr link)\b/i;
+  /\b(e-?mails?|slack|sms|text messages?|whatsapp|tweet|your (laptop|machine|computer|hard drive|home directory|file system|filesystem)|local (file|files|filesystem)|push(es|ed|ing)? (it |them |straight |right |directly )*to (the )?(main|master|branch)|pull request|pr link)\b/i
 
 /*
  * The offer and the effect must land in the SAME sentence. An honest can't-yet
@@ -148,7 +148,7 @@ const IMPOSSIBLE_EFFECT =
  * exact answer §F asks for. Sentence scope is what makes this detector honest
  * rather than merely blunt.
  */
-const SENTENCES = /(?<=[.!?…])\s+|\n+/;
+const SENTENCES = /(?<=[.!?…])\s+|\n+/
 
 /**
  * Does this prose offer an effect the catalog cannot have? Deterministic and
@@ -156,21 +156,21 @@ const SENTENCES = /(?<=[.!?…])\s+|\n+/;
  * a named impossible effect.
  */
 export const offersImpossibleCapability = (text: string): boolean => {
-	const prose = normalizeApostrophes(text).trim();
-	if (prose === "") return false;
-	return prose
-		.split(SENTENCES)
-		.some((sentence) => OFFER_PHRASE.test(sentence) && IMPOSSIBLE_EFFECT.test(sentence));
-};
+  const prose = normalizeApostrophes(text).trim()
+  if (prose === "") return false
+  return prose
+    .split(SENTENCES)
+    .some((sentence) => OFFER_PHRASE.test(sentence) && IMPOSSIBLE_EFFECT.test(sentence))
+}
 
 /**
  * The rendered prose for a turn that launched a run: the model's own words when
  * they claim nothing, the deterministic line when they do.
  */
 export const renderedRunTurnText = (command: string, modelText: string): string =>
-	claimsRunState(modelText) || offersImpossibleCapability(modelText)
-		? deterministicRunLine(command)
-		: modelText;
+  claimsRunState(modelText) || offersImpossibleCapability(modelText)
+    ? deterministicRunLine(command)
+    : modelText
 
 /*
  * Wave 13c — the truth bar has no tail: the response to an ACTION ask.
@@ -220,27 +220,27 @@ export const renderedRunTurnText = (command: string, modelText: string): string 
  *   the adjective+noun state is not the verb "open" (see CLASS_EFFECT).
  */
 const ASK_PATTERNS: ReadonlyArray<readonly [ImpossibleAskClass, RegExp]> = [
-	[
-		"email",
-		/\b(send|draft|compose|fire off|shoot over|dash off)\b[^!?\n]{0,100}\be-?mails?\b|\be-?mail\s+(my|the|your|to)\b/i,
-	],
-	[
-		"local-files",
-		/\b(read|open|show|summari[sz]e|check|what'?s in)\b[^!?\n]{0,120}\b(my (laptop|machine|computer|home director\w+|hard drive|desktop|file ?system)|local (files?|file ?system))\b/i,
-	],
-	[
-		"messaging",
-		/\b(post|send|message|dm|notify|ping|share)\b[^!?\n]{0,80}\b(slack|whatsapp|sms|text messages?|discord|(ms|microsoft) teams|messaging apps?)\b/i,
-	],
-	[
-		"push",
-		/(?<!\b(the|a|an|my|your|our|their|its|last|latest|recent|each|every|first|next|that|this|those|these)\s)\bpush(es|ing)?\b[^!?\n]{0,100}\b(main|master|branch|github|repos?)\b/i,
-	],
-	[
-		"pr",
-		/\b(open|create|make|raise|submit|file)\s+(up\s+)?(a|an|the|that|this|one|me a|us a)\s+(draft\s+)?(pull requests?|prs?)\b|\b(open|create|make|raise|submit|file)\s+(pull requests?|prs?)\s+(for|against|on|with|from)\b|\b(pull request|pr) links?\b/i,
-	],
-];
+  [
+    "email",
+    /\b(send|draft|compose|fire off|shoot over|dash off)\b[^!?\n]{0,100}\be-?mails?\b|\be-?mail\s+(my|the|your|to)\b/i
+  ],
+  [
+    "local-files",
+    /\b(read|open|show|summari[sz]e|check|what'?s in)\b[^!?\n]{0,120}\b(my (laptop|machine|computer|home director\w+|hard drive|desktop|file ?system)|local (files?|file ?system))\b/i
+  ],
+  [
+    "messaging",
+    /\b(post|send|message|dm|notify|ping|share)\b[^!?\n]{0,80}\b(slack|whatsapp|sms|text messages?|discord|(ms|microsoft) teams|messaging apps?)\b/i
+  ],
+  [
+    "push",
+    /(?<!\b(the|a|an|my|your|our|their|its|last|latest|recent|each|every|first|next|that|this|those|these)\s)\bpush(es|ing)?\b[^!?\n]{0,100}\b(main|master|branch|github|repos?)\b/i
+  ],
+  [
+    "pr",
+    /\b(open|create|make|raise|submit|file)\s+(up\s+)?(a|an|the|that|this|one|me a|us a)\s+(draft\s+)?(pull requests?|prs?)\b|\b(open|create|make|raise|submit|file)\s+(pull requests?|prs?)\s+(for|against|on|with|from)\b|\b(pull request|pr) links?\b/i
+  ]
+]
 
 /**
  * The impossible-ask class the user's message asks for, if any — detected
@@ -248,13 +248,13 @@ const ASK_PATTERNS: ReadonlyArray<readonly [ImpossibleAskClass, RegExp]> = [
  * classifies as nothing and is never held.
  */
 export const impossibleAskOf = (userText: string): ImpossibleAskClass | undefined => {
-	const ask = normalizeApostrophes(userText).trim();
-	if (ask === "") return undefined;
-	for (const [askClass, pattern] of ASK_PATTERNS) {
-		if (pattern.test(ask)) return askClass;
-	}
-	return undefined;
-};
+  const ask = normalizeApostrophes(userText).trim()
+  if (ask === "") return undefined
+  for (const [askClass, pattern] of ASK_PATTERNS) {
+    if (pattern.test(ask)) return askClass
+  }
+  return undefined
+}
 
 /*
  * The class effect, in the answer's vocabulary. These are deliberately
@@ -277,22 +277,24 @@ export const impossibleAskOf = (userText: string): ImpossibleAskClass | undefine
  *   — has no adjectival reading and needs no such guard.
  */
 const CLASS_EFFECT: Record<ImpossibleAskClass, RegExp> = {
-	email: /\be-?mails?\b/i,
-	"local-files": /\b(files?|file ?systems?|home director\w+|hard drives?|laptops?|machines?|computers?|desktops?)\b/i,
-	messaging: /\b(slack|whatsapp|sms|text messages?|messaging apps?|discord|ms teams|microsoft teams)\b/i,
-	push: /\bpush(es|ed|ing)?\b/i,
-	pr: new RegExp(
-		[
-			// The verbs with no adjectival reading — the object may be bare.
-			String.raw`(?<!\byou\s)(?<!\byou all\s)\b(create|creates|created|creating|make|makes|made|file|files|filed|submit|submits|submitted|raise|raises|raised)\s+(a\s+|an\s+|the\s+|that\s+|this\s+|your\s+|one\s+)?(draft\s+)?(pull requests?|prs?)\b`,
-			// "open", only where it is the verb and not "your/the/all open PRs".
-			String.raw`(?<!\byou\s)(?<!\byou all\s)(?<!\b(your|my|our|their|the|all|any|these|those|of|list|lists|show|shows|summari[sz]e|summari[sz]es|summari[sz]ing|review|reviews|reviewing|check|checks|track|tracks|watch|watches|read|reads|find|finds|count|counts|triage|triages)\s)\b(open|opens|opened|opening)\s+(a\s+|an\s+|the\s+|that\s+|this\s+|your\s+|one\s+)?(draft\s+)?(pull requests?|prs?)\b`,
-			String.raw`\bpr links?\b`,
-			String.raw`\b(pull requests?|prs?)\s+(will be|is being|gets?|would be)\s+(opened|created|made)\b`,
-		].join("|"),
-		"i",
-	),
-};
+  email: /\be-?mails?\b/i,
+  "local-files": /\b(files?|file ?systems?|home director\w+|hard drives?|laptops?|machines?|computers?|desktops?)\b/i,
+  messaging: /\b(slack|whatsapp|sms|text messages?|messaging apps?|discord|ms teams|microsoft teams)\b/i,
+  push: /\bpush(es|ed|ing)?\b/i,
+  pr: new RegExp(
+    [
+      // The verbs with no adjectival reading — the object may be bare.
+      String
+        .raw`(?<!\byou\s)(?<!\byou all\s)\b(create|creates|created|creating|make|makes|made|file|files|filed|submit|submits|submitted|raise|raises|raised)\s+(a\s+|an\s+|the\s+|that\s+|this\s+|your\s+|one\s+)?(draft\s+)?(pull requests?|prs?)\b`,
+      // "open", only where it is the verb and not "your/the/all open PRs".
+      String
+        .raw`(?<!\byou\s)(?<!\byou all\s)(?<!\b(your|my|our|their|the|all|any|these|those|of|list|lists|show|shows|summari[sz]e|summari[sz]es|summari[sz]ing|review|reviews|reviewing|check|checks|track|tracks|watch|watches|read|reads|find|finds|count|counts|triage|triages)\s)\b(open|opens|opened|opening)\s+(a\s+|an\s+|the\s+|that\s+|this\s+|your\s+|one\s+)?(draft\s+)?(pull requests?|prs?)\b`,
+      String.raw`\bpr links?\b`,
+      String.raw`\b(pull requests?|prs?)\s+(will be|is being|gets?|would be)\s+(opened|created|made)\b`
+    ].join("|"),
+    "i"
+  )
+}
 
 /**
  * Does this answer to an impossible-class ask OFFER the act (or a workflow
@@ -301,11 +303,11 @@ const CLASS_EFFECT: Record<ImpossibleAskClass, RegExp> = {
  * effect in the sentence that refuses it — passes through.
  */
 export const offersAskClassAct = (askClass: ImpossibleAskClass, text: string): boolean => {
-	const prose = normalizeApostrophes(text).trim();
-	if (prose === "") return false;
-	const effect = CLASS_EFFECT[askClass];
-	return prose.split(SENTENCES).some((sentence) => OFFER_PHRASE.test(sentence) && effect.test(sentence));
-};
+  const prose = normalizeApostrophes(text).trim()
+  if (prose === "") return false
+  const effect = CLASS_EFFECT[askClass]
+  return prose.split(SENTENCES).some((sentence) => OFFER_PHRASE.test(sentence) && effect.test(sentence))
+}
 
 /**
  * The rendered prose for a turn answering an impossible-class ask: the
@@ -313,4 +315,4 @@ export const offersAskClassAct = (askClass: ImpossibleAskClass, text: string): b
  * deterministic honest line when they do.
  */
 export const renderedAskTurnText = (askClass: ImpossibleAskClass, modelText: string): string =>
-	offersAskClassAct(askClass, modelText) ? ASK_HONEST_LINES[askClass] : modelText;
+  offersAskClassAct(askClass, modelText) ? ASK_HONEST_LINES[askClass] : modelText

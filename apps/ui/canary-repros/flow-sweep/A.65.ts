@@ -17,26 +17,26 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.65.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
+const app = await openApp()
+const failures: string[] = []
 try {
-	const outcome = await app.invoke("/branches.list codeplanesmithers/no-such-repo-zz", 9000);
-	console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)");
-	console.log("added lines:", JSON.stringify(outcome.added));
-	const honest = outcome.added.filter(
-		(line) =>
-			line.toLowerCase().includes("no-such-repo-zz".toLowerCase()) ||
-			/couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line),
-	);
-	console.log("honest lines:", JSON.stringify(honest));
-	if (honest.length === 0) {
-		failures.push(
-			"/branches.list with a failing argument rendered no honest response — expected an unreadable repository is named in an honest refusal",
-		);
-	}
+  const outcome = await app.invoke("/branches.list codeplanesmithers/no-such-repo-zz", 9000)
+  console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)")
+  console.log("added lines:", JSON.stringify(outcome.added))
+  const honest = outcome.added.filter(
+    (line) =>
+      line.toLowerCase().includes("no-such-repo-zz".toLowerCase()) ||
+      /couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line)
+  )
+  console.log("honest lines:", JSON.stringify(honest))
+  if (honest.length === 0) {
+    failures.push(
+      "/branches.list with a failing argument rendered no honest response — expected an unreadable repository is named in an honest refusal"
+    )
+  }
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)

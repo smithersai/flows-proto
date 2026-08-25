@@ -152,21 +152,21 @@ are green for both.
 
 ## Deploy checklist — every env var the product Worker now reads
 
-| Var | Seam | Unset behavior |
-| --- | --- | --- |
-| `SMITHERS_CHAT_URL` | chat turn upstream | defaults to `https://chat.smithers.sh/chat` |
-| `SMITHERS_CHAT_ORIGIN` | chat upstream origin gate | defaults to `https://smithers.sh` |
-| `GATEWAY_UPSTREAM_URL` | engine gateway (`/v1/*`, `/workflows/*`, approvals) | 501 |
-| `GATEWAY_AUTH_TOKEN` | gateway service-token branch | falls through to the session branch; 501 if neither |
-| `GATEWAY_SESSION_USER_ID` / `GATEWAY_SESSION_USER_ROLE` / `GATEWAY_SESSION_USER_SCOPES` | gateway trusted-proxy placeholder session | 501 if no auth branch |
-| `IDENTITY_UPSTREAM_URL` | identity (`/api/auth/*`, `/api/identity/*`, session validation) | 501; admin surface 404s everyone |
-| `IDENTITY_SERVICE_TOKEN` | product Worker → `/api/identity/validate` | validation degrades (billing 401s; admin 404s) |
-| `IDENTITY_ADMIN_TOKEN` | identity `admin/allowlist` + `admin/requests` | admin allowlist/queue 501 (admin sessions only) |
-| `BILLING_UPSTREAM_URL` | billing (`/api/billing/*`) | 501 |
-| `BILLING_AUTH_TOKEN` | the Smithers Cloud user bearer billing authenticates with | 501 |
-| `BILLING_ADMIN_TOKEN` | billing `admin/grants` | admin grant 501 (admin sessions only) |
-| `RECO_UPSTREAM_URL` | recommendations (`/api/reco/*`) | 501; the first-run message says so honestly |
-| `RECO_ADMIN_TOKEN` | reco `admin/feedback` | admin feedback 501 (admin sessions only) |
+| Var                                                                                     | Seam                                                            | Unset behavior                                      |
+| --------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------- |
+| `SMITHERS_CHAT_URL`                                                                     | chat turn upstream                                              | defaults to `https://chat.smithers.sh/chat`         |
+| `SMITHERS_CHAT_ORIGIN`                                                                  | chat upstream origin gate                                       | defaults to `https://smithers.sh`                   |
+| `GATEWAY_UPSTREAM_URL`                                                                  | engine gateway (`/v1/*`, `/workflows/*`, approvals)             | 501                                                 |
+| `GATEWAY_AUTH_TOKEN`                                                                    | gateway service-token branch                                    | falls through to the session branch; 501 if neither |
+| `GATEWAY_SESSION_USER_ID` / `GATEWAY_SESSION_USER_ROLE` / `GATEWAY_SESSION_USER_SCOPES` | gateway trusted-proxy placeholder session                       | 501 if no auth branch                               |
+| `IDENTITY_UPSTREAM_URL`                                                                 | identity (`/api/auth/*`, `/api/identity/*`, session validation) | 501; admin surface 404s everyone                    |
+| `IDENTITY_SERVICE_TOKEN`                                                                | product Worker → `/api/identity/validate`                       | validation degrades (billing 401s; admin 404s)      |
+| `IDENTITY_ADMIN_TOKEN`                                                                  | identity `admin/allowlist` + `admin/requests`                   | admin allowlist/queue 501 (admin sessions only)     |
+| `BILLING_UPSTREAM_URL`                                                                  | billing (`/api/billing/*`)                                      | 501                                                 |
+| `BILLING_AUTH_TOKEN`                                                                    | the Smithers Cloud user bearer billing authenticates with       | 501                                                 |
+| `BILLING_ADMIN_TOKEN`                                                                   | billing `admin/grants`                                          | admin grant 501 (admin sessions only)               |
+| `RECO_UPSTREAM_URL`                                                                     | recommendations (`/api/reco/*`)                                 | 501; the first-run message says so honestly         |
+| `RECO_ADMIN_TOKEN`                                                                      | reco `admin/feedback`                                           | admin feedback 501 (admin sessions only)            |
 
 Deployment requirement carried from Wave 2a and now extended to reco: **this Worker's origin must
 be listed in the identity, billing, AND recommendations workers' `ALLOWED_ORIGINS`** — the proxy
@@ -205,7 +205,7 @@ than edited in place, so the wave's own claims stay as they were made.
 ### `HEAD` did not compile (blocker, found by review)
 
 The concurrent context wave's `src/shared/AgentContext.ts` was an intent-to-add (empty-blob) index
-entry, so it was invisible to `git ls-files --others` and never committed — while every *importer*
+entry, so it was invisible to `git ls-files --others` and never committed — while every _importer_
 of it (`src/shared/NativeAgent.ts`, `AppController.ts`, `AppStore.ts`, `src/worker/index.ts`) rode
 into the wave-3b commits. Typechecking a detached worktree at `543a1d8` observed:
 
@@ -216,7 +216,7 @@ src/shared/NativeAgent.ts(3,42):            error TS2307: Cannot find module './
 src/worker/index.ts(16,69):                 error TS2307: Cannot find module '../shared/AgentContext'
 ```
 
-The gates were green in the working tree only because the file existed *on disk* there. `fc392b5`
+The gates were green in the working tree only because the file existed _on disk_ there. `fc392b5`
 lands the missing half byte-identically (module, boundary composition, five test files, the browser
 e2e script); a detached worktree at `fa65c40` now typechecks clean. The "remains uncommitted and
 untouched by this wave" line under **Preflight** is superseded by this.

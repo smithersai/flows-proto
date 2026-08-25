@@ -1,6 +1,6 @@
-import { Effect, Layer, Schema } from "effect";
-import { Event, Journal } from "@smthrs/chain";
-import type { AppStore } from "../state/AppStore";
+import { Event, Journal } from "@smthrs/chain"
+import { Effect, Layer, Schema } from "effect"
+import type { AppStore } from "../state/AppStore"
 
 /*
  * The chain Journal port over the chainEvents collection (DESIGN.md §14).
@@ -23,55 +23,55 @@ import type { AppStore } from "../state/AppStore";
  */
 
 export interface CollectionJournalOptions {
-	readonly store: AppStore;
-	readonly lineageId: string;
-	readonly actor?: "smithers" | "system";
+  readonly store: AppStore
+  readonly lineageId: string
+  readonly actor?: "smithers" | "system"
 }
 
-const encodeEvent = Schema.encodeUnknownSync(Event.Event);
-const decodeEvent = Schema.decodeUnknownSync(Event.Event);
+const encodeEvent = Schema.encodeUnknownSync(Event.Event)
+const decodeEvent = Schema.decodeUnknownSync(Event.Event)
 
 export const makeCollectionJournal = (options: CollectionJournalOptions): Journal.Service => {
-	const { store, lineageId } = options;
-	const actor = options.actor ?? "smithers";
+  const { store, lineageId } = options
+  const actor = options.actor ?? "smithers"
 
-	const lineageRecords = () =>
-		[...store.collections.chainEvents.values()]
-			.filter((record) => record.lineageId === lineageId)
-			.sort((left, right) => left.seq - right.seq);
+  const lineageRecords = () =>
+    [...store.collections.chainEvents.values()]
+      .filter((record) => record.lineageId === lineageId)
+      .sort((left, right) => left.seq - right.seq)
 
-	return Journal.make({
-		append: (event) =>
-			Effect.tryPromise({
-				try: async () => {
-					const records = lineageRecords();
-					const seq = records.length === 0 ? 0 : (records[records.length - 1]?.seq ?? -1) + 1;
-					if (store.collections.chainEvents.get(`chain-${lineageId}-${seq}`) !== undefined) {
-						throw new Error(`seq ${seq} already exists — a second writer holds this lineage`);
-					}
-					await store.dispatch({
-						type: "chain.event.appended",
-						actor,
-						lineageId,
-						seq,
-						event: encodeEvent(event),
-					}).isPersisted.promise;
-				},
-				catch: (cause) =>
-					new Journal.JournalError({
-						message: `chain journal append failed for lineage ${lineageId}: ${String(cause)}`,
-					}),
-			}),
-		read: Effect.try({
-			try: () => lineageRecords().map((record) => decodeEvent(record.event)),
-			catch: (cause) =>
-				new Journal.JournalError({
-					message: `chain journal read failed for lineage ${lineageId}: ${String(cause)}`,
-				}),
-		}),
-	});
-};
+  return Journal.make({
+    append: (event) =>
+      Effect.tryPromise({
+        try: async () => {
+          const records = lineageRecords()
+          const seq = records.length === 0 ? 0 : (records[records.length - 1]?.seq ?? -1) + 1
+          if (store.collections.chainEvents.get(`chain-${lineageId}-${seq}`) !== undefined) {
+            throw new Error(`seq ${seq} already exists — a second writer holds this lineage`)
+          }
+          await store.dispatch({
+            type: "chain.event.appended",
+            actor,
+            lineageId,
+            seq,
+            event: encodeEvent(event)
+          }).isPersisted.promise
+        },
+        catch: (cause) =>
+          new Journal.JournalError({
+            message: `chain journal append failed for lineage ${lineageId}: ${String(cause)}`
+          })
+      }),
+    read: Effect.try({
+      try: () => lineageRecords().map((record) => decodeEvent(record.event)),
+      catch: (cause) =>
+        new Journal.JournalError({
+          message: `chain journal read failed for lineage ${lineageId}: ${String(cause)}`
+        })
+    })
+  })
+}
 
 export const layerCollection = (
-	options: CollectionJournalOptions,
-): Layer.Layer<Journal.Journal> => Layer.succeed(Journal.Journal)(makeCollectionJournal(options));
+  options: CollectionJournalOptions
+): Layer.Layer<Journal.Journal> => Layer.succeed(Journal.Journal)(makeCollectionJournal(options))

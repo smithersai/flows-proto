@@ -11,24 +11,24 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.18.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
+const app = await openApp()
+const failures: string[] = []
 try {
-	await app.invoke("/chat", 3000);
-	const outcome = await app.invoke(
-		"/flow.create nightly open issue digest codeplanesmithers/canary-sandbox",
-		90000,
-	);
-	console.log("added:", JSON.stringify(outcome.added));
-	console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)");
-	const text = (await app.page.locator("body").innerText());
-	const stuck = text.includes("Preparing your codeplanesmithers/canary-sandbox workspace…");
-	const provisioned = outcome.net.some((entry) => entry.includes("/api/workflow/provision"));
-	if (stuck) failures.push('/flow.create still says "Preparing your … workspace…" after 90s');
-	if (!provisioned) failures.push("/flow.create never called POST /api/workflow/provision");
+  await app.invoke("/chat", 3000)
+  const outcome = await app.invoke(
+    "/flow.create nightly open issue digest codeplanesmithers/canary-sandbox",
+    90000
+  )
+  console.log("added:", JSON.stringify(outcome.added))
+  console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)")
+  const text = await app.page.locator("body").innerText()
+  const stuck = text.includes("Preparing your codeplanesmithers/canary-sandbox workspace…")
+  const provisioned = outcome.net.some((entry) => entry.includes("/api/workflow/provision"))
+  if (stuck) failures.push("/flow.create still says \"Preparing your … workspace…\" after 90s")
+  if (!provisioned) failures.push("/flow.create never called POST /api/workflow/provision")
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)

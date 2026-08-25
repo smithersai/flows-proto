@@ -12,53 +12,53 @@
  *
  * Exits 1 while the cap is not applied.
  */
-import { composer, launch, openSlashMenu } from "./_harness";
+import { composer, launch, openSlashMenu } from "./_harness"
 
-const CAP = 8;
-const { ctx, page } = await launch();
+const CAP = 8
+const { ctx, page } = await launch()
 
 const names = () =>
-	page.evaluate(() =>
-		Array.from(document.querySelectorAll(".slash-menu [role=option]")).map(
-			(option) => (option.querySelector(".slash-menu-name") as HTMLElement).innerText,
-		),
-	);
+  page.evaluate(() =>
+    Array.from(document.querySelectorAll(".slash-menu [role=option]")).map(
+      (option) => (option.querySelector(".slash-menu-name") as HTMLElement).innerText
+    )
+  )
 
-const over: Array<{ query: string; count: number }> = [];
+const over: Array<{ query: string; count: number }> = []
 for (const query of ["/", "/a", "/re", "/i", "/s", "/list", "/th"]) {
-	await openSlashMenu(page, query);
-	const listed = await names();
-	console.log(`"${query}" -> ${listed.length} items${listed.length > CAP ? "  <-- over the cap" : ""}`);
-	if (listed.length > CAP) over.push({ query, count: listed.length });
+  await openSlashMenu(page, query)
+  const listed = await names()
+  console.log(`"${query}" -> ${listed.length} items${listed.length > CAP ? "  <-- over the cap" : ""}`)
+  if (listed.length > CAP) over.push({ query, count: listed.length })
 }
 
 // The recency half of the row: run two flows and watch them enter a capped listing.
-await openSlashMenu(page, "/s");
-const before = await names();
+await openSlashMenu(page, "/s")
+const before = await names()
 for (const flow of ["/debug.snapshot", "/debug.events"]) {
-	const box = composer(page);
-	await box.click();
-	await box.fill(flow);
-	await page.keyboard.press("Enter");
-	await page.waitForTimeout(1800);
+  const box = composer(page)
+  await box.click()
+  await box.fill(flow)
+  await page.keyboard.press("Enter")
+  await page.waitForTimeout(1800)
 }
-await openSlashMenu(page, "/s");
-const after = await names();
-console.log("\nrecency check — /s before:", JSON.stringify(before));
-console.log("recency check — /s after :", JSON.stringify(after));
-console.log("recency reorders the remainder:", JSON.stringify(before) !== JSON.stringify(after));
+await openSlashMenu(page, "/s")
+const after = await names()
+console.log("\nrecency check — /s before:", JSON.stringify(before))
+console.log("recency check — /s after :", JSON.stringify(after))
+console.log("recency reorders the remainder:", JSON.stringify(before) !== JSON.stringify(after))
 
-console.log(`\nqueries over the ${CAP}-item cap:`, JSON.stringify(over));
-const bug = over.length > 0;
-const debugSnapshotIndex = after.indexOf("/debug.snapshot");
-const debugEventsIndex = after.indexOf("/debug.events");
+console.log(`\nqueries over the ${CAP}-item cap:`, JSON.stringify(over))
+const bug = over.length > 0
+const debugSnapshotIndex = after.indexOf("/debug.snapshot")
+const debugEventsIndex = after.indexOf("/debug.events")
 if (debugSnapshotIndex < 0 || debugEventsIndex < 0 || debugEventsIndex > debugSnapshotIndex) {
-	console.error(
-		`FAIL: recency order did not put the last executed flow first: events=${debugEventsIndex}, snapshot=${debugSnapshotIndex}`,
-	);
-	await ctx.close();
-	process.exit(1);
+  console.error(
+    `FAIL: recency order did not put the last executed flow first: events=${debugEventsIndex}, snapshot=${debugSnapshotIndex}`
+  )
+  await ctx.close()
+  process.exit(1)
 }
-console.log(bug ? "FAIL: the listing is not capped" : "OK: every listing is capped");
-await ctx.close();
-process.exit(bug ? 1 : 0);
+console.log(bug ? "FAIL: the listing is not capped" : "OK: every listing is capped")
+await ctx.close()
+process.exit(bug ? 1 : 0)

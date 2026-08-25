@@ -1,9 +1,9 @@
-import { use } from "react";
-import type { ReactNode } from "react";
-import type { AppController } from "./state/AppController";
-import { ControllerContext } from "./ControllerContext";
-import type { BootSession } from "./BootSession";
-import { createControllerBoot } from "./ControllerBootMemo";
+import { use } from "react"
+import type { ReactNode } from "react"
+import type { BootSession } from "./BootSession"
+import { createControllerBoot } from "./ControllerBootMemo"
+import { ControllerContext } from "./ControllerContext"
+import type { AppController } from "./state/AppController"
 
 /*
  * The boot module is reached through a dynamic import, not a static one. This
@@ -14,16 +14,16 @@ import { createControllerBoot } from "./ControllerBootMemo";
  * to boot, which is the only place a controller exists.
  */
 export const controllerBootPromise = createControllerBoot((session?: BootSession) =>
-	import("./ControllerBoot.client").then(({ runControllerBoot }) => runControllerBoot(session)),
-);
+  import("./ControllerBoot.client").then(({ runControllerBoot }) => runControllerBoot(session))
+)
 
 export function ControllerProvider({
-	boot,
-	children,
+  boot,
+  children
 }: {
-	readonly boot: Promise<AppController>;
-	readonly children: ReactNode;
+  readonly boot: Promise<AppController>
+  readonly children: ReactNode
 }) {
-	const controller = use(boot);
-	return <ControllerContext value={controller}>{children}</ControllerContext>;
+  const controller = use(boot)
+  return <ControllerContext value={controller}>{children}</ControllerContext>
 }

@@ -1,6 +1,6 @@
-import { Component } from "react";
-import type { ErrorInfo, ReactNode } from "react";
-import { StartupErrorPanel, startupErrorMessage } from "./StartupError";
+import { Component } from "react"
+import type { ErrorInfo, ReactNode } from "react"
+import { startupErrorMessage, StartupErrorPanel } from "./StartupError"
 
 /**
  * Catches a boot failure that reaches React.
@@ -11,23 +11,23 @@ import { StartupErrorPanel, startupErrorMessage } from "./StartupError";
  * two never render competing panels.
  */
 export class StartupErrorBoundary extends Component<
-	{ readonly onError: (error: unknown) => void; readonly children: ReactNode },
-	{ readonly message: string | null }
+  { readonly onError: (error: unknown) => void; readonly children: ReactNode },
+  { readonly message: string | null }
 > {
-	override state: { readonly message: string | null } = { message: null };
+  override state: { readonly message: string | null } = { message: null }
 
-	static getDerivedStateFromError(error: unknown): { readonly message: string } {
-		return { message: startupErrorMessage(error) };
-	}
+  static getDerivedStateFromError(error: unknown): { readonly message: string } {
+    return { message: startupErrorMessage(error) }
+  }
 
-	override componentDidCatch(error: unknown, _info: ErrorInfo): void {
-		this.props.onError(error);
-	}
+  override componentDidCatch(error: unknown, _info: ErrorInfo): void {
+    this.props.onError(error)
+  }
 
-	override render(): ReactNode {
-		const { message } = this.state;
-		return message === null ? this.props.children : <StartupErrorPanel message={message} />;
-	}
+  override render(): ReactNode {
+    const { message } = this.state
+    return message === null ? this.props.children : <StartupErrorPanel message={message} />
+  }
 }
 
 /**
@@ -38,11 +38,11 @@ export class StartupErrorBoundary extends Component<
  * the boundary may still reject.
  */
 export class MountedSignal extends Component<{ readonly onMounted: () => void }> {
-	override componentDidMount(): void {
-		this.props.onMounted();
-	}
+  override componentDidMount(): void {
+    this.props.onMounted()
+  }
 
-	override render(): ReactNode {
-		return null;
-	}
+  override render(): ReactNode {
+    return null
+  }
 }

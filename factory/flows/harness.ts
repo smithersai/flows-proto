@@ -106,24 +106,31 @@ export const runProcess = (spec: SpawnSpec): Effect.Effect<TaskResult> =>
       settled = true
       clearTimeout(timer)
       if (escalation !== undefined) clearTimeout(escalation)
-      const markerMissing =
-        spec.completionMarker !== undefined && !finalTail.includes(spec.completionMarker)
+      const markerMissing = spec.completionMarker !== undefined && !finalTail.includes(spec.completionMarker)
       const validationError = exitCode === 0 && !markerMissing ? spec.validateResult?.() : undefined
-      const verifiedExitCode =
-        exitCode === 0 && markerMissing ? -2 : exitCode === 0 && validationError ? -3 : exitCode
+      const verifiedExitCode = exitCode === 0 && markerMissing ? -2 : exitCode === 0 && validationError ? -3 : exitCode
       if (markerMissing) log.write(`\n# MISSING COMPLETION MARKER: ${spec.completionMarker}\n`)
       if (validationError) log.write(`\n# CONFINEMENT VIOLATION: ${validationError}\n`)
       log.end(() => {
-        fs.writeFileSync(manifestPath, `${JSON.stringify({
-          id: spec.id,
-          startedAt,
-          finishedAt: new Date().toISOString(),
-          command: spec.command,
-          args: spec.args,
-          cwd: spec.cwd,
-          exitCode: verifiedExitCode,
-          logPath
-        }, null, 2)}\n`)
+        fs.writeFileSync(
+          manifestPath,
+          `${
+            JSON.stringify(
+              {
+                id: spec.id,
+                startedAt,
+                finishedAt: new Date().toISOString(),
+                command: spec.command,
+                args: spec.args,
+                cwd: spec.cwd,
+                exitCode: verifiedExitCode,
+                logPath
+              },
+              null,
+              2
+            )
+          }\n`
+        )
         resume(
           Effect.succeed({
             id: spec.id,
@@ -223,7 +230,7 @@ const fileSnapshot = (filename: string): string => {
 export const makeConfinementValidator = (
   cwd: string,
   allowedPaths: ReadonlyArray<string>
-): (() => string | undefined) => {
+): () => string | undefined => {
   const root = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
     encoding: "utf8"
   }).trim()

@@ -1,12 +1,12 @@
-import { StrictMode } from "react";
-import { hydrateRoot } from "react-dom/client";
-import { StartClient } from "@tanstack/react-start/client";
-import { browserStartupWatchdog } from "./StartupWatchdog";
+import { StartClient } from "@tanstack/react-start/client"
+import { StrictMode } from "react"
+import { hydrateRoot } from "react-dom/client"
+import { browserStartupWatchdog } from "./StartupWatchdog"
 
-browserStartupWatchdog();
+browserStartupWatchdog()
 hydrateRoot(
-	document,
-	<StrictMode>
-		<StartClient />
-	</StrictMode>,
-);
+  document,
+  <StrictMode>
+    <StartClient />
+  </StrictMode>
+)

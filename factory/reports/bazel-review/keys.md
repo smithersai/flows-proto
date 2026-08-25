@@ -43,15 +43,15 @@ Our `Key` decodes `Schema.Unknown` with no required namespace field
 (`keys/src/Key.ts:60-62`). Namespace separation is a convention that each consumer
 implements by hand-picking a `kind` string. The current census:
 
-| Package | Site | Tag |
-| --- | --- | --- |
-| plan | `plan/src/StepKey.ts:302, 321, 492` | `content`, `ordinal`, `input-value` |
-| engine | `engine/src/FlowEngine/ActionKey.ts:171-172` | `run`, `cache` |
-| flow | `flow/src/Action/StepIdentity.ts:134, 160` | `declaration`, `invocation` |
-| engine-store | `engine-store/src/StepBoundary.ts:845, 870-871` | `tree-artifact`, `diff-identity` |
-| engine-store | `engine-store/src/internal/ActionPersistence.ts:614-615` | `cache-generation` |
-| flow | `flow/src/Interpreter.ts:155-161` | none (raw payload, then a bare 4-element array) |
-| flow | `flow/src/Flow/ExecutionIds.ts:64-65` | none (raw encoded payload) |
+| Package      | Site                                                     | Tag                                             |
+| ------------ | -------------------------------------------------------- | ----------------------------------------------- |
+| plan         | `plan/src/StepKey.ts:302, 321, 492`                      | `content`, `ordinal`, `input-value`             |
+| engine       | `engine/src/FlowEngine/ActionKey.ts:171-172`             | `run`, `cache`                                  |
+| flow         | `flow/src/Action/StepIdentity.ts:134, 160`               | `declaration`, `invocation`                     |
+| engine-store | `engine-store/src/StepBoundary.ts:845, 870-871`          | `tree-artifact`, `diff-identity`                |
+| engine-store | `engine-store/src/internal/ActionPersistence.ts:614-615` | `cache-generation`                              |
+| flow         | `flow/src/Interpreter.ts:155-161`                        | none (raw payload, then a bare 4-element array) |
+| flow         | `flow/src/Flow/ExecutionIds.ts:64-65`                    | none (raw encoded payload)                      |
 
 Two facts follow from that table:
 

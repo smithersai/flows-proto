@@ -1,10 +1,10 @@
 # Wave 7 — Deploy receipt: the MVP is live at https://canary.smithers.sh
 
-2026-08-09 (UTC) · run `oneshot-wave7-deploy` · branch `oneshot-mskp7qe7-work` (~/mvp), `wave5-billing-bridge` (~/flows/ui, commit `f2894e1`)
+2026-08-09 (UTC) · run `oneshot-wave7-deploy` · branch `oneshot-mskp7qe7-work` (~~/mvp), `wave5-billing-bridge` (~~/flows/ui, commit `f2894e1`)
 
 **Bottom line:** canary.smithers.sh now serves the mvp product Worker (not the flows/ui POC). Identity, reco, billing, and a canary chat are deployed and wired; a real Cerebras turn streamed through the deployed stack and its metered charge landed in deployed billing on the `smithers-canary` account ($500.000000 → $499.999850 across the verification turns). Sign-in awaits will's OAuth click (honest 503 until then); the gateway seam is an intentional honest 501. Nothing unauthorized was touched: flows/code/chat-prod/status workers unchanged, no DNS records changed, no GitHub OAuth app settings changed.
 
-> **Post-deploy correction (2026-08-09, version `d734d048`) — read this first.** The first canary deploy (`339de581`) published `/api/agent/turn` **unauthenticated to the open internet.** The Worker's only guard on that route was the same-origin check, which by design ignores requests that carry no `Origin` header at all — so any `curl -X POST https://canary.smithers.sh/api/agent/turn` on the internet streamed a live Cerebras turn on the deployment's own supplier key and metered it onto the `smithers-canary` $500 balance. Confirmed exploitable against the live deploy, then fixed and redeployed: the turn seam and its cancel now require a validated, **allowlisted** session whenever `IDENTITY_UPSTREAM_URL` is set (anonymous → `401`, signed-in-but-not-allowlisted → `403`, checked *before* any credential is spent). Re-verified live: anonymous POST now answers `401 {"message":"Sign in to run a Smithers turn."}`. The window was ~15 minutes and the exposure is bounded by the $500 grant; no unexplained charges appeared (the balance moved only by this run's own probes). **The §4 numbers below were all measured against the pre-fix version and are left as recorded.**
+> **Post-deploy correction (2026-08-09, version `d734d048`) — read this first.** The first canary deploy (`339de581`) published `/api/agent/turn` **unauthenticated to the open internet.** The Worker's only guard on that route was the same-origin check, which by design ignores requests that carry no `Origin` header at all — so any `curl -X POST https://canary.smithers.sh/api/agent/turn` on the internet streamed a live Cerebras turn on the deployment's own supplier key and metered it onto the `smithers-canary` $500 balance. Confirmed exploitable against the live deploy, then fixed and redeployed: the turn seam and its cancel now require a validated, **allowlisted** session whenever `IDENTITY_UPSTREAM_URL` is set (anonymous → `401`, signed-in-but-not-allowlisted → `403`, checked _before_ any credential is spent). Re-verified live: anonymous POST now answers `401 {"message":"Sign in to run a Smithers turn."}`. The window was ~15 minutes and the exposure is bounded by the $500 grant; no unexplained charges appeared (the balance moved only by this run's own probes). **The §4 numbers below were all measured against the pre-fix version and are left as recorded.**
 
 ## 1. Inventory (names only)
 
@@ -17,19 +17,20 @@
 
 ## 2. Deploys performed (exact commands, all from ~/flows/ui unless noted)
 
-| Worker | Version | Command | URL used by the product |
-|---|---|---|---|
-| `smithers-cloud-identity` | `db1f5649` | `bun x wrangler deploy --config workers/identity/wrangler.jsonc` | `https://smithers-cloud-identity.willcory10.workers.dev` |
-| `smithers-cloud-reco` | `c120d24a` | `bun x wrangler deploy --config workers/recommendations/wrangler.jsonc` | `https://smithers-cloud-reco.willcory10.workers.dev` |
-| `smithers-cloud-billing` | `ee0e8423` | `bun x wrangler deploy --config workers/billing/wrangler.jsonc` (redeploy from wave-5 HEAD; all pre-existing secrets persist by Cloudflare semantics) | `https://billing.smithers.sh` |
-| `smithers-cloud-chat-canary` | `4b64a7ca` | `bun x wrangler queues create smithers-metering-canary{,-dlq}` then `bun x wrangler deploy --config workers/chat/wrangler.canary.jsonc` (new config, same source as prod chat) | `https://smithers-cloud-chat-canary.willcory10.workers.dev/chat` |
-| `smithers-mvp-web` (~/mvp) | `339de581`, then `d734d048` (turn-seam session gate) | `bun run build && bun x wrangler deploy` (~/mvp; `TURN_CANCELS` DO migration v1 applied on first deploy) | **`https://canary.smithers.sh`** |
+| Worker                       | Version                                              | Command                                                                                                                                                                        | URL used by the product                                          |
+| ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `smithers-cloud-identity`    | `db1f5649`                                           | `bun x wrangler deploy --config workers/identity/wrangler.jsonc`                                                                                                               | `https://smithers-cloud-identity.willcory10.workers.dev`         |
+| `smithers-cloud-reco`        | `c120d24a`                                           | `bun x wrangler deploy --config workers/recommendations/wrangler.jsonc`                                                                                                        | `https://smithers-cloud-reco.willcory10.workers.dev`             |
+| `smithers-cloud-billing`     | `ee0e8423`                                           | `bun x wrangler deploy --config workers/billing/wrangler.jsonc` (redeploy from wave-5 HEAD; all pre-existing secrets persist by Cloudflare semantics)                          | `https://billing.smithers.sh`                                    |
+| `smithers-cloud-chat-canary` | `4b64a7ca`                                           | `bun x wrangler queues create smithers-metering-canary{,-dlq}` then `bun x wrangler deploy --config workers/chat/wrangler.canary.jsonc` (new config, same source as prod chat) | `https://smithers-cloud-chat-canary.willcory10.workers.dev/chat` |
+| `smithers-mvp-web` (~/mvp)   | `339de581`, then `d734d048` (turn-seam session gate) | `bun run build && bun x wrangler deploy` (~/mvp; `TURN_CANCELS` DO migration v1 applied on first deploy)                                                                       | **`https://canary.smithers.sh`**                                 |
 
 Why a canary chat instead of prod chat: completing metering on prod chat requires setting its `BILLING_SERVICE_TOKEN` — prod chat config is outside the authorization boundary. The canary chat is the same source with its own queue pair (sharing `smithers-metering` would let prod chat's consumer eat canary usage into its DLQ).
 
 identity/reco are served over workers.dev because their smithers.sh CNAMEs still point at dead Vercel — changing that DNS is **not** in this run's authorization (will-list below). Their zone routes (`identity.smithers.sh/*`, `reco.smithers.sh/*`) are registered and activate the moment the DNS is proxied. Browser flows are unaffected: the product Worker same-origin-proxies `/api/auth/*`, `/api/reco/*` under canary.smithers.sh.
 
 **Secrets installed (NAMES only; values generated fresh with `openssl rand` except as noted):**
+
 - identity: `SESSION_SECRET`, `IDENTITY_SERVICE_TOKEN`, `ADMIN_SERVICE_TOKEN` (fresh). `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` deliberately NOT installed (§5).
 - reco: `IDENTITY_SERVICE_TOKEN` (same value as identity's), `RECO_SERVICE_TOKEN`, `ADMIN_SERVICE_TOKEN` (fresh).
 - billing: `METERING_SERVICE_TOKEN` (fresh), `ADMIN_SERVICE_TOKEN` (fresh), `PRODUCT_SERVICE_TOKEN` (fresh). `STRIPE_*` untouched (never installed — Stripe routes answer honest 503s; alpha is subsidized).
@@ -61,12 +62,12 @@ Both runs: signed-out session/scopes honesty, OAuth start 503 `oauth_not_configu
 
 **Live-fire metering proof (the money paragraph):** reading `https://billing.smithers.sh/api/billing/balance` as the `smithers-canary` bearer around turns sent through `https://canary.smithers.sh/api/agent/turn`:
 
-| moment | totalUsd | lifetimeChargedUsd | chargeCount |
-|---|---|---|---|
-| after grant | 500 | 0 | 0 |
-| after first direct canary-chat turn | 499.999952 | 0.000048 | 2 |
-| after the seam-probe turn via canary.smithers.sh | 499.999907 | 0.000093 | 4 |
-| after the headed-browser turn | 499.99985 | 0.00015 | 6 |
+| moment                                           | totalUsd   | lifetimeChargedUsd | chargeCount |
+| ------------------------------------------------ | ---------- | ------------------ | ----------- |
+| after grant                                      | 500        | 0                  | 0           |
+| after first direct canary-chat turn              | 499.999952 | 0.000048           | 2           |
+| after the seam-probe turn via canary.smithers.sh | 499.999907 | 0.000093           | 4           |
+| after the headed-browser turn                    | 499.99985  | 0.00015            | 6           |
 
 Every turn produced exactly its at-cost charge lines (input+output, rate card `2026-08-07.1`) via the durable queue → deployed billing. Sealed transcript example (seam probe): 4 NDJSON frames `delta(reasoning)… delta(text) "ok" … done`.
 

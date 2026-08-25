@@ -91,10 +91,10 @@ The probe reads `GET <identity>/api/identity/allowlist/<login>`, expecting
 what the canary identity worker answers, unauthenticated, was checked directly
 on 2026-08-18:
 
-| Request | Answer |
-| --- | --- |
+| Request                               | Answer                                 |
+| ------------------------------------- | -------------------------------------- |
 | `GET /api/identity/allowlist/octocat` | `401 {"error":"Unauthorized service"}` |
-| `GET /api/identity/admin/audit` | `404 {"error":"Not found"}` |
+| `GET /api/identity/admin/audit`       | `404 {"error":"Not found"}`            |
 
 The worker answers 401 for a route it implements but gates, and 404 for one it
 does not. So the per-login read-back exists and gates on a **service** token —

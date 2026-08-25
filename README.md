@@ -91,30 +91,30 @@ There are nine, in [`examples/src`](examples/src), numbered in reading order. `p
 
 ## Packages
 
-| Package | Role |
-| --- | --- |
-| `@smthrs/flows` | Umbrella barrel re-exporting the engine packages below as namespaces; the `platform-*` bundles are deliberately excluded |
-| `@smthrs/canonical` | RFC 8785 canonical JSON as an Effect Schema |
-| `@smthrs/platform-node` | The Node Host bundle: Effect's Node platform services, the Undici transport, and the Node jj adapter |
-| `@smthrs/platform-bun` | The same bundle for Bun, over `@effect/platform-bun` |
-| `@smthrs/jj` | Jujutsu snapshot, restore, diff, and workspace operations as a host service |
-| `@smthrs/sandbox` | Remote `ChildProcessSpawner` implementation and the sandbox liveness probe |
-| `@smthrs/platform-browser` | Browser `FileSystem` and `ChildProcessSpawner` over ZenFS and just-bash, plus the `BrowserHost` bundle |
-| `@smthrs/journal` | Logical WAL, migrations, projections, redaction, the `OwnerId` fence |
-| `@smthrs/run-store` | Run and attempt stores, ownership arbitration, migrations |
-| `@smthrs/step-cache` | Sealed step result cache and its migration |
-| `@smthrs/artifacts` | Content-addressed artifact store, local and remote |
-| `@smthrs/database` | Driver-neutral SQL contract with transactional write retry |
-| `@smthrs/capability` | Capability vocabulary and typed permission failures, shared by the kernel and `@smthrs/jj` |
-| `@smthrs/kernel` | The closed host service list, capability sets, grants, and permission-decorated host services |
-| `@smthrs/crypto` | Injected cryptographic schema transformations |
-| `@smthrs/keys` | Canonical flow keys |
-| `@smthrs/plan` | The persisted plan: a keyed action graph, its append-only store, and its diff |
-| `@smthrs/flow` | Flow definitions, actions, durable primitives, retry policy, and the `FlowRuntime` port |
-| `@smthrs/engine` | The runtime that executes flows, plus the RPC and HTTP façades |
-| `@smthrs/engine-store` | The durable engine: claims, fences, and persists runs over the journal |
-| `@smthrs/sync` | Read-only journal replication for followers |
-| `@smthrs/time-travel` | Replay, fork, rewind, compensation, and recovery protocols |
+| Package                    | Role                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `@smthrs/flows`            | Umbrella barrel re-exporting the engine packages below as namespaces; the `platform-*` bundles are deliberately excluded |
+| `@smthrs/canonical`        | RFC 8785 canonical JSON as an Effect Schema                                                                              |
+| `@smthrs/platform-node`    | The Node Host bundle: Effect's Node platform services, the Undici transport, and the Node jj adapter                     |
+| `@smthrs/platform-bun`     | The same bundle for Bun, over `@effect/platform-bun`                                                                     |
+| `@smthrs/jj`               | Jujutsu snapshot, restore, diff, and workspace operations as a host service                                              |
+| `@smthrs/sandbox`          | Remote `ChildProcessSpawner` implementation and the sandbox liveness probe                                               |
+| `@smthrs/platform-browser` | Browser `FileSystem` and `ChildProcessSpawner` over ZenFS and just-bash, plus the `BrowserHost` bundle                   |
+| `@smthrs/journal`          | Logical WAL, migrations, projections, redaction, the `OwnerId` fence                                                     |
+| `@smthrs/run-store`        | Run and attempt stores, ownership arbitration, migrations                                                                |
+| `@smthrs/step-cache`       | Sealed step result cache and its migration                                                                               |
+| `@smthrs/artifacts`        | Content-addressed artifact store, local and remote                                                                       |
+| `@smthrs/database`         | Driver-neutral SQL contract with transactional write retry                                                               |
+| `@smthrs/capability`       | Capability vocabulary and typed permission failures, shared by the kernel and `@smthrs/jj`                               |
+| `@smthrs/kernel`           | The closed host service list, capability sets, grants, and permission-decorated host services                            |
+| `@smthrs/crypto`           | Injected cryptographic schema transformations                                                                            |
+| `@smthrs/keys`             | Canonical flow keys                                                                                                      |
+| `@smthrs/plan`             | The persisted plan: a keyed action graph, its append-only store, and its diff                                            |
+| `@smthrs/flow`             | Flow definitions, actions, durable primitives, retry policy, and the `FlowRuntime` port                                  |
+| `@smthrs/engine`           | The runtime that executes flows, plus the RPC and HTTP façades                                                           |
+| `@smthrs/engine-store`     | The durable engine: claims, fences, and persists runs over the journal                                                   |
+| `@smthrs/sync`             | Read-only journal replication for followers                                                                              |
+| `@smthrs/time-travel`      | Replay, fork, rewind, compensation, and recovery protocols                                                               |
 
 ## Documentation
 

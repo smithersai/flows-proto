@@ -16,11 +16,13 @@ Error: [A-8] no card carries proposes/why-now/what-happens with accept/edit/dism
 Expected: [32mtrue[39m
 Received: [31mfalse[39m
 ```
+
 Evidence:
+
 - screenshot: /Users/williamcory/flows/ui/test-results/section-a-first-run--A-fir-1dc51-happens-accept-edit-dismiss/test-failed-1.png
 - error-context: /Users/williamcory/flows/ui/test-results/section-a-first-run--A-fir-1dc51-happens-accept-edit-dismiss/error-context.md
 - trace: /Users/williamcory/flows/ui/test-results/section-a-first-run--A-fir-1dc51-happens-accept-edit-dismiss/trace.zip
-Duration: 4.1s
+  Duration: 4.1s
 
 ### A-9 — Dismiss is one key and the same recommendation does not return unchanged
 
@@ -32,11 +34,13 @@ Error: [A-9] Escape did not dismiss the recommendation card in one keypress
 Locator:  locator('.smithers-card, [data-card]').first()
 Expected: hidden
 ```
+
 Evidence:
+
 - screenshot: /Users/williamcory/flows/ui/test-results/section-a-first-run--A-fir-75174-n-does-not-return-unchanged/test-failed-1.png
 - error-context: /Users/williamcory/flows/ui/test-results/section-a-first-run--A-fir-75174-n-does-not-return-unchanged/error-context.md
 - trace: /Users/williamcory/flows/ui/test-results/section-a-first-run--A-fir-75174-n-does-not-return-unchanged/trace.zip
-Duration: 9.1s
+  Duration: 9.1s
 
 ## Not testable with the stub provider
 
@@ -44,7 +48,7 @@ None.
 
 ## Not testable yet
 
-- **D-4** — At $0, interactive chat keeps working; only non-complimentary work pauses  
+- **D-4** — At $0, interactive chat keeps working; only non-complimentary work pauses\
   needs SMITHERS_BILLING_BASE_URL (explicit env; live targets never inherit the dev stack) and SMITHERS_MVP_ZERO_BEARER — a Smithers Cloud bearer whose billing account holds $0
 
 ## Passes
@@ -78,4 +82,3 @@ None.
 - **F-4** — Impossible ask (claim a push): honest "can't yet + next step", never fake success (2.9s)
 - **F-5** — Impossible ask (claim a PR): honest "can't yet + next step", never fake success (2.8s)
 - **F-6** — Blocked-on-approval state agrees across every surface (no RUNNING-vs-Blocked contradiction) (42.9s)
-

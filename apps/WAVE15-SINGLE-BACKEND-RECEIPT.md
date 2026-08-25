@@ -62,13 +62,13 @@ alpha's rate card.
 Signed in as `codeplanesmithers` (allowlisted, admin) on
 <https://canary.smithers.sh>, sent "Reply with exactly: PONG-chain":
 
-| what | observed |
-|---|---|
-| the turn | streamed and completed; `PONG-chain` rendered in the transcript |
-| transport | `["POST /api/model/stream"]` — and **zero** calls to `/api/agent/turn` |
-| errors | no response >= 400, no console error |
+| what                  | observed                                                               |
+| --------------------- | ---------------------------------------------------------------------- |
+| the turn              | streamed and completed; `PONG-chain` rendered in the transcript        |
+| transport             | `["POST /api/model/stream"]` — and **zero** calls to `/api/agent/turn` |
+| errors                | no response >= 400, no console error                                   |
 | billing `chargeCount` | 1981 → **1983** (input + output token lines, rate card `2026-08-09.1`) |
-| billing `totalUsd` | 543 → 543 |
+| billing `totalUsd`    | 543 → 543                                                              |
 
 The balance does not move **by design**: interactive chat is complimentary
 ("metered at true supplier cost, on us" — the account's own
@@ -105,13 +105,13 @@ Screenshot: `/tmp/canary-chain-live.png`. Re-runnable:
   flow script — the model cannot push one — so this is a real change in what the
   product does, not only in what the fixtures say.
 
-  | suite | file | what it pins |
-  |---|---|---|
-  | E4.5-E4.9 | `cards-copy.e2e.ts` | settled/plan/blocked card copy |
-  | E4.1/E4.10/E4.11 | `cards-approvals.e2e.ts` | approval cards on a streamed turn |
-  | E13-E14 | `a11y-resilience.e2e.ts` | keyboard journey, dropped stream, retry |
-  | E2.4-E2.9 | `reco-actions.e2e.ts` | the agent's tool call opening the chooser |
-  | E3.9 | `turn-failure.e2e.ts` | retry re-POSTs a turn |
+  | suite            | file                     | what it pins                              |
+  | ---------------- | ------------------------ | ----------------------------------------- |
+  | E4.5-E4.9        | `cards-copy.e2e.ts`      | settled/plan/blocked card copy            |
+  | E4.1/E4.10/E4.11 | `cards-approvals.e2e.ts` | approval cards on a streamed turn         |
+  | E13-E14          | `a11y-resilience.e2e.ts` | keyboard journey, dropped stream, retry   |
+  | E2.4-E2.9        | `reco-actions.e2e.ts`    | the agent's tool call opening the chooser |
+  | E3.9             | `turn-failure.e2e.ts`    | retry re-POSTs a turn                     |
 
   Porting them means re-deciding what each fixture means on the chain's render
   path, which is a piece of work in its own right.

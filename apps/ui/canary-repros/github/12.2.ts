@@ -15,39 +15,41 @@
  *   cp -R ~/.multi-e2e-profile /tmp/canary-github-profile
  *   bun apps/ui/canary-repros/github/12.2.ts
  */
-import { BASE, ensureSignedIn, open, report } from "./_lib";
+import { BASE, ensureSignedIn, open, report } from "./_lib"
 
-const LARGE = process.env.LARGE_REPO ?? "facebook/react";
+const LARGE = process.env.LARGE_REPO ?? "facebook/react"
 /* The import worker is the slow part; give it four minutes before calling it. */
-const BUDGET_MS = Number(process.env.BUDGET_MS ?? 240_000);
+const BUDGET_MS = Number(process.env.BUDGET_MS ?? 240_000)
 
-const { context, page } = await open();
-await ensureSignedIn(page);
+const { context, page } = await open()
+await ensureSignedIn(page)
 
-const composer = page.locator("textarea").last();
-await composer.click();
-await composer.fill(`/repos.import ${LARGE}`);
-await page.waitForTimeout(400);
-await page.keyboard.press("Enter");
+const composer = page.locator("textarea").last()
+await composer.click()
+await composer.fill(`/repos.import ${LARGE}`)
+await page.waitForTimeout(400)
+await page.keyboard.press("Enter")
 
-const card = page.locator('[data-kind="repo-import"]').last();
-let text = "";
-const started = Date.now();
+const card = page.locator("[data-kind=\"repo-import\"]").last()
+let text = ""
+const started = Date.now()
 while (Date.now() - started < BUDGET_MS) {
-	await page.waitForTimeout(10_000);
-	text = await card.innerText().catch(() => "");
-	console.log(`t+${Math.round((Date.now() - started) / 1000)}s: ${text.replace(/\n+/g, " | ").slice(0, 160)}`);
-	if (/\bDONE\b|\bFAILED\b/.test(text)) break;
+  await page.waitForTimeout(10_000)
+  text = await card.innerText().catch(() => "")
+  console.log(`t+${Math.round((Date.now() - started) / 1000)}s: ${text.replace(/\n+/g, " | ").slice(0, 160)}`)
+  if (/\bDONE\b|\bFAILED\b/.test(text)) break
 }
 
-await page.screenshot({ path: "/tmp/canary-github-12.2.png", fullPage: true });
-console.log(`origin: ${BASE}; screenshot: /tmp/canary-github-12.2.png`);
-await context.close();
+await page.screenshot({ path: "/tmp/canary-github-12.2.png", fullPage: true })
+console.log(`origin: ${BASE}; screenshot: /tmp/canary-github-12.2.png`)
+await context.close()
 
 report(
-	/\bDONE\b|\bFAILED\b/.test(text)
-		? []
-		: [
-				`the ${LARGE} import card never reached a terminal state within ${BUDGET_MS / 1000}s — last card text: ${text.replace(/\n+/g, " | ").slice(0, 200)}`,
-			],
-);
+  /\bDONE\b|\bFAILED\b/.test(text)
+    ? []
+    : [
+      `the ${LARGE} import card never reached a terminal state within ${BUDGET_MS / 1000}s — last card text: ${
+        text.replace(/\n+/g, " | ").slice(0, 200)
+      }`
+    ]
+)

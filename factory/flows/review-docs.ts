@@ -157,10 +157,10 @@ const buildSidebar = (): number => {
   const pkgsDir = path.join(PAGES, "flows/packages")
   const pkgDirs = fs.existsSync(pkgsDir)
     ? fs
-        .readdirSync(pkgsDir, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort()
+      .readdirSync(pkgsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
     : []
   const pkgItems: Array<SidebarItem> = pkgDirs
     .filter((pkg) => routeExists(`/flows/packages/${pkg}`))
@@ -231,8 +231,8 @@ const promptFor = (pkg: string): string =>
     "Ensure, fixing or writing whatever falls short:",
     "index.md holds the package's role, entry points, and Depends on / Used by lists matching the manifest, each name linking to /flows/packages/NAME.",
     "api.md enumerates the COMPLETE public API: every export of every entry point in the exports map, following re-export chains, in tables (Export | Kind | Notes) with GitHub source links (https://github.com/smithersai/flows/blob/main/packages/" +
-      pkg +
-      "/...). Delete rows for exports that no longer exist; add rows for new ones.",
+    pkg +
+    "/...). Delete rows for exports that no longer exist; add rows for new ones.",
     "internals.md covers the core data structures public AND private, their invariants, and a walkthrough of the main code path; correct anything the source contradicts.",
     "tests.md catalogs every test file with what it proves and keeps an honest Coverage gaps section.",
     "Rules: plain .md, one H1, every type expression or generic inside backticks (a bare angle bracket kills the MDX build), docs-to-docs links are root-absolute routes, only link packages present in the manifest.",
@@ -334,15 +334,16 @@ const lines = [
   "# Review docs tree",
   "",
   `Started ${startedAt}. ${Object.keys(manifest).length} packages in the manifest, ` +
-    `${skipAgents ? "agent wave skipped" : `${results.length} maintenance seats (wave size ${WAVE_SIZE}, model ${MODEL})`}, ` +
-    `${packagesListed} package entries in the sidebar, ` +
-    `build gate ${build === null ? "skipped" : `exit ${build.exitCode}`}.`,
+  `${
+    skipAgents ? "agent wave skipped" : `${results.length} maintenance seats (wave size ${WAVE_SIZE}, model ${MODEL})`
+  }, ` +
+  `${packagesListed} package entries in the sidebar, ` +
+  `build gate ${build === null ? "skipped" : `exit ${build.exitCode}`}.`,
   "",
   "| Package | Exit | Log |",
   "| --- | --- | --- |",
   ...results.map(
-    (result) =>
-      `| ${result.id} | ${result.exitCode} | ${path.relative(FLOWS_ROOT, result.logPath)} |`
+    (result) => `| ${result.id} | ${result.exitCode} | ${path.relative(FLOWS_ROOT, result.logPath)} |`
   ),
   "",
   `Review the tree: \`cd ${path.relative(REPO_ROOT, WEBSITE)} && pnpm run dev\` (from the outer repo).`,
@@ -354,7 +355,9 @@ const gateFailed = build !== null && build.exitCode !== 0
 if (failedAgents.length > 0 || gateFailed) {
   process.exitCode = 1
   console.error(
-    `review-docs failed: ${failedAgents.length} agent seat(s) and ${gateFailed ? 1 : 0} build gate(s) failed. No current report was published.`
+    `review-docs failed: ${failedAgents.length} agent seat(s) and ${
+      gateFailed ? 1 : 0
+    } build gate(s) failed. No current report was published.`
   )
 } else {
   fs.writeFileSync(reportPath, lines.join("\n"))

@@ -52,8 +52,7 @@ const writeReport = (done: number) => {
     "| Package | Exit | All files (Stmts/Branch/Funcs/Lines) | Log |",
     "| --- | --- | --- | --- |",
     ...results.map(
-      (r) =>
-        `| ${r.id} | ${r.exitCode} | ${coverageLine(r.logPath)} | ${path.relative(FLOWS_ROOT, r.logPath)} |`
+      (r) => `| ${r.id} | ${r.exitCode} | ${coverageLine(r.logPath)} | ${path.relative(FLOWS_ROOT, r.logPath)} |`
     ),
     ""
   ]

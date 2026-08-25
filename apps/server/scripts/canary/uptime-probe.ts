@@ -29,80 +29,81 @@
  * uptime-checks.ts, which is covered by uptime-checks.test.ts. The fetch is
  * the one line in this lane that no test can reach.
  */
-import { writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs"
 import {
-	type Check,
-	REQUEST_TIMEOUT_MS,
-	resolveProbeOrigin,
-	runUptimeProbe,
-	SAMPLE_GAP_MS,
-	SAMPLES_PER_ENDPOINT,
-	tallyChecks,
-} from "./uptime-checks.ts";
+  type Check,
+  REQUEST_TIMEOUT_MS,
+  resolveProbeOrigin,
+  runUptimeProbe,
+  SAMPLE_GAP_MS,
+  SAMPLES_PER_ENDPOINT,
+  tallyChecks
+} from "./uptime-checks.ts"
 
-const args = process.argv.slice(2);
+const args = process.argv.slice(2)
 const flagValue = (name: string): string | undefined => {
-	const index = args.indexOf(name);
-	return index === -1 ? undefined : args[index + 1];
-};
+  const index = args.indexOf(name)
+  return index === -1 ? undefined : args[index + 1]
+}
 const positive = (name: string, fallback: number): number => {
-	const raw = flagValue(name);
-	if (raw === undefined) return fallback;
-	const parsed = Number(raw);
-	if (!Number.isFinite(parsed) || parsed <= 0) {
-		console.error(`FAIL: ${name} must be a positive number, got ${raw}`);
-		process.exit(2);
-	}
-	return parsed;
-};
+  const raw = flagValue(name)
+  if (raw === undefined) return fallback
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.error(`FAIL: ${name} must be a positive number, got ${raw}`)
+    process.exit(2)
+  }
+  return parsed
+}
 
 /*
  * Exit 2, not 1. Exit 1 means "the canary failed", which a caller may read as
  * a statement about the deployment. A misconfigured target is a statement
  * about this invocation, and it must never be mistaken for a verdict.
  */
-const resolved = resolveProbeOrigin(args, { CANARY_URL: process.env.CANARY_URL });
+const resolved = resolveProbeOrigin(args, { CANARY_URL: process.env.CANARY_URL })
 if ("error" in resolved) {
-	console.error(`FAIL: ${resolved.error}`);
-	process.exit(2);
+  console.error(`FAIL: ${resolved.error}`)
+  process.exit(2)
 }
-const origin = resolved.origin;
-const cookie = args.includes("--no-turn") ? undefined : process.env.CANARY_SESSION_COOKIE;
+const origin = resolved.origin
+const cookie = args.includes("--no-turn") ? undefined : process.env.CANARY_SESSION_COOKIE
 
 const report = await runUptimeProbe(
-	{
-		fetch: (url, init) => fetch(url, init),
-		now: () => Date.now(),
-		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-	},
-	{
-		origin,
-		samplesPerEndpoint: positive("--samples", SAMPLES_PER_ENDPOINT),
-		gapMs: positive("--gap-ms", SAMPLE_GAP_MS),
-		requestTimeoutMs: positive("--timeout-ms", REQUEST_TIMEOUT_MS),
-		sessionCookie: cookie === "" ? undefined : cookie,
-		runId: `canary-uptime-probe-${Date.now()}`,
-	},
-);
+  {
+    fetch: (url, init) => fetch(url, init),
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  },
+  {
+    origin,
+    samplesPerEndpoint: positive("--samples", SAMPLES_PER_ENDPOINT),
+    gapMs: positive("--gap-ms", SAMPLE_GAP_MS),
+    requestTimeoutMs: positive("--timeout-ms", REQUEST_TIMEOUT_MS),
+    sessionCookie: cookie === "" ? undefined : cookie,
+    runId: `canary-uptime-probe-${Date.now()}`
+  }
+)
 
 // The same three prefixes apps/ui/scripts/canary-seam-probe.ts prints, so a
 // human reading two canary logs side by side reads one format.
 const print = (check: Check): void => {
-	const prefix = check.status === "pass" ? "ok" : check.status === "fail" ? "FAIL" : "skip";
-	console.log(`${prefix}: ${check.label} — ${check.detail}`);
-};
-for (const check of report.checks) print(check);
+  const prefix = check.status === "pass" ? "ok" : check.status === "fail" ? "FAIL" : "skip"
+  console.log(`${prefix}: ${check.label} — ${check.detail}`)
+}
+for (const check of report.checks) print(check)
 
-const jsonPath = flagValue("--json");
+const jsonPath = flagValue("--json")
 if (jsonPath !== undefined) {
-	writeFileSync(jsonPath, `${JSON.stringify(report, null, "\t")}\n`);
-	console.log(`report: ${jsonPath}`);
+  writeFileSync(jsonPath, `${JSON.stringify(report, null, "\t")}\n`)
+  console.log(`report: ${jsonPath}`)
 }
 
-const tally = tallyChecks(report.checks);
-const summary = `${tally.passed} passed, ${tally.failed} failed, ${tally.skipped} not measured; ${report.meteredTurns} metered turn(s) spent`;
+const tally = tallyChecks(report.checks)
+const summary =
+  `${tally.passed} passed, ${tally.failed} failed, ${tally.skipped} not measured; ${report.meteredTurns} metered turn(s) spent`
 if (report.failed) {
-	console.log(`\nCANARY UPTIME PROBE FAILED against ${origin}: ${summary}.`);
-	process.exit(1);
+  console.log(`\nCANARY UPTIME PROBE FAILED against ${origin}: ${summary}.`)
+  process.exit(1)
 }
-console.log(`\nCANARY UPTIME PROBE PASS against ${origin}: ${summary}.`);
+console.log(`\nCANARY UPTIME PROBE PASS against ${origin}: ${summary}.`)

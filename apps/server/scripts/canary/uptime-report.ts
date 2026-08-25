@@ -18,56 +18,56 @@
  * into a failing report, so a probe that crashed before writing anything still
  * opens an issue rather than passing silently.
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { ALERT_TITLE, alertAction, coerceReport, renderAlertBody } from "./uptime-checks.ts";
+import { readFileSync, writeFileSync } from "node:fs"
+import { ALERT_TITLE, alertAction, coerceReport, renderAlertBody } from "./uptime-checks.ts"
 
-const args = process.argv.slice(2);
+const args = process.argv.slice(2)
 const flagValue = (name: string): string | undefined => {
-	const index = args.indexOf(name);
-	return index === -1 ? undefined : args[index + 1];
-};
+  const index = args.indexOf(name)
+  return index === -1 ? undefined : args[index + 1]
+}
 
-const reportPath = flagValue("--report");
+const reportPath = flagValue("--report")
 if (reportPath === undefined) {
-	console.error("uptime-report.ts: --report <path> is required");
-	process.exit(2);
+  console.error("uptime-report.ts: --report <path> is required")
+  process.exit(2)
 }
 
 const parsed = ((): unknown => {
-	try {
-		return JSON.parse(readFileSync(reportPath, "utf8"));
-	} catch {
-		return undefined;
-	}
-})();
-const report = coerceReport(parsed, reportPath);
+  try {
+    return JSON.parse(readFileSync(reportPath, "utf8"))
+  } catch {
+    return undefined
+  }
+})()
+const report = coerceReport(parsed, reportPath)
 
-const rawIssue = flagValue("--open-issue");
-const openIssue = rawIssue === undefined || rawIssue.trim() === "" ? undefined : Number(rawIssue);
+const rawIssue = flagValue("--open-issue")
+const openIssue = rawIssue === undefined || rawIssue.trim() === "" ? undefined : Number(rawIssue)
 if (openIssue !== undefined && !Number.isInteger(openIssue)) {
-	console.error(`uptime-report.ts: --open-issue must be an integer, got ${rawIssue}`);
-	process.exit(2);
+  console.error(`uptime-report.ts: --open-issue must be an integer, got ${rawIssue}`)
+  process.exit(2)
 }
 
-const runUrl = flagValue("--run-url") ?? "(no run url given)";
-const action = alertAction({ report, openIssue, runUrl });
+const runUrl = flagValue("--run-url") ?? "(no run url given)"
+const action = alertAction({ report, openIssue, runUrl })
 
-const bodyOut = flagValue("--body-out");
+const bodyOut = flagValue("--body-out")
 if (bodyOut !== undefined) {
-	writeFileSync(bodyOut, `${action.kind === "none" ? renderAlertBody(report, runUrl) : action.body}\n`);
+  writeFileSync(bodyOut, `${action.kind === "none" ? renderAlertBody(report, runUrl) : action.body}\n`)
 }
 
-const outputPath = flagValue("--github-output") ?? process.env.GITHUB_OUTPUT;
+const outputPath = flagValue("--github-output") ?? process.env.GITHUB_OUTPUT
 if (outputPath !== undefined && outputPath !== "") {
-	const issue = action.kind === "comment" || action.kind === "close" ? String(action.issue) : "";
-	writeFileSync(outputPath, `action=${action.kind}\nissue=${issue}\ntitle=${ALERT_TITLE}\n`, { flag: "a" });
+  const issue = action.kind === "comment" || action.kind === "close" ? String(action.issue) : ""
+  writeFileSync(outputPath, `action=${action.kind}\nissue=${issue}\ntitle=${ALERT_TITLE}\n`, { flag: "a" })
 }
 
 console.log(
-	action.kind === "none"
-		? `alert: none — ${action.reason}`
-		: `alert: ${action.kind}${action.kind === "create" ? "" : ` on issue #${String(action.issue)}`}`,
-);
+  action.kind === "none"
+    ? `alert: none — ${action.reason}`
+    : `alert: ${action.kind}${action.kind === "create" ? "" : ` on issue #${String(action.issue)}`}`
+)
 
 /*
  * The exit code carries the canary's verdict, and this step is the last one in
@@ -75,4 +75,4 @@ console.log(
  * goes red, which is the whole point of deciding the alert here rather than
  * letting the probe's own exit code fail the job first.
  */
-process.exit(report.failed ? 1 : 0);
+process.exit(report.failed ? 1 : 0)

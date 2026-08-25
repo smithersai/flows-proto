@@ -63,8 +63,8 @@ because that run predates the two harness fixes made at the source afterwards (~
 `96056bf`, `30630e3`): the refusal bar was blind to the model's typographic apostrophe
 ("can’t" is U+2019, not "can't"), and the next-step bar didn't read "I/we can <real
 alternative>" as naming a step. **No post-fix live re-run was captured**, so §F-1..§F-5
-are corrected from "pass" to *answer text honest on F-1/F-2/F-3; harness verdict stale;
-F-4/F-5 carry a real remaining defect* — see below.
+are corrected from "pass" to _answer text honest on F-1/F-2/F-3; harness verdict stale;
+F-4/F-5 carry a real remaining defect_ — see below.
 
 ### The §F defect the live run actually exposes (F-4, F-5)
 
@@ -79,8 +79,8 @@ the brief forbids:
 
 Both open with a correct "I can't" and then hand the impossible act to a run. The
 abstract prompt rule ("a run can only call the same catalog") did not hold, and the old
-approval sentence actively taught the laundering — it read as *approval unlocks the
-outbound act*, so the model used the human's approval as the mechanism granting the
+approval sentence actively taught the laundering — it read as _approval unlocks the
+outbound act_, so the model used the human's approval as the mechanism granting the
 capability. Fixed in the generated section (`Instructions.ts`), which now:
 
 - names the shape verbatim, in the "we can" form the model actually used, not only "I can";
@@ -122,7 +122,7 @@ was rewritten to what the artifacts actually show.
 1. **The §F detector inverted the rule it exists to enforce.**
    `offersImpossibleCapability` matched only the ASCII apostrophe, so the deployed
    model's "I can’t post to Slack" (U+2019) parsed as "I can" beside "Slack" — an
-   *offer*. In a launch turn the client would therefore discard the one honest answer
+   _offer_. In a launch turn the client would therefore discard the one honest answer
    §F asks for and substitute the deterministic run line. This is the identical
    blindness that cost the checklist harness two false failures the same morning, in
    the opposite direction. Prose is now normalized before either pattern sees it.

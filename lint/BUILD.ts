@@ -69,7 +69,11 @@ export const durableIdentityGuard = Smithers.LlmLint({
 export const docsReferenceSync = Smithers.LlmLint({
   changes,
   include: [Smithers.glob("//packages/*/src/**")],
-  context: [Smithers.glob("//docs/reference/*.md"), Smithers.glob("//docs/concepts/**/*.md"), Smithers.glob("//docs/guides/**/*.md")],
+  context: [
+    Smithers.glob("//docs/reference/*.md"),
+    Smithers.glob("//docs/concepts/**/*.md"),
+    Smithers.glob("//docs/guides/**/*.md")
+  ],
   deps: [],
   prompt,
   rubric: [

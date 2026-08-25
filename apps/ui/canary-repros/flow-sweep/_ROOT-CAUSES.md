@@ -10,7 +10,7 @@ rows). All 88 Appendix A flows were invoked by name on the target origin.
 composer-submitted flow as
 
 ```ts
-void commands.run(parsed.name, parsed.args);
+void commands.run(parsed.name, parsed.args)
 ```
 
 and throws the `CommandOutcome` away. The button path in the same file
@@ -22,10 +22,10 @@ honest reason.
 the slash menu is open, and the menu matches a BARE name only. So the same flow,
 with the same seam and the same refusal, behaves two different ways:
 
-| typed | rendered |
-| --- | --- |
-| `/issues.view` | toast `/issues.view didn't run` + `issues.view needs an issue number` |
-| `/issues.view 999999 codeplanesmithers/canary-sandbox` | nothing at all |
+| typed                                                  | rendered                                                              |
+| ------------------------------------------------------ | --------------------------------------------------------------------- |
+| `/issues.view`                                         | toast `/issues.view didn't run` + `issues.view needs an issue number` |
+| `/issues.view 999999 codeplanesmithers/canary-sandbox` | nothing at all                                                        |
 
 Success paths that dispatch their own card or transcript message are unaffected
 (`/admin.allowlist.add <login>` answers fine). It is specifically the flow's

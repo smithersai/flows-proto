@@ -8,8 +8,8 @@
  *
  *   bun scripts/launch-gateway-double.ts
  */
-import { createStubGateway } from "./stub-backends";
+import { createStubGateway } from "./stub-backends"
 
-const gateway = createStubGateway();
-console.log(`gateway TEST DOUBLE on http://127.0.0.1:${gateway.port}`);
-console.log("routes: POST /v1/rpc/submitApproval (echo), GET /stub/last-approval, POST /stub/fail-approval");
+const gateway = createStubGateway()
+console.log(`gateway TEST DOUBLE on http://127.0.0.1:${gateway.port}`)
+console.log("routes: POST /v1/rpc/submitApproval (echo), GET /stub/last-approval, POST /stub/fail-approval")
