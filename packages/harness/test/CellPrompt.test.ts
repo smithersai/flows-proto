@@ -338,10 +338,12 @@ describe("the contract", () => {
     // after `sympy__sympy-13878` claimed in `output` that a suite exited 0 one
     // frame after its own guarded `ctx.done` had declined to fire because that
     // suite exited 1. It moved again on 2026-08-24, 8,312 → 8,517, on will's
-    // checkpoint ruling. Moving these two numbers means a wave has to be run.
-    expect(replText()).toHaveLength(8_517)
+    // checkpoint ruling. It moved again on 2026-08-25, 8,517 → 8,811, on
+    // will's tree-review ruling: the completing cell's guard also reads the
+    // working tree back. Moving these two numbers means a wave has to be run.
+    expect(replText()).toHaveLength(8_811)
     expect(Digest.digest(replText()))
-      .toBe("70d5375b63f722d12bcad4698b892e2e5041ded5a94ad269f8958ea640c4855e")
+      .toBe("58be572ba4cc573ec4060e093633b0e7e57d883afa69914072c420cb4512479a")
   })
 
   it("encourages the guard shape and leaves the unguarded completion legal", () => {
@@ -356,6 +358,24 @@ describe("the contract", () => {
     // The rule that died. A contract that still asked for it would be asking
     // for a memory of a result in the same breath as offering the check.
     expect(text).not.toContain("Complete only once you have SEEN")
+  })
+
+  it("teaches the pre-completion tree review, silent when the tree is as expected", () => {
+    // will's ruling of 2026-08-25, adopting codex's pre-completion working-tree
+    // review: the completing cell also reads the tree back (`git status
+    // --porcelain` and `git diff`) and finishes silently only when the diff
+    // holds exactly the intended files; otherwise it prints the diff so the
+    // next frame sees what is actually in the tree. The relativeWorktrees
+    // stamp on the r97 wave showed a tree can hold something other than what
+    // the run believes it wrote. Teaching only: the harness gates nothing, and
+    // the run stays free to complete without the review.
+    const text = replText()
+    expect(text).toContain("Let the guard read the tree too")
+    expect(text).toContain("`git status --porcelain` and `git diff` in the completing cell")
+    expect(text).toContain(
+      "finish silently only when the check passes AND the diff holds exactly the files you meant to change"
+    )
+    expect(text).toContain("`console.log` that diff, so the next frame sees what is actually in the tree")
   })
 
   it("shows the guard in the worked example rather than only describing it", () => {
