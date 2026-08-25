@@ -123,9 +123,9 @@ export const normalizeCacheDirectory = (value: string): string => {
  *
  * @example
  * ```ts
- * import { Smithers } from "@smthrs/targets"
+ * import { Workspace } from "@smthrs/targets/Config"
  *
- * export const workspace = Smithers.Workspace({
+ * export const workspace = Workspace({
  *   cacheDirectory: ".flows",
  *   gitignored: true
  * })

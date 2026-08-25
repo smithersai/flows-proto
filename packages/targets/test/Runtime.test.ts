@@ -38,12 +38,14 @@ describe("Runtime declarations", () => {
     expect(versions).toEqual([">=22.19.0", ">=1.3.0"])
   })
 
-  it("rejects a version outside the variant's enumeration at the call site", () => {
-    // The directives are the assertion: an unsupported requirement does not
-    // typecheck. The schema refuses it at runtime too, which is what a
-    // JavaScript BUILD.ts file sees.
-    // @ts-expect-error "24.9.0" is not a supported Node requirement.
-    expect(() => Runtime.Node({ version: "24.9.0" })).toThrow()
+  it("routes versions outside the BUILD.ts enumeration to the WORKSPACE.ts declaration", () => {
+    // The reviewed enumeration still selects the classic NodeRuntime; any
+    // other version string is the WORKSPACE.ts form and returns the inert
+    // NodeDeclaration instead of a runtime the BUILD-era service could
+    // measure. Bun keeps the enumeration-only contract.
+    const pinned = Runtime.Node({ version: "24.9.0" })
+    expect(Runtime.isNodeDeclaration(pinned)).toBe(true)
+    expect(Runtime.isRuntime(pinned)).toBe(false)
     // @ts-expect-error a Node requirement is not a supported Bun requirement.
     expect(() => Runtime.Bun({ version: ">=22.19.0" })).toThrow()
   })

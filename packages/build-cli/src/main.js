@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { tsImport } from "tsx/esm/api"
 import { Smithers } from "@smthrs/targets"
+import { tsImport } from "tsx/esm/api"
 import { installEffectResolution } from "./effect-resolution.js"
 
 // BUILD.ts targets and the flow engine must share one Effect module instance.

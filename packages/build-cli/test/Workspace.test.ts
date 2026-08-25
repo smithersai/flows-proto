@@ -58,7 +58,7 @@ const read = (relative: string): Promise<string> => Fs.readFile(NodePath.join(ro
  * an earlier case.
  */
 const buildFile = (options: string): string =>
-  `import { Workspace } from "${NodePath.resolve(import.meta.dirname, "../../targets/src/Smithers.ts")}"\n` +
+  `import { Workspace } from "${NodePath.resolve(import.meta.dirname, "../../targets/src/Config.ts")}"\n` +
   `export const workspace = Workspace(${options})\n`
 
 const remoteCacheBuildFile = (options: string): string =>
@@ -102,7 +102,7 @@ describe("resolveConfig", () => {
     await write("package.json", `${JSON.stringify({ type: "commonjs" })}\n`)
     await write(
       "BUILD.ts",
-      `import { Workspace } from "${NodePath.resolve(import.meta.dirname, "../../targets/src/Smithers.ts")}"\n` +
+      `import { Workspace } from "${NodePath.resolve(import.meta.dirname, "../../targets/src/Config.ts")}"\n` +
         "const cacheDirectory = await Promise.resolve(\"build/cache\")\n" +
         "export const workspace = Workspace({ cacheDirectory, gitignored: false })\n"
     )
@@ -789,9 +789,10 @@ describe("module namespace cache", () => {
   it("keeps one evaluation, and one target identity, within one command", async () => {
     await write(
       "BUILD.ts",
-      `import { DepsLint, file, glob, PackageManager, Runtime, Workspace } from "${
+      `import { DepsLint, file, glob, PackageManager, Runtime } from "${
         NodePath.resolve(import.meta.dirname, "../../targets/src/Smithers.ts")
       }"\n` +
+        `import { Workspace } from "${NodePath.resolve(import.meta.dirname, "../../targets/src/Config.ts")}"\n` +
         toolchain +
         "export const config = Workspace({ cacheDirectory: \"one/cache\" })\n" +
         "export const lint = DepsLint({\n" +

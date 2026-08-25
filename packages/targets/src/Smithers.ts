@@ -23,6 +23,7 @@ import * as PackageManagerModule from "./PackageManager.ts"
 import * as RuntimeModule from "./Runtime.ts"
 import * as RustToolchainModule from "./RustToolchain.ts"
 import * as VerbModule from "./Verb.ts"
+import * as WorkspaceDeclarationModule from "./WorkspaceDeclaration.ts"
 
 /**
  * Workspace remote-cache declarations.
@@ -75,7 +76,17 @@ export * as PackageJsonTemplate from "./PackageJsonTemplate.ts"
 /** @category constructors @since 0.1.0 */
 export { file, gitDiff, glob, pnpmWorkspace } from "./Input.ts"
 /** @category constructors @since 0.1.0 */
-export { Workspace } from "./Config.ts"
+export { Workspace } from "./WorkspaceDeclaration.ts"
+/** @category constructors @since 0.1.0 */
+export { Cache, Flags, Host, Sandbox, Sandboxes } from "./WorkspaceDeclaration.ts"
+/** @category constructors @since 0.1.0 */
+export { Package } from "./Package.ts"
+/** @category constructors @since 0.1.0 */
+export { gitCommit, Mcp, NodeModule, symlink } from "./Reference.ts"
+/** @category targets @since 0.1.0 */
+export { Alias, Files, Generate, ImportClosure, Materialize, Suite, Test } from "./Compose.ts"
+/** @category constructors @since 0.1.0 */
+export { Agents } from "./AgentTarget.ts"
 /** @category constructors @since 0.1.0 */
 export { PackageDefaults } from "./PackageDefaults.ts"
 /** @category actions @since 0.1.0 */
@@ -184,7 +195,7 @@ export { LlmLint } from "./LlmLint.ts"
 /** @category actions @since 0.1.0 */
 export { ClaudeCliMissing, FindingsError, LlmReview, LlmReviewError, LlmReviewLive } from "./LlmLint.ts"
 /** @category targets @since 0.1.0 */
-export { Clean } from "./Clean.ts"
+export { Clean } from "./Compose.ts"
 /** @category targets @since 0.1.0 */
 export { Dev } from "./Dev.ts"
 /** @category targets @since 0.1.0 */
@@ -332,3 +343,66 @@ export type CiToolchain = CiToolchainModule.Toolchain
  * @since 0.1.0
  */
 export * as SecretProxy from "./SecretProxy.ts"
+
+/**
+ * PACKAGE.ts shell target flavors: `Shell.Build`, `Shell.Test`,
+ * `Shell.Run`, `Shell.Serve`, and `Shell.Diff`.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export * as Shell from "./Shell.ts"
+
+/**
+ * PACKAGE.ts agent target flavors and the workspace agent declarations:
+ * `Agent.Lint`, `Agent.Diff`, `Agent.Pr`, `Agent.ClaudeCode`,
+ * `Agent.Codex`, and `Agent.Pool`.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export * as Agent from "./AgentTarget.ts"
+
+/**
+ * PACKAGE.ts git target flavors: `Git.Commit`.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export * as Git from "./GitTarget.ts"
+
+/**
+ * PACKAGE.ts GitHub target flavors: `Github.Setup`, `Github.Workflow`,
+ * `Github.CiGen`, and `Github.Pr`.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export * as Github from "./GithubTarget.ts"
+
+/**
+ * PACKAGE.ts memory surfaces: the `Memory.Retain` target and the
+ * `Memory.SmithersCloud` workspace declaration.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export * as Memory from "./MemoryTarget.ts"
+
+/**
+ * PACKAGE.ts bundler surface: `Bundler.Rspack(...)`.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export * as Bundler from "./BundlerTarget.ts"
+
+/**
+ * npm-facing workspace declarations: `Npm.NodeModules({ packageJson })`.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export const Npm = {
+  NodeModules: WorkspaceDeclarationModule.NodeModules
+} as const

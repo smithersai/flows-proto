@@ -25,6 +25,8 @@
  * @since 0.1.0
  */
 import * as Schema from "effect/Schema"
+import * as Input from "./Input.ts"
+import * as Reference from "./Reference.ts"
 
 /**
  * Schema for the supported JavaScript runtimes.
@@ -188,7 +190,45 @@ const executableFor = (name: Name, executable: string | undefined): string =>
   executable === undefined ? name : usable(executable, "runtime executable")
 
 /**
+ * Schema for the WORKSPACE.ts Node runtime declaration.
+ *
+ * The Artsy workspace API pins the runtime either to a literal version
+ * (`S.Runtime.Node({ version: "26" })`) or derives it from a manifest's
+ * `engines` field (`S.Runtime.Node({ manifest: packageJson })`). The two
+ * options are an exclusive union.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const NodeDeclaration = Schema.TaggedStruct("NodeRuntimeDeclaration", {
+  version: Schema.optional(Schema.NonEmptyString),
+  manifest: Schema.optional(Input.File)
+})
+
+/**
+ * One WORKSPACE.ts Node runtime declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type NodeDeclaration = typeof NodeDeclaration.Type
+
+/**
+ * Checks whether a value is a WORKSPACE.ts Node runtime declaration.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
+export const isNodeDeclaration: (value: unknown) => value is NodeDeclaration = Schema.is(NodeDeclaration)
+
+/**
  * Declares Node as the workspace runtime.
+ *
+ * The BUILD.ts form (`{ version: ">=22.19.0" }`, one of the reviewed
+ * {@link NodeVersion} requirements) keeps returning the classic
+ * {@link NodeRuntime}. The WORKSPACE.ts forms — an exclusive
+ * `{ manifest }` | `{ version }` union with a free-form version string —
+ * return a branded {@link NodeDeclaration}.
  *
  * @example
  * ```ts
@@ -200,12 +240,57 @@ const executableFor = (name: Name, executable: string | undefined): string =>
  * @category constructors
  * @since 0.1.0
  */
-export const Node = (options: Options<NodeVersion>): NodeRuntime =>
-  NodeRuntime.make({
-    name: "node",
-    version: options.version,
-    executable: executableFor("node", options.executable)
-  })
+export function Node(options: Options<NodeVersion>): NodeRuntime
+export function Node(
+  options: { readonly manifest: Input.File; readonly version?: never } | {
+    readonly version: string
+    readonly manifest?: never
+  }
+): NodeDeclaration
+export function Node(
+  options: Options<NodeVersion> | { readonly manifest?: Input.File; readonly version?: string }
+): NodeRuntime | NodeDeclaration {
+  if (typeof options !== "object" || options === null) {
+    throw new TypeError("Runtime.Node options must be an object")
+  }
+  const manifest = "manifest" in options ? options.manifest : undefined
+  const version = "version" in options ? options.version : undefined
+  if (manifest !== undefined && version !== undefined) {
+    throw new Error("Runtime.Node accepts a manifest or a version, not both")
+  }
+  if (manifest !== undefined) {
+    return NodeDeclaration.make({ manifest })
+  }
+  if (version === undefined) {
+    throw new Error("Runtime.Node requires a manifest or a version")
+  }
+  if (version === ">=22.19.0") {
+    return NodeRuntime.make({
+      name: "node",
+      version,
+      executable: executableFor("node", (options as Options<NodeVersion>).executable)
+    })
+  }
+  return NodeDeclaration.make({ version: usable(version, "runtime version") })
+}
+
+/**
+ * The workspace runtime's own binary as an inert tool reference,
+ * `S.Runtime.bin`.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const bin: Reference.RuntimeBin = Reference.runtimeBin
+
+/**
+ * References a one-shot npx tool run under the workspace runtime,
+ * `S.Runtime.npx(spec)`.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const npx = Reference.runtimeNpx
 
 /**
  * Declares Bun as the workspace runtime.
