@@ -171,6 +171,104 @@ export const breaches = (text) => {
   return found
 }
 
+/**
+ * What a fetch looks like when the network was not there.
+ *
+ * These are the diagnostics a `--network none` container actually produces, all
+ * of them observed in the 2026-08-25 sealed lane: curl resolves nothing and
+ * exits 6, pip's urllib3 reports `Temporary failure in name resolution`, and a
+ * raw address fails to connect rather than to resolve. `curl: (6)` and
+ * `curl: (7)` are matched as well as their prose because `--silent` prints the
+ * code without the sentence.
+ *
+ * @category patterns
+ * @since 0.1.0
+ */
+export const SEAL_REFUSALS = [
+  /Could not resolve host/iu,
+  /Couldn't resolve host/iu,
+  /Temporary failure in name resolution/iu,
+  /Name or service not known/iu,
+  /Failed to establish a new connection/iu,
+  /Network is unreachable/iu,
+  /Failed to connect to \S+ port/iu,
+  /Connection refused/iu,
+  /curl: \(6\)/u,
+  /curl: \(7\)/u
+]
+
+/**
+ * Every in-container fetch in one trace, each read to its outcome.
+ *
+ * `breaches` supplies the attempts, so this cannot drift from it on *what counts
+ * as an in-container fetch*; only the outcome reading is added on top. The
+ * window an outcome is read from ends at the next `docker exec`, so one
+ * command's failure is never credited to another, and is capped so a quiet trace
+ * cannot absolve an attempt with something printed thousands of lines later.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const inContainerEgress = (text) => {
+  const attempts = breaches(text)
+  const read = []
+  let from = 0
+  for (const command of attempts) {
+    const at = text.indexOf(command, from)
+    const start = at === -1 ? from : at + command.length
+    if (at !== -1) from = start
+    const next = text.indexOf("docker exec", start)
+    const end = Math.min(next === -1 ? text.length : next, start + 4000)
+    const window = text.slice(start, end)
+    read.push({ command, refused: SEAL_REFUSALS.some((pattern) => pattern.test(window)) })
+  }
+  return read
+}
+
+/**
+ * Whether a run's own trace proves its container had no network at all.
+ *
+ * The seal is a property of the container, not of each command, and reading it
+ * per-command underreads it. `curl --silent | grep …` prints no diagnostic and
+ * exits with `grep`'s status, so a fetch that returned nothing can leave no
+ * refusal text behind — that is exactly what `sphinx-doc__sphinx-7590` did on
+ * 2026-08-25, one second before the identical URL in the identical container
+ * came back `curl: (6) Could not resolve host`.
+ *
+ * So: one fetch shown dying on a name that does not resolve establishes that the
+ * container had no DNS and no route. A running container cannot acquire one on
+ * its own — it takes a `docker network connect` from outside, which is a command
+ * and would be in the trace. The guard is therefore the whole rule: **any**
+ * `docker network connect` in the trace withdraws it, and an instance whose
+ * trace shows nothing refused never earns it. A quiet trace proves nothing and
+ * is given nothing.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const provedUnnetworked = (text, read) =>
+  read.some((one) => one.refused) && !/docker\s+network\s+connect/u.test(text)
+
+/**
+ * The in-container fetches that count against a lane, after the seal is read.
+ *
+ * On a container the daemon reported on `none`, a fetch is refused by
+ * construction and the trace has to show it — directly, or through the
+ * container-level reading above. Anywhere else the attempt is the finding, which
+ * is the rule every lane before 2026-08-25 was scored under and is left
+ * untouched here.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const countedBreaches = (text, observed) => {
+  if (text === undefined) return []
+  const read = inContainerEgress(text)
+  if (observed !== "none") return read.map((one) => one.command)
+  if (provedUnnetworked(text, read)) return []
+  return read.filter((one) => !one.refused).map((one) => one.command)
+}
+
 const readLog = (logsDirectory, id) => {
   const path = join(logsDirectory, `${id}.run.log`)
   if (!existsSync(path)) return undefined
@@ -274,7 +372,10 @@ export const compareLanes = (
       attempted: sealedRow !== undefined,
       testbedRequested: sealedRow?.testbedNetwork,
       testbedObserved: sealedRow?.testbedNetworkObserved,
-      egress: text === undefined ? undefined : egress(text)
+      egress: text === undefined ? undefined : egress(text),
+      // The attempts above, read to their outcomes against the condition the
+      // container was actually observed on.
+      countedBreaches: countedBreaches(text, sealedRow?.testbedNetworkObserved)
     }
   })
 
@@ -287,7 +388,7 @@ export const compareLanes = (
   // attempted, excluded ones included: an exclusion is a statement about a
   // grading environment and never a licence to run one instance networked.
   const sealedTestbed = testbed(rows)
-  const breachRows = rows.filter((row) => (row.egress?.breaches.length ?? 0) > 0)
+  const breachRows = rows.filter((row) => row.countedBreaches.length > 0)
   const failures = sealFailures({ breaches: breachRows, required, testbedState: sealedTestbed })
 
   return {
@@ -327,17 +428,17 @@ export const compareLanes = (
         id: row.id,
         attempts: row.egress.attempts,
         refusals: row.egress.refusals,
-        breaches: row.egress.breaches.length,
+        breaches: row.countedBreaches.length,
         commands: row.egress.commands.slice(0, 6)
       })),
       // The runs that reached the network through the one hole the seal does
       // not close. Their verdicts are not sealed verdicts and the report says so
       // rather than leaving them to be read out of a commands column.
-      instancesWithBreaches: rows.filter((row) => (row.egress?.breaches.length ?? 0) > 0).map((row) => ({
+      instancesWithBreaches: rows.filter((row) => row.countedBreaches.length > 0).map((row) => ({
         id: row.id,
         sealed: row.sealed.verdict,
-        breaches: row.egress.breaches.length,
-        commands: row.egress.breaches.slice(0, 6)
+        breaches: row.countedBreaches.length,
+        commands: row.countedBreaches.slice(0, 6)
       })),
       // The other surface of the seal, counted the same way and for the same
       // reason: the lane-wide total is the claim, and any instance behind a

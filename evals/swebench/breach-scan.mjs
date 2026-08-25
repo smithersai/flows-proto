@@ -25,9 +25,29 @@
  *   construction*, and a non-zero one means the constraint did not hold
  *   somewhere the ledger did not see.
  *
- * The patterns are not re-invented here. `egress`, `breaches` and `webSearches`
- * are imported from `compare-codex-lanes.mjs`, so the two reports cannot drift
- * apart on what counts as an attempt or a breach.
+ * **An attempt is not an outcome, and under `none` the difference is the whole
+ * report.** `breaches` in `compare-codex-lanes.mjs` deliberately does not read a
+ * command's result — on a `bridge` lane a `docker exec … curl` is assumed to
+ * have worked, because it would have. Under `--network none` it cannot: the
+ * container has `lo` and nothing else, which is the fact `./network-dryrun.sh`
+ * establishes against a real daemon. Counting those attempts as breaches failed
+ * the first sealed lane that ran on 2026-08-25 — 6 of them, every one of which
+ * the transcript showed dying on `Could not resolve host`.
+ *
+ * So for a container **observed** `none`, each in-container fetch is read to its
+ * outcome, and the reading fails closed: the trace has to show the refusal,
+ * either against that command or against another fetch in the same container.
+ * An attempt in a container that is never shown refusing anything stays a
+ * breach, because a fetch that left no evidence of failing inside a container
+ * that cannot reach the network is a contradiction, and the scan reports
+ * contradictions rather than resolving them in the lane's favour. For any other
+ * container the old rule stands unchanged, so no `bridge` lane's report moves.
+ *
+ * None of that logic lives here. `egress`, `inContainerEgress`,
+ * `provedUnnetworked` and `countedBreaches` are imported from
+ * `compare-codex-lanes.mjs`, beside the patterns they extend, so the one-lane
+ * scan and the two-lane comparison cannot reach different verdicts about the
+ * same trace.
  *
  * **Where the trace lives differs per arm, and only that differs.** A codex run
  * writes one transcript, `logs/<id>.run.log`. A flows run writes a driver log of
@@ -44,7 +64,13 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { breaches, egress, TESTBED_MODES, webSearches } from "./compare-codex-lanes.mjs"
+import {
+  countedBreaches,
+  egress,
+  inContainerEgress,
+  provedUnnetworked,
+  TESTBED_MODES
+} from "./compare-codex-lanes.mjs"
 
 /**
  * Every ledger row for one instance, folded into the fields a seal is read off.
@@ -144,11 +170,22 @@ export const scan = ({ journals, ledger, logs, require: required }) => {
     const found = text === undefined
       ? { attempts: 0, breaches: [], commands: [], refusals: 0, webSearches: [] }
       : egress(text)
+    // A container the daemon reported on `none` has `lo` and nothing else, so a
+    // fetch inside it is refused by construction — but the trace has to show it.
+    // Anything else, including an attempt whose outcome the trace never records,
+    // counts against the lane.
+    const inContainer = text === undefined ? [] : inContainerEgress(text)
+    const unnetworked = instance.observed === "none" && text !== undefined
+      && provedUnnetworked(text, inContainer)
+    const counted = countedBreaches(text, instance.observed)
     return {
       ...instance,
       attempts: found.attempts,
-      breaches: found.breaches,
+      breaches: counted,
       commands: found.commands,
+      inContainerAttempts: inContainer.length,
+      inContainerRefused: inContainer.length - counted.length,
+      unnetworked,
       refusals: found.refusals,
       traced: text !== undefined,
       webSearches: found.webSearches
@@ -193,6 +230,8 @@ export const scan = ({ journals, ledger, logs, require: required }) => {
     totals: {
       attempts: rows.reduce((sum, row) => sum + row.attempts, 0),
       breaches: rows.reduce((sum, row) => sum + row.breaches.length, 0),
+      inContainerAttempts: rows.reduce((sum, row) => sum + row.inContainerAttempts, 0),
+      inContainerRefused: rows.reduce((sum, row) => sum + row.inContainerRefused, 0),
       instances: rows.length,
       refusals: rows.reduce((sum, row) => sum + row.refusals, 0),
       webSearches: rows.reduce((sum, row) => sum + row.webSearches.length, 0)
@@ -220,8 +259,10 @@ export const render = (result, { label, ledger }) => {
   lines.push("| | count |", "| --- | ---: |")
   lines.push(`| containers observed \`none\` | ${result.observed.none ?? 0} of ${result.totals.instances} |`)
   lines.push(`| egress commands attempted | ${result.totals.attempts} |`)
-  lines.push(`| attempts the seal refused | ${result.totals.refusals} |`)
-  lines.push(`| **successful in-container fetches (breaches)** | **${result.totals.breaches}** |`)
+  lines.push(`| attempts the host proxy refused | ${result.totals.refusals} |`)
+  lines.push(`| in-container fetches attempted | ${result.totals.inContainerAttempts} |`)
+  lines.push(`| of those, the trace shows failing | ${result.totals.inContainerRefused} |`)
+  lines.push(`| **fetches counted against the lane (breaches)** | **${result.totals.breaches}** |`)
   lines.push(`| web-search tool lines | ${result.totals.webSearches} |`)
   lines.push("")
 
@@ -250,6 +291,10 @@ export const render = (result, { label, ledger }) => {
   }
   if (result.breached.length > 0) {
     lines.push("## Where the seal did not hold", "")
+    lines.push(
+      "Each of these ran a fetch inside the testbed that the trace does not show failing.",
+      ""
+    )
     for (const row of result.breached) {
       for (const line of row.breaches) lines.push(`- ${row.id} — \`${line}\``)
     }
@@ -269,7 +314,8 @@ export const render = (result, { label, ledger }) => {
   const verdict = result.failures.length > 0
     ? `**Verdict: FAILED.** ${result.failures.join("; ")}.`
     : result.asserted
-    ? "**Verdict: sealed.** Every container was observed `none` and no trace contains a successful fetch."
+    ? "**Verdict: sealed.** Every container was observed `none`, and every fetch attempted inside one is shown "
+      + "failing in the run's own trace."
     : `**Verdict: not asserted.** The lane's rows claim \`${result.claim}\`, so the counts above are a `
       + "reading of its traces and not a gate. Pass `--require none` to a lane that claims one."
   lines.push(verdict, "")
