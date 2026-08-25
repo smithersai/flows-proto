@@ -395,6 +395,56 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
       return new Snapshot({ id, ref: commit })
     }))
 
+  /**
+   * The repository-format keys a relative `worktree add` rewrites, read before
+   * the checkout so {@link restoreFormat} can put back exactly what stood.
+   */
+  const formatState = Effect.gen(function*() {
+    const version = yield* git(root, ["config", "--local", "--get", "core.repositoryformatversion"])
+    const marker = yield* git(root, ["config", "--local", "--get", "extensions.relativeWorktrees"])
+    return {
+      version: version.exitCode === 0 ? version.stdout.trim() : undefined,
+      marked: marker.exitCode === 0
+    }
+  })
+
+  /**
+   * Removes the format stamp {@link materialize}'s `worktree add` wrote, when
+   * it wrote one.
+   *
+   * Git 2.48 and later record the first relative checkout in the repository
+   * itself: `extensions.relativeWorktrees = true`, and
+   * `core.repositoryformatversion` raised to 1 so older git honours the
+   * extensions section. Removing the worktree takes neither back — and a git
+   * before 2.48 that opens a repository carrying an extension it does not know
+   * refuses the whole repository, not the worktree. The benchmark containers
+   * run exactly such a git against this same directory through a bind mount,
+   * so the stamp must not outlive the one command that needed it. See the
+   * comment inside {@link materialize} for the measured damage.
+   *
+   * Restores only what this checkout introduced: a marker that predates the
+   * checkout belongs to the repository and is left standing, and a pre-2.48
+   * git writes nothing, so there is nothing to remove.
+   */
+  const restoreFormat = (before: { readonly version: string | undefined; readonly marked: boolean }) =>
+    Effect.gen(function*() {
+      if (before.marked) return
+      const marker = yield* git(root, ["config", "--local", "--get", "extensions.relativeWorktrees"])
+      if (marker.exitCode !== 0) return
+      const unset = yield* git(root, ["config", "--local", "--unset", "extensions.relativeWorktrees"])
+      if (unset.exitCode !== 0) {
+        return yield* Effect.fail(
+          failed(`Could not restore the repository format after checking out a checkpoint: ${unset.stderr.trim()}`)
+        )
+      }
+      const version = yield* git(root, ["config", "--local", "core.repositoryformatversion", before.version ?? "0"])
+      if (version.exitCode !== 0) {
+        return yield* Effect.fail(
+          failed(`Could not restore the repository format after checking out a checkpoint: ${version.stderr.trim()}`)
+        )
+      }
+    })
+
   const materialize = <A, E, R>(
     id: string,
     use: (materialized: Materialized) => Effect.Effect<A, E, R>
@@ -408,6 +458,7 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
       const commit = yield* spawn(commitOf(id))
       const host = `${root}/${scratchDirectory}/${id}`
       const discard = Effect.ignore(spawn(git(root, ["worktree", "remove", "--force", host])))
+      const before = yield* spawn(formatState)
       // The worktree is removed however the call ends: a run killed at its
       // wall-clock budget would otherwise leave a second checkout of the whole
       // repository inside the tree whose diff is the run's answer.
@@ -425,6 +476,22 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
       // `git` run at the checkpoint through the mount answers "not a git
       // repository" — for a directory that is one. Git before 2.48 does not
       // know the key and ignores it, which costs that host nothing it had.
+      //
+      // A git that does know it also stamps the repository itself: the first
+      // relative checkout writes `extensions.relativeWorktrees = true` and
+      // raises `core.repositoryformatversion` to 1 in the workspace's own
+      // config, and removing the worktree takes neither back. A pre-2.48 git
+      // that then opens the repository refuses it whole — "unknown repository
+      // extension found: relativeworktrees" — and the benchmark containers run
+      // exactly such a git against this directory through the bind mount.
+      // Measured on the r97 wave: 15 of 45 runs lost every in-container `git
+      // status` and `git diff` at /testbed (exit 128 or 129) from the first
+      // `{ at: ctx.base }` call onward. `restoreFormat` therefore runs before
+      // `use`, so the repository the call reads — and every in-container git
+      // after it — carries the format it had before the checkout. The relative
+      // pointers keep working without the stamp: git resolves them regardless,
+      // and the marker's only job is to warn older worktree *tooling*, which
+      // no benchmark container runs.
       return yield* Effect.acquireUseRelease(
         discard.pipe(
           Effect.andThen(spawn(git(root, [
@@ -443,7 +510,10 @@ const gitStore = (options: GitOptions, spawner: ChildProcessSpawner["Service"]):
               : Effect.fail(failed(`Could not check out checkpoint ${id}: ${added.stderr.trim()}`))
           )
         ),
-        () => use({ id, host, guest: `${guestRoot}/${scratchDirectory}/${id}`, root, guestRoot }),
+        () =>
+          spawn(restoreFormat(before)).pipe(
+            Effect.andThen(use({ id, host, guest: `${guestRoot}/${scratchDirectory}/${id}`, root, guestRoot }))
+          ),
         () => discard
       )
     })
