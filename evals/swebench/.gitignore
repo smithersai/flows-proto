@@ -24,6 +24,9 @@
 /logs-agent/
 /logs-codex/
 /logs/
+# `./preflight-network.sh` writes one suite log per probe per condition. Two
+# whole test-suite transcripts per repository family; none of it is a result.
+/logs-preflight/
 /preds-*.json
 /scorecard.json
 /scorecard.md

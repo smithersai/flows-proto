@@ -116,6 +116,11 @@ DATASET="${SWB_DATASET:-$S/swb-verified.json}"
 MODEL_NAME="${SWB_MODEL_NAME:-flows-cell-harness}"
 POLL_SECONDS="${SWB_RERUN_POLL_SECONDS:-5}"
 SESSION_LIMIT=""
+# The testbed container's network, validated here rather than at the first
+# `docker run` so a typo costs no image pull. `none` is the default since
+# 2026-08-24; a lane reproducing a measurement taken before that pins `bridge`,
+# which is what those lanes ran under. `lib/testbed-network.sh` owns the rule.
+TESTBED_NETWORK="$("$S/lib/testbed-network.sh" resolve)" || exit 2
 
 for PAIR in "JOBS:$JOBS" "INSTANCE_BUDGET:$INSTANCE_BUDGET" "MIN_FREE_MIB:$MIN_FREE_MIB" \
   "POLL_SECONDS:$POLL_SECONDS"; do
@@ -236,7 +241,7 @@ SUBJECT="$(node -e '
 ' "$S/.subject.json" 2>/dev/null || printf 'unknown')"
 
 append "$MANIFEST" "$(row --kind header --at "$(now_ms)" --run-id "$RUN_ID" --index "$INDEX" \
-  --lane "$LANE" \
+  --lane "$LANE" --testbedNetwork "$TESTBED_NETWORK" \
   --subject "$SUBJECT" --head "$HEAD_AT_START" --seat "$SEAT" --jobs "$JOBS" \
   --instance-budget-seconds "$INSTANCE_BUDGET" --budget-usd "$BUDGET_USD" \
   --min-free-mib "$MIN_FREE_MIB" --baseline "$BASELINE" --dataset "$DATASET")"
@@ -248,6 +253,9 @@ export SWB_FULLBENCH_MIN_FREE_MIB="$MIN_FREE_MIB"
 export SWB_FULLBENCH_BUDGET="$INSTANCE_BUDGET"
 export SWB_MODEL_NAME="$MODEL_NAME"
 export SWB_SEAT="$SEAT"
+# Handed down rather than left to default, for the same reason effort is: a
+# condition a child derives is a condition that moves when the default moves.
+export SWB_TESTBED_NETWORK="$TESTBED_NETWORK"
 # Nothing is pinned: the baseline's five pinned images belong to the best-of-n
 # matrix, and a re-run that kept 15 GB of images warm would sit in the disk gate
 # instead of running.
@@ -255,7 +263,7 @@ export SWB_FULLBENCH_PINNED=""
 
 QUEUE="$(queue --remaining)"
 set -- $(queue --count)
-log "run-45: $1 of $3 already re-run, $2 to go, $JOBS in flight, ${INSTANCE_BUDGET}s each"
+log "run-45: $1 of $3 already re-run, $2 to go, $JOBS in flight, ${INSTANCE_BUDGET}s each, $TESTBED_NETWORK testbed"
 
 # ---------------------------------------------------------------------------
 # The budget gate, read from this re-run's own ledger before every launch. A

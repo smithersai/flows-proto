@@ -24,6 +24,12 @@
 # docker and is not run here. The codex backfill splits the same way:
 # `./codex-backfill-dryrun.sh` is its process half.
 #
+# The sealed testbed splits the same way again. The condition, the ledger field
+# and the assertion the scoreboard makes out of them are checked here; whether a
+# `--network none` container can be `docker exec`-ed into at all, and whether the
+# preflight tells an egress-dependent suite from a pre-existing failure, is
+# `./network-dryrun.sh`.
+#
 # The codex arm's lanes are checked here too, because a lane is a claim about
 # how a number may be quoted: each one reads its own ledger, no two share an
 # archive, an index or an evaluator run id, and the table in the script is the
@@ -172,6 +178,9 @@ node "$S/fixtures/check-codex-lanes.mjs"
 
 echo "== the two-codex-lane scoreboard"
 node "$S/fixtures/check-compare-codex-lanes.mjs"
+
+echo "== the sealed testbed"
+node "$S/fixtures/check-testbed-network.mjs"
 
 echo "== the program evidence a re-run report reads off its journals"
 node "$S/fixtures/check-program-evidence.mjs"
