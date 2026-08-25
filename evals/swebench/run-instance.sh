@@ -108,10 +108,29 @@ docker rm -f "$TMPC" >/dev/null 2>&1
 CAPTURE_BASE="$("$S/lib/snapshot-base.sh" "$WORK")"
 echo "[$RUN_ID] capture base $CAPTURE_BASE (base commit $BASE)"
 
+# The testbed container's network is a benchmark condition, and since 2026-08-24
+# the default is that it has none. `lib/testbed-network.sh` owns the rule and
+# documents why; the short version is that the codex arm's environment seal was
+# a seal on the tools an agent reaches for, and two `r90s` runs got round it with
+# a `docker exec <container> curl …` because the container kept its network. A
+# `--network none` testbed makes that impossible in the kernel rather than
+# improbable in an environment variable, and `docker exec` — which is how both
+# arms run the project's tests — is unaffected by it.
+TESTBED_NETWORK="$("$S/lib/testbed-network.sh" resolve)" || exit 2
+
 docker rm -f "$CONTAINER" >/dev/null 2>&1
-docker run -d --platform linux/amd64 --name "$CONTAINER" \
+docker run -d --platform linux/amd64 --name "$CONTAINER" --network "$TESTBED_NETWORK" \
   -v "$WORK:/testbed" -w /testbed "$IMAGE" sleep infinity >/dev/null 2>&1 || {
   echo "[$RUN_ID] CONTAINER START FAILED"; exit 1; }
+
+# What docker says the container is actually on, read back off the live
+# container. A lane's claim about its testbed is worth what this line says and
+# nothing more, so it is recorded rather than assumed — and a container that is
+# not on the condition the lane asked for stops the run here, before a token is
+# spent inside it.
+TESTBED_OBSERVED="$("$S/lib/testbed-network.sh" assert "$CONTAINER" "$TESTBED_NETWORK")" || {
+  echo "[$RUN_ID] TESTBED NETWORK MISMATCH — asked for $TESTBED_NETWORK"; exit 1; }
+echo "[$RUN_ID] testbed network $TESTBED_OBSERVED"
 
 # Keep the harness scaffolding out of the model patch.
 #
@@ -218,8 +237,14 @@ else
   # The wall clock the scorecard grades speed on. The journal's own span stops at
   # the last journaled event, which is not the same as how long the operator
   # waited for the process, so the process time is recorded here.
-  printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "seat": "%s",\n  "subject": "%s",\n  "budgetSeconds": %s,\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s,\n  "exitStatus": %s,\n  "timedOut": %s\n}\n' \
-    "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$SEAT" "$SUBJECT" "$BUDGET" "$((START*1000))" "$((END*1000))" "$((END-START))" \
+  # `testbedNetwork` is what the lane asked for and `testbedNetworkObserved` is
+  # what `docker inspect` said the container was on. They are two fields rather
+  # than one because a report that could only print the request would be
+  # printing a claim; the ledger row and every scoreboard downstream carry the
+  # observation.
+  printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "seat": "%s",\n  "subject": "%s",\n  "budgetSeconds": %s,\n  "testbedNetwork": "%s",\n  "testbedNetworkObserved": "%s",\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s,\n  "exitStatus": %s,\n  "timedOut": %s\n}\n' \
+    "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$SEAT" "$SUBJECT" "$BUDGET" \
+    "$TESTBED_NETWORK" "$TESTBED_OBSERVED" "$((START*1000))" "$((END*1000))" "$((END-START))" \
     "$RUN_STATUS" "$([ "$RUN_STATUS" -eq 124 ] && printf true || printf false)" \
     > "$TIMINGS"
 fi

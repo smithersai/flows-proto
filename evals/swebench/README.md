@@ -28,6 +28,8 @@ CLI wrapper, and the evaluator environment with it.
 | `readonly-liveness.sh`     | Proves the read-only control fires through the real CLI (spends ~$0.30) |
 | `run-instance.sh`          | One instance through the flows harness                               |
 | `run-instance-codex.sh`    | One instance through the Codex CLI, same conditions                  |
+| `preflight-network.sh`     | Proves a `--network none` testbed can still run the repos' suites    |
+| `network-dryrun.sh`        | Proves the sealed testbed against real docker, with no model spend   |
 | `run-sample.sh`            | The sample, in draw order, one harness                               |
 | `run-matrix.sh`            | The sample n times over, one harness, at a bounded concurrency       |
 | `select-candidate.mjs`     | Picks one instance's submission out of its n runs, from journals alone |
@@ -54,6 +56,7 @@ CLI wrapper, and the evaluator environment with it.
 | `verify.sh`                | Offline check that the rig still computes what it claims             |
 | `baseline/`                | The committed codex numbers and patches to compare against           |
 | `fixtures/`                | The recorded numbers `verify.sh` replays                             |
+| `lib/testbed-network.sh`   | The testbed container's network condition, resolved, observed and asserted |
 | `lib/`                     | Sampler, prompt writers, prediction builder, patch capture, subject fingerprint, per-run naming, the lock every lane shares, journal reader, full-benchmark ledger and pipeline, codex-backfill queue and token footer, analysis bundle |
 
 Everything else the rig writes — `swb-verified.json`, `sample.json`,
@@ -181,6 +184,176 @@ The whole sample, one harness at a time:
 
 Both run scripts take an optional trailing **run index**, which is how one
 instance carries five attempts at once. See [Best-of-n](#best-of-n).
+
+## The sealed testbed
+
+**The testbed container has no route out of the machine, and that is enforced
+by the kernel rather than by an environment variable.** `SWB_TESTBED_NETWORK`
+names the condition, `none` is the default, and it reaches the one `docker run`
+in the rig that starts a testbed:
+
+```sh
+SWB_TESTBED_NETWORK=none   ./run-instance.sh django__django-16612   # the default
+SWB_TESTBED_NETWORK=bridge ./run-instance-codex.sh django__django-16612 1500
+```
+
+The knob exists because the seal the codex lanes claimed was a seal on the
+*tools an agent reaches for*, and an agent found the way round it. The proxy
+variables are set through `shell_environment_policy.set`, which reaches the
+commands codex spawns on the host; `docker exec <container> curl …` starts its
+process as the docker daemon's child, inside a container that had the network
+on. Two of the 45 `r90s` runs used exactly that to fetch the merged upstream
+fix, and the `r90sh` lane repeated it. Will's ruling on 2026-08-24: a proper
+sandbox, so it cannot cheat. A container with no interfaces but `lo` cannot
+fetch a patch whatever command is run inside it, whatever the agent knows about
+proxies, and whatever a later harness invents.
+
+| value | what the testbed gets |
+| --- | --- |
+| `none` (default) | `--network none`: loopback only. No route, no DNS, no bridge, no host port |
+| `bridge` | docker's default bridge network — what every lane before 2026-08-24 was measured under |
+
+`lib/testbed-network.sh` is the only place that knows the rule, and it does
+three things rather than one:
+
+```sh
+lib/testbed-network.sh resolve                    # the requested mode, validated
+lib/testbed-network.sh observe <container>        # the mode docker reports
+lib/testbed-network.sh assert  <container> none   # both, and they must agree
+```
+
+`resolve` refuses anything but the two values, so a typo is a stopped run and
+never a silently networked one. `observe` reads `docker inspect` back off the
+live container — `HostConfig.NetworkMode` and the attached network set, both,
+because a mode that says `none` with a network attached is not `none` — and
+normalises the older daemons' `default` to `bridge`. Both run scripts call
+`assert` immediately after `docker run` and **exit rather than run an agent in a
+container whose network is not the one the lane claims**. Both then stamp the
+requested and the observed mode into `timings/<id>.json`, which is the record
+every ledger row and every report downstream is derived from.
+
+**`docker exec` still works against a `--network none` container.** It has to:
+both arms are told to run the project's tests with `docker exec <container> …`,
+and an arm that cannot run a test is measuring two variables. `exec` attaches a
+new process to an existing container's namespaces through the daemon's unix
+socket, so it needs no network of its own on either side. Measured on docker
+29.4.0, 2026-08-24, and re-measured by `./network-dryrun.sh` on every run:
+
+| in a `--network none` container | result |
+| --- | --- |
+| `docker exec <c> sh -c 'echo ok'` | exit 0 |
+| `docker exec <c> ip -o addr` | `lo` and nothing else |
+| `docker exec <c> wget -T3 http://example.com/` | exit 1, no DNS |
+| `docker exec <c> wget -T3 http://93.184.216.34/` | exit 1, no route — a raw IP does not help |
+| `docker inspect -f '{{.HostConfig.NetworkMode}}'` | `none` |
+
+That last row is the one the scanner reads. This is the difference between an
+environment seal and a sandbox: the environment seal had to be believed, and
+its report could only count how often it was pushed on. A `--network none`
+testbed produces the same evidence by construction, and the evidence is a
+kernel fact recorded off the live container rather than a claim about a
+transcript.
+
+**Every lane pins its own testbed network, the way it pins effort.** The three
+codex lanes ran before this existed and pin `bridge`, because re-running them
+under `none` would reproduce a number under conditions their recorded rows were
+never measured under. Every new lane takes the default. See
+[Lanes, and the sealed one](#lanes-and-the-sealed-one).
+
+### Preflight: does any test need the network
+
+A `--network none` testbed changes what the *agent* can run, so it has to be
+validated before a lane spends a token. The concern is narrow and specific: a
+test or a `conftest.py` that reaches the network at agent-side run time, which
+would fail under `none` for a reason that has nothing to do with the agent.
+The evaluator's own grading containers are not touched by any of this — grading
+was never the hole, and moving it would change what a verdict means.
+
+```sh
+./preflight-network.sh                    # three probes, no tokens, needs docker
+./preflight-network.sh --report out.json  # the same, with the machine-readable row set
+```
+
+It boots three pinned, representative instances — one django, one sympy, one
+astropy — twice each: once under `--network none` and once under `bridge`. Each
+boot runs that repository's own test command, from the same
+`lib/test-command.py` both prompts are written from, on an **untouched** tree at
+the base commit. The tree is untouched on purpose: the bug is present, so the
+suite is expected to fail, and an exit code on its own says nothing. What the
+probe compares is the **pair**.
+
+| what the pair shows | verdict | what it means |
+| --- | --- | --- |
+| same outcome under both | `ok` | the network makes no difference to this repository's suite |
+| `none` carries a name-resolution or connection error the `bridge` run does not | `flagged` | the suite reaches the network; the instance is not measurable under `none` |
+| `none` fails, `bridge` passes | `flagged` | same finding, read off the exit status instead |
+| `none` passes, `bridge` fails | `noisy` | reported and never counted as a network finding |
+| both fail the same way | `ok` | a pre-existing failure on an untouched tree, which is the normal case |
+
+A flagged probe names every scored instance in its repository family, because
+one probe stands for all of them. **If every probe is flagged the script says
+`SYSTEMIC` and exits 2**, in those words and at the top of its output: a
+`--network none` testbed that no repository's suite can run is not a sandbox to
+tighten, it is a condition to abandon, and finding that out is the whole reason
+the probe runs before the lane. One flagged probe exits 1 and names what it
+costs. All clear exits 0.
+
+**Three probes do not cover eight families, and the report says so before it
+says anything else.** The scored 43 come from astropy, django, matplotlib, psf,
+pydata, pytest-dev, sphinx-doc and sympy. Three is the sample Will asked for,
+on the reasoning that a `conftest.py` reaching the network is a property of a
+repository rather than of an instance — but an all-clear over three families is
+an all-clear over three families, so the uncovered ones are printed with their
+instance counts under `not probed:` ahead of the verdict line. That the class is
+non-empty is already on record: `psf__requests-1766` and `psf__requests-2317`
+are excluded by name for the grading-side version of exactly this.
+
+The knobs are the rig's usual ones: `SWB_PREFLIGHT_INSTANCES` replaces the three
+pinned ids, `SWB_PREFLIGHT_TIMEOUT` bounds each suite (default 900s, and a
+timeout under both conditions is `ok` rather than a finding), and
+`SWB_PREFLIGHT_TEST_CMD` / `SWB_PREFLIGHT_IMAGE_CMD` stub the two halves that
+need a multi-gigabyte image so `./network-dryrun.sh` can drive the real script.
+
+### By construction, not by inspection
+
+`compare-codex-lanes.mjs` grew a third question. It already counted the egress
+commands a sealed transcript issued, the proxy refusals they produced, the
+in-container fetches that got out anyway, and the `web search:` lines the proxy
+never reached. It now also reads the **testbed network each run was actually
+measured under**, out of the ledger row, out of the `docker inspect` the run
+recorded:
+
+```sh
+node compare-codex-lanes.mjs --sealed fullbench/codex-none-manifest.jsonl \
+  --logs fullbench/codex-none/logs --out fullbench/codex-none \
+  --label '`r90n` (sealed, network none)' --require none
+```
+
+The lane's claim is read off its own rows and has four states. `none` when
+every row says so, `bridge` when every row says so, `unrecorded` for the three
+lanes that ran before the field existed, and `mixed` — which is fatal on its
+own, because a lane measured under two testbed conditions is not one
+measurement.
+
+**A lane whose claim is `none` is asserted, not described.** Two things must
+hold and the report exits non-zero if either does not:
+
+- **every row observed `none`.** A row that observed `bridge`, or that carries
+  no observation at all, is named under "The testbed was not sealed" and fails
+  the lane. This is the `docker inspect` value the run recorded at the moment
+  it started its container, so the failure is a fact about that container and
+  not an inference from a transcript.
+- **zero successful egress, in every transcript.** Under `none` this is a
+  redundant check, which is the point: the breach column has to come out zero
+  by construction, and a non-zero one means the constraint did not hold
+  somewhere the ledger did not see. Either way the lane fails and the offenders
+  are named.
+
+`--require none` applies both assertions whatever the ledger claims, so an
+operator can gate a lane before reading a number out of it. Without the flag a
+`bridge` or `unrecorded` lane still renders exactly as it did before: those
+lanes are read back off their traces, they are reported with the hole they have,
+and nothing about them is retroactively re-graded.
 
 ## The prompts
 
@@ -1379,13 +1552,22 @@ run id — plus the conditions its runs are given. Moving only some of them woul
 grade one condition's patches into another condition's run id with nothing on
 disk saying so.
 
-| lane | archive | ledger | index | evaluator run id | network | effort |
-| --- | --- | --- | --- | --- | --- | --- |
-| `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` | `medium` |
-| `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` | `medium` |
-| `sealed-high` | `fullbench/codex-sealed-high/` | `codex-sealed-high-manifest.jsonl` | `r90sh` | `fullbench-codex-sealed-high` | `sealed` | `high` |
+| lane | archive | ledger | index | evaluator run id | network | effort | testbed |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` | `medium` | `bridge` |
+| `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` | `medium` | `bridge` |
+| `sealed-high` | `fullbench/codex-sealed-high/` | `codex-sealed-high-manifest.jsonl` | `r90sh` | `fullbench-codex-sealed-high` | `sealed` | `high` | `bridge` |
+| `none` | `fullbench/codex-none/` | `codex-none-manifest.jsonl` | `r90n` | `fullbench-codex-none` | `sealed` | `high` | `none` |
 
-**Every lane pins its own effort.** The two `medium` lanes ran while
+**The `none` lane is the ruling made into a condition.** It is `sealed-high`
+with the one hole closed: the same population, the same seal on codex's own
+tools, the same `high` effort, and a testbed container with no route out of the
+machine. It is the first lane whose sealed number needs no disclosure paragraph,
+because there is no in-container fetch to disclose. `./preflight-network.sh`
+runs before it, and `compare-codex-lanes.mjs --require none` gates the number
+that comes out of it. See [The sealed testbed](#the-sealed-testbed).
+
+**Every lane pins its own effort and its own testbed.** The two `medium` lanes ran while
 `run-instance-codex.sh` had that value written into it as a literal; the default
 is `high` now, so a lane that took the default would re-run at a condition its
 recorded rows were never measured under. Two lanes may therefore share a network
@@ -1539,6 +1721,14 @@ Closing the hole means running the tests somewhere the container cannot reach
 the network — a `--network none` testbed, or a proxy inside the container as
 well — and both change what the *other* arm was measured under, so neither is a
 change to make silently between two lanes of one comparison.
+
+**It is closed, as a new lane rather than a silent edit.** Will ruled on
+2026-08-24 that the testbed gets a proper sandbox so an agent cannot cheat.
+`SWB_TESTBED_NETWORK=none` is the default for everything from that date, the
+three lanes above pin `bridge` because that is what they were measured under,
+and the `none` lane is `sealed-high` re-run with the hole shut. Nothing above is
+re-graded: `r90s` and `r90sh` keep their numbers, their two void verdicts and
+this disclosure. See [The sealed testbed](#the-sealed-testbed).
 
 `django__django-13212` graded `eval error` on its first pass: the official
 evaluator's `make_test_spec` fetches `tests/requirements/py3.txt` from

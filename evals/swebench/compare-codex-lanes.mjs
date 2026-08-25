@@ -35,6 +35,14 @@
  *   contains and the proxy refusals they produced. An instance that attempted
  *   egress is listed by name whatever the outcome, because the reader of a
  *   sealed number is entitled to know where the seal was pushed on.
+ * - **A kernel seal is asserted, not described.** From 2026-08-24 a lane may run
+ *   its testbed container on `--network none`, and each run records what
+ *   `docker inspect` said its container was actually on. A lane whose ledger
+ *   claims `none` has to satisfy both halves — every row observed `none`, and
+ *   zero in-container fetches across every transcript — or `main` exits
+ *   non-zero. The second half is redundant under the first, which is the point:
+ *   the breach column comes out zero *by construction*, so a non-zero one means
+ *   the constraint did not hold somewhere the ledger did not see.
  *
  * It reads two codex ledgers, the flows ledger and the sealed lane's own
  * transcripts. No evaluator report, no journal, no clock, no network. Running it
@@ -169,29 +177,103 @@ const readLog = (logsDirectory, id) => {
   return readFileSync(path, "utf8")
 }
 
+/** The two testbed network conditions a run may have been measured under. */
+export const TESTBED_MODES = new Set(["none", "bridge"])
+
+/**
+ * What testbed network a lane was measured under, read off its own rows.
+ *
+ * Two fields, and the difference between them is the whole design.
+ * `testbedNetwork` is what the lane asked for and `testbedNetworkObserved` is
+ * what the run read back out of `docker inspect` at the moment it started its
+ * container. **The claim comes from the request and the assertion comes from
+ * the observation**, because a lane that judged itself by its own request would
+ * be checking a variable against itself, and a lane that took its claim from
+ * the observation could clear itself by failing to seal every single container.
+ *
+ * Four states, and the fourth is the interesting one:
+ *
+ * - `none` — the lane asked for `none`
+ * - `bridge` — the lane asked for `bridge`
+ * - `unrecorded` — no row carries either field. The three lanes that ran before
+ *   2026-08-24 are here, and they stay readable: their reports are the
+ *   trace-reading ones they always were, with the hole they always had.
+ * - `mixed` — the rows disagree, in either field, which is fatal on its own. A
+ *   lane measured under two testbed conditions is not one measurement, and no
+ *   arithmetic over it means anything.
+ *
+ * A row with no observation is `missing`, and it is counted apart from a row
+ * that observed `bridge`: one is a container that was networked and one is a
+ * container nothing checked. Both fail a `none` lane, for the same reason — a
+ * seal that was not measured was not sealed — but a reader repairing the lane
+ * needs to know which.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const testbed = (rows) => {
+  const requests = []
+  const observations = []
+  const missing = []
+  const unsealed = []
+  for (const row of rows) {
+    // A row the lane never attempted is not a row about a container. Only the
+    // instances this lane actually ran can say anything about its testbed.
+    if (!row.attempted) continue
+    const asked = TESTBED_MODES.has(row.testbedRequested) ? row.testbedRequested : undefined
+    const seen = TESTBED_MODES.has(row.testbedObserved) ? row.testbedObserved : undefined
+    if (asked !== undefined) requests.push(asked)
+    if (seen === undefined) {
+      missing.push({ id: row.id, requested: asked ?? "unrecorded" })
+      continue
+    }
+    observations.push(seen)
+    if (seen !== "none") unsealed.push({ id: row.id, observed: seen, requested: asked ?? "unrecorded" })
+  }
+  const askedFor = new Set(requests)
+  const seenOn = new Set(observations)
+  // Observations that disagree are `mixed` before anything else is read: two
+  // containers on two networks is two measurements whatever both rows asked
+  // for. Then the request, which is the lane's claim. Then the observation on
+  // its own, so a ledger written by a runner that records only the fact still
+  // reads as a lane rather than as an absence.
+  const claim = seenOn.size > 1 || askedFor.size > 1 ? "mixed"
+    : askedFor.size === 1 ? [...askedFor][0]
+    : seenOn.size === 1 ? [...seenOn][0]
+    : "unrecorded"
+  return { claim, observed: observations.length, missing, unsealed }
+}
+
 /**
  * The two codex lanes over the flows population.
  *
  * @category conversions
  * @since 0.1.0
  */
-export const compareLanes = ({ label = "`r90s` (sealed)", manifestPath, netPath, sealedPath, logsDirectory }) => {
+export const compareLanes = (
+  { label = "`r90s` (sealed)", logsDirectory, manifestPath, netPath, require: required, sealedPath }
+) => {
   const flows = population(manifestPath)
   const net = attempted(netPath)
   const sealed = attempted(sealedPath)
 
   const rows = flows.map(({ id, flowsVerdict }) => {
     const text = logsDirectory === undefined ? undefined : readLog(logsDirectory, id)
+    const sealedRow = sealed.get(id)
     return {
       id,
       excluded: isExcluded(id),
       flows: readVerdict(flowsVerdict),
       net: readVerdict(net.get(id)?.verdict),
-      sealed: readVerdict(sealed.get(id)?.verdict),
+      sealed: readVerdict(sealedRow?.verdict),
       netWall: net.get(id)?.wallSeconds,
-      sealedWall: sealed.get(id)?.wallSeconds,
+      sealedWall: sealedRow?.wallSeconds,
       netTokens: net.get(id)?.tokens,
-      sealedTokens: sealed.get(id)?.tokens,
+      sealedTokens: sealedRow?.tokens,
+      // The condition asked for, and the condition `docker inspect` reported.
+      attempted: sealedRow !== undefined,
+      testbedRequested: sealedRow?.testbedNetwork,
+      testbedObserved: sealedRow?.testbedNetworkObserved,
       egress: text === undefined ? undefined : egress(text)
     }
   })
@@ -201,6 +283,13 @@ export const compareLanes = ({ label = "`r90s` (sealed)", manifestPath, netPath,
   const count = (list, predicate) => list.filter(predicate).length
   const denominator = denominators(rows.map((row) => row.id))
 
+  // The kernel half of the seal. It is computed over every row the lane
+  // attempted, excluded ones included: an exclusion is a statement about a
+  // grading environment and never a licence to run one instance networked.
+  const sealedTestbed = testbed(rows)
+  const breachRows = rows.filter((row) => (row.egress?.breaches.length ?? 0) > 0)
+  const failures = sealFailures({ breaches: breachRows, required, testbedState: sealedTestbed })
+
   return {
     // Which sealed lane this is. The script reads whichever ledger and
     // transcripts it is pointed at, so the report has to name the lane it
@@ -208,6 +297,10 @@ export const compareLanes = ({ label = "`r90s` (sealed)", manifestPath, netPath,
     // quoted under another lane's conditions, which is the defect the lanes
     // exist to prevent.
     label,
+    // The condition the caller demanded, if any. `--require none` is how a lane
+    // is gated before a number is quoted out of it, and it is recorded so the
+    // report says whether it was asserted or merely described.
+    required,
     rows,
     excluded: denominator.excluded,
     totals: {
@@ -256,9 +349,66 @@ export const compareLanes = ({ label = "`r90s` (sealed)", manifestPath, netPath,
         searches: row.egress.webSearches.length,
         queries: row.egress.webSearches.slice(0, 6)
       })),
-      transcriptsRead: rows.filter((row) => row.egress !== undefined).length
+      transcriptsRead: rows.filter((row) => row.egress !== undefined).length,
+      testbed: sealedTestbed,
+      // The assertions a kernel-sealed lane has to satisfy. Empty is the pass,
+      // and `main` exits non-zero when it is not.
+      failures
     }
   }
+}
+
+/**
+ * What a lane's testbed condition obliges it to prove.
+ *
+ * A `bridge` or `unrecorded` lane owes nothing new: those are the lanes read
+ * back off their traces, reported with the hole they have, and nothing about
+ * them is retroactively re-graded. A `none` lane owes two things, and both are
+ * assertions rather than descriptions.
+ *
+ * `require` forces the `none` obligations whatever the ledger claims, which is
+ * how an operator gates a lane before quoting a number out of it. It is also
+ * the only way an `unrecorded` lane fails: without it, a lane that predates the
+ * field is reported and not judged.
+ *
+ * @category conversions
+ * @since 0.1.0
+ */
+export const sealFailures = ({ breaches, required, testbedState }) => {
+  const failures = []
+  if (testbedState.claim === "mixed") {
+    failures.push({
+      kind: "mixed testbed",
+      detail: "the lane's rows were measured under more than one testbed network, so it is not one measurement"
+    })
+  }
+  const asserted = required === "none" || testbedState.claim === "none"
+  if (!asserted) return failures
+  if (testbedState.claim === "unrecorded") {
+    failures.push({
+      kind: "unmeasured testbed",
+      detail: "`none` was required and no row in this lane recorded what its container was on"
+    })
+  }
+  for (const row of testbedState.unsealed) {
+    failures.push({
+      kind: "networked testbed",
+      detail: `${row.id} ran its testbed on '${row.observed}', not none`
+    })
+  }
+  for (const row of testbedState.missing) {
+    failures.push({
+      kind: "unmeasured testbed",
+      detail: `${row.id} recorded no observed testbed network (asked for '${row.requested}')`
+    })
+  }
+  for (const row of breaches) {
+    failures.push({
+      kind: "in-container egress",
+      detail: `${row.id} fetched from inside its testbed container, which a --network none container cannot do`
+    })
+  }
+  return failures
 }
 
 const verdictCell = (state) => (state.graded ? state.verdict : `_${state.verdict}_`)
@@ -270,7 +420,7 @@ const verdictCell = (state) => (state.graded ? state.verdict : `_${state.verdict
  * @since 0.1.0
  */
 export const render = (result) => {
-  const { excluded, movement, notComparable, rows, seal, totals } = result
+  const { excluded, movement, notComparable, required, rows, seal, totals } = result
   const label = result.label ?? "`r90s` (sealed)"
   // The narrow column header is the lane's index alone; the label's first
   // backticked token is it, so one flag names both.
@@ -301,6 +451,60 @@ export const render = (result) => {
     for (const row of notComparable) lines.push(`- \`${row.id}\` — network: ${row.net}, sealed: ${row.sealed}`)
     lines.push("")
   }
+  lines.push("## The testbed")
+  lines.push("")
+  const claim = seal.testbed.claim
+  const asserted = required === "none" || claim === "none"
+  if (claim === "none") {
+    lines.push(
+      `**\`--network none\`, observed on ${seal.testbed.observed} of the lane's containers.** Each run read`
+        + " `docker inspect` back off its own container and recorded what it said, so this is a kernel fact rather"
+        + " than a claim about a transcript. A container with no interface but `lo` cannot fetch an upstream patch"
+        + " whatever command is run inside it, which is the hole `r90s` and `r90sh` disclose and this lane does not"
+        + " have."
+    )
+  } else if (claim === "bridge") {
+    lines.push(
+      `**\`--network bridge\`, observed on ${seal.testbed.observed} of the lane's containers.** The testbed keeps`
+        + " the network on purpose so that test behaviour does not change with the condition, which leaves the"
+        + " `docker exec` hole open. The section below is what that costs, read off the transcripts."
+    )
+  } else if (claim === "mixed") {
+    lines.push(
+      "**The lane's rows disagree about what their containers were on.** A lane measured under two testbed"
+        + " conditions is not one measurement, and no rate over it means anything."
+    )
+  } else {
+    lines.push(
+      "**Unrecorded.** This lane ran before `SWB_TESTBED_NETWORK` existed, so no row says what its container was"
+        + " on. It is read back off its traces, below, and reported with the hole it has."
+    )
+  }
+  lines.push("")
+  if (seal.failures.length === 0) {
+    if (asserted) {
+      lines.push(
+        "**Sealed by construction.** Every row observed `none`, and no transcript contains an in-container fetch."
+          + " The second is redundant given the first, which is the point: the breach count below has to be zero,"
+          + " and a non-zero one would mean the constraint did not hold somewhere the ledger did not see."
+      )
+    }
+  } else {
+    lines.push("### The testbed was not sealed")
+    lines.push("")
+    lines.push(
+      `**${seal.failures.length} failed assertions.** ${
+        required === "none" ? "`--require none` was passed, so" : "This lane's rows claim `none`, so"
+      } every container had to be observed on \`none\` and no transcript could contain an in-container fetch.`
+        + " **No number in this report is a sealed number.**"
+    )
+    lines.push("")
+    lines.push("| what failed | detail |")
+    lines.push("| --- | --- |")
+    for (const failure of seal.failures) lines.push(`| ${failure.kind} | ${failure.detail} |`)
+    lines.push("")
+  }
+  lines.push("")
   lines.push("## Was the seal pushed on")
   lines.push("")
   lines.push(
@@ -402,21 +606,41 @@ const main = () => {
       process.exit(1)
     }
   }
+  // `--require none` asserts the kernel seal whatever the ledger claims, so an
+  // operator can gate a lane before quoting a number out of it. Nothing else is
+  // a condition worth demanding: `bridge` is the absence of the constraint.
+  const required = flag("--require", undefined)
+  if (required !== undefined && required !== "none") {
+    console.error(`compare-codex-lanes.mjs: --require takes 'none', got '${required}'`)
+    process.exit(2)
+  }
   const result = compareLanes({
     label: flag("--label", "`r90s` (sealed)"),
     manifestPath,
     netPath,
     sealedPath,
+    require: required,
     logsDirectory: existsSync(logsDirectory) ? logsDirectory : undefined
   })
   if (argv.includes("--json")) {
     process.stdout.write(`${JSON.stringify(result, undefined, 2)}\n`)
-    return
+  } else {
+    const markdown = render(result)
+    writeFileSync(join(out, "lanes.md"), markdown)
+    writeFileSync(join(out, "lanes.json"), `${JSON.stringify(result, undefined, 2)}\n`)
+    process.stdout.write(markdown)
   }
-  const markdown = render(result)
-  writeFileSync(join(out, "lanes.md"), markdown)
-  writeFileSync(join(out, "lanes.json"), `${JSON.stringify(result, undefined, 2)}\n`)
-  process.stdout.write(markdown)
+  // The lane fails the process, not just the prose. A report that printed "no
+  // number here is a sealed number" and exited 0 would be a report a script
+  // could quote from, and the whole point of a kernel seal is that it is checked
+  // rather than believed.
+  if (result.seal.failures.length > 0) {
+    console.error(
+      `compare-codex-lanes.mjs: ${result.seal.failures.length} failed testbed assertions — this lane is not sealed`
+    )
+    for (const failure of result.seal.failures) console.error(`  ${failure.kind}: ${failure.detail}`)
+    process.exit(1)
+  }
 }
 
 if (import.meta.filename === process.argv[1]) main()

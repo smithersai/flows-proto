@@ -88,10 +88,27 @@ trap - EXIT
 CAPTURE_BASE="$("$S/lib/snapshot-base.sh" "$WORK")"
 echo "[$RUN_ID] capture base $CAPTURE_BASE"
 
+# The testbed container's network, from the same place the flows side reads it,
+# and for the reason this arm made necessary: `SWB_CODEX_NETWORK=sealed` reaches
+# the commands codex spawns on the host and not the processes a
+# `docker exec <container> …` starts, so two of the 45 `r90s` runs fetched the
+# merged upstream fix from inside the container the seal did not cover.
+# `SWB_TESTBED_NETWORK=none` — the default since 2026-08-24 — removes the far
+# side of that command from the network entirely. `lib/testbed-network.sh` owns
+# the rule and records the docker-measured facts behind it.
+TESTBED_NETWORK="$("$S/lib/testbed-network.sh" resolve)" || exit 2
+
 docker rm -f "$CONTAINER" >/dev/null 2>&1
-docker run -d --platform linux/amd64 --name "$CONTAINER" \
+docker run -d --platform linux/amd64 --name "$CONTAINER" --network "$TESTBED_NETWORK" \
   -v "$WORK:/testbed" -w /testbed "$IMAGE" sleep infinity >/dev/null 2>&1 || {
   echo "[$RUN_ID] CONTAINER START FAILED"; exit 1; }
+
+# Read back off the live container, and fatal when it disagrees. A sealed lane's
+# whole claim is this line, and a claim a run cannot check is the defect the
+# `codex-sealed-websearch` lane already cost us once.
+TESTBED_OBSERVED="$("$S/lib/testbed-network.sh" assert "$CONTAINER" "$TESTBED_NETWORK")" || {
+  echo "[$RUN_ID] TESTBED NETWORK MISMATCH — asked for $TESTBED_NETWORK"; exit 1; }
+echo "[$RUN_ID] testbed network $TESTBED_OBSERVED"
 
 # The repository's own test runner, from the same place the flows side reads it.
 # It is environment teaching, not an answer — `lib/test-command.py` refuses to
@@ -230,8 +247,14 @@ CODE=$?
 END=$(date +%s)
 echo "[$RUN_ID] codex done in $((END-START))s (exit $CODE)"
 
-printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "model": "%s",\n  "budgetSeconds": %s,\n  "network": "%s",\n  "effort": "%s",\n  "exitCode": %s,\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s\n}\n' \
-  "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$MODEL" "$BUDGET" "$NETWORK" "$EFFORT" "$CODE" "$((START*1000))" "$((END*1000))" "$((END-START))" \
+# `network` is the seal on codex's own tools and `testbedNetwork` is the seal on
+# the container those tools can reach through `docker exec`. They are separate
+# conditions with separate holes, so a run records both — and records what
+# `docker inspect` observed as well as what the lane asked for, because the
+# scoreboard asserts on the observation.
+printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "model": "%s",\n  "budgetSeconds": %s,\n  "network": "%s",\n  "effort": "%s",\n  "testbedNetwork": "%s",\n  "testbedNetworkObserved": "%s",\n  "exitCode": %s,\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s\n}\n' \
+  "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$MODEL" "$BUDGET" "$NETWORK" "$EFFORT" \
+  "$TESTBED_NETWORK" "$TESTBED_OBSERVED" "$CODE" "$((START*1000))" "$((END*1000))" "$((END-START))" \
   > "$TIMINGS"
 
 "$S/lib/capture-patch.sh" "$WORK" "$PATCH" \

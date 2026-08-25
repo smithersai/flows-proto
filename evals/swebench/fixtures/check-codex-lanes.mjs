@@ -22,10 +22,13 @@
  *   told apart after the fact.
  * - **no two lanes share a set of conditions, and every lane pins all of
  *   them.** `sealed` and `sealed-high` share a network condition and differ in
- *   effort, which is the whole point of the second one; two lanes with the same
- *   pair would be one measurement under two names. A lane that left a condition
- *   to the runner's default would move when the default moves — which is exactly
- *   what happened to effort on 2026-08-23 — so both are written down per lane.
+ *   effort; `sealed-high` and `none` share a network condition *and* an effort
+ *   and differ in the testbed's own network, which is the whole point of the
+ *   third one. Two lanes with the same triple would be one measurement under two
+ *   names. A lane that left a condition to the runner's default would move when
+ *   the default moves — which is exactly what happened to effort on 2026-08-23,
+ *   and what the testbed's default did on 2026-08-24 — so all three are written
+ *   down per lane.
  *
  * The process half — claims, slots, pulls, grading, deletion — is
  * `./codex-backfill-dryrun.sh`, which needs docker.
@@ -100,14 +103,14 @@ const script = readFileSync(join(root, "codex-backfill.sh"), "utf8")
 const readme = readFileSync(join(root, "README.md"), "utf8")
 
 const declared = [...script.matchAll(
-  /^ {2}(?<lane>[a-z-]+)\)\n\s*FBC="\$FB\/(?<archive>[A-Za-z0-9_.-]+)"\n\s*CODEX_MANIFEST="\$FB\/(?<ledger>[A-Za-z0-9_.-]+)"\n\s*LANE_INDEX="(?<index>[A-Za-z0-9]+)"; LANE_RUN_ID="(?<runId>[A-Za-z0-9-]+)"; LANE_NETWORK="(?<network>[a-z]+)"; LANE_EFFORT="(?<effort>[a-z]+)" ;;$/gmu
+  /^ {2}(?<lane>[a-z-]+)\)\n\s*FBC="\$FB\/(?<archive>[A-Za-z0-9_.-]+)"\n\s*CODEX_MANIFEST="\$FB\/(?<ledger>[A-Za-z0-9_.-]+)"\n\s*LANE_INDEX="(?<index>[A-Za-z0-9]+)"; LANE_RUN_ID="(?<runId>[A-Za-z0-9-]+)"; LANE_NETWORK="(?<network>[a-z]+)"; LANE_EFFORT="(?<effort>[a-z]+)"; LANE_TESTBED="(?<testbed>[a-z]+)" ;;$/gmu
 )].map((match) => match.groups)
 
 assert.ok(declared.length >= 2, `the script declares at least two lanes, read ${declared.length}`)
 assert.deepEqual(
   declared.map((lane) => lane.lane).sort(),
-  ["net", "sealed", "sealed-high"],
-  "the lanes are net, sealed and sealed-high"
+  ["net", "none", "sealed", "sealed-high"],
+  "the lanes are net, sealed, sealed-high and none"
 )
 
 // The artifacts a lane writes have to be tellable apart after the fact.
@@ -117,17 +120,20 @@ for (const key of ["archive", "ledger", "index", "runId"]) {
 }
 
 // The conditions may overlap one at a time — `sealed` and `sealed-high` share a
-// network — but never as a whole, or two lanes would be one measurement under
-// two names.
-const conditions = declared.map((lane) => `${lane.network}/${lane.effort}`)
-assert.equal(new Set(conditions).size, conditions.length, "two lanes measure the same pair of conditions")
+// network, `sealed-high` and `none` share a network *and* an effort — but never
+// as a whole, or two lanes would be one measurement under two names. The tuple
+// grew to three on 2026-08-24, when the testbed's own network became a
+// condition; checking the old pair would now let `sealed-high` and `none` read
+// as one lane.
+const conditions = declared.map((lane) => `${lane.network}/${lane.effort}/${lane.testbed}`)
+assert.equal(new Set(conditions).size, conditions.length, "two lanes measure the same triple of conditions")
 
 for (const lane of declared) {
   const row = readme
     .split("\n")
     .find((line) => line.startsWith(`| \`${lane.lane}\``) && line.includes(lane.index))
   assert.ok(row !== undefined, `README documents the ${lane.lane} lane's index ${lane.index}`)
-  for (const value of [lane.ledger, lane.runId, lane.network, lane.effort]) {
+  for (const value of [lane.ledger, lane.runId, lane.network, lane.effort, lane.testbed]) {
     assert.ok(row.includes(value), `the README row for ${lane.lane} names ${value}`)
   }
   assert.ok(
@@ -202,5 +208,6 @@ assert.ok(
 rmSync(temporary, { recursive: true, force: true })
 console.log(
   "check-codex-lanes: a lane reads its own ledger, an unknown lane is refused, no two lanes share an artifact"
-    + " or a pair of conditions, every lane pins its effort, and the script's table is the README's."
+    + " or a triple of conditions, every lane pins its effort and its testbed, and the script's table is the"
+    + " README's."
 )

@@ -73,11 +73,12 @@ FB="${FB_DIR:-$S/fullbench}"
 # id and no artifact would say so. `run-45.sh` names its lanes the same way and
 # for the same reason.
 #
-# | lane | archive | ledger | index | evaluator run id | network | effort |
-# | --- | --- | --- | --- | --- | --- | --- |
-# | `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` | `medium` |
-# | `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` | `medium` |
-# | `sealed-high` | `fullbench/codex-sealed-high/` | `codex-sealed-high-manifest.jsonl` | `r90sh` | `fullbench-codex-sealed-high` | `sealed` | `high` |
+# | lane | archive | ledger | index | evaluator run id | network | effort | testbed |
+# | --- | --- | --- | --- | --- | --- | --- | --- |
+# | `net` (default) | `fullbench/codex/` | `codex-manifest.jsonl` | `r90c` | `fullbench-codex` | `on` | `medium` | `bridge` |
+# | `sealed` | `fullbench/codex-sealed/` | `codex-sealed-manifest.jsonl` | `r90s` | `fullbench-codex-sealed` | `sealed` | `medium` | `bridge` |
+# | `sealed-high` | `fullbench/codex-sealed-high/` | `codex-sealed-high-manifest.jsonl` | `r90sh` | `fullbench-codex-sealed-high` | `sealed` | `high` | `bridge` |
+# | `none` | `fullbench/codex-none/` | `codex-none-manifest.jsonl` | `r90n` | `fullbench-codex-none` | `sealed` | `high` | `none` |
 #
 # The lanes are a table rather than a name template: every one of them is a
 # claim about how a number may be quoted, and inventing `--lane whatever` on the
@@ -92,6 +93,18 @@ FB="${FB_DIR:-$S/fullbench}"
 # `sealed` with the effort moved to `high`, which is what the flows arm has
 # always run at — the whole point of the lane, and the reason two lanes may share
 # a network condition while no two share an artifact.
+#
+# **The testbed network is pinned the same way, and for the same reason.** The
+# three lanes above ran before 2026-08-24, when the testbed container kept the
+# network so that test behaviour would not change with the condition — and two
+# of the 45 `r90s` runs used exactly that, with a
+# `docker exec <container> curl …` that fetched the merged upstream fix. The
+# default is `none` now, and a lane that did not pin `bridge` would reproduce
+# an old number under a condition its rows were never measured under. The
+# `none` lane is `sealed-high` with the hole shut: same population, same seal on
+# codex's own tools, same effort, and a container with no route out of the
+# machine. `sealed-high` and `none` therefore share network *and* effort and
+# differ in the testbed, which is why the conditions are checked as a triple.
 # ---------------------------------------------------------------------------
 LANE="${SWB_CODEX_LANE:-net}"
 PREVIOUS=""
@@ -103,17 +116,21 @@ case "$LANE" in
   net)
     FBC="$FB/codex"
     CODEX_MANIFEST="$FB/codex-manifest.jsonl"
-    LANE_INDEX="r90c"; LANE_RUN_ID="fullbench-codex"; LANE_NETWORK="on"; LANE_EFFORT="medium" ;;
+    LANE_INDEX="r90c"; LANE_RUN_ID="fullbench-codex"; LANE_NETWORK="on"; LANE_EFFORT="medium"; LANE_TESTBED="bridge" ;;
   sealed)
     FBC="$FB/codex-sealed"
     CODEX_MANIFEST="$FB/codex-sealed-manifest.jsonl"
-    LANE_INDEX="r90s"; LANE_RUN_ID="fullbench-codex-sealed"; LANE_NETWORK="sealed"; LANE_EFFORT="medium" ;;
+    LANE_INDEX="r90s"; LANE_RUN_ID="fullbench-codex-sealed"; LANE_NETWORK="sealed"; LANE_EFFORT="medium"; LANE_TESTBED="bridge" ;;
   sealed-high)
     FBC="$FB/codex-sealed-high"
     CODEX_MANIFEST="$FB/codex-sealed-high-manifest.jsonl"
-    LANE_INDEX="r90sh"; LANE_RUN_ID="fullbench-codex-sealed-high"; LANE_NETWORK="sealed"; LANE_EFFORT="high" ;;
+    LANE_INDEX="r90sh"; LANE_RUN_ID="fullbench-codex-sealed-high"; LANE_NETWORK="sealed"; LANE_EFFORT="high"; LANE_TESTBED="bridge" ;;
+  none)
+    FBC="$FB/codex-none"
+    CODEX_MANIFEST="$FB/codex-none-manifest.jsonl"
+    LANE_INDEX="r90n"; LANE_RUN_ID="fullbench-codex-none"; LANE_NETWORK="sealed"; LANE_EFFORT="high"; LANE_TESTBED="none" ;;
   *)
-    echo "codex-backfill.sh: unknown lane '$LANE' — the lanes are net, sealed and sealed-high"; exit 2 ;;
+    echo "codex-backfill.sh: unknown lane '$LANE' — the lanes are net, sealed, sealed-high and none"; exit 2 ;;
 esac
 
 EVAL_RUN_ID="${SWB_CODEX_BACKFILL_RUN_ID:-$LANE_RUN_ID}"
@@ -122,7 +139,8 @@ INDEX="${SWB_CODEX_BACKFILL_INDEX:-$LANE_INDEX}"
 # that a child process has to be told rather than derive.
 SWB_CODEX_NETWORK="${SWB_CODEX_NETWORK:-$LANE_NETWORK}"
 SWB_CODEX_EFFORT="${SWB_CODEX_EFFORT:-$LANE_EFFORT}"
-export SWB_CODEX_NETWORK SWB_CODEX_EFFORT
+SWB_TESTBED_NETWORK="${SWB_TESTBED_NETWORK:-$LANE_TESTBED}"
+export SWB_CODEX_NETWORK SWB_CODEX_EFFORT SWB_TESTBED_NETWORK
 MODEL="${SWB_CODEX_MODEL:-gpt-5.6-sol}"
 MODEL_NAME="${SWB_MODEL_NAME:-codex-cli}"
 # The same per-instance budget the flows side was given by the full benchmark.
@@ -378,6 +396,7 @@ run_one() {
   append "$CODEX_MANIFEST" "$(row --kind instance --id "$ID" --state started --at "$STARTED_AT" \
     --run-id "$EVAL_RUN_ID" --index "$INDEX" --model "$MODEL" --budgetSeconds "$BUDGET" \
     --network "$SWB_CODEX_NETWORK" --effort "$SWB_CODEX_EFFORT" \
+    --testbedNetwork "$SWB_TESTBED_NETWORK" \
     --flows-verdict "$FLOWS_VERDICT" --flows-eval-error "$FLOWS_EVAL_ERROR" --pid $$)"
 
   # Purge whatever a dead attempt at this instance left behind, in the shared
@@ -456,6 +475,25 @@ run_one() {
   if [ -n "$TOKENS" ]; then OPTIONAL="$OPTIONAL --tokens $TOKENS"; fi
   if [ -n "$AGENT_SECONDS" ]; then OPTIONAL="$OPTIONAL --agentSeconds $AGENT_SECONDS"; fi
 
+  # What `docker inspect` said the testbed container was on, taken off the
+  # timings the run wrote rather than off the lane's own variable. The lane's
+  # variable is a request; this is the observation, and it is what
+  # `compare-codex-lanes.mjs` asserts a `none` lane against. A run that recorded
+  # nothing leaves the field absent, which the scoreboard treats as a failed
+  # assertion rather than as a pass — a lane cannot claim a seal it did not
+  # measure.
+  TESTBED_OBSERVED="$(node -e '
+    const fs = require("fs")
+    try {
+      const timings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+      const seen = timings.testbedNetworkObserved
+      process.stdout.write(seen === "none" || seen === "bridge" ? seen : "")
+    } catch { process.stdout.write("") }
+  ' "$FBC/timings/$ID.json" 2>/dev/null || printf '')"
+  if [ -n "$TESTBED_OBSERVED" ]; then
+    OPTIONAL="$OPTIONAL --testbedNetworkObserved $TESTBED_OBSERVED"
+  fi
+
   # Grade, immediately, into the one accumulating run id. Serialized across
   # invocations by the rig's evaluator lock, because `evaluate.sh` documents what
   # two concurrent evaluator processes do to each other's image cleanup — and the
@@ -527,6 +565,7 @@ run_one() {
     --image "$IMAGE" --image-state "$REMOVED" --run-id "$EVAL_RUN_ID" --index "$INDEX" \
     --model "$MODEL" --budgetSeconds "$BUDGET" \
     --network "$SWB_CODEX_NETWORK" --effort "$SWB_CODEX_EFFORT" \
+    --testbedNetwork "$SWB_TESTBED_NETWORK" \
     --flows-verdict "$FLOWS_VERDICT" --flows-eval-error "$FLOWS_EVAL_ERROR" \
     --freeMiB "$("$S/lib/disk-free.sh")" $OPTIONAL)"
   FLAG=""
@@ -590,7 +629,7 @@ case "$MODE" in
     fi
     require_auth
     COUNT="$(printf '%s\n' "$REMAINING" | wc -l | tr -d ' ')"
-    log backfill "lane $LANE ($SWB_CODEX_NETWORK network, $SWB_CODEX_EFFORT effort, index $INDEX, run id $EVAL_RUN_ID)"
+    log backfill "lane $LANE ($SWB_CODEX_NETWORK network, $SWB_CODEX_EFFORT effort, $SWB_TESTBED_NETWORK testbed, index $INDEX, run id $EVAL_RUN_ID)"
     log backfill "$COUNT instances to back fill, $JOBS at a time, $SLOTS docker slots, budget ${BUDGET}s each"
     FAILURES=0
     if [ "$JOBS" = "1" ]; then

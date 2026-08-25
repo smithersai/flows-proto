@@ -267,9 +267,27 @@ rm -rf -- "$JOURNAL"
 rm -f -- "$PATCH" "$PATCH.untracked" "$TIMINGS" "$LOG_PREFIX".*
 
 COST="$(node "$S/lib/run-cost.mjs" "$FB/journals/$ID" 2>/dev/null || printf '{}')"
+# What `docker inspect` said this instance's testbed container was on, taken off
+# the timings `run-instance.sh` wrote rather than off the driver's variable. The
+# variable is the request; this is the observation, and the flows arm records it
+# for the same reason the codex arm does — a lane's claim about its testbed is
+# worth what the container reported and nothing more.
+TESTBED_OBSERVED="$(node -e '
+  const fs = require("fs")
+  try {
+    const timings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+    const seen = timings.testbedNetworkObserved
+    process.stdout.write(seen === "none" || seen === "bridge" ? seen : "")
+  } catch { process.stdout.write("") }
+' "$FB/timings/$ID.json" 2>/dev/null || printf '')"
+TESTBED_ROW=""
+if [ -n "$TESTBED_OBSERVED" ]; then
+  TESTBED_ROW="--testbedNetworkObserved $TESTBED_OBSERVED"
+fi
 append "$MANIFEST" "$(row --kind instance --id "$ID" --state ran --at "$RUN_ENDED" \
   --image "$IMAGE" --exit "$RUN_STATUS" --patchBytes "$PATCH_BYTES" \
   --runStartedAt "$RUN_STARTED" --runEndedAt "$RUN_ENDED" \
+  --testbedNetwork "${SWB_TESTBED_NETWORK:-none}" $TESTBED_ROW \
   --wallSeconds "$(( (RUN_ENDED - RUN_STARTED) / 1000 ))" --cost-json "$COST")"
 
 # ---------------------------------------------------------------------------
