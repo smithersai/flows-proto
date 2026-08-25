@@ -63,13 +63,12 @@ workflow runs.
 
 The `CHECKLIST_*` env vars are auth material; never commit them.
 
-| Variable | Rows | What it is |
-| --- | --- | --- |
-| `CHECKLIST_SESSION_COOKIE` | §A (except A-1), §B, §C, §F, D-1, D-2, D-3 | Cookie header for a normal signed-in session |
-| `CHECKLIST_ZERO_BALANCE_BEARER` | D-4 | Cookie header for a session already parked at $0 |
-| `CHECKLIST_BILLING_UPSTREAM_URL` | §E | Billing upstream origin |
-| `CHECKLIST_BILLING_ADMIN_TOKEN` | E-2, E-3 | Billing upstream admin token |
-| `CHECKLIST_LOGIN` | A-8, A-9 | The checklist account's GitHub login. Optional: the runner reads it from `/api/auth/session` when unset. |
+| Variable                         | Rows                                       | What it is                                                                                               |
+| -------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `CHECKLIST_SESSION_COOKIE`       | §A (except A-1), §B, §C, §F, D-1, D-2, D-3 | Cookie header for a normal signed-in session                                                             |
+| `CHECKLIST_ZERO_BALANCE_BEARER`  | D-4                                        | Cookie header for a session already parked at $0                                                         |
+| `CHECKLIST_BILLING_UPSTREAM_URL` | §E                                         | Billing upstream origin                                                                                  |
+| `CHECKLIST_BILLING_ADMIN_TOKEN`  | E-2, E-3                                   | Billing upstream admin token                                                                             |
 
 Get the cookie headers from a real browser session (e.g.
 `launch-mint-session.ts`'s storage-state output, formatted as
@@ -119,12 +118,12 @@ signed-in allowlisted session, and answers the repo chooser, so the run needs no
 credential, no deployment, and no model spend. Each costs one vite build plus
 one wrangler boot, roughly a minute before the first assertion.
 
-| Script | Cost | What it proves |
-| --- | --- | --- |
-| `web-chat-hermetic-e2e.ts` | free | One prompt streams a scripted NDJSON reply through the Worker, and the hidden runtime context reaches the model without leaking into the transcript. |
-| `web-chat-context-e2e.ts` | free | The reply is derived from the runtime context, and a state change (the theme) reaches the NEXT turn on the wire and in the composed instructions. |
-| `web-chat-shell-e2e.ts` | free | World and Connectors open as embedded panes; the transcript and composer DOM nodes survive every transition, on a 1400px and a 700px window. |
-| `web-chat-e2e.ts` | **real model spend** | The same first-prompt journey against a real model. Boots the vite dev server if nothing answers the target. Never in CI — run it by hand or as a canary. |
+| Script                     | Cost                 | What it proves                                                                                                                                            |
+| -------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `web-chat-hermetic-e2e.ts` | free                 | One prompt streams a scripted NDJSON reply through the Worker, and the hidden runtime context reaches the model without leaking into the transcript.      |
+| `web-chat-context-e2e.ts`  | free                 | The reply is derived from the runtime context, and a state change (the theme) reaches the NEXT turn on the wire and in the composed instructions.         |
+| `web-chat-shell-e2e.ts`    | free                 | World and Connectors open as embedded panes; the transcript and composer DOM nodes survive every transition, on a 1400px and a 700px window.              |
+| `web-chat-e2e.ts`          | **real model spend** | The same first-prompt journey against a real model. Boots the vite dev server if nothing answers the target. Never in CI — run it by hand or as a canary. |
 
 `web-chat-hermetic-e2e.ts` and `web-chat-e2e.ts` are the two halves of one
 split (I-7). The live half asserts "some genuine streamed prose arrived", which
@@ -149,19 +148,9 @@ discovery the launch checklist uses.
 
 ### The suite resets what it dirties
 
-A-9 dismisses a recommendation, which is the row's whole point. Reco then
-suppresses that recommendation for seven days (its D5 rule), so before
-2026-08-18 a single run left A-8 grading a card that honestly said "nothing
-needs you right now" and A-9 with nothing to dismiss — for a week, and it
-read like a product defect. Both rows now lift the account's dismissals
-first, through `DELETE /api/admin/reco-dismissals?login=`, and every report
-carries what the reset did as the row's first line of evidence.
-
-The reset is admin-gated. A checklist session that is not an admin gets a
-404, the row records that in its evidence, and the run behaves exactly as it
-did before — so read A-8 and A-9's evidence before believing either one.
-The reco worker keeps its append-only feedback log through a reset: what was
-lifted is the suppression, not the record that it happened.
+Rows that write state (a grant, an allowlist entry, a watched selection) run
+against seams that record the write with attribution, so the report's
+evidence names what the row changed.
 
 ### A leftover `wrangler dev` outlives an interrupted run
 

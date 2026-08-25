@@ -643,18 +643,6 @@
 	font-size: 0.8125rem;
 	white-space: nowrap;
 }
-/* Inside the feedback log the same stamp is inline prose, not a row end. */
-.reco-log-entries .queue-at {
-	margin-left: 0;
-}
-.reco-log-entries {
-	list-style: none;
-	margin: 0;
-	padding: 0;
-	display: flex;
-	flex-direction: column;
-	gap: 0.25rem;
-}
 
 /* An empty state's next step is a flow, so it is a real affordance (§28.2). */
 .world-card-empty-action {

@@ -4,12 +4,12 @@ The deployable applications of the Smithers product, as pnpm workspace
 members (`apps/*` in `pnpm-workspace.yaml`). Formerly one package,
 `apps/mvp`; split 2026-08-15.
 
-| Package  | Name             | What it is                                                                                                                                       |
-| -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ui/`    | `smithers-ui`    | The Electrobun + React native app and pure-web UI. Vite builds to `ui/dist`. `src/dev/` is the vite dev/preview AgentApi middleware (not a deployable). |
-| `server/`| `smithers-server`| The Cloudflare Worker deployable (`smithers-mvp-web`, canary.smithers.sh). Serves `../ui/dist` assets and the `/api`, `/v1`, `/workflows` seams.   |
-| `shared/`| `smithers-shared`| The agent contract both sides import (`AgentContext`, `AgentApiRoutes`, `NativeAgent` frames, `Cards`, ...). Import as `smithers-shared/<Module>`. |
-| `tui/`   | `smithers-tui`   | The opentui (React) terminal chat client: a TUI clone of the app's chat against the same turn contract. Default transport is the chat upstream (CloudAgent semantics); `--origin`/`SMITHERS_TUI_ORIGIN` attaches through the Worker boundary. |
+| Package   | Name              | What it is                                                                                                                                                                                                                                    |
+| --------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui/`     | `smithers-ui`     | The Electrobun + React native app and pure-web UI. Vite builds to `ui/dist`. `src/dev/` is the vite dev/preview AgentApi middleware (not a deployable).                                                                                       |
+| `server/` | `smithers-server` | The Cloudflare Worker deployable (`smithers-mvp-web`, canary.smithers.sh). Serves `../ui/dist` assets and the `/api`, `/v1`, `/workflows` seams.                                                                                              |
+| `shared/` | `smithers-shared` | The agent contract both sides import (`AgentContext`, `AgentApiRoutes`, `NativeAgent` frames, `Cards`, ...). Import as `smithers-shared/<Module>`.                                                                                            |
+| `tui/`    | `smithers-tui`    | The opentui (React) terminal chat client: a TUI clone of the app's chat against the same turn contract. Default transport is the chat upstream (CloudAgent semantics); `--origin`/`SMITHERS_TUI_ORIGIN` attaches through the Worker boundary. |
 
 Deploy identity: the Worker's wrangler `name` stays `smithers-mvp-web`.
 Renaming it would deploy a fresh Worker and orphan the Durable Object
@@ -23,19 +23,19 @@ had no living source elsewhere and was promoted to `packages/chain`
 Product-level docs (`DESIGN.md`, `MIGRATION.md`, `WAVE*-RECEIPT.md`,
 `reports/`) live at this level because they cover UI and Worker waves
 alike. `UPSTREAMS.md` names the sibling Cloudflare Workers this product
-proxies — identity, billing, chat, recommendations — which live in a
+proxies — identity, billing, chat — which live in a
 different repository and are what a broken sign-in usually means.
 
 ## Running it locally
 
-| Command | From | What runs |
-| --- | --- | --- |
-| `pnpm dev` | repository root | The UI on `http://localhost:5173`. Forwards to `pnpm --filter smithers-ui run web`, so the `--configLoader runner` flag lives in one place. |
-| `pnpm --filter smithers-ui run serve:local` | anywhere | The UI built and served by `wrangler dev`, i.e. the UI **and** the product Worker together. Use this to exercise the `/api` seams. |
-| `pnpm --filter smithers-ui run build` | anywhere | The production bundle into `apps/ui/dist`, which the Worker serves as static assets. |
+| Command                                     | From            | What runs                                                                                                                                   |
+| ------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                                  | repository root | The UI on `http://localhost:5173`. Forwards to `pnpm --filter smithers-ui run web`, so the `--configLoader runner` flag lives in one place. |
+| `pnpm --filter smithers-ui run serve:local` | anywhere        | The UI built and served by `wrangler dev`, i.e. the UI **and** the product Worker together. Use this to exercise the `/api` seams.          |
+| `pnpm --filter smithers-ui run build`       | anywhere        | The production bundle into `apps/ui/dist`, which the Worker serves as static assets.                                                        |
 
 Dev rides the deployed seams. Everything the product Worker proxies in
-production (`/api/auth`, `/api/identity`, `/api/reco`, `/api/billing`,
+production (`/api/auth`, `/api/identity`, `/api/billing`,
 `/api/repos`, `/api/github`, `/api/user`, `/api/notifications`,
 `/api/workflow`, `/api/client-errors`) forwards to
 `https://canary.smithers.sh`, so the identity probe answers definitively
