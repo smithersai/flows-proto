@@ -182,6 +182,9 @@ node "$S/fixtures/check-compare-codex-lanes.mjs"
 echo "== the sealed testbed"
 node "$S/fixtures/check-testbed-network.mjs"
 
+echo "== one lane's seal, either arm"
+node "$S/fixtures/check-breach-scan.mjs"
+
 echo "== the program evidence a re-run report reads off its journals"
 node "$S/fixtures/check-program-evidence.mjs"
 

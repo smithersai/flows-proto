@@ -43,6 +43,7 @@ CLI wrapper, and the evaluator environment with it.
 | `codex-backfill.sh`        | One codex attempt on every instance the full benchmark graded        |
 | `codex-backfill-dryrun.sh` | Proves the backfill against real docker, with no model spend         |
 | `compare-codex-lanes.mjs`  | The codex arm with the network against the same arm sealed           |
+| `breach-scan.mjs`          | One lane's seal, either arm, asserted off its own ledger and traces  |
 | `regrade.sh`               | Re-grades a collected patch when the rig, not the patch, was at fault |
 | `lib/httpbin.sh`           | Decides and proves the httpbin the psf/requests family is graded against |
 | `run-45.sh`                | The re-run: the baseline's 45 instances again, on today's harness    |
@@ -354,6 +355,49 @@ operator can gate a lane before reading a number out of it. Without the flag a
 `bridge` or `unrecorded` lane still renders exactly as it did before: those
 lanes are read back off their traces, they are reported with the hole they have,
 and nothing about them is retroactively re-graded.
+
+### One lane's seal, either arm
+
+`compare-codex-lanes.mjs` asserts the seal as one column of a two-lane codex
+comparison. `breach-scan.mjs` asks the same question of a **single lane of
+either arm**, which is what a sealed *pair* of arms needs: a claim made for the
+codex lane is worth nothing unless the same evidence is produced for the flows
+lane, off the same patterns, in the same words.
+
+```sh
+node breach-scan.mjs --ledger fullbench/codex-none-manifest.jsonl \
+  --logs fullbench/codex-none/logs --require none --out fullbench/codex-none
+
+node breach-scan.mjs --ledger fullbench/rerun-r98/manifest.jsonl \
+  --logs fullbench/rerun-r98/logs --journals fullbench/rerun-r98/journals \
+  --require none --out fullbench/rerun-r98
+```
+
+It imports `egress`, `breaches` and `webSearches` from `compare-codex-lanes.mjs`
+rather than restating them, so the two reports cannot drift apart on what counts
+as an attempt or a breach. The one thing that differs per arm is **where the
+trace lives**: a codex run writes one transcript at `logs/<id>.run.log`, and a
+flows run writes a driver log of that name plus a journal at
+`journals/<id>/engine.db`, whose `flows_journal_events.payload_json` holds every
+call the agent made and every result it got back. A scan that read only the
+driver's log would clear every flows lane by looking in the wrong file, so both
+are read and concatenated.
+
+Four rules, and each is a way a scan could clear a lane it should fail:
+
+- **the assertion reads the observation, never the request.** A lane that asked
+  for `none` and ran on `bridge` fails, and so does a row that carries no
+  observation at all — an unmeasured container is not a sealed container.
+- **an untraced instance fails.** Scanning a missing file as the empty string is
+  how a lane clears itself by losing its evidence.
+- **a lane that recorded no condition is reported, not graded.** The three lanes
+  that predate the field print their counts under `Verdict: not asserted`, and
+  the word the sealed lanes earn is one they can never print.
+- **`mixed` fails a `--require none`.** A lane measured under two testbed
+  conditions is not one measurement.
+
+`fixtures/check-breach-scan.mjs` pins all four offline, and `./verify.sh` runs
+it.
 
 ## The prompts
 
