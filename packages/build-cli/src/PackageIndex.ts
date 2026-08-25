@@ -84,12 +84,47 @@ const collectReferences = (
   if (prototype !== Object.prototype && prototype !== null) return
   const tag = (value as { readonly _tag?: unknown })._tag
   const name = (value as { readonly name?: unknown }).name
-  if ((tag === "AgentRef" || tag === "FlagRef") && typeof name === "string") {
+  if ((tag === "AgentRef" || tag === "FlagRef" || tag === "HostBin") && typeof name === "string") {
     into.push({ tag, name })
   }
   for (const key of Object.getOwnPropertyNames(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
     if (descriptor !== undefined && "value" in descriptor) collectReferences(descriptor.value, into, seen)
+  }
+}
+
+/** Rules that may never be reachable through a `data` edge. */
+const illegalDataRules: ReadonlySet<string> = new Set(["Shell.Run", "Shell.Serve"])
+
+/**
+ * Enforces the data-edge law: `data` means materialize producer files, so a
+ * Run or Serve target reachable through a `data` attr — directly or through
+ * any dependency chain entered there — is a graph-load error, never a target
+ * that quietly executes as a side effect of materialization.
+ */
+const assertLegalDataClosure = (row: IndexedTarget): void => {
+  const attrs = Target.metadata(row.target).attrs
+  if (typeof attrs !== "object" || attrs === null) return
+  const descriptor = Object.getOwnPropertyDescriptor(attrs, "data")
+  if (descriptor === undefined || !("value" in descriptor)) return
+  const entries = new Set<Target.AnyTarget>()
+  collectTargets(descriptor.value, entries, new Set())
+  const seen = new Set<Target.AnyTarget>()
+  const stack = [...entries]
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (seen.has(current)) continue
+    seen.add(current)
+    const metadata = Target.metadata(current)
+    if (illegalDataRules.has(metadata.target)) {
+      throw new PackageError(
+        "illegal_data_target",
+        `${row.label} reaches a ${metadata.target} target through its data attr; ` +
+          "data means materialize producer files and may not execute Run or Serve targets",
+        { label: row.label }
+      )
+    }
+    for (const dependency of metadata.dependencies) stack.push(dependency)
   }
 }
 
@@ -259,6 +294,7 @@ export class PackageIndex {
     // or flag; an unknown name is a graph-load error.
     const agents = WorkspaceDeclaration.agentNames(graph.workspace)
     const flags = WorkspaceDeclaration.flagNames(graph.workspace)
+    const hostBins = new Set(graph.workspace.host === undefined ? [] : graph.workspace.host.bins)
     const visited = new Set<Target.AnyTarget>()
     const validateReferences = (target: Target.AnyTarget, label: string): void => {
       if (visited.has(target)) return
@@ -276,10 +312,22 @@ export class PackageIndex {
             label
           })
         }
+        if (reference.tag === "HostBin" && !hostBins.has(reference.name)) {
+          throw new PackageError(
+            "undeclared_host_bin",
+            `S.Host.bin(${
+              JSON.stringify(reference.name)
+            }) names no binary in the workspace S.Host({ bins }) declaration`,
+            { label }
+          )
+        }
       }
       for (const dependency of Target.metadata(target).dependencies) validateReferences(dependency, label)
     }
-    for (const row of rows) validateReferences(row.target, row.label)
+    for (const row of rows) {
+      validateReferences(row.target, row.label)
+      assertLegalDataClosure(row)
+    }
     rows.sort((left, right) => byCodeUnit(left.label, right.label))
     return new PackageIndex(
       graph.root,

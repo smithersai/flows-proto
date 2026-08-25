@@ -1,0 +1,1654 @@
+/**
+ * Package-mode planning and execution: the W2 execution core.
+ *
+ * Planning resolves every tool reference against the workspace (the
+ * resolutions are key material), expands declared inputs, and computes each
+ * node's content key through the shared injective encoder
+ * (`Planner.keyOf`). Execution reuses the existing keep-going scheduler
+ * (`Executor.schedule`), the shared exec implementation (`Exec.run`), and
+ * the workspace cache (`Cache.openCache`).
+ *
+ * W2 implements Shell.Build, Shell.Test, Shell.Run, Shell.Diff, Generate,
+ * Materialize, Clean, Suite, and Alias. Every other rule keeps a loud typed
+ * refusal: it plans (so its key is visible) and fails at execution.
+ *
+ * @since 0.1.0
+ */
+import * as Exec from "@smthrs/targets/Exec"
+import * as Input from "@smthrs/targets/Input"
+import * as Shell from "@smthrs/targets/Shell"
+import * as Target from "@smthrs/targets/Target"
+import * as Cause from "effect/Cause"
+import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
+import { minimatch } from "minimatch"
+import * as NodeFs from "node:fs"
+import * as Fs from "node:fs/promises"
+import * as NodePath from "node:path"
+import { performance } from "node:perf_hooks"
+import { openCache } from "./Cache.ts"
+import * as Diagnostic from "./Diagnostic.ts"
+import * as Executor from "./Executor.ts"
+import type * as PackageIndexModule from "./PackageIndex.ts"
+import * as PackageTree from "./PackageTree.ts"
+import * as Planner from "./Planner.ts"
+import type * as Workspace from "./Workspace.ts"
+
+const posix = (value: string): string => value.split(NodePath.sep).join("/")
+
+/**
+ * Cache-key salt for package-mode execution semantics.
+ *
+ * @category keys
+ * @since 0.1.0
+ */
+export const PACKAGE_EXECUTION_FORMAT = 1
+
+/**
+ * The mode one node executes under: `execute` for plain tool runs and
+ * builds, `check` for the non-mutating drift verdict of Diff and Generate,
+ * `write` for their applying form. Modes are distinct key material.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Mode = "execute" | "check" | "write"
+
+/**
+ * The invocation surface: a CLI verb, or `auto` for the bare-label form
+ * whose verb is implied by the target flavor.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type PackageVerb = "build" | "test" | "lint" | "run" | "auto"
+
+/** The rules the W2 executor implements. */
+const implementedRules: ReadonlySet<string> = new Set([
+  "Shell.Build",
+  "Shell.Test",
+  "Shell.Run",
+  "Shell.Diff",
+  "Generate",
+  "Materialize",
+  "Clean",
+  "Suite",
+  "Alias",
+  "Filegroup"
+])
+
+/** Rules whose default mode is the non-mutating check. */
+const checkModeRules: ReadonlySet<string> = new Set(["Shell.Diff", "Generate"])
+
+const refusalFor = (rule: string): string =>
+  `NotImplemented: ${rule} execution is a later capability lane; ` +
+  "W2 implements Shell.Build, Shell.Test, Shell.Run, Shell.Diff, Generate, Materialize, Clean, Suite, and Alias"
+
+/**
+ * One planned package-mode node. Structurally a {@link Planner.PlannedTarget}
+ * so the existing scheduler accepts the work list unchanged.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface PackageNode extends Planner.PlannedTarget {
+  readonly rule: string
+  readonly mode: Mode
+  readonly packagePath: string
+  readonly refusal: string | undefined
+  readonly sandbox: "none" | { readonly network?: boolean | undefined } | undefined
+  readonly secrets: ReadonlyArray<string>
+  readonly argv: ReadonlyArray<string> | undefined
+  /**
+   * The workspace-relative directory the tool spawns in. `bin`-form tools
+   * run from the declaring package (their configs resolve upward and their
+   * scope is the package); `command`, `bun`, and script forms run from the
+   * workspace root, which their text is written against.
+   */
+  readonly cwd: string
+  readonly env: Readonly<Record<string, string>>
+  readonly bunTemplate:
+    | { readonly template: string; readonly consts: Readonly<Record<string, string>>; readonly bunPath: string }
+    | undefined
+  readonly writeSet: ReadonlyArray<string>
+  readonly outDirs: ReadonlyArray<string>
+  readonly emit:
+    | ReadonlyArray<{
+      readonly path: string
+      readonly value: { readonly kind: "bytes"; readonly text: string } | {
+        readonly kind: "link"
+        readonly target: string
+      }
+    }>
+    | undefined
+  readonly members: ReadonlyArray<string>
+  readonly aliasOf: string | undefined
+  readonly materializeOf: string | undefined
+  readonly gateDeps: ReadonlyArray<string>
+  readonly cleanOutDirs: ReadonlyArray<string>
+  readonly cleanPaths: ReadonlyArray<string>
+}
+
+/**
+ * The inert plan report `--plan` prints in package mode.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface PlanReport {
+  readonly verb: string
+  readonly pattern: string
+  readonly roots: ReadonlyArray<string>
+  readonly targets: ReadonlyArray<{
+    readonly label: string
+    readonly rule: string
+    readonly mode: Mode
+    readonly key: string
+    readonly cacheable: boolean
+    readonly dependencies: ReadonlyArray<string>
+    readonly argv?: ReadonlyArray<string> | undefined
+    readonly refusal?: string | undefined
+  }>
+}
+
+/**
+ * Options accepted by {@link run}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface RunOptions {
+  readonly index: PackageIndexModule.PackageIndex
+  readonly cacheDirectory: string
+  readonly verb: PackageVerb
+  readonly pattern: string
+  readonly write?: boolean | undefined
+  readonly fix?: boolean | undefined
+  readonly plan?: boolean | undefined
+  readonly jobs?: number | undefined
+  readonly readCache?: boolean | undefined
+  readonly signal?: AbortSignal | undefined
+  readonly log?: ((line: string) => void) | undefined
+}
+
+/** Collects targets reachable inside one attr value, without user code. */
+const collectTargets = (value: unknown, into: Array<Target.AnyTarget>, seen: Set<object>): void => {
+  if (Target.isTarget(value)) {
+    into.push(value)
+    return
+  }
+  if (typeof value !== "object" || value === null || seen.has(value)) return
+  seen.add(value)
+  if (Array.isArray(value)) {
+    for (const entry of value) collectTargets(entry, into, seen)
+    return
+  }
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (descriptor !== undefined && "value" in descriptor) collectTargets(descriptor.value, into, seen)
+  }
+}
+
+/** Collects tagged records of one tag inside an attr value. */
+const collectTagged = (value: unknown, tag: string, into: Array<Record<string, unknown>>, seen: Set<object>): void => {
+  if (typeof value !== "object" || value === null || seen.has(value) || Target.isTarget(value)) return
+  seen.add(value)
+  if (Array.isArray(value)) {
+    for (const entry of value) collectTagged(entry, tag, into, seen)
+    return
+  }
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return
+  if ((value as { readonly _tag?: unknown })._tag === tag) into.push(value as Record<string, unknown>)
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (descriptor !== undefined && "value" in descriptor) collectTagged(descriptor.value, tag, into, seen)
+  }
+}
+
+const attrMember = (attrs: unknown, name: string): unknown => {
+  if (typeof attrs !== "object" || attrs === null) return undefined
+  const descriptor = Object.getOwnPropertyDescriptor(attrs, name)
+  return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined
+}
+
+const attrTargets = (attrs: unknown, name: string): ReadonlyArray<Target.AnyTarget> => {
+  const found: Array<Target.AnyTarget> = []
+  collectTargets(attrMember(attrs, name), found, new Set())
+  return found
+}
+
+/** One resolved tool: the executable path plus its key-material identity. */
+interface ResolvedTool {
+  readonly path: string
+  readonly identity: unknown
+}
+
+/** A tool that could not be resolved: the typed refusal plus its identity. */
+interface RefusedTool {
+  readonly refusal: string
+  readonly identity: unknown
+}
+
+type ToolOutcome = { readonly _tag: "resolved"; readonly tool: ResolvedTool } | {
+  readonly _tag: "refused"
+  readonly tool: RefusedTool
+}
+
+const binNameOf = (packageName: string, bin: string | undefined): string => {
+  if (bin !== undefined) return bin
+  const parts = packageName.split("/")
+  return parts[parts.length - 1]!
+}
+
+interface PlanContext {
+  readonly root: string
+  readonly cacheDirectory: string
+  readonly index: PackageIndexModule.PackageIndex
+  readonly signal: AbortSignal | undefined
+  readonly log: (line: string) => void
+  readonly flags: Readonly<Record<string, string>>
+  readonly managerBinary: string
+  readonly tools: Map<string, ToolOutcome>
+  readonly probes: Map<string, PackageTree.Probe>
+  readonly nodes: Map<string, PackageNode>
+  readonly privateLabels: WeakMap<Target.AnyTarget, string>
+  privateCounter: number
+  readonly visiting: Set<Target.AnyTarget>
+  readonly ambient: unknown
+  /**
+   * The mode each selected root is planned under, by label. `mode` is genuine
+   * key material and each mode is a distinct view, but the scheduler, the
+   * reports, and the cache all key by label, so one invocation plans one node
+   * per label. When a Diff or Generate target is both a check-mode dependency
+   * (or gate) and a `--write` root in the same invocation, the root's mode is
+   * authoritative: the single node runs and applies, which also satisfies the
+   * dependent that wanted it green. Cross-invocation mode views stay on
+   * distinct keys because each invocation plans the label in exactly one mode.
+   */
+  readonly rootModes: ReadonlyMap<string, Mode>
+}
+
+const probeOnce = async (context: PlanContext, path: string): Promise<PackageTree.Probe> => {
+  const known = context.probes.get(path)
+  if (known !== undefined) return known
+  const probe = await PackageTree.probeVersion(path)
+  context.probes.set(path, probe)
+  return probe
+}
+
+const moduleVersion = async (root: string, packageName: string): Promise<string | null> => {
+  try {
+    const manifest = NodePath.join(root, "node_modules", ...packageName.split("/"), "package.json")
+    const parsed = JSON.parse(await Fs.readFile(manifest, "utf8")) as { readonly version?: unknown }
+    return typeof parsed.version === "string" ? parsed.version : null
+  } catch {
+    return null
+  }
+}
+
+const resolveTool = async (context: PlanContext, reference: Record<string, unknown>): Promise<ToolOutcome> => {
+  const key = JSON.stringify(reference)
+  const known = context.tools.get(key)
+  if (known !== undefined) return known
+  const tag = reference["_tag"]
+  let outcome: ToolOutcome
+  if (tag === "NodeModuleBin") {
+    const packageName = String(reference["package"])
+    const bin = binNameOf(packageName, typeof reference["bin"] === "string" ? reference["bin"] : undefined)
+    const path = NodePath.join(context.root, "node_modules", ".bin", bin)
+    const version = await moduleVersion(context.root, packageName)
+    const identity = { tag: "NodeModuleBin", package: packageName, bin, version }
+    let executable = false
+    try {
+      await Fs.access(path, 1)
+      executable = true
+    } catch {
+      executable = false
+    }
+    outcome = executable
+      ? { _tag: "resolved", tool: { path, identity } }
+      : {
+        _tag: "refused",
+        tool: {
+          refusal: `node_modules binary not found: ${posix(NodePath.relative(context.root, path))} ` +
+            `(from S.NodeModule.Bin(${JSON.stringify(packageName)}))`,
+          identity: { ...identity, absent: true }
+        }
+      }
+  } else if (tag === "HostBin") {
+    const name = String(reference["name"])
+    const path = PackageTree.findOnPath(name)
+    if (path === undefined) {
+      outcome = {
+        _tag: "refused",
+        tool: {
+          refusal: `host binary ${JSON.stringify(name)} is declared in S.Host({ bins }) but is not present on PATH`,
+          identity: { tag: "HostBin", name, absent: true }
+        }
+      }
+    } else {
+      const probe = await probeOnce(context, path)
+      outcome = {
+        _tag: "resolved",
+        tool: {
+          path,
+          identity: { tag: "HostBin", name, path, probe: { exitCode: probe.exitCode, output: probe.output } }
+        }
+      }
+    }
+  } else if (tag === "PackageManagerBin") {
+    const name = context.managerBinary
+    const path = PackageTree.findOnPath(name)
+    if (path === undefined) {
+      outcome = {
+        _tag: "refused",
+        tool: {
+          refusal: `workspace package manager binary ${JSON.stringify(name)} is not present on PATH`,
+          identity: { tag: "PackageManagerBin", manager: name, absent: true }
+        }
+      }
+    } else {
+      const probe = await probeOnce(context, path)
+      outcome = {
+        _tag: "resolved",
+        tool: {
+          path,
+          identity: {
+            tag: "PackageManagerBin",
+            manager: name,
+            path,
+            probe: { exitCode: probe.exitCode, output: probe.output }
+          }
+        }
+      }
+    }
+  } else if (tag === "RuntimeBin") {
+    outcome = {
+      _tag: "resolved",
+      tool: { path: process.execPath, identity: { tag: "RuntimeBin", runtime: "node", version: process.version } }
+    }
+  } else if (tag === "RuntimeNpx") {
+    const path = PackageTree.findOnPath("npx")
+    if (path === undefined) {
+      outcome = {
+        _tag: "refused",
+        tool: {
+          refusal: "npx is not present on PATH",
+          identity: { tag: "RuntimeNpx", spec: reference["spec"], absent: true }
+        }
+      }
+    } else {
+      const probe = await probeOnce(context, path)
+      outcome = {
+        _tag: "resolved",
+        tool: {
+          path,
+          identity: {
+            tag: "RuntimeNpx",
+            spec: reference["spec"],
+            path,
+            probe: { exitCode: probe.exitCode, output: probe.output }
+          }
+        }
+      }
+    }
+  } else {
+    outcome = {
+      _tag: "refused",
+      tool: { refusal: `unknown tool reference: ${key}`, identity: { tag: "unknown", key } }
+    }
+  }
+  context.tools.set(key, outcome)
+  return outcome
+}
+
+const resolveBun = async (context: PlanContext): Promise<ToolOutcome> => {
+  const key = "{bun}"
+  const known = context.tools.get(key)
+  if (known !== undefined) return known
+  const path = PackageTree.findOnPath("bun")
+  let outcome: ToolOutcome
+  if (path === undefined) {
+    outcome = {
+      _tag: "refused",
+      tool: {
+        refusal: "bun is required for bun: templates but is not present on PATH",
+        identity: { tag: "Bun", absent: true }
+      }
+    }
+  } else {
+    const probe = await probeOnce(context, path)
+    outcome = {
+      _tag: "resolved",
+      tool: { path, identity: { tag: "Bun", path, probe: { exitCode: probe.exitCode, output: probe.output } } }
+    }
+  }
+  context.tools.set(key, outcome)
+  return outcome
+}
+
+const packagePathOf = (context: PlanContext, target: Target.AnyTarget): string => {
+  const source = Target.metadata(target).sourceFile
+  if (source !== undefined) {
+    const relative = NodePath.relative(context.root, NodePath.dirname(source))
+    if (relative === "") return ""
+    if (!relative.startsWith("..") && !NodePath.isAbsolute(relative)) return posix(relative)
+  }
+  return context.index.ownerOf(target) ?? ""
+}
+
+const labelOf = (context: PlanContext, target: Target.AnyTarget): string => {
+  const labeled = context.index.labelOf(target)
+  if (labeled !== undefined) return labeled
+  const known = context.privateLabels.get(target)
+  if (known !== undefined) return known
+  context.privateCounter += 1
+  const label = `//${packagePathOf(context, target)}:__private_${
+    Target.metadata(target).target.replace(/[^A-Za-z0-9]/g, "_")
+  }_${context.privateCounter}`
+  context.privateLabels.set(target, label)
+  return label
+}
+
+/** Expands and digests one target's declared inputs against its package. */
+const expandInputs = async (
+  context: PlanContext,
+  packagePath: string,
+  declarations: ReadonlyArray<Input.Declared>
+): Promise<ReadonlyArray<Workspace.ExpandedInput>> => {
+  const expanded: Array<Workspace.ExpandedInput> = []
+  for (const declaration of declarations) {
+    if (declaration._tag === "File") {
+      const path = Input.resolvePath(packagePath, declaration.path)
+      const digest = await Input.digestFile(NodePath.join(context.root, path), {
+        workspaceRoot: context.root,
+        signal: context.signal
+      })
+      const files = [{ path, digest }]
+      expanded.push({ declaration, files, digest: Input.digestText(JSON.stringify(files)) })
+      continue
+    }
+    if (declaration._tag === "Glob") {
+      const matches = await Input.expandGlob(context.root, packagePath, declaration, {
+        cacheDirectory: context.cacheDirectory,
+        signal: context.signal
+      })
+      const files = await Input.digestFiles(context.root, matches, { signal: context.signal })
+      expanded.push({ declaration, files, digest: Input.digestText(JSON.stringify(files)) })
+      continue
+    }
+    if (declaration._tag === "PnpmWorkspace") {
+      const matches = await Input.expandPnpmWorkspace(context.root, packagePath, declaration, {
+        cacheDirectory: context.cacheDirectory,
+        signal: context.signal
+      })
+      const files = await Input.digestFiles(context.root, matches, { signal: context.signal })
+      expanded.push({ declaration, files, digest: Input.digestText(JSON.stringify(files)) })
+      continue
+    }
+    expanded.push(await expandGitDiff(context, declaration))
+  }
+  return expanded
+}
+
+/** One `git diff --name-status -z` row. */
+interface DiffEntry {
+  readonly status: string
+  readonly path: string
+}
+
+const parseNameStatusZ = (raw: string): Array<DiffEntry> => {
+  const parts = raw.split("\0")
+  const entries: Array<DiffEntry> = []
+  for (let index = 0; index < parts.length; index += 1) {
+    const status = parts[index]!
+    if (status === "") continue
+    // Rename/copy rows carry two paths; the post-image is the second one.
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const post = parts[index + 2]
+      if (post !== undefined && post !== "") entries.push({ status, path: post })
+      index += 2
+      continue
+    }
+    const path = parts[index + 1]
+    if (path !== undefined && path !== "") entries.push({ status, path })
+    index += 1
+  }
+  return entries
+}
+
+/**
+ * Expands one declared git diff to key material: the filtered file digests
+ * plus the filtered patch bytes. `paths` narrows by glob; `added` narrows to
+ * added files matching its globs; `addedLines` contributes its source text
+ * (the patch already carries the lines).
+ */
+const expandGitDiff = async (
+  context: PlanContext,
+  declaration: Extract<Input.Declared, { readonly _tag: "GitDiff" }>
+): Promise<Workspace.ExpandedInput> => {
+  const base = Input.validateGitBase(declaration.base)
+  const raw = await PackageTree.runGit(context.root, [
+    "diff",
+    "--name-status",
+    "-z",
+    "--end-of-options",
+    base,
+    "--"
+  ])
+  const entries = parseNameStatusZ(raw)
+  const matchesAny = (path: string, patterns: ReadonlyArray<string>): boolean =>
+    patterns.some((pattern) => minimatch(path, pattern, { dot: true }))
+  const selected = entries.filter((entry) => {
+    if (declaration.paths !== undefined && !matchesAny(entry.path, declaration.paths)) return false
+    if (declaration.added !== undefined) {
+      if (!entry.status.startsWith("A")) return false
+      if (!matchesAny(entry.path, declaration.added)) return false
+    }
+    return true
+  })
+  const paths = selected.map((entry) => entry.path).sort()
+  const files = await Input.digestFiles(context.root, paths, { signal: context.signal })
+  const patch = paths.length === 0
+    ? ""
+    : await PackageTree.runGit(context.root, ["diff", "--binary", "--end-of-options", base, "--", ...paths])
+  return {
+    declaration,
+    files,
+    digest: Input.digestText(JSON.stringify({ patch, files, addedLines: declaration.addedLines ?? null }))
+  }
+}
+
+/** The non-glob directory prefix of one write-set pattern. */
+const staticPrefixOf = (pattern: string): string => {
+  const segments = pattern.split("/")
+  const kept: Array<string> = []
+  for (const segment of segments) {
+    if (/[*?{}[\]!]/.test(segment)) break
+    kept.push(segment)
+  }
+  return kept.join("/")
+}
+
+const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox"]): ReadonlyArray<string> => {
+  const capabilities = ["fs:read", "proc:spawn"]
+  if (mode === "write" || rule === "Shell.Build" || rule === "Materialize" || rule === "Clean") {
+    capabilities.push("fs:write")
+  }
+  if (sandbox === "none" || (typeof sandbox === "object" && sandbox.network === true)) capabilities.push("net:open")
+  return capabilities
+}
+
+interface VisitOptions {
+  readonly mode: Mode
+}
+
+const visit = async (
+  context: PlanContext,
+  target: Target.AnyTarget,
+  options: VisitOptions
+): Promise<PackageNode> => {
+  const label = labelOf(context, target)
+  const known = context.nodes.get(label)
+  if (known !== undefined) return known
+  if (context.visiting.has(target)) throw new Error(`target dependency cycle reaches ${label}`)
+  context.visiting.add(target)
+  const metadata = Target.metadata(target)
+  const rule = metadata.target
+  const packagePath = packagePathOf(context, target)
+  const attrs = metadata.attrs
+
+  // Dependencies: always visited for key material; the execution edges are a
+  // per-rule subset decided below.
+  const depKeys = new Map<Target.AnyTarget, string>()
+  const dependencyRows: Array<{ readonly label: string; readonly key: string }> = []
+  const depLabels = new Map<Target.AnyTarget, string>()
+  for (const dependency of metadata.dependencies) {
+    const depRule = Target.metadata(dependency).target
+    const depMode: Mode = checkModeRules.has(depRule) ? "check" : "execute"
+    const planned = await visit(context, dependency, { mode: depMode })
+    depKeys.set(dependency, planned.keyPreview)
+    depLabels.set(dependency, planned.label)
+    dependencyRows.push({ label: planned.label, key: planned.keyPreview })
+  }
+
+  const declaredInputs = await expandInputs(context, packagePath, metadata.inputs)
+  const inputDigests = new Map<Input.Declared, string>()
+  for (const expanded of declaredInputs) inputDigests.set(expanded.declaration, expanded.digest)
+
+  // Tool resolution. Everything resolved here is key material; a refusal is
+  // recorded on the node and fails the target at execution, typed and loud.
+  const toolchain: Array<unknown> = []
+  let refusal: string | undefined
+  const noteRefusal = (message: string): void => {
+    refusal ??= message
+  }
+  if (!implementedRules.has(rule)) {
+    noteRefusal(
+      rule === "Shell.Serve" ? "NotImplemented: Shell.Serve execution is a later lane (services)" : refusalFor(rule)
+    )
+  }
+  const services = attrTargets(attrs, "services")
+  if (services.length > 0 && rule !== "Shell.Serve") {
+    noteRefusal(`NotImplemented: ${rule} declares services, and the services edge is a later lane`)
+  }
+
+  const resolveToken = async (entry: string): Promise<string> => {
+    if (entry.startsWith("{smthrs:tool:") && entry.endsWith("}")) {
+      const reference = JSON.parse(entry.slice("{smthrs:tool:".length, -1)) as Record<string, unknown>
+      const outcome = await resolveTool(context, reference)
+      toolchain.push(outcome.tool.identity)
+      if (outcome._tag === "refused") {
+        noteRefusal(outcome.tool.refusal)
+        return entry
+      }
+      return outcome.tool.path
+    }
+    if (entry.startsWith("{smthrs:flag:") && entry.endsWith("}")) {
+      const name = entry.slice("{smthrs:flag:".length, -1)
+      const value = context.flags[name]
+      if (value === undefined) {
+        noteRefusal(`S.Flags.${name} names no declared workspace flag`)
+        return entry
+      }
+      // The reference in attrs keys the name; the workspace-declared value
+      // the argv actually receives is keyed here.
+      toolchain.push({ tag: "Flag", name, value })
+      return value
+    }
+    if (entry.startsWith("{smthrs:script:") && entry.endsWith("}")) {
+      const declared = entry.slice("{smthrs:script:".length, -1)
+      const resolved = Input.resolvePath(packagePath, declared)
+      try {
+        await Fs.access(NodePath.join(context.root, resolved))
+      } catch {
+        noteRefusal(`generator script not found: ${resolved}`)
+      }
+      return resolved
+    }
+    if (entry === Shell.bunToken) {
+      const outcome = await resolveBun(context)
+      toolchain.push(outcome.tool.identity)
+      if (outcome._tag === "refused") {
+        noteRefusal(outcome.tool.refusal)
+        return entry
+      }
+      return outcome.tool.path
+    }
+    return entry
+  }
+
+  // Per-rule extraction.
+  let argv: Array<string> | undefined
+  let env: Record<string, string> = {}
+  let bunTemplate: PackageNode["bunTemplate"]
+  let emit: PackageNode["emit"]
+  const writeSet: Array<string> = []
+  const outDirs: Array<string> = []
+  const members: Array<string> = []
+  let aliasOf: string | undefined
+  let materializeOf: string | undefined
+  const cleanOutDirs: Array<string> = []
+  const cleanPaths: Array<string> = []
+  const secrets: Array<string> = []
+  const secretRecords: Array<Record<string, unknown>> = []
+  collectTagged(attrMember(attrs, "secrets"), "Secret", secretRecords, new Set())
+  for (const record of secretRecords) {
+    if (typeof record["env"] === "string") secrets.push(record["env"])
+  }
+  const sandbox = attrMember(attrs, "sandbox") as PackageNode["sandbox"]
+
+  const changes = attrMember(attrs, "changes")
+  if (Array.isArray(changes)) {
+    for (const pattern of changes) {
+      if (typeof pattern === "string") writeSet.push(Input.resolvePath(packagePath, pattern))
+    }
+  }
+
+  // Every tool spawns from the workspace root: the observed declarations are
+  // written against it (root-relative config paths, `//`-anchored scripts,
+  // shell text naming workspace paths), and tools that resolve their config
+  // by walking upward behave identically. Package scoping happens through
+  // declared inputs and write sets, not the process cwd.
+  const cwd = "."
+  const isShellExec = rule === "Shell.Build" || rule === "Shell.Test" || rule === "Shell.Run" || rule === "Shell.Diff"
+  if (isShellExec && refusal === undefined) {
+    const shellAttrs = attrs as Shell.ExecAttrs
+    const payload = Shell.execPayload(shellAttrs)
+    env = { ...(payload.env as Record<string, string>) }
+    const resolved: Array<string> = []
+    for (const entry of payload.argv as ReadonlyArray<string>) resolved.push(await resolveToken(entry))
+    if (shellAttrs.bun !== undefined) {
+      const bun = await resolveBun(context)
+      const consts: Record<string, string> = {}
+      for (const [name, reference] of Object.entries(shellAttrs.using ?? {})) {
+        const outcome = await resolveTool(context, reference)
+        toolchain.push({ slot: `using:${name}`, identity: outcome.tool.identity })
+        if (outcome._tag === "refused") noteRefusal(outcome.tool.refusal)
+        else consts[name] = outcome.tool.path
+      }
+      if (bun._tag === "resolved" && refusal === undefined) {
+        bunTemplate = { template: shellAttrs.bun, consts, bunPath: bun.tool.path }
+      }
+    }
+    // A Diff tool that names no path in its declared args is pointed at its
+    // write set: the resolved patterns' static prefixes become trailing
+    // arguments. `prettier --write` alone formats nothing; with the write
+    // set's directory it formats exactly what the declaration confines it
+    // to.
+    if (
+      rule === "Shell.Diff" &&
+      shellAttrs.bin !== undefined &&
+      (shellAttrs.args ?? []).every((entry) => typeof entry !== "string" || entry.startsWith("-"))
+    ) {
+      const appended = new Set<string>()
+      for (const pattern of writeSet) {
+        const prefix = staticPrefixOf(pattern)
+        appended.add(prefix === "" ? "." : prefix)
+      }
+      for (const path of [...appended].sort()) resolved.push(path)
+    }
+    argv = resolved
+    if (rule === "Shell.Build") {
+      const declaredOut = attrMember(attrs, "outDirs")
+      if (Array.isArray(declaredOut)) {
+        for (const dir of declaredOut) {
+          if (typeof dir === "string") outDirs.push(Input.resolvePath(packagePath, dir))
+        }
+      }
+    }
+  }
+
+  if (rule === "Generate" && refusal === undefined) {
+    const script = attrMember(attrs, "script")
+    const emitAttr = attrMember(attrs, "emit")
+    const bin = attrMember(attrs, "bin")
+    if (script !== undefined && typeof (script as { readonly path?: unknown }).path === "string") {
+      const resolved: Array<string> = []
+      for (
+        const entry of [
+          Shell.toolToken({ _tag: "RuntimeBin" } as never),
+          Shell.scriptToken((script as { readonly path: string }).path)
+        ]
+      ) {
+        resolved.push(await resolveToken(entry))
+      }
+      argv = resolved
+    } else if (emitAttr !== undefined && typeof emitAttr === "object" && emitAttr !== null) {
+      const entries: Array<NonNullable<PackageNode["emit"]>[number]> = []
+      for (const [name, value] of Object.entries(emitAttr)) {
+        const path = Input.resolvePath(packagePath, name)
+        if (typeof value === "string") {
+          entries.push({ path, value: { kind: "bytes", text: value } })
+        } else if (
+          typeof value === "object" && value !== null &&
+          (value as { readonly _tag?: unknown })._tag === "Symlink"
+        ) {
+          entries.push({ path, value: { kind: "link", target: (value as { readonly path: string }).path } })
+        }
+        writeSet.push(path)
+      }
+      emit = entries
+    } else if (bin !== undefined) {
+      noteRefusal("NotImplemented: the Generate bin/stdout form is not implemented in W2")
+    }
+  }
+
+  if (rule === "Suite") {
+    for (const member of attrTargets(attrs, "tests")) members.push(depLabels.get(member) ?? labelOf(context, member))
+  }
+  if (rule === "Alias") {
+    const aliased = attrTargets(attrs, "target")[0]
+    if (aliased !== undefined) aliasOf = depLabels.get(aliased) ?? labelOf(context, aliased)
+  }
+  if (rule === "Materialize") {
+    const inner = attrTargets(attrs, "target")[0]
+    if (inner !== undefined) materializeOf = depLabels.get(inner) ?? labelOf(context, inner)
+  }
+  if (rule === "Clean") {
+    for (const cleaned of attrTargets(attrs, "targets")) {
+      const cleanedMetadata = Target.metadata(cleaned)
+      const cleanedPath = packagePathOf(context, cleaned)
+      const collectOut = (candidate: Target.AnyTarget, candidatePath: string): void => {
+        const declaredOut = attrMember(Target.metadata(candidate).attrs, "outDirs")
+        if (Array.isArray(declaredOut)) {
+          for (const dir of declaredOut) {
+            if (typeof dir === "string") cleanOutDirs.push(Input.resolvePath(candidatePath, dir))
+          }
+        }
+      }
+      collectOut(cleaned, cleanedPath)
+      // A filegroup of build targets contributes its members' outDirs.
+      for (const nested of cleanedMetadata.dependencies) collectOut(nested, packagePathOf(context, nested))
+    }
+    const paths = attrMember(attrs, "paths")
+    if (Array.isArray(paths)) {
+      for (const path of paths) {
+        if (typeof path === "string") cleanPaths.push(path)
+      }
+    }
+  }
+
+  // NodeModule dependency references key the installed package version.
+  const moduleRefs: Array<Record<string, unknown>> = []
+  collectTagged(attrs, "NodeModule", moduleRefs, new Set())
+  for (const reference of moduleRefs) {
+    const packageName = String(reference["package"])
+    toolchain.push({ tag: "NodeModule", package: packageName, version: await moduleVersion(context.root, packageName) })
+  }
+
+  // Current write-set state keys the check verdict: a hand-edited generated
+  // file or a removed emitted symlink must re-key the check.
+  let writeSetState: unknown = null
+  if (rule === "Generate" || rule === "Shell.Diff") {
+    if (emit !== undefined) {
+      const states: Array<unknown> = []
+      for (const entry of emit) {
+        const state = await PackageTree.pathState(NodePath.join(context.root, ...entry.path.split("/")))
+        states.push({ path: entry.path, state })
+      }
+      writeSetState = states
+    } else {
+      const states: Array<unknown> = []
+      for (const pattern of writeSet) {
+        const matches = await Input.expandGlob(context.root, "", pattern, {
+          cacheDirectory: context.cacheDirectory,
+          signal: context.signal
+        })
+        const files = await Input.digestFiles(context.root, matches, { signal: context.signal })
+        states.push({ pattern, digest: Input.digestText(JSON.stringify(files)) })
+      }
+      writeSetState = states
+    }
+  }
+
+  // The mode a target is planned under. A root's requested mode wins over the
+  // dependency mode an earlier visitor asked for, so a `--write` root that is
+  // also reached as a check-mode gate or dependency is planned once, in write
+  // mode, and applies. See `PlanContext.rootModes`.
+  const mode = context.rootModes.get(label) ?? options.mode
+  const gateDeps = attrTargets(attrs, "gates").map((gate) => depLabels.get(gate) ?? labelOf(context, gate))
+
+  // Execution edges: what must settle green before this node runs.
+  let executionDeps: Array<string>
+  if (rule === "Clean" || refusal !== undefined) {
+    executionDeps = []
+  } else if (rule === "Alias") {
+    executionDeps = aliasOf === undefined ? [] : [aliasOf]
+  } else if (rule === "Materialize") {
+    executionDeps = materializeOf === undefined ? [] : [materializeOf]
+  } else if (rule === "Suite") {
+    executionDeps = [...members]
+  } else {
+    executionDeps = [...new Set(dependencyRows.map((row) => row.label))]
+  }
+
+  const cacheable = refusal === undefined && (
+    (rule === "Shell.Test" && mode === "execute") ||
+    rule === "Shell.Build" ||
+    (rule === "Generate" && mode === "check")
+  )
+
+  const keyMaterial: Planner.KeyMaterial = {
+    body: {
+      flow: target._tag,
+      target: rule,
+      // `metadata.implementationDigest` is deliberately absent: function
+      // identity carries per-process entropy (closures cannot be inspected),
+      // so it can never answer a cross-process hit. The ambient
+      // implementation fingerprint in `inputs` covers every byte of the
+      // executor and rule implementations instead.
+      schemas: metadata.schemaIdentity,
+      mode,
+      cwd,
+      outputs: outDirs.length === 0 ? null : [...outDirs],
+      executionFormat: Planner.EXECUTION_FORMAT,
+      packageFormat: PACKAGE_EXECUTION_FORMAT
+    },
+    inputs: {
+      ambient: context.ambient,
+      attrs: Planner.attrsValue(attrs, depKeys, inputDigests),
+      declared: declaredInputs,
+      dependencies: dependencyRows,
+      toolchain,
+      writeSetState
+    },
+    layers: [],
+    capabilities: capabilitiesFor(rule, mode, sandbox)
+  }
+
+  // Key-material forensics: SMTHRS_DEBUG_KEYS=<file> appends every node's
+  // injective encoding, so two runs' keys can be diffed byte for byte.
+  if (process.env["SMTHRS_DEBUG_KEYS"] !== undefined) {
+    NodeFs.appendFileSync(
+      process.env["SMTHRS_DEBUG_KEYS"],
+      `=== ${label}\n${Planner.encodeKeyMaterial(keyMaterial)}\n`
+    )
+  }
+  const node: PackageNode = {
+    label,
+    target: rule,
+    kinds: metadata.kinds,
+    attrs,
+    dependencies: executionDeps,
+    declaredInputs,
+    declaredOutputs: undefined,
+    cacheable,
+    cacheLookup: "not-wired",
+    wouldRun: true,
+    keyMaterial,
+    keyPreview: Planner.keyOf(keyMaterial),
+    rule,
+    mode,
+    packagePath,
+    refusal,
+    sandbox,
+    secrets,
+    argv,
+    cwd,
+    env,
+    bunTemplate,
+    writeSet,
+    outDirs,
+    emit,
+    members,
+    aliasOf,
+    materializeOf,
+    gateDeps,
+    cleanOutDirs,
+    cleanPaths
+  }
+  context.visiting.delete(target)
+  context.nodes.set(label, node)
+  return node
+}
+
+/** The mode one root executes under, given the invocation. */
+const rootMode = (rule: string, options: RunOptions): Mode => {
+  if (!checkModeRules.has(rule)) return "execute"
+  if (options.write === true || options.fix === true) return "write"
+  if (options.verb === "run") return "write"
+  return "check"
+}
+
+const managerBinaryOf = (workspace: PackageIndexModule.PackageIndex["workspace"]): string => {
+  const manager = workspace.packageManager as { readonly _tag?: unknown; readonly name?: unknown }
+  if (manager._tag === "YarnPackageManager") return "yarn"
+  if (typeof manager.name === "string") return manager.name
+  return "pnpm"
+}
+
+/**
+ * One planned package-mode execution: the keyed nodes plus the scheduled
+ * work list.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface PackagePlan {
+  readonly roots: ReadonlyArray<string>
+  readonly workList: ReadonlyArray<PackageNode>
+  readonly nodes: ReadonlyMap<string, PackageNode>
+}
+
+/**
+ * Plans one package-mode invocation: resolves roots, walks the graph,
+ * resolves tools, and keys every node.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
+export const plan = async (options: RunOptions): Promise<PackagePlan> => {
+  const index = options.index
+  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`))
+  const rows = index.resolve(options.pattern)
+  const verb = options.verb
+  const selected = verb === "auto"
+    ? rows
+    : rows.filter((row) => Target.metadata(row.target).kinds.includes(verb))
+  if (verb !== "auto" && rows.length === 1 && selected.length === 0) {
+    throw new Error(`target selected by ${options.pattern} does not support the ${verb} verb`)
+  }
+  if (selected.length === 0) throw new Error(`no targets selected by ${options.pattern} for the ${verb} verb`)
+  // The mode each selected root is planned under. Computed before the walk so a
+  // target reached first as a dependency still adopts its root mode. A label
+  // appears at most once in `selected`, so this maps each root to one mode.
+  const rootModes = new Map<string, Mode>()
+  for (const row of selected) {
+    rootModes.set(row.label, rootMode(Target.metadata(row.target).target, options))
+  }
+  const workspace = index.workspace
+  const lockfilePath = (workspace.packageManager as { readonly lockfile?: { readonly path?: unknown } }).lockfile?.path
+  const lockfileDigest = typeof lockfilePath === "string"
+    ? await Input.digestFile(NodePath.join(index.root, Input.resolvePath("", lockfilePath)), {
+      workspaceRoot: index.root,
+      signal: options.signal
+    })
+    : undefined
+  const context: PlanContext = {
+    root: index.root,
+    cacheDirectory: options.cacheDirectory,
+    index,
+    signal: options.signal,
+    log,
+    flags: workspace.flags?.flags ?? {},
+    managerBinary: managerBinaryOf(workspace),
+    tools: new Map(),
+    probes: new Map(),
+    nodes: new Map(),
+    privateLabels: new WeakMap(),
+    privateCounter: 0,
+    visiting: new Set(),
+    rootModes,
+    ambient: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      lockfile: lockfileDigest ?? null,
+      implementation: await Planner.implementationFingerprint(options.signal)
+    }
+  }
+  const roots: Array<string> = []
+  for (const row of selected) {
+    const rule = Target.metadata(row.target).target
+    const node = await visit(context, row.target, { mode: rootMode(rule, options) })
+    roots.push(node.label)
+  }
+  // The work list is the closure of the roots over execution edges only;
+  // key-only dependencies (a Clean's targets, a refused rule's attrs) stay
+  // planned but unscheduled.
+  const workLabels = new Set<string>()
+  const queue = [...roots]
+  while (queue.length > 0) {
+    const label = queue.pop()!
+    if (workLabels.has(label)) continue
+    workLabels.add(label)
+    const node = context.nodes.get(label)
+    if (node === undefined) throw new Error(`planned execution edge names an unplanned node: ${label}`)
+    for (const dependency of node.dependencies) queue.push(dependency)
+    for (const gate of node.gateDeps) queue.push(gate)
+  }
+  const workList = [...workLabels].map((label) => context.nodes.get(label)!)
+  return { roots, workList, nodes: context.nodes }
+}
+
+/** Renders a duration for status lines. */
+const formatDuration = (durationMs: number): string =>
+  durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${Math.round(durationMs)}ms`
+
+const sandboxProfile = "(version 1)(allow default)(deny network*)"
+
+const wrapSandbox = (
+  argv: ReadonlyArray<string>,
+  sandbox: PackageNode["sandbox"],
+  label: string,
+  log: (line: string) => void
+): ReadonlyArray<string> => {
+  if (sandbox === "none") return argv
+  if (typeof sandbox === "object" && sandbox !== null && sandbox.network === true) return argv
+  if (process.platform !== "darwin") {
+    log(`${label}  sandbox: unenforced on this platform`)
+    return argv
+  }
+  return ["/usr/bin/sandbox-exec", "-p", sandboxProfile, ...argv]
+}
+
+const execErrorText = (error: Exec.ExecError): string => {
+  const stderr = error.stderr.trim()
+  const stdout = error.stdout.trim()
+  const detail = stderr !== "" ? stderr : stdout
+  return `command failed (exit ${error.exitCode}): ${error.argv.join(" ")}${detail === "" ? "" : `\n${detail}`}`
+}
+
+interface ExecOutcome {
+  readonly ok: boolean
+  readonly error?: string | undefined
+  readonly result?: Exec.Result | undefined
+}
+
+/**
+ * Executes one planned package-mode work list with keep-going scheduling.
+ *
+ * @category execution
+ * @since 0.1.0
+ */
+export const execute = async (
+  planned: PackagePlan,
+  options: RunOptions
+): Promise<Executor.Summary> => {
+  const index = options.index
+  const root = index.root
+  const cacheDirectory = options.cacheDirectory
+  const jobs = Executor.resolveJobs(options.jobs)
+  const readCache = options.readCache ?? true
+  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`))
+  const startedAt = performance.now()
+  const store = await openCache({ workspaceRoot: root, cacheDirectory, warn: log })
+  const reports = new Map<string, Executor.TargetReport>()
+  const notGreen = new Set<string>()
+  const byLabel = new Map(planned.workList.map((node) => [node.label, node]))
+
+  const report = (entry: Executor.TargetReport): void => {
+    reports.set(entry.label, entry)
+    const line = `${entry.label}  ${entry.status}  ${formatDuration(entry.durationMs)}`
+    log(entry.error === undefined ? line : `${line}  ${entry.error}`)
+  }
+
+  const spawnNode = async (node: PackageNode, workspaceRoot: string): Promise<ExecOutcome> => {
+    if (node.argv === undefined) return { ok: false, error: `${node.rule} planned no executable` }
+    const secretEnv: Record<string, string> = {}
+    for (const name of node.secrets) {
+      const value = process.env[name]
+      if (value === undefined) {
+        return {
+          ok: false,
+          error: `missing secret: environment variable ${name} is not set (declared as S.Secret(${
+            JSON.stringify(name)
+          }))`
+        }
+      }
+      secretEnv[name] = value
+    }
+    let argv = [...node.argv]
+    if (node.bunTemplate !== undefined) {
+      const directory = NodePath.join(root, ...cacheDirectory.split("/"), "tmp")
+      await Fs.mkdir(directory, { recursive: true })
+      const program = NodePath.join(directory, `bun-${node.keyPreview.slice(0, 16)}.ts`)
+      const lines = [
+        `import { $ } from "bun"`,
+        ...Object.entries(node.bunTemplate.consts).map(([name, path]) => `const ${name} = ${JSON.stringify(path)}`),
+        node.bunTemplate.template,
+        ""
+      ]
+      await Fs.writeFile(program, lines.join("\n"), "utf8")
+      argv = argv.map((entry) => entry === Shell.bunProgramToken ? program : entry)
+    }
+    const wrapped = wrapSandbox(argv, node.sandbox, node.label, log)
+    const payload: Exec.Payload = {
+      cwd: node.cwd,
+      argv: wrapped as [string, ...Array<string>],
+      env: { ...node.env, ...secretEnv },
+      secrets: [],
+      expectedExitCodes: [0],
+      timeoutMs: Shell.packageExecTimeoutMs
+    }
+    const exit = await Effect.runPromiseExit(
+      Exec.run({ workspaceRoot, cacheDirectory }, payload),
+      { signal: options.signal }
+    )
+    if (Exit.isSuccess(exit)) return { ok: true, result: exit.value }
+    // Exec.run fails only with ExecError; render whatever the cause carries.
+    const value: unknown = Cause.squash(exit.cause)
+    if (
+      typeof value === "object" && value !== null &&
+      (value as { readonly _tag?: unknown })._tag === "smithers-build/ExecError"
+    ) {
+      return { ok: false, error: execErrorText(value as Exec.ExecError) }
+    }
+    return { ok: false, error: Diagnostic.message(value, "tool run failed") }
+  }
+
+  const decodeBuildOutput = (output: unknown): ReadonlyArray<PackageTree.OutDirManifest> | undefined => {
+    if (typeof output !== "object" || output === null) return undefined
+    if ((output as { readonly kind?: unknown }).kind !== "build") return undefined
+    const manifests = (output as { readonly manifests?: unknown }).manifests
+    if (!Array.isArray(manifests)) return undefined
+    const decoded: Array<PackageTree.OutDirManifest> = []
+    for (const manifest of manifests) {
+      const valid = PackageTree.decodeManifest(manifest)
+      if (valid === undefined) return undefined
+      decoded.push(valid)
+    }
+    return decoded
+  }
+
+  // A cache entry's own `outDir` is untrusted (a shared remote, a backup, a
+  // hand edit). `decodeManifest` already confines it to a workspace-relative
+  // path with no `..`, but a valid-looking outDir that the target never
+  // declared must still not drive a materialize: the decoded set is required
+  // to be exactly the target's declared output roots before any tree is
+  // written or rename-swapped, so a poisoned entry cannot place bytes over a
+  // directory this target does not own.
+  const manifestsBindToDeclared = (
+    manifests: ReadonlyArray<PackageTree.OutDirManifest>,
+    declared: ReadonlyArray<string>
+  ): boolean => {
+    const declaredSet = new Set(declared)
+    if (manifests.length !== declaredSet.size) return false
+    const seen = new Set<string>()
+    for (const manifest of manifests) {
+      if (!declaredSet.has(manifest.outDir) || seen.has(manifest.outDir)) return false
+      seen.add(manifest.outDir)
+    }
+    return true
+  }
+
+  const cacheGet = async (node: PackageNode): Promise<{ readonly output: unknown } | undefined> => {
+    if (!readCache || !node.cacheable) return undefined
+    const cached = await store.get(node.keyPreview).catch(() => null)
+    if (cached === null || !cached.exitOk || cached.target !== node.rule || cached.label !== node.label) {
+      return undefined
+    }
+    return { output: cached.output }
+  }
+
+  const cachePut = async (node: PackageNode, output: unknown): Promise<void> => {
+    if (!node.cacheable) return
+    await store.put(node.keyPreview, {
+      key: node.keyPreview,
+      target: node.rule,
+      label: node.label,
+      exitOk: true,
+      output,
+      storedAt: new Date().toISOString()
+    }).catch((cause: unknown) => {
+      log(`smthrs: could not store ${node.label} in the cache: ${Diagnostic.message(cause)}`)
+    })
+  }
+
+  const matchesWriteSet = (path: string, patterns: ReadonlyArray<string>): boolean =>
+    patterns.some((pattern) => minimatch(path, pattern, { dot: true }) || path === pattern)
+
+  /** Runs one mutating tool with mechanical write-set confinement. */
+  const runWriteEnforced = async (node: PackageNode): Promise<ExecOutcome> => {
+    const snapshot = await PackageTree.snapshotTree(root, cacheDirectory)
+    // Git omits gitignored paths, so a cheap content-free guard records them
+    // separately; an out-of-set write to a gitignored path would otherwise be
+    // invisible to the change set and never reverted.
+    const ignored = await PackageTree.snapshotIgnored(root, cacheDirectory)
+    // Git cannot see a write that lands through an in-workspace symlink whose
+    // real target leaves the workspace; those portals are measured directly.
+    const portals = await PackageTree.snapshotPortals(
+      root,
+      cacheDirectory,
+      (link) => log(`${node.label}  portal left unconfined (target too large): ${link}`)
+    )
+    try {
+      const spawned = await spawnNode(node, root)
+      const changed = await PackageTree.changedSinceSnapshot(snapshot, cacheDirectory)
+      const changedIgnored = await PackageTree.changedIgnored(ignored, cacheDirectory)
+      // Any write through an escaping-symlink portal is out of the workspace and
+      // therefore out of any write-set; it is reverted whether the run passed
+      // or failed.
+      const escapedPortals = await PackageTree.revertChangedPortals(portals)
+      if (!spawned.ok) {
+        // A failed apply reverts everything it touched: a partial write from
+        // a tool that then errored is not a state anyone asked for.
+        for (const path of changed) await PackageTree.revertPath(snapshot, path)
+        for (const path of changedIgnored) {
+          const resolved = PackageTree.resolveChangedPath(root, path)
+          if (resolved === undefined || !matchesWriteSet(resolved, node.writeSet)) {
+            await PackageTree.revertIgnored(ignored, path)
+          }
+        }
+        return spawned
+      }
+      const outOfSet: Array<string> = []
+      for (const path of changed) {
+        const resolved = PackageTree.resolveChangedPath(root, path)
+        if (resolved === undefined || !matchesWriteSet(resolved, node.writeSet)) outOfSet.push(path)
+      }
+      for (const path of outOfSet) await PackageTree.revertPath(snapshot, path)
+      const ignoredOutOfSet: Array<string> = []
+      for (const path of changedIgnored) {
+        const resolved = PackageTree.resolveChangedPath(root, path)
+        if (resolved === undefined || !matchesWriteSet(resolved, node.writeSet)) {
+          await PackageTree.revertIgnored(ignored, path)
+          ignoredOutOfSet.push(path)
+        }
+      }
+      const offenders = [...outOfSet, ...ignoredOutOfSet, ...escapedPortals]
+      if (offenders.length > 0) {
+        return {
+          ok: false,
+          error: `wrote outside its declared write-set (reverted): ${offenders.join(", ")}`
+        }
+      }
+      return { ok: true }
+    } finally {
+      await PackageTree.releaseSnapshot(snapshot)
+      await PackageTree.releasePortals(portals)
+    }
+  }
+
+  /** Runs one check-mode tool against a scratch copy and reports drift. */
+  const runCheckViaScratch = async (node: PackageNode): Promise<ExecOutcome> => {
+    // The scratch copy carries the real tree's escaping symlinks verbatim, so a
+    // dry-run write through one lands in the same external target the real tree
+    // points at. Measure those portals against the real tree: check mode must
+    // never touch it.
+    const portals = await PackageTree.snapshotPortals(
+      root,
+      cacheDirectory,
+      (link) => log(`${node.label}  portal left unconfined (target too large): ${link}`)
+    )
+    const scratch = await PackageTree.scratchCopy(root, cacheDirectory)
+    try {
+      const spawned = await spawnNode(node, scratch)
+      const escapedPortals = await PackageTree.revertChangedPortals(portals)
+      if (!spawned.ok) return spawned
+      if (escapedPortals.length > 0) {
+        return {
+          ok: false,
+          error: `check touched the real tree through a symlink (reverted): ${escapedPortals.join(", ")}`
+        }
+      }
+      const drift: Array<string> = []
+      for (const pattern of node.writeSet) {
+        const realFiles = await Input.expandGlob(root, "", pattern, {
+          cacheDirectory,
+          signal: options.signal
+        })
+        const scratchFiles = await Input.expandGlob(scratch, "", pattern, {
+          cacheDirectory,
+          signal: options.signal
+        })
+        const paths = [...new Set([...realFiles, ...scratchFiles])].sort()
+        for (const path of paths) {
+          const realState = await PackageTree.pathState(NodePath.join(root, ...path.split("/")))
+          const scratchState = await PackageTree.pathState(NodePath.join(scratch, ...path.split("/")))
+          const same = JSON.stringify(realState) === JSON.stringify(scratchState)
+          if (!same) drift.push(path)
+        }
+      }
+      if (drift.length > 0) {
+        return { ok: false, error: `drift in declared write-set (run with --write to apply): ${drift.join(", ")}` }
+      }
+      return { ok: true }
+    } finally {
+      await Fs.rm(scratch, { recursive: true, force: true })
+      await PackageTree.releasePortals(portals)
+    }
+  }
+
+  const runEmit = async (node: PackageNode): Promise<ExecOutcome> => {
+    const entries = node.emit ?? []
+    if (node.mode === "write") {
+      for (const entry of entries) {
+        const absolute = NodePath.join(root, ...entry.path.split("/"))
+        await Fs.mkdir(NodePath.dirname(absolute), { recursive: true })
+        await Fs.rm(absolute, { force: true })
+        if (entry.value.kind === "link") await Fs.symlink(entry.value.target, absolute)
+        else await Fs.writeFile(absolute, entry.value.text, "utf8")
+      }
+      return { ok: true }
+    }
+    const wrong: Array<string> = []
+    for (const entry of entries) {
+      const state = await PackageTree.pathState(NodePath.join(root, ...entry.path.split("/")))
+      if (entry.value.kind === "link") {
+        if (state.kind !== "link" || state.target !== entry.value.target) wrong.push(entry.path)
+      } else if (
+        state.kind !== "file" ||
+        state.digest !== PackageTree.digestBytes(Buffer.from(entry.value.text, "utf8"))
+      ) {
+        wrong.push(entry.path)
+      }
+    }
+    if (wrong.length > 0) {
+      return { ok: false, error: `drift in declared emit outputs (run with --write to apply): ${wrong.join(", ")}` }
+    }
+    return { ok: true }
+  }
+
+  const runOne = async (label: string): Promise<void> => {
+    const node = byLabel.get(label)!
+    const started = performance.now()
+    const fail = (error: string): void => {
+      notGreen.add(label)
+      report({
+        label,
+        target: node.rule,
+        status: "failed",
+        durationMs: performance.now() - started,
+        key: node.keyPreview,
+        error
+      })
+    }
+    const green = (status: "hit" | "ran"): void => {
+      report({
+        label,
+        target: node.rule,
+        status,
+        durationMs: performance.now() - started,
+        key: node.keyPreview
+      })
+    }
+    // A red gate is a refusal with the gate report attached; a red data or
+    // plain dependency skips the consumer. A suite aggregates its members
+    // instead of skipping.
+    if (node.rule !== "Suite") {
+      const redGate = node.gateDeps.find((gate) => notGreen.has(gate))
+      if (redGate !== undefined) {
+        const gateReport = node.gateDeps
+          .map((gate) => `${gate}=${reports.get(gate)?.status ?? "unscheduled"}`)
+          .join(", ")
+        return fail(`refused: gate ${redGate} is not green (gates: ${gateReport})`)
+      }
+      const blocked = node.dependencies.find((dependency) => notGreen.has(dependency))
+      if (blocked !== undefined) {
+        notGreen.add(label)
+        report({
+          label,
+          target: node.rule,
+          status: "skipped",
+          durationMs: 0,
+          key: node.keyPreview,
+          error: `dependency ${blocked} did not succeed`
+        })
+        return
+      }
+    }
+    if (node.refusal !== undefined) return fail(node.refusal)
+    try {
+      switch (node.rule) {
+        case "Filegroup":
+          return green("ran")
+        case "Suite": {
+          const line = node.members
+            .map((member) => `${member}=${reports.get(member)?.status ?? "unscheduled"}`)
+            .join(", ")
+          const red = node.members.filter((member) => {
+            const status = reports.get(member)?.status
+            return status !== "hit" && status !== "ran"
+          })
+          if (red.length > 0) return fail(`suite is red; members: ${line}`)
+          log(`${node.label}  members: ${line}`)
+          return green("ran")
+        }
+        case "Alias": {
+          if (node.aliasOf === undefined) return fail("alias names no target")
+          const status = reports.get(node.aliasOf)?.status
+          if (status !== "hit" && status !== "ran") return fail(`aliased target ${node.aliasOf} did not succeed`)
+          return green("ran")
+        }
+        case "Materialize": {
+          if (node.materializeOf === undefined) return fail("materialize names no target")
+          const producer = planned.nodes.get(node.materializeOf)
+          if (producer === undefined) return fail(`materialize target ${node.materializeOf} was not planned`)
+          const cached = await store.get(producer.keyPreview).catch(() => null)
+          const manifests = cached !== null && cached.exitOk ? decodeBuildOutput(cached.output) : undefined
+          if (manifests !== undefined) {
+            // Bind the untrusted manifests to the producer's declared outputs
+            // before materializing any of them: a cache entry whose outDir is a
+            // valid relative path the producer never declared must not
+            // rename-swap a directory this target does not own.
+            if (!manifestsBindToDeclared(manifests, producer.outDirs)) {
+              return fail(
+                `cannot materialize: cached manifests for ${producer.label} do not match its declared outDirs`
+              )
+            }
+            for (const manifest of manifests) {
+              const matches = await PackageTree.treeMatchesManifest(root, manifest)
+              if (matches === undefined) continue
+              const blobProblem = await PackageTree.verifyManifestBlobs(root, cacheDirectory, manifest)
+              if (blobProblem !== undefined) return fail(`cannot materialize: ${blobProblem}`)
+              await PackageTree.materializeManifest(root, cacheDirectory, manifest)
+            }
+            return green("ran")
+          }
+          // No captured manifest: the producer ran in this invocation, so its
+          // declared outDirs must exist on disk.
+          for (const outDir of producer.outDirs) {
+            try {
+              const stats = await Fs.stat(NodePath.join(root, ...outDir.split("/")))
+              if (!stats.isDirectory()) return fail(`declared outDir is not a directory: ${outDir}`)
+            } catch {
+              return fail(`no artifacts available to materialize: ${outDir} is absent`)
+            }
+          }
+          return green("ran")
+        }
+        case "Clean": {
+          for (const outDir of node.cleanOutDirs) {
+            await Fs.rm(NodePath.join(root, ...outDir.split("/")), { recursive: true, force: true })
+          }
+          for (const declared of node.cleanPaths) {
+            let absolute: string
+            try {
+              absolute = Exec.resolveWorkspacePath(root, declared)
+            } catch (cause) {
+              return fail(`clean path refused: ${Diagnostic.message(cause)}`)
+            }
+            await Fs.rm(absolute, { recursive: true, force: true })
+          }
+          return green("ran")
+        }
+        case "Shell.Build": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined) {
+            const manifests = decodeBuildOutput(cached.output)
+            if (manifests !== undefined && manifestsBindToDeclared(manifests, node.outDirs)) {
+              let usable = true
+              for (const manifest of manifests) {
+                const problem = await PackageTree.verifyManifestBlobs(root, cacheDirectory, manifest)
+                if (problem !== undefined) {
+                  log(`${node.label}  cache miss: ${problem}`)
+                  usable = false
+                  break
+                }
+              }
+              if (usable) {
+                for (const manifest of manifests) {
+                  await PackageTree.materializeManifest(root, cacheDirectory, manifest)
+                }
+                return green("hit")
+              }
+            }
+          }
+          const spawned = await spawnNode(node, root)
+          if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
+          const manifests: Array<PackageTree.OutDirManifest> = []
+          for (const outDir of node.outDirs) {
+            manifests.push(await PackageTree.captureOutDir(root, cacheDirectory, outDir))
+          }
+          await cachePut(node, { kind: "build", manifests })
+          return green("ran")
+        }
+        case "Shell.Test": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined) return green("hit")
+          const spawned = await spawnNode(node, root)
+          if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
+          await cachePut(node, { kind: "shell-test" })
+          return green("ran")
+        }
+        case "Shell.Run": {
+          const spawned = await spawnNode(node, root)
+          if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
+          return green("ran")
+        }
+        case "Shell.Diff": {
+          const outcome = node.mode === "write" ? await runWriteEnforced(node) : await runCheckViaScratch(node)
+          if (!outcome.ok) return fail(outcome.error ?? "diff run failed")
+          return green("ran")
+        }
+        case "Generate": {
+          if (node.emit !== undefined) {
+            const outcome = await runEmit(node)
+            if (!outcome.ok) return fail(outcome.error ?? "generate failed")
+            if (node.mode === "check") await cachePut(node, { kind: "generate-check" })
+            return green("ran")
+          }
+          if (node.mode === "check") {
+            const cached = await cacheGet(node)
+            if (cached !== undefined) return green("hit")
+            const outcome = await runCheckViaScratch(node)
+            if (!outcome.ok) return fail(outcome.error ?? "generate check failed")
+            await cachePut(node, { kind: "generate-check" })
+            return green("ran")
+          }
+          const outcome = await runWriteEnforced(node)
+          if (!outcome.ok) return fail(outcome.error ?? "generate failed")
+          return green("ran")
+        }
+        default:
+          return fail(refusalFor(node.rule))
+      }
+    } catch (cause) {
+      return fail(Diagnostic.message(cause, "target failed"))
+    }
+  }
+
+  try {
+    await Executor.schedule(planned.workList, jobs, runOne, options.signal)
+  } finally {
+    await store.close().catch(() => undefined)
+  }
+
+  const results = planned.workList
+    .map((node) => reports.get(node.label))
+    .filter((entry): entry is Executor.TargetReport => entry !== undefined)
+  const counts = {
+    hit: results.filter((entry) => entry.status === "hit").length,
+    ran: results.filter((entry) => entry.status === "ran").length,
+    failed: results.filter((entry) => entry.status === "failed").length,
+    skipped: results.filter((entry) => entry.status === "skipped").length
+  }
+  const durationMs = performance.now() - startedAt
+  log(
+    `${results.length} targets: ${counts.hit} hit, ${counts.ran} ran, ` +
+      `${counts.failed} failed, ${counts.skipped} skipped (${formatDuration(durationMs)})`
+  )
+  return {
+    verb: options.verb,
+    pattern: options.pattern,
+    jobs,
+    durationMs,
+    counts,
+    ok: counts.failed === 0,
+    results
+  }
+}
+
+/**
+ * Plans and, unless `--plan` asked for the inert report, executes one
+ * package-mode invocation.
+ *
+ * @category execution
+ * @since 0.1.0
+ */
+export const run = async (options: RunOptions): Promise<Executor.Summary | PlanReport> => {
+  const planned = await plan(options)
+  if (options.plan === true) {
+    return {
+      verb: options.verb,
+      pattern: options.pattern,
+      roots: planned.roots,
+      targets: planned.workList.map((node) => ({
+        label: node.label,
+        rule: node.rule,
+        mode: node.mode,
+        key: node.keyPreview,
+        cacheable: node.cacheable,
+        dependencies: node.dependencies,
+        ...(node.argv === undefined ? {} : { argv: node.argv }),
+        ...(node.refusal === undefined ? {} : { refusal: node.refusal })
+      }))
+    }
+  }
+  return execute(planned, options)
+}
