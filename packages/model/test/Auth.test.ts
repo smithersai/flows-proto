@@ -26,4 +26,15 @@ describe("Auth", () => {
     const error = await Effect.runPromise(Auth.bearer(Redacted.make("")).sign({}).pipe(Effect.flip))
     expect(error).toMatchObject({ code: "authentication" })
   })
+
+  it("treats the ChatGPT account id as credential-shaped, and the client identity headers as public", () => {
+    // The account id must never enter step keys, journals, or diagnostics, so
+    // it rides through Auth; the codex client identity headers are route
+    // identity and stay public.
+    expect(Auth.isCredentialName("chatgpt-account-id")).toBe(true)
+    expect(Auth.isCredentialName("ChatGPT-Account-Id")).toBe(true)
+    expect(Auth.isCredentialName("chatgpt_account_id")).toBe(true)
+    expect(Auth.isCredentialName("originator")).toBe(false)
+    expect(Auth.isCredentialName("openai-beta")).toBe(false)
+  })
 })

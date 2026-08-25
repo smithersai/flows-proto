@@ -14,12 +14,16 @@ import { ModelError } from "./ModelError.ts"
  * parameters, and structured bodies so the sealed-step boundary and logging
  * boundary cannot disagree.
  *
+ * `chatgpt-account-id` names an account rather than a secret, but it is an
+ * identity the ChatGPT-subscription route must keep out of step keys, journals,
+ * and diagnostics, so it is matched here and applied through {@link Auth}.
+ *
  * @since 0.1.0
  * @category constants
  * @slop
  */
 export const credentialNamePattern =
-  /authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|credential|password|passphrase|passwd|signature|x-amz-signature|cookie|set[-_]?cookie/i
+  /authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|credential|password|passphrase|passwd|signature|x-amz-signature|cookie|set[-_]?cookie|chatgpt[-_]?account[-_]?id/i
 
 /**
  * Reports whether a field name conventionally carries credentials.
@@ -44,8 +48,17 @@ export type Redacted<A = string> = EffectRedacted.Redacted<A>
  * view has been created. This is the redaction boundary: credentials never
  * enter the harness step key, and signing never logs their values.
  *
- * OAuth is intentionally out of scope; the package README describes that
- * boundary.
+ * `sign` may hold rotating state — an OAuth token store is one — but every
+ * dependency it needs (host filesystem, HTTP, clock) is captured at
+ * construction time: the type has no requirements channel, and the host that
+ * composes the route owns the store. The constructors here are the static
+ * cases; token-store auths live with their hosts.
+ *
+ * `refresh` is the optional reactive half of such a store. When present,
+ * `Route.stream` runs it after an `authentication` failure and retries the
+ * signed request exactly once, so an access token that expired between
+ * proactive checks costs one recovery rather than the sealed step. A static
+ * credential leaves it undefined and a bad key stays terminal.
  *
  * @since 0.1.0
  * @category models
@@ -53,6 +66,7 @@ export type Redacted<A = string> = EffectRedacted.Redacted<A>
  */
 export interface Auth {
   readonly sign: (headers: Record<string, string>) => Effect.Effect<Record<string, string>, ModelError>
+  readonly refresh?: Effect.Effect<void, ModelError> | undefined
 }
 
 const secret = (key: Redacted<string>): Effect.Effect<string, ModelError> =>

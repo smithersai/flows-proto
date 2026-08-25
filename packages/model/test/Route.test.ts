@@ -529,3 +529,93 @@ describe("Route.stream", () => {
     expect(events).toEqual([])
   })
 })
+
+describe("Route.stream refresh", () => {
+  const refusal = () => new ModelError({ code: "authentication", message: "expired", httpStatus: 401 })
+
+  const countingExecutor = (
+    respond: (attempt: number, httpRequest: HttpClientRequest.HttpClientRequest) => Effect.Effect<Response, ModelError>
+  ) => {
+    const seen: Array<HttpClientRequest.HttpClientRequest> = []
+    const executor = RequestExecutor.RequestExecutor.of({
+      execute: (httpRequest) => {
+        seen.push(httpRequest)
+        return respond(seen.length, httpRequest).pipe(
+          Effect.map((response) => HttpClientResponse.fromWeb(httpRequest, response))
+        )
+      }
+    })
+    return { executor, seen }
+  }
+
+  const refreshingAuth = () => {
+    let token = "stale-token"
+    let refreshes = 0
+    const auth: Auth.Auth = {
+      sign: (headers) => Effect.sync(() => ({ ...headers, Authorization: `Bearer ${token}` })),
+      refresh: Effect.sync(() => {
+        refreshes += 1
+        token = "fresh-token"
+      })
+    }
+    return { auth, count: () => refreshes }
+  }
+
+  const withAuth = (auth: Auth.Auth) =>
+    Route.make({
+      id: "refreshing",
+      protocol,
+      endpoint: endpoint({ url: "https://example.test" }),
+      auth,
+      framing: Framing.sse
+    })
+
+  it("refreshes and re-signs exactly once after an authentication failure", async () => {
+    const { auth, count } = refreshingAuth()
+    const { executor, seen } = countingExecutor((attempt) =>
+      attempt === 1 ? Effect.fail(refusal()) : Effect.succeed(sseResponse(["[DONE]"]))
+    )
+
+    const events = await collect(withAuth(auth), executor)
+
+    expect(events).toEqual([])
+    expect(count()).toBe(1)
+    expect(seen.map((request) => request.headers.authorization)).toEqual([
+      "Bearer stale-token",
+      "Bearer fresh-token"
+    ])
+  })
+
+  it("surfaces the second authentication failure rather than retrying again", async () => {
+    const { auth, count } = refreshingAuth()
+    const { executor, seen } = countingExecutor(() => Effect.fail(refusal()))
+
+    const error = await drainError(withAuth(auth), executor)
+
+    expect(error).toMatchObject({ code: "authentication", httpStatus: 401 })
+    expect(count()).toBe(1)
+    expect(seen).toHaveLength(2)
+  })
+
+  it("keeps a static credential terminal: no refresh, one attempt", async () => {
+    const { executor, seen } = countingExecutor(() => Effect.fail(refusal()))
+
+    const error = await drainError(withAuth(Auth.bearer(Redacted.make("static-key"))), executor)
+
+    expect(error).toMatchObject({ code: "authentication" })
+    expect(seen).toHaveLength(1)
+  })
+
+  it("does not treat other failures as refreshable", async () => {
+    const { auth, count } = refreshingAuth()
+    const { executor, seen } = countingExecutor(() =>
+      Effect.fail(new ModelError({ code: "rate_limited", message: "slow down", httpStatus: 429 }))
+    )
+
+    const error = await drainError(withAuth(auth), executor)
+
+    expect(error).toMatchObject({ code: "rate_limited" })
+    expect(count()).toBe(0)
+    expect(seen).toHaveLength(1)
+  })
+})

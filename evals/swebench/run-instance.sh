@@ -30,6 +30,15 @@ SEAT="${2:-openai:gpt-5.6-sol}"
 BUDGET="${3:-1200}"
 INDEX="${4:-}"
 DATASET="${SWB_DATASET:-$S/swb-verified.json}"
+# How the seat authenticates, handed down from the driver. `chatgpt` points the
+# flows CLI at the codex session (ChatGPT plan) instead of OPENAI_API_KEY; the
+# seat string is unchanged, so pricing stays on the committed table — derived,
+# not billed. Recorded in the timings JSON so every instance names its basis.
+OPENAI_AUTH="${SWB_FLOWS_OPENAI_AUTH:-api-key}"
+case "$OPENAI_AUTH" in
+  api-key|chatgpt) ;;
+  *) echo "[$INSTANCE] SWB_FLOWS_OPENAI_AUTH must be 'api-key' or 'chatgpt', got '$OPENAI_AUTH'"; exit 2 ;;
+esac
 
 if [ ! -f "$DATASET" ]; then
   echo "[$INSTANCE] no dataset at $DATASET — run ./bootstrap.sh first"; exit 1
@@ -208,7 +217,7 @@ if [ "${SWB_SKIP_AGENT:-0}" = "1" ]; then
   echo "[$RUN_ID] SWB_SKIP_AGENT=1 — no agent, capture proof only"
   RUN_STATUS=0
 else
-  echo "[$RUN_ID] agent start ($SEAT, ${BUDGET}s)"
+  echo "[$RUN_ID] agent start ($SEAT via $OPENAI_AUTH, ${BUDGET}s)"
   START=$(date +%s)
   set +e
   (
@@ -223,6 +232,7 @@ else
     export FLOWS_TEST_COMMAND="$TEST_CMD"
     export FLOWS_TEST_CONTAINER="$CONTAINER"
     export FLOWS_TEST_CWD="/testbed"
+    export FLOWS_OPENAI_AUTH="$OPENAI_AUTH"
     A=$("$S/flows.sh" --json plan fix | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.stringify(JSON.parse(s).approval))}catch{process.exit(1)}})') || exit 1
     "$S/flows.sh" --json approve "$A" --scope run >/dev/null 2>&1 || {
       echo "[$RUN_ID] APPROVAL FAILED"; exit 1;
@@ -242,8 +252,8 @@ else
   # than one because a report that could only print the request would be
   # printing a claim; the ledger row and every scoreboard downstream carry the
   # observation.
-  printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "seat": "%s",\n  "subject": "%s",\n  "budgetSeconds": %s,\n  "testbedNetwork": "%s",\n  "testbedNetworkObserved": "%s",\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s,\n  "exitStatus": %s,\n  "timedOut": %s\n}\n' \
-    "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$SEAT" "$SUBJECT" "$BUDGET" \
+  printf '{\n  "instance_id": "%s",\n  "run_id": "%s",\n  "runIndex": "%s",\n  "seat": "%s",\n  "openaiAuth": "%s",\n  "subject": "%s",\n  "budgetSeconds": %s,\n  "testbedNetwork": "%s",\n  "testbedNetworkObserved": "%s",\n  "startedAt": %s,\n  "endedAt": %s,\n  "wallClockSeconds": %s,\n  "exitStatus": %s,\n  "timedOut": %s\n}\n' \
+    "$INSTANCE" "$RUN_ID" "$RUN_INDEX" "$SEAT" "$OPENAI_AUTH" "$SUBJECT" "$BUDGET" \
     "$TESTBED_NETWORK" "$TESTBED_OBSERVED" "$((START*1000))" "$((END*1000))" "$((END-START))" \
     "$RUN_STATUS" "$([ "$RUN_STATUS" -eq 124 ] && printf true || printf false)" \
     > "$TIMINGS"

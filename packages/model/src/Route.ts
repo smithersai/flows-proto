@@ -150,14 +150,31 @@ const stream = <Body, Frame, Event, State>(
     Stream.unwrap(
       Effect.fn("flows/model/Route.stream")(function*() {
         const prepared = yield* prepare(route, request)
-        const signedHeaders = yield* route.auth.sign({ ...prepared.publicHeaders })
-        const httpRequest = HttpClientRequest.post(prepared.url, { headers: signedHeaders }).pipe(
-          HttpClientRequest.bodyUint8Array(prepared.body, "application/json")
-        )
-        const response = yield* executor.execute(httpRequest, {
-          modelId: request.modelId,
-          classifyError: route.protocol.classifyError
+        const attempt = Effect.gen(function*() {
+          const signedHeaders = yield* route.auth.sign({ ...prepared.publicHeaders })
+          const httpRequest = HttpClientRequest.post(prepared.url, { headers: signedHeaders }).pipe(
+            HttpClientRequest.bodyUint8Array(prepared.body, "application/json")
+          )
+          return yield* executor.execute(httpRequest, {
+            modelId: request.modelId,
+            classifyError: route.protocol.classifyError
+          })
         })
+        // An `authentication` failure is terminal on both retry ladders — a bad
+        // key never repairs itself by waiting. A refresh-capable Auth is the
+        // one case where recovery is possible: run its refresh and re-sign
+        // exactly once, so an access token that expired mid-flight costs one
+        // recovery, while a credential the refresh cannot repair still fails
+        // typed on the second attempt.
+        const refresh = route.auth.refresh
+        const response = yield* (refresh === undefined
+          ? attempt
+          : attempt.pipe(
+            Effect.catchIf(
+              (error): error is ModelError => error instanceof ModelError && error.code === "authentication",
+              () => Effect.andThen(refresh, attempt)
+            )
+          ))
         const decodeEvent = Schema.decodeUnknownEffect(route.protocol.stream.event)
         const events = route.framing.frame(
           response.stream.pipe(

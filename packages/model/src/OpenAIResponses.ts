@@ -100,6 +100,36 @@ export const Body = Schema.Struct({
  */
 export type Body = typeof Body.Type
 
+const { max_output_tokens: _maxOutputTokens, ...chatgptFields } = Body.fields
+
+/**
+ * JSON schema for a ChatGPT-plan Responses request body. The subscription
+ * backend narrows the API-key surface (each delta confirmed against the live
+ * backend, 2026-08-25): `store` must be `false` — nothing is persisted
+ * server-side — `max_output_tokens` is rejected outright, and
+ * `include: ["reasoning.encrypted_content"]` is how reasoning survives the
+ * statelessness: the returned items carry their own encrypted state and are
+ * replayed verbatim on the next request.
+ *
+ * @category schemas
+ * @since 0.1.0
+ * @slop
+ */
+export const ChatGPTBody = Schema.Struct({
+  ...chatgptFields,
+  store: Schema.Literal(false),
+  include: Schema.Array(Schema.Literal("reasoning.encrypted_content"))
+})
+
+/**
+ * The decoded form of the ChatGPT-plan Responses request body.
+ *
+ * @category models
+ * @since 0.1.0
+ * @slop
+ */
+export type ChatGPTBody = typeof ChatGPTBody.Type
+
 type InputItem = typeof InputItem.Type
 type FunctionTool = typeof FunctionTool.Type
 
@@ -299,6 +329,23 @@ const fromRequest = Effect.fn("OpenAIResponses.fromRequest")((
   options: { readonly native: boolean }
 ): Effect.Effect<Body, ModelError> => Effect.succeed(buildBody(request, options)))
 
+const chatgptBody = (request: ModelRequest, options: { readonly native: boolean }): ChatGPTBody => {
+  const { max_output_tokens: _dropped, ...base } = buildBody(request, options)
+  return {
+    ...base,
+    // `item_reference` names a stored response, and this backend stores none:
+    // a reference would 400 where the encrypted reasoning item replays whole.
+    input: base.input.filter((item) => !("type" in item && item.type === "item_reference")),
+    store: false,
+    include: ["reasoning.encrypted_content"]
+  }
+}
+
+const chatgptFromRequest = Effect.fn("OpenAIResponses.chatgptFromRequest")((
+  request: ModelRequest,
+  options: { readonly native: boolean }
+): Effect.Effect<ChatGPTBody, ModelError> => Effect.succeed(chatgptBody(request, options)))
+
 const eventType = (value: OpenAIEvent): string => value.type
 
 const string = (value: unknown): string | undefined => typeof value === "string" ? value : undefined
@@ -414,9 +461,49 @@ const completeTool = (
 const rememberItem = (state: State, itemId: string): State =>
   state.itemIds.includes(itemId) ? state : { ...state, itemIds: [...state.itemIds, itemId] }
 
+/**
+ * How a stream's reasoning items are carried into the next request.
+ *
+ * `stored` is api.openai.com: the provider persists the response, so replay
+ * sends `item_reference` ids and the settle event records which ids to
+ * reference. `encrypted` is the ChatGPT-plan backend, which persists nothing
+ * (`store` must be false): the reasoning item itself, `encrypted_content`
+ * included, is captured as a thinking part's signature and replayed verbatim,
+ * and no item id is ever recorded for referencing.
+ */
+type Continuation = "stored" | "encrypted"
+
+// The reasoning item, replayable exactly as `assistantInput` will parse it back
+// out of the signature. Emitted as its own thinking part rather than onto the
+// summary's part because a part's signature is fixed at its start event, and
+// the encrypted content only arrives when the item completes.
+const encryptedReasoning = (
+  state: State,
+  itemId: string,
+  item: Readonly<Record<string, unknown>>
+): { readonly state: State; readonly events: ReadonlyArray<ModelEvent.ModelEvent> } => {
+  const encrypted = string(item.encrypted_content)
+  if (encrypted === undefined) return { state, events: [] }
+  const id = `${itemId}:encrypted`
+  const signature = CanonicalJson.stringify({
+    type: "reasoning",
+    id: itemId,
+    ...(Array.isArray(item.summary) ? { summary: item.summary } : {}),
+    encrypted_content: encrypted
+  })
+  return {
+    state,
+    events: [
+      ModelEvent.ModelEvent.ThinkingStart({ type: "thinking-start", id, signature }),
+      ModelEvent.ModelEvent.ThinkingEnd({ type: "thinking-end", id })
+    ]
+  }
+}
+
 const stepEvent = (
   state: State,
-  value: OpenAIEvent
+  value: OpenAIEvent,
+  continuation: Continuation
 ): { readonly state: State; readonly events: ReadonlyArray<ModelEvent.ModelEvent> } | ModelError => {
   if (state.settled) return { state, events: [] }
   const type = eventType(value)
@@ -452,13 +539,22 @@ const stepEvent = (
     (type === "response.reasoning_summary.delta" || type === "response.reasoning_summary_text.delta" ||
       type === "response.reasoning_text.delta") && delta !== undefined
   ) {
-    const reasoning = rememberItem(current, itemId)
+    const reasoning = continuation === "stored" ? rememberItem(current, itemId) : current
     const fresh = !reasoning.thinkingIds.has(itemId)
     return {
       state: { ...reasoning, thinkingIds: new Set([...reasoning.thinkingIds, itemId]) },
       events: [
         ...(fresh
-          ? [ModelEvent.ModelEvent.ThinkingStart({ type: "thinking-start", id: itemId, signature: itemId })]
+          ? [
+            ModelEvent.ModelEvent.ThinkingStart({
+              type: "thinking-start",
+              id: itemId,
+              // Under stored continuation the item id doubles as the replay
+              // signature; under encrypted continuation the signature is the
+              // full reasoning item, which arrives with the item's done event.
+              ...(continuation === "stored" ? { signature: itemId } : {})
+            })
+          ]
           : []),
         ModelEvent.ModelEvent.ThinkingDelta({ type: "thinking-delta", id: itemId, text: delta })
       ]
@@ -468,7 +564,7 @@ const stepEvent = (
     type === "response.reasoning_summary.done" || type === "response.reasoning_summary_text.done" ||
     type === "response.reasoning_text.done"
   ) {
-    const reasoning = rememberItem(current, itemId)
+    const reasoning = continuation === "stored" ? rememberItem(current, itemId) : current
     return {
       state: reasoning,
       events: reasoning.thinkingIds.has(itemId)
@@ -478,7 +574,7 @@ const stepEvent = (
   }
   if (type === "response.output_item.added") {
     if (item?.type === "reasoning") {
-      return { state: rememberItem(current, itemId), events: [] }
+      return { state: continuation === "stored" ? rememberItem(current, itemId) : current, events: [] }
     }
     if (item?.type !== "function_call") return { state: current, events: [] }
     const callId = string(item.call_id) ?? string(item.id)
@@ -528,7 +624,9 @@ const stepEvent = (
   }
   if (type === "response.function_call_arguments.done" || type === "response.output_item.done") {
     if (type === "response.output_item.done" && item?.type === "reasoning") {
-      return { state: rememberItem(current, itemId), events: [] }
+      return continuation === "stored"
+        ? { state: rememberItem(current, itemId), events: [] }
+        : encryptedReasoning(current, itemId, item)
     }
     if (type === "response.output_item.done" && item?.type !== "function_call") {
       return { state: current, events: [] }
@@ -561,17 +659,20 @@ const stepEvent = (
   return { state: current, events: [] }
 }
 
-const step = Effect.fn("OpenAIResponses.step")((
-  state: State,
-  event: OpenAIEvent
-): Effect.Effect<readonly [State, ReadonlyArray<ModelEvent.ModelEvent>], ModelError> =>
-  Effect.suspend(() => {
-    const result = stepEvent(state, event)
-    return result instanceof ModelError
-      ? Effect.fail(result)
-      : Effect.succeed([result.state, result.events] as const)
-  })
-)
+const stepWith = (continuation: Continuation) =>
+  Effect.fn("OpenAIResponses.step")((
+    state: State,
+    event: OpenAIEvent
+  ): Effect.Effect<readonly [State, ReadonlyArray<ModelEvent.ModelEvent>], ModelError> =>
+    Effect.suspend(() => {
+      const result = stepEvent(state, event, continuation)
+      return result instanceof ModelError
+        ? Effect.fail(result)
+        : Effect.succeed([result.state, result.events] as const)
+    })
+  )
+
+const step = stepWith("stored")
 
 const finalize = (state: State): ReadonlyArray<ModelEvent.ModelEvent> =>
   ToolStream.flushAborted(state.tools).completed.map((call) =>
@@ -587,7 +688,10 @@ const classifyError = (status: number, body: string): ModelError => {
   const parsed = Option.isSome(decoded) ? decoded.value : undefined
   const error = record(parsed?.error)
   const code = string(error?.code) ?? string(error?.type) ?? string(parsed?.code)
-  const message = string(error?.message) ?? string(parsed?.message) ??
+  // The ChatGPT-plan backend answers 4xx with a flat `{"detail": "…"}`
+  // envelope rather than api.openai.com's `{"error": {…}}`; both spell a
+  // classifiable message.
+  const message = string(error?.message) ?? string(parsed?.message) ?? string(parsed?.detail) ??
     `OpenAI Responses request failed with HTTP ${status}`
   return new ModelError({
     code: providerReason(status, code, message),
@@ -629,6 +733,48 @@ export const protocol: Protocol.Protocol<
       settled: false
     }),
     step,
+    onHalt: finalize
+  },
+  classifyError
+})
+
+/**
+ * The OpenAI Responses protocol as ChatGPT-plan backends serve it: the same
+ * SSE event stream and usage counters, with the request narrowed to the
+ * subscription surface ({@link ChatGPTBody}) and reasoning continuation
+ * carried in `encrypted_content` instead of stored item references. Deferred
+ * tools are disabled: the extension is unconfirmed on this backend, and every
+ * tool sent immediately is the portable contract.
+ *
+ * @category models
+ * @since 0.1.0
+ * @slop
+ */
+export const chatgptProtocol: Protocol.Protocol<
+  ChatGPTBody,
+  string,
+  OpenAIEvent,
+  State
+> = Protocol.make({
+  id: "openai-responses-chatgpt",
+  supportsDeferred: () => false,
+  body: {
+    schema: ChatGPTBody,
+    from: chatgptFromRequest
+  },
+  stream: {
+    event: Schema.fromJsonString(OpenAIEvent),
+    initial: () => ({
+      tools: ToolStream.initial(),
+      toolNames: {},
+      textIds: new Set(),
+      thinkingIds: new Set(),
+      completedToolIds: new Set(),
+      itemIds: [],
+      responseId: undefined,
+      settled: false
+    }),
+    step: stepWith("encrypted"),
     onHalt: finalize
   },
   classifyError
