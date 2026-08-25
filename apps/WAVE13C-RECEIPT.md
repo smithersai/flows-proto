@@ -57,7 +57,7 @@ launched nothing.
   answer and is not reviewed, exactly as in wave 12.
 
 **What it deliberately does NOT touch:** ordinary conversation, including
-conversation *about* the class nouns ("what would you do about email?"), and
+conversation _about_ the class nouns ("what would you do about email?"), and
 asks the catalog CAN serve ("make me a workflow that summarizes issues") —
 both pinned streaming untouched through the real controller. A refusal
 sentence never carries an offer phrase, and a user-performed act in the
@@ -182,7 +182,7 @@ please the checklist.
   same-class ask in another shape ("shoot a note to the team over gmail")
   classifies as nothing and streams. The prompt's generated can't-yet section
   remains the primary lever for everything outside the five keyed shapes.
-- The ask gate still arms on any *verb* use of "push" toward a repository
+- The ask gate still arms on any _verb_ use of "push" toward a repository
   ("push my changes"), including a repo the catalog could one day write to.
   The honest line says what is true today, so the cost of that arm is one
   deterministic honest sentence — but it is an arm on the act, not on talk

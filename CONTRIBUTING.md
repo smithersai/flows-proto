@@ -31,12 +31,12 @@ the root and selected member manifests.
 
 The cost is that one edit lands in several places. If you change:
 
-| What                                                             | Also update                                                                                                                                                                                  |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm-workspace.yaml` package membership                         | `packages/flows/test/vitestCoverageIsolation.test.ts` (the coverage-universe policy pin); lockfile inputs are derived automatically                                                          |
-| root `package.json` scripts                                      | `packages/flows/test/vitestCoverageIsolation.test.ts` (the aggregator roster)                                                                                                                |
-| root `BUILD.ts` CI jobs, steps, or triggers                      | the generated `.github/workflows/ci.yml` (`pnpm exec smthrs build '//:ci'` with `mode: "write"`), and `packages/flows/test/vitestCoverageIsolation.test.ts` (source-text pins)               |
-| `.github/workflows/release.yml`                                  | the same suite, plus `scripts/release-rehearsal.test.mjs`                                                                                                                                    |
+| What                                        | Also update                                                                                                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm-workspace.yaml` package membership    | `packages/flows/test/vitestCoverageIsolation.test.ts` (the coverage-universe policy pin); lockfile inputs are derived automatically                                            |
+| root `package.json` scripts                 | `packages/flows/test/vitestCoverageIsolation.test.ts` (the aggregator roster)                                                                                                  |
+| root `BUILD.ts` CI jobs, steps, or triggers | the generated `.github/workflows/ci.yml` (`pnpm exec smthrs build '//:ci'` with `mode: "write"`), and `packages/flows/test/vitestCoverageIsolation.test.ts` (source-text pins) |
+| `.github/workflows/release.yml`             | the same suite, plus `scripts/release-rehearsal.test.mjs`                                                                                                                      |
 
 Miss one and CI reports a generated file as a hand edit, which is exactly
 what it should do — it cannot tell your deliberate change from a stray one.

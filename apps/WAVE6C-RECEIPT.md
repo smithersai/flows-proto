@@ -6,7 +6,7 @@
 
 `POST /api/agent/turn/cancel` answered **500** (proven in
 `~/flows/ui/WAVE6B-HARNESS-RECEIPT.md`): `handleCancel` called `abort()` on an
-`AbortController` created inside the *turn* request's handler, and workerd
+`AbortController` created inside the _turn_ request's handler, and workerd
 forbids cross-request I/O. A server-side kill was impossible through the
 route; the turn streamed to `done:stop` regardless.
 
@@ -26,7 +26,7 @@ one shared store two requests may both reach:
   then its streaming pump re-reads the DO **between chunks and on a 500 ms
   timer tick while the upstream is silent** — every one of those reads is the
   turn request's own subrequest, which workerd allows. The poll is
-  rate-limited to at most one per 500 ms *and* at least one per 64 chunks: a
+  rate-limited to at most one per 500 ms _and_ at least one per 64 chunks: a
   Worker request may make only ~1000 subrequests, and a token-streamed turn
   delivers far more chunks than that, so an unthrottled per-chunk poll would
   end long turns with "Too many subrequests"; the chunk-count floor keeps the

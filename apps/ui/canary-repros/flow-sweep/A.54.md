@@ -15,6 +15,7 @@
 §14.3 — the pull request is opened and surfaces as the same `pr` card
 `/prs.view` lands on; a bad form is refused with the seam's own honest line,
 e.g. `prs.create needs a source branch — run /branches.list, then /prs.create
+
 <title> from:<bookmark>`.
 
 ## Actual

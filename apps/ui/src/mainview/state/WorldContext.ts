@@ -15,15 +15,15 @@
  * A note cut by the budget says so; the model is never left to infer that
  * silence means the note is empty.
  */
-import type { AgentRuntimeWorldDocument } from "smithers-shared/AgentContext";
+import type { AgentRuntimeWorldDocument } from "smithers-shared/AgentContext"
 
 /** What the caller must supply per note. `AppState`'s WorldDocument satisfies it. */
 export interface WorldContextInput {
-	readonly id: string;
-	readonly path: string;
-	readonly title: string;
-	readonly body: string;
-	readonly confidence: number;
+  readonly id: string
+  readonly path: string
+  readonly title: string
+  readonly body: string
+  readonly confidence: number
 }
 
 /**
@@ -33,18 +33,18 @@ export interface WorldContextInput {
  * as the transcript window the turn already spends and small enough that a
  * large World cannot crowd the conversation out of context.
  */
-export const WORLD_BODY_BUDGET = 8000;
+export const WORLD_BODY_BUDGET = 8000
 
 /** How much of that budget any single note may take, so one long note cannot eat it all. */
-export const WORLD_BODY_PER_DOCUMENT = 4000;
+export const WORLD_BODY_PER_DOCUMENT = 4000
 
 /** Cut a body to `room`, on a line boundary when one is close to the end. */
 const head = (body: string, room: number): string => {
-	if (body.length <= room) return body;
-	const cut = body.slice(0, room);
-	const lastBreak = cut.lastIndexOf("\n");
-	return lastBreak > room * 0.5 ? cut.slice(0, lastBreak) : cut;
-};
+  if (body.length <= room) return body
+  const cut = body.slice(0, room)
+  const lastBreak = cut.lastIndexOf("\n")
+  return lastBreak > room * 0.5 ? cut.slice(0, lastBreak) : cut
+}
 
 /**
  * The world documents as the runtime context carries them: metadata for every
@@ -53,40 +53,40 @@ const head = (body: string, room: number): string => {
  * the list the pane shows.
  */
 export const worldContextDocuments = (
-	documents: ReadonlyArray<WorldContextInput>,
-	selectedId: string | null,
-	budget = WORLD_BODY_BUDGET,
-	perDocument = WORLD_BODY_PER_DOCUMENT,
+  documents: ReadonlyArray<WorldContextInput>,
+  selectedId: string | null,
+  budget = WORLD_BODY_BUDGET,
+  perDocument = WORLD_BODY_PER_DOCUMENT
 ): Array<AgentRuntimeWorldDocument> => {
-	// The open note is the one the user is asking about; it is served first
-	// however the snapshot happens to be sorted.
-	const order = [...documents].sort((left, right) => {
-		if (left.id === right.id) return 0;
-		if (left.id === selectedId) return -1;
-		if (right.id === selectedId) return 1;
-		return 0;
-	});
-	const bodies = new Map<string, { readonly body: string; readonly truncated: boolean }>();
-	let spent = 0;
-	for (const document of order) {
-		const body = document.body.trim();
-		if (body === "") {
-			bodies.set(document.id, { body: "", truncated: false });
-			continue;
-		}
-		const room = Math.max(0, Math.min(perDocument, budget - spent));
-		const carried = head(body, room);
-		spent += carried.length;
-		bodies.set(document.id, { body: carried, truncated: carried.length < body.length });
-	}
-	return documents.map((document) => {
-		const carried = bodies.get(document.id);
-		return {
-			path: document.path,
-			title: document.title,
-			confidence: document.confidence,
-			body: carried?.body ?? "",
-			...(carried?.truncated === true ? { bodyTruncated: true } : {}),
-		};
-	});
-};
+  // The open note is the one the user is asking about; it is served first
+  // however the snapshot happens to be sorted.
+  const order = [...documents].sort((left, right) => {
+    if (left.id === right.id) return 0
+    if (left.id === selectedId) return -1
+    if (right.id === selectedId) return 1
+    return 0
+  })
+  const bodies = new Map<string, { readonly body: string; readonly truncated: boolean }>()
+  let spent = 0
+  for (const document of order) {
+    const body = document.body.trim()
+    if (body === "") {
+      bodies.set(document.id, { body: "", truncated: false })
+      continue
+    }
+    const room = Math.max(0, Math.min(perDocument, budget - spent))
+    const carried = head(body, room)
+    spent += carried.length
+    bodies.set(document.id, { body: carried, truncated: carried.length < body.length })
+  }
+  return documents.map((document) => {
+    const carried = bodies.get(document.id)
+    return {
+      path: document.path,
+      title: document.title,
+      confidence: document.confidence,
+      body: carried?.body ?? "",
+      ...(carried?.truncated === true ? { bodyTruncated: true } : {})
+    }
+  })
+}

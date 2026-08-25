@@ -14,13 +14,13 @@
  * app, and a reset clears it with the rest of the prefixed keys, so a stale
  * value can only ever survive as far as the store's own first stamp.
  */
-import { PERSISTED_KEY_PREFIX } from "../chain/SchemaVersion";
+import { PERSISTED_KEY_PREFIX } from "../chain/SchemaVersion"
 
 /** Where the bootstrap reads the last applied light/dark choice. */
-export const THEME_MIRROR_KEY = `${PERSISTED_KEY_PREFIX}theme`;
+export const THEME_MIRROR_KEY = `${PERSISTED_KEY_PREFIX}theme`
 
 /** Where the bootstrap reads the last applied color theme. */
-export const PALETTE_MIRROR_KEY = `${PERSISTED_KEY_PREFIX}palette`;
+export const PALETTE_MIRROR_KEY = `${PERSISTED_KEY_PREFIX}palette`
 
 /**
  * Mirror one applied appearance value for the next boot's first paint.
@@ -30,10 +30,10 @@ export const PALETTE_MIRROR_KEY = `${PERSISTED_KEY_PREFIX}palette`;
  * app down with it, so the write is best-effort by design.
  */
 export const rememberAppearance = (key: string, value: string): void => {
-	if (typeof localStorage === "undefined") return;
-	try {
-		localStorage.setItem(key, value);
-	} catch {
-		// No mirror this time; the app still applies the value it just set.
-	}
-};
+  if (typeof localStorage === "undefined") return
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // No mirror this time; the app still applies the value it just set.
+  }
+}

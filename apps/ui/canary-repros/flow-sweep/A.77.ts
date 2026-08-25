@@ -4,4 +4,4 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.77.ts
  */
-import "./A.74";
+import "./A.74"

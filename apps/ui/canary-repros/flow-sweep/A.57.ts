@@ -17,26 +17,26 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.57.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
+const app = await openApp()
+const failures: string[] = []
 try {
-	const outcome = await app.invoke("/billing.upgrade pro", 9000);
-	console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)");
-	console.log("added lines:", JSON.stringify(outcome.added));
-	const honest = outcome.added.filter(
-		(line) =>
-			line.toLowerCase().includes("stripe".toLowerCase()) ||
-			/couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line),
-	);
-	console.log("honest lines:", JSON.stringify(honest));
-	if (honest.length === 0) {
-		failures.push(
-			"/billing.upgrade with a failing argument rendered no honest response — expected the unconfigured checkout is refused out loud (bare \"/billing.upgrade\" does say \"stripe billing is not configured\")",
-		);
-	}
+  const outcome = await app.invoke("/billing.upgrade pro", 9000)
+  console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)")
+  console.log("added lines:", JSON.stringify(outcome.added))
+  const honest = outcome.added.filter(
+    (line) =>
+      line.toLowerCase().includes("stripe".toLowerCase()) ||
+      /couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line)
+  )
+  console.log("honest lines:", JSON.stringify(honest))
+  if (honest.length === 0) {
+    failures.push(
+      "/billing.upgrade with a failing argument rendered no honest response — expected the unconfigured checkout is refused out loud (bare \"/billing.upgrade\" does say \"stripe billing is not configured\")"
+    )
+  }
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)

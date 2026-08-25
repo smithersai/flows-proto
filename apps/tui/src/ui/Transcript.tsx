@@ -1,7 +1,7 @@
-import { useSyncExternalStore } from "react";
-import { cardPlaceholder, toolCallLine } from "../state/Transcript";
-import type { MessageEntry, TranscriptStore } from "../state/Transcript";
-import { scrubToolEcho } from "../state/MessageScrub";
+import { useSyncExternalStore } from "react"
+import { scrubToolEcho } from "../state/MessageScrub"
+import { cardPlaceholder, toolCallLine } from "../state/Transcript"
+import type { MessageEntry, TranscriptStore } from "../state/Transcript"
 
 /*
  * The transcript projection: a sticky-bottom scroll area rendering the
@@ -17,67 +17,67 @@ import { scrubToolEcho } from "../state/MessageScrub";
  */
 
 const MessageLine = ({ entry }: { readonly entry: MessageEntry }) => {
-	if (entry.role === "user") {
-		return (
-			<box flexShrink={0} marginTop={1}>
-				<text>
-					<span fg="#7aa2f7">
-						<strong>{"> "}</strong>
-					</span>
-					{entry.text}
-				</text>
-			</box>
-		);
-	}
-	const visible = scrubToolEcho(entry.text);
-	return (
-		<box flexShrink={0} flexDirection="column" marginTop={1}>
-			{entry.reasoning !== undefined && entry.reasoning !== "" && (
-				<text fg="#565f89">
-					<em>{entry.reasoning}</em>
-				</text>
-			)}
-			{visible !== "" && <text>{visible}</text>}
-			{entry.status === "streaming" && <text fg="#565f89">…</text>}
-			{(entry.status === "failed" || entry.status === "interrupted") && (
-				<text fg="#e0af68">{entry.detail ?? entry.status}</text>
-			)}
-		</box>
-	);
-};
+  if (entry.role === "user") {
+    return (
+      <box flexShrink={0} marginTop={1}>
+        <text>
+          <span fg="#7aa2f7">
+            <strong>{"> "}</strong>
+          </span>
+          {entry.text}
+        </text>
+      </box>
+    )
+  }
+  const visible = scrubToolEcho(entry.text)
+  return (
+    <box flexShrink={0} flexDirection="column" marginTop={1}>
+      {entry.reasoning !== undefined && entry.reasoning !== "" && (
+        <text fg="#565f89">
+          <em>{entry.reasoning}</em>
+        </text>
+      )}
+      {visible !== "" && <text>{visible}</text>}
+      {entry.status === "streaming" && <text fg="#565f89">…</text>}
+      {(entry.status === "failed" || entry.status === "interrupted") && (
+        <text fg="#e0af68">{entry.detail ?? entry.status}</text>
+      )}
+    </box>
+  )
+}
 
 export const Transcript = ({ store }: { readonly store: TranscriptStore }) => {
-	useSyncExternalStore(store.subscribe, store.getVersion);
-	const entries = store.entries();
-	return (
-		<scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
-			<box flexDirection="column" paddingLeft={1} paddingRight={1}>
-				{entries.map((entry) => {
-					switch (entry.kind) {
-						case "message":
-							return <MessageLine key={entry.id} entry={entry} />;
-						case "tool":
-							return (
-								<box key={entry.id} flexShrink={0}>
-									<text fg="#9ece6a">{toolCallLine(entry)}</text>
-								</box>
-							);
-						case "card":
-							// TODO(open-in-app): render a link that opens this card in the native app
-							return (
-								<box key={entry.id} flexShrink={0}>
-									<text fg="#bb9af7">{cardPlaceholder(entry)}</text>
-								</box>
-							);
-						case "event":
-							return (
-								<box key={entry.id} flexShrink={0}>
-									<text fg="#565f89">{entry.text}</text>
-								</box>
-							);
-					}
-				})}
-			</box>
-		</scrollbox>
-	);
-};
+  useSyncExternalStore(store.subscribe, store.getVersion)
+  const entries = store.entries()
+  return (
+    <scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
+      <box flexDirection="column" paddingLeft={1} paddingRight={1}>
+        {entries.map((entry) => {
+          switch (entry.kind) {
+            case "message":
+              return <MessageLine key={entry.id} entry={entry} />
+            case "tool":
+              return (
+                <box key={entry.id} flexShrink={0}>
+                  <text fg="#9ece6a">{toolCallLine(entry)}</text>
+                </box>
+              )
+            case "card":
+              // TODO(open-in-app): render a link that opens this card in the native app
+              return (
+                <box key={entry.id} flexShrink={0}>
+                  <text fg="#bb9af7">{cardPlaceholder(entry)}</text>
+                </box>
+              )
+            case "event":
+              return (
+                <box key={entry.id} flexShrink={0}>
+                  <text fg="#565f89">{entry.text}</text>
+                </box>
+              )
+          }
+        })}
+      </box>
+    </scrollbox>
+  )
+}

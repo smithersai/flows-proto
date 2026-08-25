@@ -17,26 +17,26 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.19.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
+const app = await openApp()
+const failures: string[] = []
 try {
-	const outcome = await app.invoke("/flow.repo.choose codeplanesmithers/canary-sandbox", 6000);
-	console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)");
-	console.log("added lines:", JSON.stringify(outcome.added));
-	const honest = outcome.added.filter(
-		(line) =>
-			line.toLowerCase().includes("codeplanesmithers/canary-sandbox".toLowerCase()) ||
-			/couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line),
-	);
-	console.log("honest lines:", JSON.stringify(honest));
-	if (honest.length === 0) {
-		failures.push(
-			"/flow.repo.choose with a failing argument rendered no honest response — expected choosing a watched repository for a workflow names the repository it chose",
-		);
-	}
+  const outcome = await app.invoke("/flow.repo.choose codeplanesmithers/canary-sandbox", 6000)
+  console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)")
+  console.log("added lines:", JSON.stringify(outcome.added))
+  const honest = outcome.added.filter(
+    (line) =>
+      line.toLowerCase().includes("codeplanesmithers/canary-sandbox".toLowerCase()) ||
+      /couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line)
+  )
+  console.log("honest lines:", JSON.stringify(honest))
+  if (honest.length === 0) {
+    failures.push(
+      "/flow.repo.choose with a failing argument rendered no honest response — expected choosing a watched repository for a workflow names the repository it chose"
+    )
+  }
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)

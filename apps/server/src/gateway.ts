@@ -29,13 +29,13 @@
  * apps/ui/canary-repros/honesty/22.6). A deadline turns that into one of the
  * seam's own honest states.
  */
-export const GATEWAY_UPSTREAM_TIMEOUT_MS = 20_000;
+export const GATEWAY_UPSTREAM_TIMEOUT_MS = 20_000
 
 /** A deadline expiring, told apart from a connection that failed outright. */
 export class GatewayTimeoutError extends Error {
-	constructor(seam: string) {
-		super(`${seam} did not answer within ${Math.round(GATEWAY_UPSTREAM_TIMEOUT_MS / 1000)}s.`);
-	}
+  constructor(seam: string) {
+    super(`${seam} did not answer within ${Math.round(GATEWAY_UPSTREAM_TIMEOUT_MS / 1000)}s.`)
+  }
 }
 
 /**
@@ -43,54 +43,54 @@ export class GatewayTimeoutError extends Error {
  * streaming relay answer is never cut off mid-body.
  */
 const fetchWithDeadline = async (
-	seam: string,
-	url: string,
-	init: RequestInit,
-	timeoutMs: number = GATEWAY_UPSTREAM_TIMEOUT_MS,
+  seam: string,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = GATEWAY_UPSTREAM_TIMEOUT_MS
 ): Promise<Response> => {
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(new GatewayTimeoutError(seam)), timeoutMs);
-	try {
-		return await fetch(url, { ...init, signal: controller.signal });
-	} finally {
-		clearTimeout(timer);
-	}
-};
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new GatewayTimeoutError(seam)), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 export interface GatewayRecord {
-	readonly gatewayId: string;
-	readonly baseUrl: string;
-	readonly token: string;
-	readonly vmId: string | null;
-	readonly expiresAt: number;
-	/** Half-life cadence (§5): re-resolve at the midpoint of the issued window. */
-	readonly renewAfter: number;
-	/** When this record was minted — the floor under a forced re-provision. */
-	readonly provisionedAt: number;
+  readonly gatewayId: string
+  readonly baseUrl: string
+  readonly token: string
+  readonly vmId: string | null
+  readonly expiresAt: number
+  /** Half-life cadence (§5): re-resolve at the midpoint of the issued window. */
+  readonly renewAfter: number
+  /** When this record was minted — the floor under a forced re-provision. */
+  readonly provisionedAt: number
 }
 
 interface GatewayRecordRow {
-	readonly gatewayId: string;
-	readonly baseUrl: string;
-	readonly token: string;
-	readonly vmId: string | null;
-	readonly expiresAt: number;
-	readonly renewAfter: number;
-	readonly provisionedAt?: number;
+  readonly gatewayId: string
+  readonly baseUrl: string
+  readonly token: string
+  readonly vmId: string | null
+  readonly expiresAt: number
+  readonly renewAfter: number
+  readonly provisionedAt?: number
 }
 
 export interface GatewaySessionStorage {
-	readonly get: <T>(key: string) => Promise<T | undefined>;
-	readonly put: (key: string, value: unknown) => Promise<void>;
+  readonly get: <T>(key: string) => Promise<T | undefined>
+  readonly put: (key: string, value: unknown) => Promise<void>
 }
 
 export interface GatewaySessionStub {
-	readonly fetch: (request: Request) => Promise<Response>;
+  readonly fetch: (request: Request) => Promise<Response>
 }
 
 export interface GatewaySessionNamespace {
-	readonly idFromName: (name: string) => unknown;
-	readonly get: (id: unknown) => GatewaySessionStub;
+  readonly idFromName: (name: string) => unknown
+  readonly get: (id: unknown) => GatewaySessionStub
 }
 
 /**
@@ -99,33 +99,35 @@ export interface GatewaySessionNamespace {
  * server: the read route is consumed by this Worker's own handlers only.
  */
 export class GatewaySessionRegistry {
-	constructor(private readonly ctx: { readonly storage: GatewaySessionStorage }) {}
+  constructor(private readonly ctx: { readonly storage: GatewaySessionStorage }) {}
 
-	private key(repo: string): string {
-		return `gateway:${repo}`;
-	}
+  private key(repo: string): string {
+    return `gateway:${repo}`
+  }
 
-	async fetch(request: Request): Promise<Response> {
-		const answer = (body: unknown): Response =>
-			new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-		const url = new URL(request.url);
-		if (url.pathname === "/record" && request.method === "GET") {
-			const repo = url.searchParams.get("repo") ?? "";
-			const record = await this.ctx.storage.get<GatewayRecordRow>(this.key(repo));
-			return answer({ record: record ?? null });
-		}
-		if (url.pathname === "/record" && request.method === "PUT") {
-			const body = (await request.json().catch(() => undefined)) as
-				| { repo?: unknown; record?: unknown }
-				| undefined;
-			if (typeof body?.repo !== "string" || body.repo === "" || typeof body.record !== "object" || body.record === null) {
-				return new Response("bad request", { status: 400 });
-			}
-			await this.ctx.storage.put(this.key(body.repo), body.record);
-			return answer({ ok: true });
-		}
-		return new Response("not found", { status: 404 });
-	}
+  async fetch(request: Request): Promise<Response> {
+    const answer = (body: unknown): Response =>
+      new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
+    const url = new URL(request.url)
+    if (url.pathname === "/record" && request.method === "GET") {
+      const repo = url.searchParams.get("repo") ?? ""
+      const record = await this.ctx.storage.get<GatewayRecordRow>(this.key(repo))
+      return answer({ record: record ?? null })
+    }
+    if (url.pathname === "/record" && request.method === "PUT") {
+      const body = (await request.json().catch(() => undefined)) as
+        | { repo?: unknown; record?: unknown }
+        | undefined
+      if (
+        typeof body?.repo !== "string" || body.repo === "" || typeof body.record !== "object" || body.record === null
+      ) {
+        return new Response("bad request", { status: 400 })
+      }
+      await this.ctx.storage.put(this.key(body.repo), body.record)
+      return answer({ ok: true })
+    }
+    return new Response("not found", { status: 404 })
+  }
 }
 
 /**
@@ -136,31 +138,31 @@ export class GatewaySessionRegistry {
  * Dot-PREFIXED names (`.github`) are real repositories and stay legal.
  */
 export const isRelayRepoName = (value: string): boolean =>
-	/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !/(?:^|\/)\.{1,2}(?:\/|$)/.test(value);
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !/(?:^|\/)\.{1,2}(?:\/|$)/.test(value)
 
 export interface GatewayEnv {
-	readonly IDENTITY_UPSTREAM_URL?: string;
-	readonly IDENTITY_SERVICE_TOKEN?: string;
-	readonly SMITHERS_CLOUD_API_BASE_URL?: string;
-	readonly GATEWAY_SESSIONS?: GatewaySessionNamespace;
-	/** Override for GATEWAY_UPSTREAM_TIMEOUT_MS, in milliseconds. */
-	readonly UPSTREAM_TIMEOUT_MS?: string;
+  readonly IDENTITY_UPSTREAM_URL?: string
+  readonly IDENTITY_SERVICE_TOKEN?: string
+  readonly SMITHERS_CLOUD_API_BASE_URL?: string
+  readonly GATEWAY_SESSIONS?: GatewaySessionNamespace
+  /** Override for GATEWAY_UPSTREAM_TIMEOUT_MS, in milliseconds. */
+  readonly UPSTREAM_TIMEOUT_MS?: string
 }
 
 /** The deadline this deployment uses, defaulted when unset or unparseable. */
 export const upstreamTimeoutMs = (env: { readonly UPSTREAM_TIMEOUT_MS?: string }): number => {
-	const configured = Number(env.UPSTREAM_TIMEOUT_MS ?? "");
-	return Number.isFinite(configured) && configured > 0 ? configured : GATEWAY_UPSTREAM_TIMEOUT_MS;
-};
+  const configured = Number(env.UPSTREAM_TIMEOUT_MS ?? "")
+  return Number.isFinite(configured) && configured > 0 ? configured : GATEWAY_UPSTREAM_TIMEOUT_MS
+}
 
-export const DEFAULT_CLOUD_API_BASE_URL = "https://api.jjhub.tech";
+export const DEFAULT_CLOUD_API_BASE_URL = "https://api.jjhub.tech"
 
 /*
  * Unit-test fallback when no DO binding exists (the binding is always present
  * on a real deployment — wrangler.jsonc binds it): a per-isolate map, best
  * effort exactly like the turn-cancel fallback.
  */
-const memoryRecords = new Map<string, GatewayRecord>();
+const memoryRecords = new Map<string, GatewayRecord>()
 
 /*
  * A separator no login or repo can contain (NUL): `${login}${repo}` alone would
@@ -170,79 +172,79 @@ const memoryRecords = new Map<string, GatewayRecord>();
  * unreadable and a review of the seam holding the user's Cloud token could not
  * be read.
  */
-const recordKey = (login: string, repo: string): string => `${login}\u0000${repo}`;
+const recordKey = (login: string, repo: string): string => `${login}\u0000${repo}`
 
 const readRecord = async (env: GatewayEnv, login: string, repo: string): Promise<GatewayRecord | undefined> => {
-	const namespace = env.GATEWAY_SESSIONS;
-	if (namespace === undefined) return memoryRecords.get(recordKey(login, repo));
-	try {
-		const stub = namespace.get(namespace.idFromName(login));
-		const response = await stub.fetch(
-			new Request(`https://gateway-sessions.internal/record?repo=${encodeURIComponent(repo)}`),
-		);
-		const body = (await response.json().catch(() => undefined)) as { record?: GatewayRecordRow | null } | undefined;
-		const record = body?.record;
-		if (record === undefined || record === null) return undefined;
-		// A record written before this field existed is old by definition, so it
-		// has already earned the right to be re-provisioned on a tunnel failure.
-		return { ...record, provisionedAt: typeof record.provisionedAt === "number" ? record.provisionedAt : 0 };
-	} catch {
-		return undefined;
-	}
-};
+  const namespace = env.GATEWAY_SESSIONS
+  if (namespace === undefined) return memoryRecords.get(recordKey(login, repo))
+  try {
+    const stub = namespace.get(namespace.idFromName(login))
+    const response = await stub.fetch(
+      new Request(`https://gateway-sessions.internal/record?repo=${encodeURIComponent(repo)}`)
+    )
+    const body = (await response.json().catch(() => undefined)) as { record?: GatewayRecordRow | null } | undefined
+    const record = body?.record
+    if (record === undefined || record === null) return undefined
+    // A record written before this field existed is old by definition, so it
+    // has already earned the right to be re-provisioned on a tunnel failure.
+    return { ...record, provisionedAt: typeof record.provisionedAt === "number" ? record.provisionedAt : 0 }
+  } catch {
+    return undefined
+  }
+}
 
 const readBoundedResponseText = async (response: Response, limit = 240): Promise<string> => {
-	const reader = response.body?.getReader();
-	if (reader === undefined) return "";
-	const decoder = new TextDecoder();
-	let detail = "";
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		detail += decoder.decode(value, { stream: true });
-		if (detail.length >= limit) {
-			await reader.cancel().catch(() => {});
-			break;
-		}
-	}
-	return detail.slice(0, limit).trim();
-};
+  const reader = response.body?.getReader()
+  if (reader === undefined) return ""
+  const decoder = new TextDecoder()
+  let detail = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    detail += decoder.decode(value, { stream: true })
+    if (detail.length >= limit) {
+      await reader.cancel().catch(() => {})
+      break
+    }
+  }
+  return detail.slice(0, limit).trim()
+}
 
 const writeRecord = async (
-	env: GatewayEnv,
-	login: string,
-	repo: string,
-	record: GatewayRecord,
+  env: GatewayEnv,
+  login: string,
+  repo: string,
+  record: GatewayRecord
 ): Promise<string | undefined> => {
-	const namespace = env.GATEWAY_SESSIONS;
-	if (namespace === undefined) {
-		memoryRecords.set(recordKey(login, repo), record);
-		return undefined;
-	}
-	try {
-		const stub = namespace.get(namespace.idFromName(login));
-		const response = await stub.fetch(
-			new Request("https://gateway-sessions.internal/record", {
-				method: "PUT",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ repo, record }),
-			}),
-		);
-		if (response.ok) {
-			await response.body?.cancel();
-			return undefined;
-		}
-		const detail = await readBoundedResponseText(response);
-		return `The gateway session store answered HTTP ${response.status}${detail === "" ? "." : `: ${detail}`}`;
-	} catch (error) {
-		return `The gateway session store is unavailable: ${error instanceof Error ? error.message : "unknown error"}`;
-	}
-};
+  const namespace = env.GATEWAY_SESSIONS
+  if (namespace === undefined) {
+    memoryRecords.set(recordKey(login, repo), record)
+    return undefined
+  }
+  try {
+    const stub = namespace.get(namespace.idFromName(login))
+    const response = await stub.fetch(
+      new Request("https://gateway-sessions.internal/record", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repo, record })
+      })
+    )
+    if (response.ok) {
+      await response.body?.cancel()
+      return undefined
+    }
+    const detail = await readBoundedResponseText(response)
+    return `The gateway session store answered HTTP ${response.status}${detail === "" ? "." : `: ${detail}`}`
+  } catch (error) {
+    return `The gateway session store is unavailable: ${error instanceof Error ? error.message : "unknown error"}`
+  }
+}
 
 /** The unit-test hook: clears the in-isolate fallback between tests. */
 export const clearMemoryGatewayRecords = (): void => {
-	memoryRecords.clear();
-};
+  memoryRecords.clear()
+}
 
 /**
  * The unit-test hook for an AGED record — the state a real deployment is in
@@ -250,14 +252,14 @@ export const clearMemoryGatewayRecords = (): void => {
  * re-provisioning out of. Tests cannot wait out a real half-life.
  */
 export const seedMemoryGatewayRecord = (login: string, repo: string, record: GatewayRecord): void => {
-	memoryRecords.set(recordKey(login, repo), record);
-};
+  memoryRecords.set(recordKey(login, repo), record)
+}
 
 export type CloudTokenOutcome =
-	| { readonly status: "ok"; readonly token: string }
-	| { readonly status: "not_configured"; readonly detail: string }
-	| { readonly status: "unavailable"; readonly detail: string }
-	| { readonly status: "not_found"; readonly detail: string };
+  | { readonly status: "ok"; readonly token: string }
+  | { readonly status: "not_configured"; readonly detail: string }
+  | { readonly status: "unavailable"; readonly detail: string }
+  | { readonly status: "not_found"; readonly detail: string }
 
 /**
  * The per-user Cloud token door (wave-11b): POST /api/identity/cloud-token on
@@ -265,69 +267,71 @@ export type CloudTokenOutcome =
  * upstream; a typed failure is surfaced, never fabricated.
  */
 export const fetchCloudToken = async (env: GatewayEnv, login: string): Promise<CloudTokenOutcome> => {
-	const upstream = env.IDENTITY_UPSTREAM_URL?.trim();
-	if (upstream === undefined || upstream === "") {
-		return { status: "not_configured", detail: "IDENTITY_UPSTREAM_URL is unset on this deployment." };
-	}
-	const serviceToken = env.IDENTITY_SERVICE_TOKEN?.trim();
-	if (serviceToken === undefined || serviceToken === "") {
-		return { status: "not_configured", detail: "IDENTITY_SERVICE_TOKEN is unset on this deployment." };
-	}
-	let response: Response;
-	try {
-		response = await fetchWithDeadline(
-			"The Cloud token door",
-			new URL("/api/identity/cloud-token", upstream).toString(),
-			{
-				method: "POST",
-				headers: { "content-type": "application/json", "x-smithers-service-token": serviceToken },
-				body: JSON.stringify({ login }),
-			},
-			upstreamTimeoutMs(env),
-		);
-	} catch (error) {
-		return {
-			status: "unavailable",
-			detail: `The identity service is unreachable: ${error instanceof Error ? error.message : "unknown error"}`,
-		};
-	}
-	if (!response.ok) {
-		const detail = (await response.text().catch(() => "")).trim().slice(0, 200);
-		return {
-			status: "unavailable",
-			detail: `The Cloud token door answered HTTP ${response.status}${detail === "" ? "." : `: ${detail}`}`,
-		};
-	}
-	const body = (await response.json().catch(() => undefined)) as
-		| { found?: unknown; token?: unknown; cloud?: { status?: unknown; reason?: unknown } }
-		| undefined;
-	if (body?.found === true && typeof body.token === "string" && body.token !== "") {
-		return { status: "ok", token: body.token };
-	}
-	const cloudStatus = typeof body?.cloud?.status === "string" ? body.cloud.status : "unknown";
-	const cloudReason = typeof body?.cloud?.reason === "string" ? body.cloud.reason : null;
-	return {
-		status: "not_found",
-		detail: `No Smithers Cloud identity is available for this account (${cloudStatus}${cloudReason === null ? "" : `: ${cloudReason}`}).`,
-	};
-};
+  const upstream = env.IDENTITY_UPSTREAM_URL?.trim()
+  if (upstream === undefined || upstream === "") {
+    return { status: "not_configured", detail: "IDENTITY_UPSTREAM_URL is unset on this deployment." }
+  }
+  const serviceToken = env.IDENTITY_SERVICE_TOKEN?.trim()
+  if (serviceToken === undefined || serviceToken === "") {
+    return { status: "not_configured", detail: "IDENTITY_SERVICE_TOKEN is unset on this deployment." }
+  }
+  let response: Response
+  try {
+    response = await fetchWithDeadline(
+      "The Cloud token door",
+      new URL("/api/identity/cloud-token", upstream).toString(),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-smithers-service-token": serviceToken },
+        body: JSON.stringify({ login })
+      },
+      upstreamTimeoutMs(env)
+    )
+  } catch (error) {
+    return {
+      status: "unavailable",
+      detail: `The identity service is unreachable: ${error instanceof Error ? error.message : "unknown error"}`
+    }
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).trim().slice(0, 200)
+    return {
+      status: "unavailable",
+      detail: `The Cloud token door answered HTTP ${response.status}${detail === "" ? "." : `: ${detail}`}`
+    }
+  }
+  const body = (await response.json().catch(() => undefined)) as
+    | { found?: unknown; token?: unknown; cloud?: { status?: unknown; reason?: unknown } }
+    | undefined
+  if (body?.found === true && typeof body.token === "string" && body.token !== "") {
+    return { status: "ok", token: body.token }
+  }
+  const cloudStatus = typeof body?.cloud?.status === "string" ? body.cloud.status : "unknown"
+  const cloudReason = typeof body?.cloud?.reason === "string" ? body.cloud.reason : null
+  return {
+    status: "not_found",
+    detail: `No Smithers Cloud identity is available for this account (${cloudStatus}${
+      cloudReason === null ? "" : `: ${cloudReason}`
+    }).`
+  }
+}
 
 export type ProvisionOutcome =
-	| { readonly status: "ready"; readonly record: GatewayRecord }
-	| { readonly status: "provisioning"; readonly detail: string }
-	| { readonly status: "no_capacity"; readonly detail: string }
-	| { readonly status: "unavailable"; readonly detail: string }
-	| { readonly status: "no_cloud_token"; readonly detail: string }
-	/*
-	 * Wave 12 §4: the watched set is a GITHUB set, but a gateway needs a
-	 * Smithers Cloud repository. When the two don't coincide Cloud answers 404,
-	 * and that is a distinct, honest, un-retryable state — not the generic
-	 * "provisioning answered HTTP 404" the raw seam used to leak.
-	 */
-	| { readonly status: "no_cloud_repo"; readonly detail: string };
+  | { readonly status: "ready"; readonly record: GatewayRecord }
+  | { readonly status: "provisioning"; readonly detail: string }
+  | { readonly status: "no_capacity"; readonly detail: string }
+  | { readonly status: "unavailable"; readonly detail: string }
+  | { readonly status: "no_cloud_token"; readonly detail: string }
+  /*
+   * Wave 12 §4: the watched set is a GITHUB set, but a gateway needs a
+   * Smithers Cloud repository. When the two don't coincide Cloud answers 404,
+   * and that is a distinct, honest, un-retryable state — not the generic
+   * "provisioning answered HTTP 404" the raw seam used to leak.
+   */
+  | { readonly status: "no_cloud_repo"; readonly detail: string }
 
 const readProvisionError = async (response: Response): Promise<string> =>
-	readBoundedResponseText(response).catch(() => "");
+  readBoundedResponseText(response).catch(() => "")
 
 /**
  * Provision-or-resume (§5): POST {cloud}/api/repos/{owner}/{repo}/gateway with
@@ -338,119 +342,121 @@ const readProvisionError = async (response: Response): Promise<string> =>
  * retry-loop).
  */
 const provisionGateway = async (
-	env: GatewayEnv,
-	login: string,
-	repo: string,
-	cloudToken: string,
+  env: GatewayEnv,
+  login: string,
+  repo: string,
+  cloudToken: string
 ): Promise<ProvisionOutcome | { readonly status: "cloud_token_rejected" }> => {
-	const base = env.SMITHERS_CLOUD_API_BASE_URL?.trim() || DEFAULT_CLOUD_API_BASE_URL;
-	let response: Response;
-	try {
-		response = await fetchWithDeadline(
-			"Smithers Cloud",
-			new URL(`/api/repos/${repo}/gateway`, base).toString(),
-			{ method: "POST", headers: { authorization: `Bearer ${cloudToken}` } },
-			upstreamTimeoutMs(env),
-		);
-	} catch (error) {
-		/*
-		 * A provision POST that never answers is not a dead end: the route is
-		 * idempotent, and Cloud may well still be building the sandbox behind
-		 * the silence. So a deadline lands in the seam's `provisioning` state —
-		 * the caller polls to its own bounded deadline and then says so — and
-		 * only a real connection failure is reported as unreachable. Either way
-		 * the request ANSWERS, which is the whole point.
-		 */
-		if (error instanceof GatewayTimeoutError) {
-			return {
-				status: "provisioning",
-				detail: `Smithers Cloud hasn't finished preparing the workspace for ${repo} yet — it took longer than ${Math.round(upstreamTimeoutMs(env) / 1000)}s to answer.`,
-			};
-		}
-		return {
-			status: "unavailable",
-			detail: `Smithers Cloud is unreachable: ${error instanceof Error ? error.message : "unknown error"}`,
-		};
-	}
-	if (response.status === 401) {
-		await response.body?.cancel();
-		return { status: "cloud_token_rejected" };
-	}
-	if (response.status === 409) {
-		return {
-			status: "provisioning",
-			detail: `The workspace for ${repo} is still being prepared.`,
-		};
-	}
-	if (response.status === 404) {
-		await readProvisionError(response);
-		return {
-			status: "no_cloud_repo",
-			detail: `${repo} isn't on Smithers Cloud yet, so there is no workspace to provision for it.`,
-		};
-	}
-	/*
-	 * The pool says no, in the second shape it has: `429 quota_exceeded /
-	 * concurrent sandboxes limit reached`, caught live on canary. It is the same
-	 * truth as the 500 `no_capacity` below and deserves the same honest state —
-	 * leaking "answered HTTP 429: {…}" is exactly the raw failure §4 is about.
-	 */
-	if (response.status === 429) {
-		await readProvisionError(response);
-		return {
-			status: "no_capacity",
-			detail: "Smithers Cloud has no free workspace capacity right now — nothing was queued; try again in a bit.",
-		};
-	}
-	if (!response.ok) {
-		const detail = await readProvisionError(response);
-		if (response.status === 500 && detail.includes("no_capacity")) {
-			return {
-				status: "no_capacity",
-				detail: "Smithers Cloud has no free workspace capacity right now — nothing was queued; try again in a bit.",
-			};
-		}
-		return {
-			status: "unavailable",
-			detail: `Provisioning the workspace answered HTTP ${response.status}${detail === "" ? "." : `: ${detail}`}`,
-		};
-	}
-	const body = (await response.json().catch(() => undefined)) as
-		| {
-				base_url?: unknown;
-				token?: unknown;
-				expires_at?: unknown;
-				gateway_id?: unknown;
-				vm_id?: unknown;
-		  }
-		| undefined;
-	if (
-		body === undefined ||
-		typeof body.base_url !== "string" ||
-		typeof body.token !== "string" ||
-		typeof body.gateway_id !== "string" ||
-		typeof body.expires_at !== "string"
-	) {
-		return { status: "unavailable", detail: "Provisioning answered in a shape the gateway seam did not understand." };
-	}
-	const expiresAt = Date.parse(body.expires_at);
-	const now = Date.now();
-	const record: GatewayRecord = {
-		gatewayId: body.gateway_id,
-		baseUrl: body.base_url,
-		token: body.token,
-		vmId: typeof body.vm_id === "string" ? body.vm_id : null,
-		// §5: expires_at is a re-resolve cadence, not a credential lifetime.
-		// Re-call at the midpoint of the issued window (half-life), with a sane
-		// floor so a bogus upstream timestamp cannot spin the provision loop.
-		expiresAt: Number.isFinite(expiresAt) ? expiresAt : now + 60 * 60 * 1000,
-		renewAfter: Number.isFinite(expiresAt) ? now + Math.max((expiresAt - now) / 2, 60 * 1000) : now + 30 * 60 * 1000,
-		provisionedAt: now,
-	};
-	const persistenceError = await writeRecord(env, login, repo, record);
-	if (persistenceError !== undefined) return { status: "unavailable", detail: persistenceError };
-	return { status: "ready", record };
-};
+  const base = env.SMITHERS_CLOUD_API_BASE_URL?.trim() || DEFAULT_CLOUD_API_BASE_URL
+  let response: Response
+  try {
+    response = await fetchWithDeadline(
+      "Smithers Cloud",
+      new URL(`/api/repos/${repo}/gateway`, base).toString(),
+      { method: "POST", headers: { authorization: `Bearer ${cloudToken}` } },
+      upstreamTimeoutMs(env)
+    )
+  } catch (error) {
+    /*
+     * A provision POST that never answers is not a dead end: the route is
+     * idempotent, and Cloud may well still be building the sandbox behind
+     * the silence. So a deadline lands in the seam's `provisioning` state —
+     * the caller polls to its own bounded deadline and then says so — and
+     * only a real connection failure is reported as unreachable. Either way
+     * the request ANSWERS, which is the whole point.
+     */
+    if (error instanceof GatewayTimeoutError) {
+      return {
+        status: "provisioning",
+        detail: `Smithers Cloud hasn't finished preparing the workspace for ${repo} yet — it took longer than ${
+          Math.round(upstreamTimeoutMs(env) / 1000)
+        }s to answer.`
+      }
+    }
+    return {
+      status: "unavailable",
+      detail: `Smithers Cloud is unreachable: ${error instanceof Error ? error.message : "unknown error"}`
+    }
+  }
+  if (response.status === 401) {
+    await response.body?.cancel()
+    return { status: "cloud_token_rejected" }
+  }
+  if (response.status === 409) {
+    return {
+      status: "provisioning",
+      detail: `The workspace for ${repo} is still being prepared.`
+    }
+  }
+  if (response.status === 404) {
+    await readProvisionError(response)
+    return {
+      status: "no_cloud_repo",
+      detail: `${repo} isn't on Smithers Cloud yet, so there is no workspace to provision for it.`
+    }
+  }
+  /*
+   * The pool says no, in the second shape it has: `429 quota_exceeded /
+   * concurrent sandboxes limit reached`, caught live on canary. It is the same
+   * truth as the 500 `no_capacity` below and deserves the same honest state —
+   * leaking "answered HTTP 429: {…}" is exactly the raw failure §4 is about.
+   */
+  if (response.status === 429) {
+    await readProvisionError(response)
+    return {
+      status: "no_capacity",
+      detail: "Smithers Cloud has no free workspace capacity right now — nothing was queued; try again in a bit."
+    }
+  }
+  if (!response.ok) {
+    const detail = await readProvisionError(response)
+    if (response.status === 500 && detail.includes("no_capacity")) {
+      return {
+        status: "no_capacity",
+        detail: "Smithers Cloud has no free workspace capacity right now — nothing was queued; try again in a bit."
+      }
+    }
+    return {
+      status: "unavailable",
+      detail: `Provisioning the workspace answered HTTP ${response.status}${detail === "" ? "." : `: ${detail}`}`
+    }
+  }
+  const body = (await response.json().catch(() => undefined)) as
+    | {
+      base_url?: unknown
+      token?: unknown
+      expires_at?: unknown
+      gateway_id?: unknown
+      vm_id?: unknown
+    }
+    | undefined
+  if (
+    body === undefined ||
+    typeof body.base_url !== "string" ||
+    typeof body.token !== "string" ||
+    typeof body.gateway_id !== "string" ||
+    typeof body.expires_at !== "string"
+  ) {
+    return { status: "unavailable", detail: "Provisioning answered in a shape the gateway seam did not understand." }
+  }
+  const expiresAt = Date.parse(body.expires_at)
+  const now = Date.now()
+  const record: GatewayRecord = {
+    gatewayId: body.gateway_id,
+    baseUrl: body.base_url,
+    token: body.token,
+    vmId: typeof body.vm_id === "string" ? body.vm_id : null,
+    // §5: expires_at is a re-resolve cadence, not a credential lifetime.
+    // Re-call at the midpoint of the issued window (half-life), with a sane
+    // floor so a bogus upstream timestamp cannot spin the provision loop.
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : now + 60 * 60 * 1000,
+    renewAfter: Number.isFinite(expiresAt) ? now + Math.max((expiresAt - now) / 2, 60 * 1000) : now + 30 * 60 * 1000,
+    provisionedAt: now
+  }
+  const persistenceError = await writeRecord(env, login, repo, record)
+  if (persistenceError !== undefined) return { status: "unavailable", detail: persistenceError }
+  return { status: "ready", record }
+}
 
 /**
  * Resolve the caller's gateway for a repo: a cached record inside its
@@ -459,44 +465,44 @@ const provisionGateway = async (
  * re-mints the Cloud token through the door exactly once.
  */
 export const ensureGateway = async (
-	env: GatewayEnv,
-	login: string,
-	repo: string,
-	force = false,
+  env: GatewayEnv,
+  login: string,
+  repo: string,
+  force = false
 ): Promise<ProvisionOutcome> => {
-	// The routes refuse a malformed repo before reaching here; the seam refuses
-	// it again so no caller can spend the Cloud token on an unintended path.
-	if (!isRelayRepoName(repo)) {
-		return { status: "unavailable", detail: `${repo} is not a repository this seam can address.` };
-	}
-	if (!force) {
-		const cached = await readRecord(env, login, repo);
-		if (cached !== undefined && Date.now() < cached.renewAfter) {
-			return { status: "ready", record: cached };
-		}
-	}
-	const cloudToken = await fetchCloudToken(env, login);
-	if (cloudToken.status !== "ok") {
-		if (cloudToken.status === "not_found") return { status: "no_cloud_token", detail: cloudToken.detail };
-		return { status: "unavailable", detail: cloudToken.detail };
-	}
-	const first = await provisionGateway(env, login, repo, cloudToken.token);
-	if (first.status !== "cloud_token_rejected") return first;
-	// The vaulted Cloud token was rejected (plue-side expiry/revocation): the
-	// door re-exchanges from the vaulted GitHub token, so one fresh mint may
-	// legitimately succeed. More than one retry would be a loop.
-	const reminted = await fetchCloudToken(env, login);
-	if (reminted.status !== "ok") {
-		return reminted.status === "not_found"
-			? { status: "no_cloud_token", detail: reminted.detail }
-			: { status: "unavailable", detail: reminted.detail };
-	}
-	const second = await provisionGateway(env, login, repo, reminted.token);
-	if (second.status === "cloud_token_rejected") {
-		return { status: "unavailable", detail: "Smithers Cloud rejected a freshly minted identity token." };
-	}
-	return second;
-};
+  // The routes refuse a malformed repo before reaching here; the seam refuses
+  // it again so no caller can spend the Cloud token on an unintended path.
+  if (!isRelayRepoName(repo)) {
+    return { status: "unavailable", detail: `${repo} is not a repository this seam can address.` }
+  }
+  if (!force) {
+    const cached = await readRecord(env, login, repo)
+    if (cached !== undefined && Date.now() < cached.renewAfter) {
+      return { status: "ready", record: cached }
+    }
+  }
+  const cloudToken = await fetchCloudToken(env, login)
+  if (cloudToken.status !== "ok") {
+    if (cloudToken.status === "not_found") return { status: "no_cloud_token", detail: cloudToken.detail }
+    return { status: "unavailable", detail: cloudToken.detail }
+  }
+  const first = await provisionGateway(env, login, repo, cloudToken.token)
+  if (first.status !== "cloud_token_rejected") return first
+  // The vaulted Cloud token was rejected (plue-side expiry/revocation): the
+  // door re-exchanges from the vaulted GitHub token, so one fresh mint may
+  // legitimately succeed. More than one retry would be a loop.
+  const reminted = await fetchCloudToken(env, login)
+  if (reminted.status !== "ok") {
+    return reminted.status === "not_found"
+      ? { status: "no_cloud_token", detail: reminted.detail }
+      : { status: "unavailable", detail: reminted.detail }
+  }
+  const second = await provisionGateway(env, login, repo, reminted.token)
+  if (second.status === "cloud_token_rejected") {
+    return { status: "unavailable", detail: "Smithers Cloud rejected a freshly minted identity token." }
+  }
+  return second
+}
 
 /*
  * A relay answer that is the TUNNEL failing, not the engine answering. §5: a
@@ -507,40 +513,40 @@ export const ensureGateway = async (
  * "reconnecting" until the record aged out. Re-POSTing the provision route is
  * what resumes the VM, so this is stale state, not a dead end.
  */
-const isTunnelFailure = (status: number): boolean => status === 502 || status === 503 || status === 504;
+const isTunnelFailure = (status: number): boolean => status === 502 || status === 503 || status === 504
 
 /**
  * How long a freshly minted record is trusted before another tunnel failure may
  * force a second re-provision. Without it an EventSource that reconnects every
  * few seconds would stampede the provision route — exactly what §5 forbids.
  */
-const FORCED_REPROVISION_FLOOR_MS = 30_000;
+const FORCED_REPROVISION_FLOOR_MS = 30_000
 
 /**
  * The one relayed method a repeat could duplicate. Every other allowlisted call
  * is a read, or is keyed by (runId, nodeId, iteration) and lands the same
  * decision twice — safe to replay onto a resumed gateway.
  */
-export const NON_REPLAYABLE_GATEWAY_METHODS: ReadonlyArray<string> = ["launchRun"];
+export const NON_REPLAYABLE_GATEWAY_METHODS: ReadonlyArray<string> = ["launchRun"]
 
 /** The RPC methods the product relays. Nothing else crosses this seam. */
 export const ALLOWED_GATEWAY_METHODS: ReadonlyArray<string> = [
-	"listWorkflows",
-	"launchRun",
-	"getRun",
-	"listApprovals",
-	"submitApproval",
-	"getNodeOutput",
-	"whatHappened",
-];
+  "listWorkflows",
+  "launchRun",
+  "getRun",
+  "listApprovals",
+  "submitApproval",
+  "getNodeOutput",
+  "whatHappened"
+]
 
 export type GatewayCallOutcome =
-	| { readonly status: "ok"; readonly response: Response }
-	| { readonly status: "provisioning"; readonly detail: string }
-	| { readonly status: "no_capacity"; readonly detail: string }
-	| { readonly status: "no_cloud_token"; readonly detail: string }
-	| { readonly status: "no_cloud_repo"; readonly detail: string }
-	| { readonly status: "unavailable"; readonly detail: string };
+  | { readonly status: "ok"; readonly response: Response }
+  | { readonly status: "provisioning"; readonly detail: string }
+  | { readonly status: "no_capacity"; readonly detail: string }
+  | { readonly status: "no_cloud_token"; readonly detail: string }
+  | { readonly status: "no_cloud_repo"; readonly detail: string }
+  | { readonly status: "unavailable"; readonly detail: string }
 
 /**
  * Call the per-user gateway through the relay: the Worker holds the token and
@@ -549,87 +555,87 @@ export type GatewayCallOutcome =
  * reprovisioned under a live token; the fresh record is always adopted).
  */
 export const callGateway = async (
-	env: GatewayEnv,
-	login: string,
-	repo: string,
-	path: string,
-	init: {
-		readonly method: string;
-		readonly body?: unknown;
-		readonly headers?: Record<string, string>;
-		/** Whether this call may be replayed onto a re-provisioned gateway. */
-		readonly replayable?: boolean;
-	},
+  env: GatewayEnv,
+  login: string,
+  repo: string,
+  path: string,
+  init: {
+    readonly method: string
+    readonly body?: unknown
+    readonly headers?: Record<string, string>
+    /** Whether this call may be replayed onto a re-provisioned gateway. */
+    readonly replayable?: boolean
+  }
 ): Promise<GatewayCallOutcome> => {
-	const gateway = await ensureGateway(env, login, repo);
-	if (gateway.status !== "ready") return gateway;
-	/** Why the last attempt could not reach the gateway — stated, never swallowed. */
-	let reason: string | undefined;
-	const attempt = async (record: GatewayRecord): Promise<Response | undefined> => {
-		try {
-			// The relay base_url is a PATH base (…/api/gateways/<id>): URL-joining
-			// an absolute path would drop it, so concatenate instead.
-			return await fetchWithDeadline(
-				"The workspace gateway",
-				`${record.baseUrl.replace(/\/+$/, "")}${path}`,
-				{
-					method: init.method,
-					headers: {
-						authorization: `Bearer ${record.token}`,
-						...(init.body === undefined ? {} : { "content-type": "application/json" }),
-						...init.headers,
-					},
-					...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-				},
-				upstreamTimeoutMs(env),
-			);
-		} catch (error) {
-			reason = error instanceof Error ? error.message : String(error);
-			return undefined;
-		}
-	};
-	let response = await attempt(gateway.record);
-	/*
-	 * Three things force exactly ONE re-provision, all from §5: a 401 (the VM
-	 * was reprovisioned under a live token), an unreachable base_url, and a
-	 * relay tunnel failure (the VM idle-suspended or was recycled behind a row
-	 * that still reads `running`). Either way the cached record is stale and
-	 * the fresh one is adopted — "never cache the token past a gateway_id
-	 * change". One retry, never a loop.
-	 */
-	const tunnelFailed = response !== undefined && isTunnelFailure(response.status);
-	if (response === undefined || response.status === 401 || tunnelFailed) {
-		// A record minted moments ago has already had its chance: re-POSTing
-		// again cannot resume anything and would only stampede the route.
-		if (
-			tunnelFailed &&
-			response !== undefined &&
-			Date.now() - gateway.record.provisionedAt < FORCED_REPROVISION_FLOOR_MS
-		) {
-			return { status: "ok", response };
-		}
-		if (response !== undefined) await response.body?.cancel();
-		const renewed = await ensureGateway(env, login, repo, true);
-		if (renewed.status !== "ready") return renewed;
-		/*
-		 * A tunnel failure can also mean the engine took the write and only the
-		 * answer was lost, so a call that a repeat could duplicate is NOT
-		 * replayed: the gateway is resumed for the next one and this attempt is
-		 * reported as what it was.
-		 */
-		if (tunnelFailed && init.replayable === false) {
-			return {
-				status: "unavailable",
-				detail: "Your workspace had gone to sleep. It is awake again — ask me once more.",
-			};
-		}
-		response = await attempt(renewed.record);
-	}
-	if (response === undefined) {
-		return {
-			status: "unavailable",
-			detail: `The workspace gateway is unreachable${reason === undefined ? "." : `: ${reason}`}`,
-		};
-	}
-	return { status: "ok", response };
-};
+  const gateway = await ensureGateway(env, login, repo)
+  if (gateway.status !== "ready") return gateway
+  /** Why the last attempt could not reach the gateway — stated, never swallowed. */
+  let reason: string | undefined
+  const attempt = async (record: GatewayRecord): Promise<Response | undefined> => {
+    try {
+      // The relay base_url is a PATH base (…/api/gateways/<id>): URL-joining
+      // an absolute path would drop it, so concatenate instead.
+      return await fetchWithDeadline(
+        "The workspace gateway",
+        `${record.baseUrl.replace(/\/+$/, "")}${path}`,
+        {
+          method: init.method,
+          headers: {
+            authorization: `Bearer ${record.token}`,
+            ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+            ...init.headers
+          },
+          ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) })
+        },
+        upstreamTimeoutMs(env)
+      )
+    } catch (error) {
+      reason = error instanceof Error ? error.message : String(error)
+      return undefined
+    }
+  }
+  let response = await attempt(gateway.record)
+  /*
+   * Three things force exactly ONE re-provision, all from §5: a 401 (the VM
+   * was reprovisioned under a live token), an unreachable base_url, and a
+   * relay tunnel failure (the VM idle-suspended or was recycled behind a row
+   * that still reads `running`). Either way the cached record is stale and
+   * the fresh one is adopted — "never cache the token past a gateway_id
+   * change". One retry, never a loop.
+   */
+  const tunnelFailed = response !== undefined && isTunnelFailure(response.status)
+  if (response === undefined || response.status === 401 || tunnelFailed) {
+    // A record minted moments ago has already had its chance: re-POSTing
+    // again cannot resume anything and would only stampede the route.
+    if (
+      tunnelFailed &&
+      response !== undefined &&
+      Date.now() - gateway.record.provisionedAt < FORCED_REPROVISION_FLOOR_MS
+    ) {
+      return { status: "ok", response }
+    }
+    if (response !== undefined) await response.body?.cancel()
+    const renewed = await ensureGateway(env, login, repo, true)
+    if (renewed.status !== "ready") return renewed
+    /*
+     * A tunnel failure can also mean the engine took the write and only the
+     * answer was lost, so a call that a repeat could duplicate is NOT
+     * replayed: the gateway is resumed for the next one and this attempt is
+     * reported as what it was.
+     */
+    if (tunnelFailed && init.replayable === false) {
+      return {
+        status: "unavailable",
+        detail: "Your workspace had gone to sleep. It is awake again — ask me once more."
+      }
+    }
+    response = await attempt(renewed.record)
+  }
+  if (response === undefined) {
+    return {
+      status: "unavailable",
+      detail: `The workspace gateway is unreachable${reason === undefined ? "." : `: ${reason}`}`
+    }
+  }
+  return { status: "ok", response }
+}

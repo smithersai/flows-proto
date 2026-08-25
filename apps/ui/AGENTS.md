@@ -6,7 +6,7 @@
 
 This binds BOTH agent populations:
 
-1. **Agents building this app:** every capability's output renders as a card/embed inside the transcript at conversation width, composer visible below. Building a surface that opens as a takeover/full-screen/second view by default is a defect — the diff gets rejected. Full-screen exists only as a *presentation transition of the same embedded component* (maximize), entered only by the user's explicit act.
+1. **Agents building this app:** every capability's output renders as a card/embed inside the transcript at conversation width, composer visible below. Building a surface that opens as a takeover/full-screen/second view by default is a defect — the diff gets rejected. Full-screen exists only as a _presentation transition of the same embedded component_ (maximize), entered only by the user's explicit act.
 2. **The agent inside the app (encode this in its system prompt and tool projection):** when the user asks about something ("what is in world?"), the agent ANSWERS IN THE CHAT — with an embedded card when a surface is involved — and never opens a full-screen view. Surface-maximizing commands are user-triggered only (`trigger: user` on the axis); the agent's invocation of any surface command renders its embedded form. Full-screen happens only when the user explicitly asks for it, in those words.
 
 The user has stated this law repeatedly; violations keep shipping. Treat any full-screen-by-default behavior — new or existing — as a bug to fix on sight, not legacy to preserve.
@@ -44,6 +44,7 @@ Nothing user-visible may be added unless the current brief or the canon (`DESIGN
 - Smithers workflow dashboards under `.smithers/ui/` are control-plane tooling, not shipped product code, and may use the workflow runtime's own Gateway UI components.
 
 <!-- smithers:prefer-workflows START -->
+
 ## Smithers workflows
 
 Use your best judgment, weighing speed, quality, and token usage, to decide
@@ -58,4 +59,5 @@ available workflows and `smithers workflow run <id>` to launch one.
 When a session ends successfully and the work could have been a smithers
 workflow, offer to turn the session into a reusable smithers workflow for next
 time.
+
 <!-- smithers:prefer-workflows END -->

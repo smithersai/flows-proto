@@ -74,7 +74,7 @@ proves both recovery directions from each.
 ### Versioned envelopes, ordered migrations, quarantine
 
 The envelope carries `version`. `migrateEntries` walks an ordered list of
-steps, each migrating version *n* to *n+1*; open applies every step between
+steps, each migrating version _n_ to _n+1_; open applies every step between
 the stored version and `ENVELOPE_VERSION` in order.
 
 - **Version 0** is the pre-envelope layout: the 13 collection keys living

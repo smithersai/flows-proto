@@ -5,19 +5,19 @@
  * the command contract — an honest error string, or void on success. Cards
  * carry the substance; a seam never returns raw payloads to the transcript.
  */
-import type { AppStore } from "../AppStore";
+import type { AppStore } from "../AppStore"
 
-export type SeamFetch = (input: string, init?: RequestInit) => Promise<Response>;
+export type SeamFetch = (input: string, init?: RequestInit) => Promise<Response>
 
 export interface SeamContext {
-	readonly http: SeamFetch;
-	readonly baseUrl: string;
-	readonly store: AppStore;
-	readonly dispatch: AppStore["dispatch"];
-	/** The acting principal for dispatches: "user", or "smithers" under withAgentActor. */
-	readonly actor: () => "user" | "smithers";
-	/** The next transcript ordinal — new cards surface at the end, never mid-history. */
-	readonly nextOrdinal: () => number;
+  readonly http: SeamFetch
+  readonly baseUrl: string
+  readonly store: AppStore
+  readonly dispatch: AppStore["dispatch"]
+  /** The acting principal for dispatches: "user", or "smithers" under withAgentActor. */
+  readonly actor: () => "user" | "smithers"
+  /** The next transcript ordinal — new cards surface at the end, never mid-history. */
+  readonly nextOrdinal: () => number
 }
 
 /**
@@ -31,15 +31,15 @@ export interface SeamContext {
  * product's own voice, so that is what a plumbing body gets.
  */
 export const readErrorMessage = async (response: Response, fallback: string): Promise<string> => {
-	const text = (await response.text().catch(() => "")).trim();
-	if (text === "") return fallback;
-	try {
-		const body = JSON.parse(text) as { message?: unknown; error?: unknown };
-		if (typeof body.message === "string" && body.message !== "") return body.message.slice(0, 240);
-		if (typeof body.error === "string" && body.error !== "") return body.error.slice(0, 240);
-	} catch {
-		// Not JSON at all: plumbing, never copy.
-		return fallback;
-	}
-	return fallback;
-};
+  const text = (await response.text().catch(() => "")).trim()
+  if (text === "") return fallback
+  try {
+    const body = JSON.parse(text) as { message?: unknown; error?: unknown }
+    if (typeof body.message === "string" && body.message !== "") return body.message.slice(0, 240)
+    if (typeof body.error === "string" && body.error !== "") return body.error.slice(0, 240)
+  } catch {
+    // Not JSON at all: plumbing, never copy.
+    return fallback
+  }
+  return fallback
+}

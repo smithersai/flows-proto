@@ -26,7 +26,6 @@ Call log:
   - waiting for locator('.smithers-card, [data-card]').first()
     14 × locator resolved to <section data-kind="reco" data-status="active" class="smithers-card" data-maximized="false" aria-label="What I found">…</section>
        - unexpected value "visible"
-
 ```
 
 ```yaml
@@ -156,5 +155,5 @@ Call log:
   293 |     })
   294 |   })
   295 | })
-  296 | 
+  296 |
 ```

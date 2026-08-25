@@ -5,34 +5,34 @@
  * invocation (the launch-law parity gate). The footer states the follow-up
  * command in words instead.
  */
-import { GitBranch } from "lucide-react";
-import type { Card } from "../state/AppState";
+import { GitBranch } from "lucide-react"
+import type { Card } from "../state/AppState"
 
 export const BranchesCardBody = ({
-	card,
+  card
 }: {
-	readonly card: Extract<Card, { kind: "branches" }>;
+  readonly card: Extract<Card, { kind: "branches" }>
 }) => (
-	<div className="world-card-list">
-		<ul className="world-card-list">
-			{card.payload.bookmarks.length === 0 ? (
-				<li className="world-card-empty">No branches in {card.payload.repo} yet.</li>
-			) : (
-				card.payload.bookmarks.map((bookmark) => (
-					<li key={bookmark.name} className="world-card-row">
-						<GitBranch size={14} aria-hidden="true" />
-						<span className="world-card-title">{bookmark.name}</span>
-						{bookmark.head !== null ? (
-							<span className="world-card-path">{bookmark.head.slice(0, 8)}</span>
-						) : null}
-					</li>
-				))
-			)}
-		</ul>
-		{card.payload.bookmarks.length > 0 ? (
-			<p className="world-card-path">
-				Open a pull request with /prs.create {"<title>"} from:{"<branch>"}
-			</p>
-		) : null}
-	</div>
-);
+  <div className="world-card-list">
+    <ul className="world-card-list">
+      {card.payload.bookmarks.length === 0 ?
+        <li className="world-card-empty">No branches in {card.payload.repo} yet.</li> :
+        (
+          card.payload.bookmarks.map((bookmark) => (
+            <li key={bookmark.name} className="world-card-row">
+              <GitBranch size={14} aria-hidden="true" />
+              <span className="world-card-title">{bookmark.name}</span>
+              {bookmark.head !== null ? <span className="world-card-path">{bookmark.head.slice(0, 8)}</span> : null}
+            </li>
+          ))
+        )}
+    </ul>
+    {card.payload.bookmarks.length > 0 ?
+      (
+        <p className="world-card-path">
+          Open a pull request with /prs.create {"<title>"} from:{"<branch>"}
+        </p>
+      ) :
+      null}
+  </div>
+)

@@ -18,23 +18,23 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.54.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
+const app = await openApp()
+const failures: string[] = []
 try {
-	const forms = [
-		"/prs.create flow-sweep repro title-only codeplanesmithers/canary-sandbox",
-		"/prs.create flow-sweep repro from:no-such-bookmark-zz codeplanesmithers/canary-sandbox",
-		"/prs.create flow-sweep repro from:main codeplanesmithers/no-such-repo-zz",
-		"/prs.create flow-sweep repro from:codeplanesmithers-patch-1 codeplanesmithers/canary-sandbox",
-	];
-	for (const form of forms) {
-		const outcome = await app.invoke(form, 14000);
-		console.log(`${form}\n  net: ${outcome.net.join(" | ") || "(none)"}\n  added: ${JSON.stringify(outcome.added)}`);
-		if (outcome.added.length === 0) failures.push(`${form} rendered nothing at all`);
-	}
+  const forms = [
+    "/prs.create flow-sweep repro title-only codeplanesmithers/canary-sandbox",
+    "/prs.create flow-sweep repro from:no-such-bookmark-zz codeplanesmithers/canary-sandbox",
+    "/prs.create flow-sweep repro from:main codeplanesmithers/no-such-repo-zz",
+    "/prs.create flow-sweep repro from:codeplanesmithers-patch-1 codeplanesmithers/canary-sandbox"
+  ]
+  for (const form of forms) {
+    const outcome = await app.invoke(form, 14000)
+    console.log(`${form}\n  net: ${outcome.net.join(" | ") || "(none)"}\n  added: ${JSON.stringify(outcome.added)}`)
+    if (outcome.added.length === 0) failures.push(`${form} rendered nothing at all`)
+  }
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)

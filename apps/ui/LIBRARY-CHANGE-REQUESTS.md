@@ -57,7 +57,7 @@ changes personally.
   ```ts
   const refused = descriptor.capabilities.filter((declared) =>
     Option.match(Capability.parse(declared), {
-      onNone: () => true,                                   // <- unparseable ⇒ refused
+      onNone: () => true, // <- unparseable ⇒ refused
       onSome: (capability) => !CapabilitySet.allows(envelope, capability)
     })
   )

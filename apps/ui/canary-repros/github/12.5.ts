@@ -20,41 +20,42 @@
  *
  *   bun apps/ui/canary-repros/github/12.5.ts
  */
-import { BASE, ensureSignedIn, open, report } from "./_lib";
+import { BASE, ensureSignedIn, open, report } from "./_lib"
 
-const REPO = process.env.REPO ?? "codeplanesmithers/canary-sandbox";
-const { context, page } = await open();
-await ensureSignedIn(page);
+const REPO = process.env.REPO ?? "codeplanesmithers/canary-sandbox"
+const { context, page } = await open()
+await ensureSignedIn(page)
 
 const status = await page.evaluate(async (repo) => {
-	const response = await fetch(`/api/repos/${repo}/github-app-status`);
-	return { status: response.status, body: await response.text() };
-}, REPO);
-console.log(`GET /api/repos/${REPO}/github-app-status -> ${status.status} ${status.body.trim()}`);
+  const response = await fetch(`/api/repos/${repo}/github-app-status`)
+  return { status: response.status, body: await response.text() }
+}, REPO)
+console.log(`GET /api/repos/${REPO}/github-app-status -> ${status.status} ${status.body.trim()}`)
 
-const composer = page.locator("textarea").last();
-await composer.click();
-await composer.fill(`/repos.app ${REPO}`);
-await page.waitForTimeout(400);
-await page.keyboard.press("Enter");
-await page.waitForTimeout(12_000);
+const composer = page.locator("textarea").last()
+await composer.click()
+await composer.fill(`/repos.app ${REPO}`)
+await page.waitForTimeout(400)
+await page.keyboard.press("Enter")
+await page.waitForTimeout(12_000)
 /* The transcript virtualizes, so read the whole of it and pull out the one
  * line /repos.app writes rather than diffing a prefix. */
-const whole = await page.locator(".smithers-transcript").innerText();
-const said =
-	whole
-		.split("\n")
-		.filter((line) => line.includes("Smithers GitHub App"))
-		.pop() ?? "";
-console.log(`transcript line: ${said}`);
+const whole = await page.locator(".smithers-transcript").innerText()
+const said = whole
+  .split("\n")
+  .filter((line) => line.includes("Smithers GitHub App"))
+  .pop() ?? ""
+console.log(`transcript line: ${said}`)
 
-const failures: Array<string> = [];
-if (!/not installed/.test(said)) failures.push("the app did not state the installation status at all");
+const failures: Array<string> = []
+if (!/not installed/.test(said)) failures.push("the app did not state the installation status at all")
 if (!/https:\/\/github\.com\//.test(said)) {
-	failures.push(`/repos.app offered no github.com install link — it said: ${said.trim().replace(/\n+/g, " ").slice(0, 200)}`);
+  failures.push(
+    `/repos.app offered no github.com install link — it said: ${said.trim().replace(/\n+/g, " ").slice(0, 200)}`
+  )
 }
 
-await page.screenshot({ path: "/tmp/canary-github-12.5.png", fullPage: true });
-console.log(`origin: ${BASE}; screenshot: /tmp/canary-github-12.5.png`);
-await context.close();
-report(failures);
+await page.screenshot({ path: "/tmp/canary-github-12.5.png", fullPage: true })
+console.log(`origin: ${BASE}; screenshot: /tmp/canary-github-12.5.png`)
+await context.close()
+report(failures)

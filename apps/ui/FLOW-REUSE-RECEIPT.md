@@ -82,7 +82,7 @@ answered by the binding with its payload decoded and its success encoded back.
 **The swap did not land.** `CellTurn` screens a flow's declared capabilities
 with `Capability.parse`, whose action set is closed (`fs:*`, `net:*`,
 `model:call`, `proc:spawn`, `jj:*`), and an unparseable claim is refused for
-*any* envelope — including `{ action: "*", resource: "**" }`. Every flow in
+_any_ envelope — including `{ action: "*", resource: "**" }`. Every flow in
 this app claims the vocabulary that carries DESIGN.md §14's three-tier approval
 policy, which has no honest fs/net/proc equivalent, so under the cell loop all
 88 would be refused. The third test in `AppEngine.test.ts` pins exactly this.
@@ -216,7 +216,7 @@ changes personally.
   ```ts
   const refused = descriptor.capabilities.filter((declared) =>
     Option.match(Capability.parse(declared), {
-      onNone: () => true,                                   // <- unparseable ⇒ refused
+      onNone: () => true, // <- unparseable ⇒ refused
       onSome: (capability) => !CapabilitySet.allows(envelope, capability)
     })
   )

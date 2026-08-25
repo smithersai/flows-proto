@@ -13,71 +13,72 @@
  *
  *   bun apps/ui/canary-repros/cards/7.3.ts
  */
-import { chromium } from "playwright";
+import { chromium } from "playwright"
 
-const BASE = process.env.CANARY_URL ?? "https://canary.smithers.sh";
-const PROFILE = process.env.CARDS_PROFILE ?? "/tmp/canary-cards-profile";
+const BASE = process.env.CANARY_URL ?? "https://canary.smithers.sh"
+const PROFILE = process.env.CARDS_PROFILE ?? "/tmp/canary-cards-profile"
 
 /* Cards with a repo-qualified title are the ones that lose the pill first. */
 const FLOWS = [
-	"/billing.balance",
-	"/issues.list codeplanesmithers/canary-sandbox",
-	"/branches.list codeplanesmithers/canary-sandbox",
-	"/env.view codeplanesmithers/canary-sandbox",
-];
+  "/billing.balance",
+  "/issues.list codeplanesmithers/canary-sandbox",
+  "/branches.list codeplanesmithers/canary-sandbox",
+  "/env.view codeplanesmithers/canary-sandbox"
+]
 
 const context = await chromium.launchPersistentContext(PROFILE, {
-	headless: true,
-	viewport: { width: 390, height: 844 },
-});
-const page = context.pages()[0] ?? (await context.newPage());
-await page.goto(BASE, { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(4000);
+  headless: true,
+  viewport: { width: 390, height: 844 }
+})
+const page = context.pages()[0] ?? (await context.newPage())
+await page.goto(BASE, { waitUntil: "domcontentloaded" })
+await page.waitForTimeout(4000)
 
 for (const flow of FLOWS) {
-	const composer = page.locator("textarea").first();
-	await composer.click();
-	await composer.fill("");
-	await page.keyboard.type(flow, { delay: 8 });
-	await page.keyboard.press("Enter");
-	await page.waitForTimeout(6500);
+  const composer = page.locator("textarea").first()
+  await composer.click()
+  await composer.fill("")
+  await page.keyboard.type(flow, { delay: 8 })
+  await page.keyboard.press("Enter")
+  await page.waitForTimeout(6500)
 }
 
 const badges = await page.$$eval("[data-kind]", (cards) =>
-	cards.map((card) => {
-		const badge = card.querySelector(".sui-badge") as HTMLElement | null;
-		if (badge === null) return null;
-		return {
-			kind: card.getAttribute("data-kind"),
-			text: badge.innerText,
-			needs: badge.scrollWidth,
-			gets: badge.clientWidth,
-		};
-	}),
-);
+  cards.map((card) => {
+    const badge = card.querySelector(".sui-badge") as HTMLElement | null
+    if (badge === null) return null
+    return {
+      kind: card.getAttribute("data-kind"),
+      text: badge.innerText,
+      needs: badge.scrollWidth,
+      gets: badge.clientWidth
+    }
+  }))
 
-const rows = badges.filter((row): row is NonNullable<typeof row> => row !== null);
-const expectedKinds = ["balance", "issue-list", "branches", "env"];
-const renderedKinds = new Set(rows.map((row) => row.kind));
-const missingKinds = expectedKinds.filter((kind) => !renderedKinds.has(kind));
+const rows = badges.filter((row): row is NonNullable<typeof row> => row !== null)
+const expectedKinds = ["balance", "issue-list", "branches", "env"]
+const renderedKinds = new Set(rows.map((row) => row.kind))
+const missingKinds = expectedKinds.filter((kind) => !renderedKinds.has(kind))
 for (const row of rows) {
-	console.log(`${row.kind}: pill "${row.text}" needs ${row.needs}px, gets ${row.gets}px`);
+  console.log(`${row.kind}: pill "${row.text}" needs ${row.needs}px, gets ${row.gets}px`)
 }
-const truncated = rows.filter((row) => row.needs > row.gets + 1);
+const truncated = rows.filter((row) => row.needs > row.gets + 1)
 
-await page.screenshot({ path: "/tmp/canary-cards-7.3-narrow.png", fullPage: true });
-await context.close();
+await page.screenshot({ path: "/tmp/canary-cards-7.3-narrow.png", fullPage: true })
+await context.close()
 
 if (missingKinds.length > 0) {
-	console.error(`SETUP 7.3: expected card kinds did not render with readable badges: ${missingKinds.join(", ")}`);
-	process.exit(2);
+  console.error(`SETUP 7.3: expected card kinds did not render with readable badges: ${missingKinds.join(", ")}`)
+  process.exit(2)
 }
 if (truncated.length > 0) {
-	console.error(
-		`FAIL 7.3: ${truncated.length} card status pill(s) are clipped at 390px — ${truncated
-			.map((row) => `${row.kind} "${row.text}" ${row.gets}/${row.needs}px`)
-			.join(", ")}`,
-	);
-	process.exit(1);
+  console.error(
+    `FAIL 7.3: ${truncated.length} card status pill(s) are clipped at 390px — ${
+      truncated
+        .map((row) => `${row.kind} "${row.text}" ${row.gets}/${row.needs}px`)
+        .join(", ")
+    }`
+  )
+  process.exit(1)
 }
-console.log("PASS 7.3: every card status pill renders in full at 390px.");
+console.log("PASS 7.3: every card status pill renders in full at 390px.")

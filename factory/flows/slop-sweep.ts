@@ -13,15 +13,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Flow } from "../../packages/flow/src/index.ts"
 import { Node } from "../../packages/plan/src/index.ts"
-import {
-  AgentTask,
-  chunk,
-  FLOWS_ROOT,
-  listPackages,
-  REPORTS_DIR,
-  runFlow,
-  type TaskResult
-} from "./harness.ts"
+import { AgentTask, chunk, FLOWS_ROOT, listPackages, REPORTS_DIR, runFlow, type TaskResult } from "./harness.ts"
 
 const WAVE_SIZE = 8
 const MODEL = "sonnet"
@@ -54,7 +46,7 @@ const writeReport = (done: number) => {
     "| --- | --- | --- |",
     ...results.map((r) => `| ${r.id} | ${r.exitCode} | ${path.relative(FLOWS_ROOT, r.logPath)} |`),
     "",
-    'Verification: `grep -rn "@slop" packages/*/src | wc -l`.',
+    "Verification: `grep -rn \"@slop\" packages/*/src | wc -l`.",
     ""
   ]
   fs.mkdirSync(REPORTS_DIR, { recursive: true })
@@ -102,7 +94,7 @@ for (let index = 0; index < waves.length; index++) {
   writeReport(results.length)
 }
 
-const slopCount = execSync('grep -rn "@slop" packages/*/src 2>/dev/null | wc -l', {
+const slopCount = execSync("grep -rn \"@slop\" packages/*/src 2>/dev/null | wc -l", {
   cwd: FLOWS_ROOT
 })
   .toString()

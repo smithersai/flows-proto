@@ -10,20 +10,20 @@
 
 /** Where a system Chrome/Chromium usually lives, most-preferred first. */
 export const BROWSER_CANDIDATES: ReadonlyArray<string> = [
-	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-	"/Applications/Chromium.app/Contents/MacOS/Chromium",
-	"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-	"/usr/bin/google-chrome",
-	"/usr/bin/google-chrome-stable",
-	"/usr/bin/chromium",
-	"/usr/bin/chromium-browser",
-];
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser"
+]
 
 export interface DiscoveryOptions {
-	/** `--browser <path>`, which wins over everything. */
-	readonly explicit?: string | undefined;
-	readonly env: Readonly<Record<string, string | undefined>>;
-	readonly exists: (path: string) => boolean;
+  /** `--browser <path>`, which wins over everything. */
+  readonly explicit?: string | undefined
+  readonly env: Readonly<Record<string, string | undefined>>
+  readonly exists: (path: string) => boolean
 }
 
 /**
@@ -32,28 +32,30 @@ export interface DiscoveryOptions {
  * fails loudly at spawn instead of silently falling back to another browser.
  */
 export const findBrowser = ({ explicit, env, exists }: DiscoveryOptions): string | undefined => {
-	if (explicit !== undefined && explicit !== "") return explicit;
-	const fromEnv = env.CHECKLIST_BROWSER;
-	if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-	return BROWSER_CANDIDATES.find((candidate) => exists(candidate));
-};
+  if (explicit !== undefined && explicit !== "") return explicit
+  const fromEnv = env.CHECKLIST_BROWSER
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv
+  return BROWSER_CANDIDATES.find((candidate) => exists(candidate))
+}
 
 export const NO_BROWSER_REASON =
-	`no Chrome/Chromium binary found for the headless page driver — pass --browser <path>, set $CHECKLIST_BROWSER, or install one of: ${BROWSER_CANDIDATES.join(", ")}`;
+  `no Chrome/Chromium binary found for the headless page driver — pass --browser <path>, set $CHECKLIST_BROWSER, or install one of: ${
+    BROWSER_CANDIDATES.join(", ")
+  }`
 
-export const NO_BROWSER_REQUESTED_REASON = "--no-browser was passed, so no headless page was opened for this row";
+export const NO_BROWSER_REQUESTED_REASON = "--no-browser was passed, so no headless page was opened for this row"
 
 export const browserArgv = (binary: string, port: number, userDataDir: string): ReadonlyArray<string> => [
-	binary,
-	"--headless=new",
-	`--remote-debugging-port=${port}`,
-	`--user-data-dir=${userDataDir}`,
-	"--no-first-run",
-	"--no-default-browser-check",
-	"--disable-gpu",
-	"about:blank",
-];
+  binary,
+  "--headless=new",
+  `--remote-debugging-port=${port}`,
+  `--user-data-dir=${userDataDir}`,
+  "--no-first-run",
+  "--no-default-browser-check",
+  "--disable-gpu",
+  "about:blank"
+]
 
 /** PUT this to open a fresh DevTools target on `url` and get its websocket back. */
 export const newTargetUrl = (port: number, url: string): string =>
-	`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`;
+  `http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`

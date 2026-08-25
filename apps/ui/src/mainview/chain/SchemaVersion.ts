@@ -1,5 +1,5 @@
-import type { StorageApi } from "@tanstack/db";
-import { ENVELOPE_STORAGE_KEY, STAGED_ENVELOPE_STORAGE_KEY } from "./TransactionalStorage";
+import type { StorageApi } from "@tanstack/db"
+import { ENVELOPE_STORAGE_KEY, STAGED_ENVELOPE_STORAGE_KEY } from "./TransactionalStorage"
 
 /*
  * The boot gate for the persisted store: which backend holds it (E3.6) and
@@ -42,22 +42,22 @@ import { ENVELOPE_STORAGE_KEY, STAGED_ENVELOPE_STORAGE_KEY } from "./Transaction
  * The shape version of everything AppStore persists. Bump it whenever a
  * persisted schema changes in a way an older row cannot satisfy.
  */
-export const APP_SCHEMA_VERSION = 9;
+export const APP_SCHEMA_VERSION = 9
 
 /** The prefix AppStore gives every persisted collection's storage key. */
-export const PERSISTED_KEY_PREFIX = "smithers-mvp.";
+export const PERSISTED_KEY_PREFIX = "smithers-mvp."
 
 /** Where the gate stamps the version it last wrote the store under. */
-export const SCHEMA_VERSION_STORAGE_KEY = `${PERSISTED_KEY_PREFIX}schemaVersion`;
+export const SCHEMA_VERSION_STORAGE_KEY = `${PERSISTED_KEY_PREFIX}schemaVersion`
 
 /** Where boot stamps the backend that holds the live store. */
-export const PERSISTENCE_BACKEND_STORAGE_KEY = `${PERSISTED_KEY_PREFIX}persistenceBackend`;
+export const PERSISTENCE_BACKEND_STORAGE_KEY = `${PERSISTED_KEY_PREFIX}persistenceBackend`
 
 /** Raw pre-migration envelopes retained outside the live namespace on a reset. */
-export const SCHEMA_QUARANTINE_PREFIX = "smithers-mvp-quarantine.";
+export const SCHEMA_QUARANTINE_PREFIX = "smithers-mvp-quarantine."
 
 /** The two stores AppStore can persist into. */
-export type PersistenceBackendKind = "opfs" | "localStorage";
+export type PersistenceBackendKind = "opfs" | "localStorage"
 
 /*
  * The gate's own bookkeeping, as opposed to the data. A reset clears the data
@@ -65,23 +65,23 @@ export type PersistenceBackendKind = "opfs" | "localStorage";
  * backend stamp names where the store lives, which a reset does not change.
  */
 const BOOKKEEPING_KEYS: ReadonlySet<string> = new Set([
-	SCHEMA_VERSION_STORAGE_KEY,
-	PERSISTENCE_BACKEND_STORAGE_KEY,
-]);
+  SCHEMA_VERSION_STORAGE_KEY,
+  PERSISTENCE_BACKEND_STORAGE_KEY
+])
 
 /**
  * The backend the last launch committed to, or null when no launch has stamped
  * one (a first run, or a store written before the stamp existed).
  */
 export const readRecordedBackend = (storage: StorageApi): PersistenceBackendKind | null => {
-	const stamped = storage.getItem(PERSISTENCE_BACKEND_STORAGE_KEY);
-	return stamped === "opfs" || stamped === "localStorage" ? stamped : null;
-};
+  const stamped = storage.getItem(PERSISTENCE_BACKEND_STORAGE_KEY)
+  return stamped === "opfs" || stamped === "localStorage" ? stamped : null
+}
 
 /** Stamp the backend this launch committed to, for the next launch to honour. */
 export const recordBackend = (storage: StorageApi, backend: PersistenceBackendKind): void => {
-	storage.setItem(PERSISTENCE_BACKEND_STORAGE_KEY, backend);
-};
+  storage.setItem(PERSISTENCE_BACKEND_STORAGE_KEY, backend)
+}
 
 /**
  * Every collection id AppStore persists. SchemaVersion.test.ts asserts this
@@ -90,54 +90,54 @@ export const recordBackend = (storage: StorageApi, backend: PersistenceBackendKi
  * stale key behind after a bump.
  */
 export const PERSISTED_COLLECTION_IDS: ReadonlyArray<string> = [
-	"app-sessions",
-	"app-messages",
-	"app-connectors",
-	"app-connector-operations",
-	"world-documents",
-	"app-cards",
-	"app-transitions",
-	"app-identity-sessions",
-	"app-billing-accounts",
-	"app-toasts",
-	"app-watched-repos",
-	"app-tool-calls",
-	"app-chain-events",
-];
+  "app-sessions",
+  "app-messages",
+  "app-connectors",
+  "app-connector-operations",
+  "world-documents",
+  "app-cards",
+  "app-transitions",
+  "app-identity-sessions",
+  "app-billing-accounts",
+  "app-toasts",
+  "app-watched-repos",
+  "app-tool-calls",
+  "app-chain-events"
+]
 
 /** The storage keys the gate clears on a mismatch. */
 export const persistedStorageKeys = (): ReadonlyArray<string> => [
-	...PERSISTED_COLLECTION_IDS.map((id) => `${PERSISTED_KEY_PREFIX}${id}`),
-	// The transactional envelope and its write-ahead stage
-	// (TransactionalStorage.ts): persisted state, cleared with the rest.
-	ENVELOPE_STORAGE_KEY,
-	STAGED_ENVELOPE_STORAGE_KEY,
-];
+  ...PERSISTED_COLLECTION_IDS.map((id) => `${PERSISTED_KEY_PREFIX}${id}`),
+  // The transactional envelope and its write-ahead stage
+  // (TransactionalStorage.ts): persisted state, cleared with the rest.
+  ENVELOPE_STORAGE_KEY,
+  STAGED_ENVELOPE_STORAGE_KEY
+]
 
 export interface SchemaVersionOutcome {
-	/**
-	 * "match" left the store alone. "reset" cleared it: either the stamp named
-	 * a different version, or there was no stamp and the rows predate the gate.
-	 */
-	/**
-	 * "match" left the store alone. "reset" cleared it: the stamp named a
-	 * different version. "adopt" left an unstamped store's data in place and
-	 * stamped it — see `enforceSchemaVersion`.
-	 */
-	readonly action: "match" | "reset" | "adopt";
-	/** The stamp the gate read, or null when the store carried none. */
-	readonly from: string | null;
-	/** The version now stamped. */
-	readonly to: number;
-	/** The keys the gate removed, sorted. */
-	readonly clearedKeys: ReadonlyArray<string>;
-	/** Backup keys holding the raw envelopes removed from the live namespace. */
-	readonly quarantinedKeys: ReadonlyArray<string>;
+  /**
+   * "match" left the store alone. "reset" cleared it: either the stamp named
+   * a different version, or there was no stamp and the rows predate the gate.
+   */
+  /**
+   * "match" left the store alone. "reset" cleared it: the stamp named a
+   * different version. "adopt" left an unstamped store's data in place and
+   * stamped it — see `enforceSchemaVersion`.
+   */
+  readonly action: "match" | "reset" | "adopt"
+  /** The stamp the gate read, or null when the store carried none. */
+  readonly from: string | null
+  /** The version now stamped. */
+  readonly to: number
+  /** The keys the gate removed, sorted. */
+  readonly clearedKeys: ReadonlyArray<string>
+  /** Backup keys holding the raw envelopes removed from the live namespace. */
+  readonly quarantinedKeys: ReadonlyArray<string>
 }
 
 export interface SchemaVersionOptions {
-	/** Defaults to APP_SCHEMA_VERSION. Tests pass a bump. */
-	readonly version?: number;
+  /** Defaults to APP_SCHEMA_VERSION. Tests pass a bump. */
+  readonly version?: number
 }
 
 /*
@@ -147,31 +147,31 @@ export interface SchemaVersionOptions {
  * never the contract: the declared list is always cleared too.
  */
 interface EnumerableStorage {
-	readonly length: number;
-	key: (index: number) => string | null;
+  readonly length: number
+  key: (index: number) => string | null
 }
 
 const enumerable = (storage: StorageApi): EnumerableStorage | undefined => {
-	const candidate = storage as Partial<EnumerableStorage>;
-	return typeof candidate.length === "number" && typeof candidate.key === "function"
-		? (candidate as EnumerableStorage)
-		: undefined;
-};
+  const candidate = storage as Partial<EnumerableStorage>
+  return typeof candidate.length === "number" && typeof candidate.key === "function"
+    ? (candidate as EnumerableStorage)
+    : undefined
+}
 
 const keysToClear = (storage: StorageApi): ReadonlyArray<string> => {
-	const keys = new Set<string>(persistedStorageKeys());
-	const scannable = enumerable(storage);
-	if (scannable !== undefined) {
-		for (let index = 0; index < scannable.length; index += 1) {
-			const key = scannable.key(index);
-			if (key === null) continue;
-			if (!key.startsWith(PERSISTED_KEY_PREFIX)) continue;
-			if (BOOKKEEPING_KEYS.has(key)) continue;
-			keys.add(key);
-		}
-	}
-	return [...keys].sort();
-};
+  const keys = new Set<string>(persistedStorageKeys())
+  const scannable = enumerable(storage)
+  if (scannable !== undefined) {
+    for (let index = 0; index < scannable.length; index += 1) {
+      const key = scannable.key(index)
+      if (key === null) continue
+      if (!key.startsWith(PERSISTED_KEY_PREFIX)) continue
+      if (BOOKKEEPING_KEYS.has(key)) continue
+      keys.add(key)
+    }
+  }
+  return [...keys].sort()
+}
 
 /**
  * Reconciles a localStorage-backed store with the current schema version.
@@ -198,28 +198,28 @@ const keysToClear = (storage: StorageApi): ReadonlyArray<string> => {
  * never present an empty store as a returning user's conversation.
  */
 export const enforceSchemaVersion = (
-	storage: StorageApi,
-	options: SchemaVersionOptions = {},
+  storage: StorageApi,
+  options: SchemaVersionOptions = {}
 ): SchemaVersionOutcome => {
-	const version = options.version ?? APP_SCHEMA_VERSION;
-	const from = storage.getItem(SCHEMA_VERSION_STORAGE_KEY);
-	if (from === String(version)) {
-		return { action: "match", from, to: version, clearedKeys: [], quarantinedKeys: [] };
-	}
-	if (from === null) {
-		storage.setItem(SCHEMA_VERSION_STORAGE_KEY, String(version));
-		return { action: "adopt", from, to: version, clearedKeys: [], quarantinedKeys: [] };
-	}
-	const clearedKeys = keysToClear(storage);
-	const quarantinedKeys: string[] = [];
-	for (const key of clearedKeys) {
-		const raw = storage.getItem(key);
-		if (raw === null) continue;
-		const quarantineKey = `${SCHEMA_QUARANTINE_PREFIX}${from}.${key.slice(PERSISTED_KEY_PREFIX.length)}`;
-		storage.setItem(quarantineKey, raw);
-		quarantinedKeys.push(quarantineKey);
-	}
-	for (const key of clearedKeys) storage.removeItem(key);
-	storage.setItem(SCHEMA_VERSION_STORAGE_KEY, String(version));
-	return { action: "reset", from, to: version, clearedKeys, quarantinedKeys };
-};
+  const version = options.version ?? APP_SCHEMA_VERSION
+  const from = storage.getItem(SCHEMA_VERSION_STORAGE_KEY)
+  if (from === String(version)) {
+    return { action: "match", from, to: version, clearedKeys: [], quarantinedKeys: [] }
+  }
+  if (from === null) {
+    storage.setItem(SCHEMA_VERSION_STORAGE_KEY, String(version))
+    return { action: "adopt", from, to: version, clearedKeys: [], quarantinedKeys: [] }
+  }
+  const clearedKeys = keysToClear(storage)
+  const quarantinedKeys: string[] = []
+  for (const key of clearedKeys) {
+    const raw = storage.getItem(key)
+    if (raw === null) continue
+    const quarantineKey = `${SCHEMA_QUARANTINE_PREFIX}${from}.${key.slice(PERSISTED_KEY_PREFIX.length)}`
+    storage.setItem(quarantineKey, raw)
+    quarantinedKeys.push(quarantineKey)
+  }
+  for (const key of clearedKeys) storage.removeItem(key)
+  storage.setItem(SCHEMA_VERSION_STORAGE_KEY, String(version))
+  return { action: "reset", from, to: version, clearedKeys, quarantinedKeys }
+}

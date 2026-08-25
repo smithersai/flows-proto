@@ -10,16 +10,16 @@
 
 /** What the browser would put in the tab ring, in document order. */
 const FOCUSABLE = [
-	"a[href]",
-	"button:not([disabled])",
-	"input:not([disabled])",
-	"select:not([disabled])",
-	"textarea:not([disabled])",
-	'[tabindex]:not([tabindex="-1"])',
-].join(",");
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex=\"-1\"])"
+].join(",")
 
 const isVisible = (element: HTMLElement): boolean =>
-	element.getClientRects().length > 0 && element.getAttribute("aria-hidden") !== "true";
+  element.getClientRects().length > 0 && element.getAttribute("aria-hidden") !== "true"
 
 /**
  * The tab stop before or after `region`, skipping everything inside it.
@@ -28,32 +28,32 @@ const isVisible = (element: HTMLElement): boolean =>
  * user can see, never the browser chrome.
  */
 export const focusableOutside = (
-	region: HTMLElement,
-	backwards: boolean,
-	scope: ParentNode = document,
+  region: HTMLElement,
+  backwards: boolean,
+  scope: ParentNode = document
 ): HTMLElement | undefined => {
-	const stops = [...scope.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-		(element) => !region.contains(element) && isVisible(element),
-	);
-	if (stops.length === 0) return undefined;
-	if (backwards) {
-		// Document order: the last stop that precedes the region, else wrap.
-		let previous: HTMLElement | undefined;
-		for (const stop of stops) {
-			if (region.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_PRECEDING) previous = stop;
-		}
-		return previous ?? stops[stops.length - 1];
-	}
-	/*
-	 * The region can be the last thing in the document — the world editor is —
-	 * so a forward Tab with nothing after it wraps to the first stop rather
-	 * than answering "nowhere to go" and leaving the user inside the trap.
-	 */
-	return (
-		stops.find((stop) => (region.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0) ??
-		stops[0]
-	);
-};
+  const stops = [...scope.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (element) => !region.contains(element) && isVisible(element)
+  )
+  if (stops.length === 0) return undefined
+  if (backwards) {
+    // Document order: the last stop that precedes the region, else wrap.
+    let previous: HTMLElement | undefined
+    for (const stop of stops) {
+      if (region.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_PRECEDING) previous = stop
+    }
+    return previous ?? stops[stops.length - 1]
+  }
+  /*
+   * The region can be the last thing in the document — the world editor is —
+   * so a forward Tab with nothing after it wraps to the first stop rather
+   * than answering "nowhere to go" and leaving the user inside the trap.
+   */
+  return (
+    stops.find((stop) => (region.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0) ??
+      stops[0]
+  )
+}
 
 /**
  * Handles a Tab press inside `region` by moving focus out of it.
@@ -62,16 +62,16 @@ export const focusableOutside = (
  * key — including a modified Tab — to the region itself.
  */
 export const tabOutOf = (
-	event: Pick<KeyboardEvent, "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey"> & {
-		preventDefault: () => void;
-	},
-	region: HTMLElement,
-	scope?: ParentNode,
+  event: Pick<KeyboardEvent, "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey"> & {
+    preventDefault: () => void
+  },
+  region: HTMLElement,
+  scope?: ParentNode
 ): boolean => {
-	if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return false;
-	const next = focusableOutside(region, event.shiftKey, scope);
-	if (next === undefined) return false;
-	event.preventDefault();
-	next.focus();
-	return true;
-};
+  if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return false
+  const next = focusableOutside(region, event.shiftKey, scope)
+  if (next === undefined) return false
+  event.preventDefault()
+  next.focus()
+  return true
+}

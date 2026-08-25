@@ -16,29 +16,35 @@
  *
  *   bun 9.4.ts        exit 1 while the bug is present, 0 once it is fixed.
  */
-import { chromium } from "playwright";
+import { chromium } from "playwright"
 
-const BASE = process.env.CANARY_URL ?? "https://canary.smithers.sh";
-const PROFILE = process.env.PROF ?? "/tmp/canary-surfaces-profile";
-const REPO = "codeplanesmithers/canary-sandbox";
+const BASE = process.env.CANARY_URL ?? "https://canary.smithers.sh"
+const PROFILE = process.env.PROF ?? "/tmp/canary-surfaces-profile"
+const REPO = "codeplanesmithers/canary-sandbox"
 
 const github = (await (await fetch(`https://api.github.com/repos/${REPO}/pulls?state=open`)).json()) as Array<{
-	number: number;
-	title: string;
-}>;
-console.log(`github: ${github.length} open pull request(s) in ${REPO}:`, github.map((pull) => `#${pull.number}`).join(", "));
+  number: number
+  title: string
+}>
+console.log(
+  `github: ${github.length} open pull request(s) in ${REPO}:`,
+  github.map((pull) => `#${pull.number}`).join(", ")
+)
 
-const context = await chromium.launchPersistentContext(PROFILE, { headless: true, viewport: { width: 1400, height: 1000 } });
-const page = context.pages()[0] ?? (await context.newPage());
-await page.goto(BASE, { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(5000);
+const context = await chromium.launchPersistentContext(PROFILE, {
+  headless: true,
+  viewport: { width: 1400, height: 1000 }
+})
+const page = context.pages()[0] ?? (await context.newPage())
+await page.goto(BASE, { waitUntil: "domcontentloaded" })
+await page.waitForTimeout(5000)
 
-const session = await page.evaluate(async () => (await fetch("/api/auth/session")).text());
-console.log("session:", session);
+const session = await page.evaluate(async () => (await fetch("/api/auth/session")).text())
+console.log("session:", session)
 if (!session.includes("login")) {
-	console.error("FAIL(setup): the profile is signed out — run the OAuth flow first.");
-	await context.close();
-	process.exit(2);
+  console.error("FAIL(setup): the profile is signed out — run the OAuth flow first.")
+  await context.close()
+  process.exit(2)
 }
 
 /*
@@ -46,24 +52,24 @@ if (!session.includes("login")) {
  * request's title, so a whole-body match would agree with GitHub for the wrong
  * reason; the assertion below reads the pr-list card alone.
  */
-await page.goto("about:blank", { waitUntil: "domcontentloaded" });
-const cdp = await context.newCDPSession(page);
+await page.goto("about:blank", { waitUntil: "domcontentloaded" })
+const cdp = await context.newCDPSession(page)
 await cdp.send("Storage.clearDataForOrigin", {
-	origin: new URL(BASE).origin,
-	storageTypes: "file_systems,local_storage,indexeddb,cache_storage,websql,service_workers",
-});
-await cdp.detach().catch(() => {});
-await page.goto(BASE, { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(7000);
+  origin: new URL(BASE).origin,
+  storageTypes: "file_systems,local_storage,indexeddb,cache_storage,websql,service_workers"
+})
+await cdp.detach().catch(() => {})
+await page.goto(BASE, { waitUntil: "domcontentloaded" })
+await page.waitForTimeout(7000)
 
-const composer = page.locator("textarea.sui-chat-composer-input");
-await composer.click();
-await composer.fill(`/prs.list ${REPO}`);
-await page.keyboard.press("Enter");
-await page.waitForTimeout(10000);
+const composer = page.locator("textarea.sui-chat-composer-input")
+await composer.click()
+await composer.fill(`/prs.list ${REPO}`)
+await page.keyboard.press("Enter")
+await page.waitForTimeout(10000)
 
-const body = await page.locator("body").innerText();
-await page.screenshot({ path: "/tmp/canary-9.4.png", fullPage: true });
+const body = await page.locator("body").innerText()
+await page.screenshot({ path: "/tmp/canary-9.4.png", fullPage: true })
 
 /*
  * The product Worker caps a session at 120 turns an hour and renders the cap
@@ -71,30 +77,30 @@ await page.screenshot({ path: "/tmp/canary-9.4.png", fullPage: true });
  * all, which must read as a setup failure, never as either verdict.
  */
 if (body.includes("open to design partners only") || body.includes("something is looping")) {
-	console.error("SETUP: the session is turn-rate-limited (120/hour) — rerun after the window resets.");
-	await context.close();
-	process.exit(2);
+  console.error("SETUP: the session is turn-rate-limited (120/hour) — rerun after the window resets.")
+  await context.close()
+  process.exit(2)
 }
 
-const card = page.locator('[data-kind="pr-list"]').last();
+const card = page.locator("[data-kind=\"pr-list\"]").last()
 if ((await card.count()) === 0) {
-	console.error("SETUP: /prs.list rendered no pr-list card — nothing to compare.");
-	await context.close();
-	process.exit(2);
+  console.error("SETUP: /prs.list rendered no pr-list card — nothing to compare.")
+  await context.close()
+  process.exit(2)
 }
-const cardText = await card.innerText();
-console.log("pr-list card:\n" + cardText);
-console.log("screenshot: /tmp/canary-9.4.png");
-await context.close();
+const cardText = await card.innerText()
+console.log("pr-list card:\n" + cardText)
+console.log("screenshot: /tmp/canary-9.4.png")
+await context.close()
 
 /* Assert POSITIVELY, and against the card alone. */
-const missing = github.filter((pull) => !cardText.includes(`#${pull.number}`) || !cardText.includes(pull.title));
+const missing = github.filter((pull) => !cardText.includes(`#${pull.number}`) || !cardText.includes(pull.title))
 if (missing.length > 0) {
-	console.error(
-		`FAIL: GitHub has ${github.length} open pull request(s) in ${REPO} and the product's pull-request card omits ${
-			missing.length
-		} of them (${missing.map((pull) => `#${pull.number} "${pull.title}"`).join(", ")}), so accepting the recommendation that proposes reviewing one cannot run the proposed work.`,
-	);
-	process.exit(1);
+  console.error(
+    `FAIL: GitHub has ${github.length} open pull request(s) in ${REPO} and the product's pull-request card omits ${missing.length} of them (${
+      missing.map((pull) => `#${pull.number} "${pull.title}"`).join(", ")
+    }), so accepting the recommendation that proposes reviewing one cannot run the proposed work.`
+  )
+  process.exit(1)
 }
-console.log("PASS: the product's pull-request card names every open GitHub pull request.");
+console.log("PASS: the product's pull-request card names every open GitHub pull request.")

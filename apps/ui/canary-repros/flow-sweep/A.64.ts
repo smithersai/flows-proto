@@ -17,26 +17,26 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.64.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
+const app = await openApp()
+const failures: string[] = []
 try {
-	const outcome = await app.invoke("/env.set NOT_AN_ASSIGNMENT codeplanesmithers/canary-sandbox", 9000);
-	console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)");
-	console.log("added lines:", JSON.stringify(outcome.added));
-	const honest = outcome.added.filter(
-		(line) =>
-			line.toLowerCase().includes("name=value".toLowerCase()) ||
-			/couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line),
-	);
-	console.log("honest lines:", JSON.stringify(honest));
-	if (honest.length === 0) {
-		failures.push(
-			"/env.set with a failing argument rendered no honest response — expected a malformed argument is refused (\"env.set needs a NAME=value pair\")",
-		);
-	}
+  const outcome = await app.invoke("/env.set NOT_AN_ASSIGNMENT codeplanesmithers/canary-sandbox", 9000)
+  console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)")
+  console.log("added lines:", JSON.stringify(outcome.added))
+  const honest = outcome.added.filter(
+    (line) =>
+      line.toLowerCase().includes("name=value".toLowerCase()) ||
+      /couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line)
+  )
+  console.log("honest lines:", JSON.stringify(honest))
+  if (honest.length === 0) {
+    failures.push(
+      "/env.set with a failing argument rendered no honest response — expected a malformed argument is refused (\"env.set needs a NAME=value pair\")"
+    )
+  }
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)

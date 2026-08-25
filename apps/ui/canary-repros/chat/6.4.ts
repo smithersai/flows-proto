@@ -9,37 +9,37 @@
  *
  * Exits 1 while the two lists differ.
  */
-import { composer, launch, resetStore } from "./_harness";
+import { composer, launch, resetStore } from "./_harness"
 
-const harness = await launch();
-const { ctx, page } = harness;
-await resetStore(harness);
+const harness = await launch()
+const { ctx, page } = harness
+await resetStore(harness)
 
 const manifest = (await page.evaluate(
-	() => document.querySelector("[data-flows]")!.getAttribute("data-flows")!,
+  () => document.querySelector("[data-flows]")!.getAttribute("data-flows")!
 ))
-	.split(/\s+/)
-	.filter(Boolean)
-	.sort();
+  .split(/\s+/)
+  .filter(Boolean)
+  .sort()
 
-const box = composer(page);
-await box.click();
-await box.fill("/flows");
-await page.keyboard.press("Enter");
-await page.waitForTimeout(3000);
+const box = composer(page)
+await box.click()
+await box.fill("/flows")
+await page.keyboard.press("Enter")
+await page.waitForTimeout(3000)
 
-const rendered = await page.locator("body").innerText();
-const listed = manifest.filter((name) => rendered.includes(`/${name} —`));
-const missing = manifest.filter((name) => !rendered.includes(`/${name} —`));
+const rendered = await page.locator("body").innerText()
+const listed = manifest.filter((name) => rendered.includes(`/${name} —`))
+const missing = manifest.filter((name) => !rendered.includes(`/${name} —`))
 
-console.log("data-flows manifest:", manifest.length);
-console.log("/flows output lists:", listed.length);
-console.log("missing from /flows (" + missing.length + "):");
-console.log(JSON.stringify(missing, null, 1));
-await page.screenshot({ path: "/tmp/canary-chat-6.4.png", fullPage: true });
-console.log("screenshot: /tmp/canary-chat-6.4.png");
+console.log("data-flows manifest:", manifest.length)
+console.log("/flows output lists:", listed.length)
+console.log("missing from /flows (" + missing.length + "):")
+console.log(JSON.stringify(missing, null, 1))
+await page.screenshot({ path: "/tmp/canary-chat-6.4.png", fullPage: true })
+console.log("screenshot: /tmp/canary-chat-6.4.png")
 
-const bug = missing.length > 0;
-console.log(bug ? "\nFAIL: /flows does not match data-flows" : "\nOK");
-await ctx.close();
-process.exit(bug ? 1 : 0);
+const bug = missing.length > 0
+console.log(bug ? "\nFAIL: /flows does not match data-flows" : "\nOK")
+await ctx.close()
+process.exit(bug ? 1 : 0)

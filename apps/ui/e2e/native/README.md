@@ -21,16 +21,16 @@ So the work is split. Everything decidable without a window is a `bun test`
 under `src/bun/`, and runs in CI on every push. Only the launch itself needs a
 real window, and only macOS can provide one.
 
-| id | Where it is proved |
-| --- | --- |
-| E12.1 | `native-launch.ts` (macOS), plus `src/bun/Main.test.ts` for the window it builds |
-| E12.2 | `src/bun/Main.test.ts` (all six URL branches), `native-launch.ts` end to end |
-| E12.3 | `src/bun/Main.test.ts` — registration, binding, and every handler answering |
-| E12.4 | `src/bun/LocalRepository.test.ts` (real git), `src/bun/Main.test.ts` (through the RPC seam) |
+| id    | Where it is proved                                                                           |
+| ----- | -------------------------------------------------------------------------------------------- |
+| E12.1 | `native-launch.ts` (macOS), plus `src/bun/Main.test.ts` for the window it builds             |
+| E12.2 | `src/bun/Main.test.ts` (all six URL branches), `native-launch.ts` end to end                 |
+| E12.3 | `src/bun/Main.test.ts` — registration, binding, and every handler answering                  |
+| E12.4 | `src/bun/LocalRepository.test.ts` (real git), `src/bun/Main.test.ts` (through the RPC seam)  |
 | E12.5 | `src/bun/Main.test.ts` (channel → URL), `native-artifact.ts` (channel stamp on the artifact) |
-| E12.6 | `native-artifact.ts` (macOS) |
-| E12.7 | **Human task — see below. There is no signing configuration in this repository.** |
-| CN-22 | `native-launch.ts --target https://canary.smithers.sh` |
+| E12.6 | `native-artifact.ts` (macOS)                                                                 |
+| E12.7 | **Human task — see below. There is no signing configuration in this repository.**            |
+| CN-22 | `native-launch.ts --target https://canary.smithers.sh`                                       |
 
 ## The files
 

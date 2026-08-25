@@ -12,23 +12,23 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.26.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
-const clientErrors: string[] = [];
+const app = await openApp()
+const failures: string[] = []
+const clientErrors: string[] = []
 app.page.on("request", (request) => {
-	if (request.url().includes("/api/client-errors")) clientErrors.push((request.postData() ?? "").slice(0, 300));
-});
+  if (request.url().includes("/api/client-errors")) clientErrors.push((request.postData() ?? "").slice(0, 300))
+})
 try {
-	const outcome = await app.invoke("/copy-message flow-sweep A26 clipboard probe", 6000);
-	console.log("added:", JSON.stringify(outcome.added));
-	console.log("client errors:", clientErrors);
-	if (clientErrors.some((body) => body.includes("unhandledrejection") && body.includes("Clipboard"))) {
-		failures.push("/copy-message raised an unhandled clipboard rejection");
-	}
-	if (outcome.added.length === 0) failures.push("/copy-message rendered nothing — success and failure look identical");
+  const outcome = await app.invoke("/copy-message flow-sweep A26 clipboard probe", 6000)
+  console.log("added:", JSON.stringify(outcome.added))
+  console.log("client errors:", clientErrors)
+  if (clientErrors.some((body) => body.includes("unhandledrejection") && body.includes("Clipboard"))) {
+    failures.push("/copy-message raised an unhandled clipboard rejection")
+  }
+  if (outcome.added.length === 0) failures.push("/copy-message rendered nothing — success and failure look identical")
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)

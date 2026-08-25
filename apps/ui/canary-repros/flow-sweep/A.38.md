@@ -31,7 +31,7 @@ confirmation at all, so a successful request and a dropped one look identical.
 slash flow as
 
 ```ts
-void commands.run(parsed.name, parsed.args);
+void commands.run(parsed.name, parsed.args)
 ```
 
 and discards the `CommandOutcome`. The BUTTON path in the same file
@@ -45,10 +45,10 @@ different outcomes.
 
 Proof of the split, observed live on the same session:
 
-| typed | rendered |
-| --- | --- |
-| `/issues.view` | toast `/issues.view didn't run` + `issues.view needs an issue number` |
-| `/issues.view 999999 codeplanesmithers/canary-sandbox` | nothing |
+| typed                                                  | rendered                                                              |
+| ------------------------------------------------------ | --------------------------------------------------------------------- |
+| `/issues.view`                                         | toast `/issues.view didn't run` + `issues.view needs an issue number` |
+| `/issues.view 999999 codeplanesmithers/canary-sandbox` | nothing                                                               |
 
 ## Screenshot
 

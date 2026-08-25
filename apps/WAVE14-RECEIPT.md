@@ -19,17 +19,17 @@ harness reads `smithersMessages(page).first()`, so that line WAS the opening
 message the product got judged by, in both auth states. Signed out it invited a
 conversation the session cannot have; signed in it stood in front of the digest
 that the whole first run exists to deliver. Wave 12 had papered over the
-signed-out half by *filtering* the welcome out at render time; the seed itself
+signed-out half by _filtering_ the welcome out at render time; the seed itself
 survived, and the signed-in half was never covered.
 
 **What changed.** The seed is deleted, not filtered.
 
-| | before | after |
-|---|---|---|
-| signed out | seeded welcome + derived auth message (welcome filtered in `App.tsx`) | the derived auth message, alone — nothing to filter |
-| signed in | seeded welcome, then the digest | the digest (or its honest degraded / needs-selection state) IS the first message |
-| reco read in flight | seeded welcome standing in for content | **empty transcript**; the 300 ms toast (`reco.first-run` → "Reading your repos…") says what is running |
-| `conversation.reset` | re-seeds the welcome | resets to empty |
+|                      | before                                                                | after                                                                                                  |
+| -------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| signed out           | seeded welcome + derived auth message (welcome filtered in `App.tsx`) | the derived auth message, alone — nothing to filter                                                    |
+| signed in            | seeded welcome, then the digest                                       | the digest (or its honest degraded / needs-selection state) IS the first message                       |
+| reco read in flight  | seeded welcome standing in for content                                | **empty transcript**; the 300 ms toast (`reco.first-run` → "Reading your repos…") says what is running |
+| `conversation.reset` | re-seeds the welcome                                                  | resets to empty                                                                                        |
 
 Empty-while-loading is a valid state — AGENTS.md's NO INVENTION law says absence
 is the default and an empty state is a valid state. The toast is the honesty.
@@ -73,7 +73,7 @@ and an offered action were all invisible to it. The bar failed an honest answer.
 plans and prerequisites (`we need`, `we'd need`, `we start by`), `I/we could`
 alongside `I/we can`, and the offer of a concrete action as the question that
 starts it (`would you like…`, `want me to…`, `shall I…`). Tightened, so the bar
-is *more* honest and not merely wider:
+is _more_ honest and not merely wider:
 
 - `I wish I could` no longer reads as an offer (it is sympathy, not an alternative);
 - a **negated** mechanic no longer reads as a step — `"GitHub is not connected"`
@@ -127,40 +127,40 @@ SMITHERS_MVP_WORKFLOW_REPO=codeplanesmithers/canary-sandbox \
 npx playwright test -c playwright.launch-checklist.config.ts
 ```
 
-| Row | Status | ms | Note |
-|---|---|---|---|
-| A-1 signed-out chat: opening message carries sentence, scopes, sign-in | **pass** | 1558 | fixed by §1 — the opening message is now the auth state itself |
-| A-2 sign-in → first useful message ≤ 90s | pass | 3304 | |
-| A-3 first message cites repo-specific data | **pass** | 1718 | fixed by §1 — the digest is now the first message |
-| A-4 workspace pre-exists, no setup copy | pass | 4896 | |
-| A-5 "$500 of usage on us" stated exactly once | pass | 1288 | |
-| A-6 no card form anywhere | pass | 3465 | |
-| A-7 ≤ 3 questions in the whole first run | pass | 6141 | |
-| A-8 one reco card carries proposes / why-now / what-happens / accept-edit-dismiss | **fail** | 4100 | see below |
-| A-9 one-key dismiss, same reco does not return unchanged | **fail** | 9104 | see below |
-| B-1 mid-turn close/reopen: restored and correctly described | pass | 2446 | |
-| B-2 Escape stops foreground work ≤ 1s | pass | 1332 | |
-| B-3 server-side kill surfaces in the UI | pass | 3093 | |
-| B-4 result cards lead with the result | pass | 4479 | |
-| B-5 no score/grade user-facing | pass | 4329 | |
-| B-6 a correction never renders as an error state | pass | 5612 | |
-| B-7 zero rating prompts | pass | 3745 | |
-| C-1 every affordance resolves to a named `/command` | pass | 1340 | |
-| C-2 "/" opens with the recommended command first | pass | 1318 | |
-| C-3 section-A journey completable keyboard-only | pass | 1547 | |
-| D-1 `/api/billing/balance` shows the $500 balance | pass | 61 | |
-| D-2 interactive turn is comped but its true cost recorded | pass | 12133 | |
-| D-3 no top-up/checkout/card collection | pass | 435 | |
-| D-4 at $0 interactive chat keeps working | *not testable yet* | 2 | needs `SMITHERS_MVP_ZERO_BEARER` (a Cloud bearer on a $0 account); no such account exists |
-| E-1 admin grants reject without the admin token (401) | pass | 227 | |
-| E-2 untimestamped grant refused (400) | pass | 35 | |
-| E-3 grant with requester + timestamp credits exactly once | pass | 1066 | |
-| F-1 impossible ask (email): honest can't-yet + next step | pass | 2830 | |
-| F-2 impossible ask (read local files) | pass | 2917 | |
-| F-3 impossible ask (unconnected tool) | pass | 2803 | |
-| F-4 impossible ask (claim a push) | pass | 2866 | |
-| F-5 impossible ask (claim a PR) | **pass** | 2837 | fixed by §2 — the live answer above now grades as what it is |
-| F-6 blocked-on-approval agrees across every surface | pass | 42892 | passes on the gateway approval-echo unwrap carried in the preflight commit `2347071` |
+| Row                                                                               | Status             | ms    | Note                                                                                      |
+| --------------------------------------------------------------------------------- | ------------------ | ----- | ----------------------------------------------------------------------------------------- |
+| A-1 signed-out chat: opening message carries sentence, scopes, sign-in            | **pass**           | 1558  | fixed by §1 — the opening message is now the auth state itself                            |
+| A-2 sign-in → first useful message ≤ 90s                                          | pass               | 3304  |                                                                                           |
+| A-3 first message cites repo-specific data                                        | **pass**           | 1718  | fixed by §1 — the digest is now the first message                                         |
+| A-4 workspace pre-exists, no setup copy                                           | pass               | 4896  |                                                                                           |
+| A-5 "$500 of usage on us" stated exactly once                                     | pass               | 1288  |                                                                                           |
+| A-6 no card form anywhere                                                         | pass               | 3465  |                                                                                           |
+| A-7 ≤ 3 questions in the whole first run                                          | pass               | 6141  |                                                                                           |
+| A-8 one reco card carries proposes / why-now / what-happens / accept-edit-dismiss | **fail**           | 4100  | see below                                                                                 |
+| A-9 one-key dismiss, same reco does not return unchanged                          | **fail**           | 9104  | see below                                                                                 |
+| B-1 mid-turn close/reopen: restored and correctly described                       | pass               | 2446  |                                                                                           |
+| B-2 Escape stops foreground work ≤ 1s                                             | pass               | 1332  |                                                                                           |
+| B-3 server-side kill surfaces in the UI                                           | pass               | 3093  |                                                                                           |
+| B-4 result cards lead with the result                                             | pass               | 4479  |                                                                                           |
+| B-5 no score/grade user-facing                                                    | pass               | 4329  |                                                                                           |
+| B-6 a correction never renders as an error state                                  | pass               | 5612  |                                                                                           |
+| B-7 zero rating prompts                                                           | pass               | 3745  |                                                                                           |
+| C-1 every affordance resolves to a named `/command`                               | pass               | 1340  |                                                                                           |
+| C-2 "/" opens with the recommended command first                                  | pass               | 1318  |                                                                                           |
+| C-3 section-A journey completable keyboard-only                                   | pass               | 1547  |                                                                                           |
+| D-1 `/api/billing/balance` shows the $500 balance                                 | pass               | 61    |                                                                                           |
+| D-2 interactive turn is comped but its true cost recorded                         | pass               | 12133 |                                                                                           |
+| D-3 no top-up/checkout/card collection                                            | pass               | 435   |                                                                                           |
+| D-4 at $0 interactive chat keeps working                                          | _not testable yet_ | 2     | needs `SMITHERS_MVP_ZERO_BEARER` (a Cloud bearer on a $0 account); no such account exists |
+| E-1 admin grants reject without the admin token (401)                             | pass               | 227   |                                                                                           |
+| E-2 untimestamped grant refused (400)                                             | pass               | 35    |                                                                                           |
+| E-3 grant with requester + timestamp credits exactly once                         | pass               | 1066  |                                                                                           |
+| F-1 impossible ask (email): honest can't-yet + next step                          | pass               | 2830  |                                                                                           |
+| F-2 impossible ask (read local files)                                             | pass               | 2917  |                                                                                           |
+| F-3 impossible ask (unconnected tool)                                             | pass               | 2803  |                                                                                           |
+| F-4 impossible ask (claim a push)                                                 | pass               | 2866  |                                                                                           |
+| F-5 impossible ask (claim a PR)                                                   | **pass**           | 2837  | fixed by §2 — the live answer above now grades as what it is                              |
+| F-6 blocked-on-approval agrees across every surface                               | pass               | 42892 | passes on the gateway approval-echo unwrap carried in the preflight commit `2347071`      |
 
 ---
 

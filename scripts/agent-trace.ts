@@ -210,9 +210,9 @@ for (const f of frames) {
 }
 const flowRows = [...byFlow.entries()].sort((a, b) => b[1].ms - a[1].ms)
   .map(([flow, s]) =>
-    `<tr><td class=mono>${esc(flow)}</td><td class=num>${s.n}</td><td class=num>${(s.ms / 1000).toFixed(1)}s</td><td class=num>${
-      (s.worst / 1000).toFixed(1)
-    }s</td></tr>`
+    `<tr><td class=mono>${esc(flow)}</td><td class=num>${s.n}</td><td class=num>${
+      (s.ms / 1000).toFixed(1)
+    }s</td><td class=num>${(s.worst / 1000).toFixed(1)}s</td></tr>`
   ).join("")
 
 const maxTok = Math.max(1, ...frames.map((f) => (f.usage.inputTokens ?? 0) + (f.usage.outputTokens ?? 0)))
@@ -344,7 +344,9 @@ details summary{cursor:pointer}
 </div>
 <table><tr><th>flow</th><th class=num>calls</th><th class=num>total</th><th class=num>worst</th></tr>${flowRows}</table>
 ${
-  runNotes.map((n) => `<details class=box><summary>${esc(n.kind)}</summary><pre>${esc(n.text)}</pre></details>`).join("")
+  runNotes.map((n) => `<details class=box><summary>${esc(n.kind)}</summary><pre>${esc(n.text)}</pre></details>`).join(
+    ""
+  )
 }
 <p class=dim>Context panes are reconstructed from the journal: it stores a context digest, not the text. The parts shown — fixed prefix, state roster, projected transcript — are what <code>CellTurn.projected</code> assembles. Use ← → or j/k to move between frames.</p>
 </header>

@@ -165,7 +165,7 @@ non-handoff flow).
 parent) hands off, the continuation passes `parent: undefined`
 (`make.ts:247-253`, the literal `undefined` at line 252). The prompt
 cancellation path survives via the mutable `roundExecutionId` finalizer
-(`make.ts:141-160`), but the *completion wakeup* edge does not: in
+(`make.ts:141-160`), but the _completion wakeup_ edge does not: in
 `layerMemory` the post-handoff round's `state.parent` is `undefined`, so when
 that round later completes, the parked parent is not resumed
 (`layerMemory.ts:121`). A discard-launched parent whose child handed off and
@@ -222,7 +222,7 @@ run with no re-execution, pinned as intended by
 `test/IncrementalInvalidation.test.ts:182-188` ("A later engine instance
 replays the RECORDED failure for the same key"). The failing action in that
 test is literally an input-read failure (`"input-unreadable"`) — the
-canonical *transient* error class. Nothing in the `Encoded` seam
+canonical _transient_ error class. Nothing in the `Encoded` seam
 (`Encoded.ts:116-122`) or the key material (`ActionKey.ts:115-197`) lets an
 implementation or a driver mark a failure as non-cacheable; the only escapes
 are a changed read-set digest or a changed cache environment. `RetryPolicy`
@@ -313,13 +313,13 @@ making a long-lived in-memory deployment the path of least resistance.
 
 ## Summary table
 
-| # | Severity | Area | One-line statement |
-|---|----------|------|--------------------|
-| 1 | HIGH | wake signals | `resume` drops a wakeup that lands while the round fiber is live; re-signal is a no-op; discard runs park forever |
-| 2 | HIGH | cycles | No cycle detection; parent-chain cycle deadlocks; contract and README promise `FlowCycleDetected` |
-| 3 | HIGH | memoization × interruption | Interrupt-only failure exits are memoized and replayed as outcomes, against the driver contract |
-| 4 | MEDIUM | trampoline | discard+handoff stalls the lineage; post-handoff rounds drop the parent wake edge |
-| 5 | MEDIUM | in-flight dedup | Same sealed key double-executes concurrently; `nondeterministic` first-wins rule unimplemented |
-| 6 | MEDIUM | error caching | No transience: a transient failure poisons a cross-run key permanently |
-| 7 | LOW | interruption | `interruptUnsafe` leaves `poll` a defect (pinned) |
-| 8 | LOW | invalidation | No evict/delete anywhere in the seam; in-memory state grows unboundedly behind real transports |
+| # | Severity | Area                       | One-line statement                                                                                                |
+| - | -------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1 | HIGH     | wake signals               | `resume` drops a wakeup that lands while the round fiber is live; re-signal is a no-op; discard runs park forever |
+| 2 | HIGH     | cycles                     | No cycle detection; parent-chain cycle deadlocks; contract and README promise `FlowCycleDetected`                 |
+| 3 | HIGH     | memoization × interruption | Interrupt-only failure exits are memoized and replayed as outcomes, against the driver contract                   |
+| 4 | MEDIUM   | trampoline                 | discard+handoff stalls the lineage; post-handoff rounds drop the parent wake edge                                 |
+| 5 | MEDIUM   | in-flight dedup            | Same sealed key double-executes concurrently; `nondeterministic` first-wins rule unimplemented                    |
+| 6 | MEDIUM   | error caching              | No transience: a transient failure poisons a cross-run key permanently                                            |
+| 7 | LOW      | interruption               | `interruptUnsafe` leaves `poll` a defect (pinned)                                                                 |
+| 8 | LOW      | invalidation               | No evict/delete anywhere in the seam; in-memory state grows unboundedly behind real transports                    |

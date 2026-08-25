@@ -11,33 +11,33 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.12.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
 const count = (lines: ReadonlyArray<string>): number | undefined => {
-	for (const line of lines) {
-		const match = /^Watch (\d+) repositor/.exec(line);
-		if (match !== null) return Number(match[1]);
-	}
-	return undefined;
-};
-
-const app = await openApp();
-const failures: string[] = [];
-try {
-	await app.invoke("/chat", 3000);
-	await app.invoke("/repos.watch", 8000);
-	await app.invoke("/repos.watch.none", 4000);
-	const before = count((await app.page.locator("body").innerText()).split("\n"));
-	const outcome = await app.invoke("/repos.watch.toggle no-such/repo", 4000);
-	const after = count((await app.page.locator("body").innerText()).split("\n"));
-	console.log("selected before:", before, "after:", after, "added:", JSON.stringify(outcome.added));
-	if (before !== undefined && after !== undefined && after > before) {
-		failures.push(`/repos.watch.toggle no-such/repo raised the selection from ${before} to ${after}`);
-	}
-	if (!outcome.added.some((line) => line.includes("no-such/repo"))) {
-		failures.push("/repos.watch.toggle no-such/repo never named the repository it could not find");
-	}
-} finally {
-	await app.close();
+  for (const line of lines) {
+    const match = /^Watch (\d+) repositor/.exec(line)
+    if (match !== null) return Number(match[1])
+  }
+  return undefined
 }
-report(failures);
+
+const app = await openApp()
+const failures: string[] = []
+try {
+  await app.invoke("/chat", 3000)
+  await app.invoke("/repos.watch", 8000)
+  await app.invoke("/repos.watch.none", 4000)
+  const before = count((await app.page.locator("body").innerText()).split("\n"))
+  const outcome = await app.invoke("/repos.watch.toggle no-such/repo", 4000)
+  const after = count((await app.page.locator("body").innerText()).split("\n"))
+  console.log("selected before:", before, "after:", after, "added:", JSON.stringify(outcome.added))
+  if (before !== undefined && after !== undefined && after > before) {
+    failures.push(`/repos.watch.toggle no-such/repo raised the selection from ${before} to ${after}`)
+  }
+  if (!outcome.added.some((line) => line.includes("no-such/repo"))) {
+    failures.push("/repos.watch.toggle no-such/repo never named the repository it could not find")
+  }
+} finally {
+  await app.close()
+}
+report(failures)

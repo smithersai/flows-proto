@@ -108,7 +108,7 @@ Two things make it non-vacuous, both added after review:
 - **A regression fixture** replaying the four dead-literal classes of the
   2026-08-15 rename, asserted to be caught.
 
-An auditor then found a hole in the pin *in the same shape*: card kinds were
+An auditor then found a hole in the pin _in the same shape_: card kinds were
 checked inside `[data-kind="…"]` selectors and `.kind ===` comparisons but not
 when passed as a function argument, which is how most are passed. Closed, with a
 fixture in that exact shape.
@@ -162,12 +162,12 @@ version was created 2026-08-13, and the probe reds against it today.
 
 ## Where the numbers stand
 
-| Workspace | Before | After |
-| --- | ---: | ---: |
-| `apps/ui` | 526 | 628 |
-| `apps/server` | 108 | 371 |
-| `apps/shared` | 33 | 33 |
-| `apps/tui` | 20 | 27 |
+| Workspace     | Before | After |
+| ------------- | -----: | ----: |
+| `apps/ui`     |    526 |   628 |
+| `apps/server` |    108 |   371 |
+| `apps/shared` |     33 |    33 |
+| `apps/tui`    |     20 |    27 |
 
 17 hermetic e2e suites exist where there were none. `worker-e2e.ts` went from
 red to green. No test was weakened, skipped, or deleted to reach any of it —
@@ -231,11 +231,11 @@ Three of the four whole-set failures turned out to be defects in the tests
 rather than the product, and each was fixed at its cause rather than by
 widening a budget:
 
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| roaming "never mounted" | `open()` returned at `readyState`, before React mounted | wait for the `[data-flows]` manifest, retry the navigation |
-| "surfaces menu never opened" | a synthetic click delivered before the handler attached is lost | click the trigger up to three times |
-| "connector rows did not load" | the seed named no backend, so the app read OPFS while the rows sat in localStorage | stamp `persistenceBackend` in the seed |
+| Symptom                       | Cause                                                                              | Fix                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| roaming "never mounted"       | `open()` returned at `readyState`, before React mounted                            | wait for the `[data-flows]` manifest, retry the navigation |
+| "surfaces menu never opened"  | a synthetic click delivered before the handler attached is lost                    | click the trigger up to three times                        |
+| "connector rows did not load" | the seed named no backend, so the app read OPFS while the rows sat in localStorage | stamp `persistenceBackend` in the seed                     |
 
 The first two moved between suites run to run, which is the signature of a lost
 event rather than a slow one. None was fixed by raising a timeout.

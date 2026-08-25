@@ -1,11 +1,11 @@
-import { z } from "zod";
-import { CardPatchSchema, CardSchema } from "./Cards";
-import type { AgentRuntimeContext } from "./AgentContext";
+import { z } from "zod"
+import type { AgentRuntimeContext } from "./AgentContext"
+import { CardPatchSchema, CardSchema } from "./Cards"
 
 export type FetchLike = (
-	input: string | URL | Request,
-	init?: RequestInit,
-) => Promise<Response>;
+  input: string | URL | Request,
+  init?: RequestInit
+) => Promise<Response>
 
 /*
  * The chat turn message contract, matching the landed chat worker
@@ -14,44 +14,44 @@ export type FetchLike = (
  * continuation turn carries.
  */
 export type AgentChatMessage =
-	| { readonly role: "user" | "assistant"; readonly content: string }
-	| {
-			readonly type: "function_call";
-			readonly call_id: string;
-			readonly name: string;
-			readonly arguments: string;
-	  }
-	| {
-			readonly type: "function_call_output";
-			readonly call_id: string;
-			readonly output: string;
-	  };
+  | { readonly role: "user" | "assistant"; readonly content: string }
+  | {
+    readonly type: "function_call"
+    readonly call_id: string
+    readonly name: string
+    readonly arguments: string
+  }
+  | {
+    readonly type: "function_call_output"
+    readonly call_id: string
+    readonly output: string
+  }
 
 /** The OpenAI JSON-schema function tool spec the chat worker passes upstream. */
 export interface AgentToolSpec {
-	readonly type: "function";
-	readonly name: string;
-	readonly description: string;
-	readonly parameters: Record<string, unknown>;
+  readonly type: "function"
+  readonly name: string
+  readonly description: string
+  readonly parameters: Record<string, unknown>
 }
 
 export interface StartAgentTurnRequest {
-	readonly runId: string;
-	readonly messages: ReadonlyArray<AgentChatMessage>;
-	readonly instructions: string;
-	/** The tool specs offered this turn; the worker forwards them untouched. */
-	readonly tools?: ReadonlyArray<AgentToolSpec>;
-	/**
-	 * The freshly-derived runtime context for THIS turn (AgentContext.ts). Hidden
-	 * context: it rides the wire to the server boundary, which renders it into the
-	 * upstream instructions — it is never persisted into the visible transcript.
-	 */
-	readonly context?: AgentRuntimeContext;
+  readonly runId: string
+  readonly messages: ReadonlyArray<AgentChatMessage>
+  readonly instructions: string
+  /** The tool specs offered this turn; the worker forwards them untouched. */
+  readonly tools?: ReadonlyArray<AgentToolSpec>
+  /**
+   * The freshly-derived runtime context for THIS turn (AgentContext.ts). Hidden
+   * context: it rides the wire to the server boundary, which renders it into the
+   * upstream instructions — it is never persisted into the visible transcript.
+   */
+  readonly context?: AgentRuntimeContext
 }
 
 export type StartAgentTurnResult =
-	| { readonly status: "started" }
-	| { readonly status: "error"; readonly message: string };
+  | { readonly status: "started" }
+  | { readonly status: "error"; readonly message: string }
 
 /*
  * Why a turn's stream ended, per the chat tool-loop contract. `cancelled` is
@@ -59,7 +59,7 @@ export type StartAgentTurnResult =
  * /api/agent/turn/cancel ends the turn's stream with it so the client renders
  * the kill honestly instead of watching the stream silently stop.
  */
-export const AgentTurnDoneReasonSchema = z.enum(["stop", "tool_call", "tool_limit", "cancelled"]);
+export const AgentTurnDoneReasonSchema = z.enum(["stop", "tool_call", "tool_limit", "cancelled"])
 
 /*
  * The chain frame vocabulary (DESIGN.md §14). These schemas MIRROR the
@@ -70,22 +70,22 @@ export const AgentTurnDoneReasonSchema = z.enum(["stop", "tool_call", "tool_limi
 
 /** The chain's gate observations, plus the two execution-produced kinds. */
 export const ChainGateKindSchema = z.enum([
-	"shape",
-	"fuel",
-	"catalog",
-	"denied",
-	"call_failed",
-	"script_failed",
-]);
+  "shape",
+  "fuel",
+  "catalog",
+  "denied",
+  "call_failed",
+  "script_failed"
+])
 
 /** Why a lineage parked — the chain's suspension reason vocabulary. */
-export const ChainParkCodeSchema = z.enum(["approval", "event", "timer", "quota", "plugin"]);
+export const ChainParkCodeSchema = z.enum(["approval", "event", "timer", "quota", "plugin"])
 
 /** How a settled call resolved: executed live, cache hit, or replayed prefix. */
-export const ChainCallVerdictSchema = z.enum(["run", "hit", "replay"]);
+export const ChainCallVerdictSchema = z.enum(["run", "hit", "replay"])
 
 /** How a link ended: the three trampoline outcomes. */
-export const ChainLinkOutcomeSchema = z.enum(["done", "to", "park"]);
+export const ChainLinkOutcomeSchema = z.enum(["done", "to", "park"])
 
 /*
  * One frame of a streamed agent turn — the single contract the native Electrobun
@@ -100,86 +100,86 @@ export const ChainLinkOutcomeSchema = z.enum(["done", "to", "park"]);
  * rendering needs; the chainEvents journal remains the full evidence.
  */
 export const AgentTurnFrameSchema = z.discriminatedUnion("type", [
-	z.object({
-		runId: z.string(),
-		type: z.literal("delta"),
-		kind: z.enum(["reasoning", "text"]),
-		text: z.string(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("done"),
-		reason: AgentTurnDoneReasonSchema.optional(),
-		error: z.string().optional(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("card"),
-		card: CardSchema,
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("card.update"),
-		id: z.string(),
-		patch: CardPatchSchema,
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("tool_call"),
-		call_id: z.string(),
-		name: z.string(),
-		arguments: z.string(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("link.authored"),
-		link: z.number().int().nonnegative(),
-		scriptDigest: z.string(),
-		script: z.string(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("call.started"),
-		link: z.number().int().nonnegative(),
-		ordinal: z.number().int().nonnegative(),
-		name: z.string(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("call.settled"),
-		link: z.number().int().nonnegative(),
-		ordinal: z.number().int().nonnegative(),
-		name: z.string(),
-		verdict: ChainCallVerdictSchema,
-		resultDigest: z.string().optional(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("gate.rejected"),
-		link: z.number().int().nonnegative(),
-		kind: ChainGateKindSchema,
-		message: z.string().optional(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("link.ended"),
-		link: z.number().int().nonnegative(),
-		outcome: ChainLinkOutcomeSchema,
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("steering.drained"),
-		link: z.number().int().nonnegative(),
-		count: z.number().int().positive(),
-	}),
-	z.object({
-		runId: z.string(),
-		type: z.literal("park"),
-		code: ChainParkCodeSchema,
-		card: CardSchema.optional(),
-	}),
-]);
-export type AgentTurnFrame = z.infer<typeof AgentTurnFrameSchema>;
+  z.object({
+    runId: z.string(),
+    type: z.literal("delta"),
+    kind: z.enum(["reasoning", "text"]),
+    text: z.string()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("done"),
+    reason: AgentTurnDoneReasonSchema.optional(),
+    error: z.string().optional()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("card"),
+    card: CardSchema
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("card.update"),
+    id: z.string(),
+    patch: CardPatchSchema
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("tool_call"),
+    call_id: z.string(),
+    name: z.string(),
+    arguments: z.string()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("link.authored"),
+    link: z.number().int().nonnegative(),
+    scriptDigest: z.string(),
+    script: z.string()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("call.started"),
+    link: z.number().int().nonnegative(),
+    ordinal: z.number().int().nonnegative(),
+    name: z.string()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("call.settled"),
+    link: z.number().int().nonnegative(),
+    ordinal: z.number().int().nonnegative(),
+    name: z.string(),
+    verdict: ChainCallVerdictSchema,
+    resultDigest: z.string().optional()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("gate.rejected"),
+    link: z.number().int().nonnegative(),
+    kind: ChainGateKindSchema,
+    message: z.string().optional()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("link.ended"),
+    link: z.number().int().nonnegative(),
+    outcome: ChainLinkOutcomeSchema
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("steering.drained"),
+    link: z.number().int().nonnegative(),
+    count: z.number().int().positive()
+  }),
+  z.object({
+    runId: z.string(),
+    type: z.literal("park"),
+    code: ChainParkCodeSchema,
+    card: CardSchema.optional()
+  })
+])
+export type AgentTurnFrame = z.infer<typeof AgentTurnFrameSchema>
 
 export const isAgentTurnFrame = (value: unknown): value is AgentTurnFrame =>
-	AgentTurnFrameSchema.safeParse(value).success;
+  AgentTurnFrameSchema.safeParse(value).success

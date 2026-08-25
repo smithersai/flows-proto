@@ -14,7 +14,7 @@
  */
 
 /** One selector and the registered flow the elements it matches invoke. */
-export type FlowBindingHint = readonly [selector: string, flow: string];
+export type FlowBindingHint = readonly [selector: string, flow: string]
 
 /**
  * Stamps `data-flow` on every match under `root`.
@@ -24,13 +24,11 @@ export type FlowBindingHint = readonly [selector: string, flow: string];
  * stamped as soon as it exists. Stamping is idempotent and never overrides a
  * `data-flow` the element already carries.
  */
-export const stampFlows =
-	(hints: ReadonlyArray<FlowBindingHint>) =>
-	(root: HTMLElement | null): void => {
-		if (root === null) return;
-		for (const [selector, flow] of hints) {
-			for (const element of root.querySelectorAll<HTMLElement>(selector)) {
-				if (element.getAttribute("data-flow") === null) element.setAttribute("data-flow", flow);
-			}
-		}
-	};
+export const stampFlows = (hints: ReadonlyArray<FlowBindingHint>) => (root: HTMLElement | null): void => {
+  if (root === null) return
+  for (const [selector, flow] of hints) {
+    for (const element of root.querySelectorAll<HTMLElement>(selector)) {
+      if (element.getAttribute("data-flow") === null) element.setAttribute("data-flow", flow)
+    }
+  }
+}

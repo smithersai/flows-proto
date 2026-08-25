@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { fileURLToPath } from "node:url";
+import { describe, expect, test } from "bun:test"
+import { fileURLToPath } from "node:url"
 
 /*
  * The Start entry renders `routes/__root.tsx` on the SERVER, so every module
@@ -14,29 +14,29 @@ import { fileURLToPath } from "node:url";
  * made inside a process that has one.
  */
 
-const appRoot = fileURLToPath(new URL("../..", import.meta.url));
+const appRoot = fileURLToPath(new URL("../..", import.meta.url))
 
 const importsWithoutDom = async (specifier: string): Promise<{ code: number; stderr: string }> => {
-	const child = Bun.spawn({
-		cmd: [process.execPath, "-e", `await import(${JSON.stringify(specifier)});`],
-		cwd: appRoot,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-	return { code, stderr };
-};
+  const child = Bun.spawn({
+    cmd: [process.execPath, "-e", `await import(${JSON.stringify(specifier)});`],
+    cwd: appRoot,
+    stdout: "pipe",
+    stderr: "pipe"
+  })
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
+  return { code, stderr }
+}
 
 describe("the server-rendered route graph evaluates without a DOM", () => {
-	test("ControllerProvider imports with no window", async () => {
-		const result = await importsWithoutDom("./src/mainview/ControllerProvider.tsx");
-		expect(result.stderr).not.toContain("window is not defined");
-		expect(result.code).toBe(0);
-	});
+  test("ControllerProvider imports with no window", async () => {
+    const result = await importsWithoutDom("./src/mainview/ControllerProvider.tsx")
+    expect(result.stderr).not.toContain("window is not defined")
+    expect(result.code).toBe(0)
+  })
 
-	test("the boot module is the browser-only half, and stays out of the static graph", async () => {
-		// Stated as a fact, not an aspiration: this is WHY the import above is dynamic.
-		const result = await importsWithoutDom("./src/mainview/ControllerBoot.client.ts");
-		expect(result.code).not.toBe(0);
-	});
-});
+  test("the boot module is the browser-only half, and stays out of the static graph", async () => {
+    // Stated as a fact, not an aspiration: this is WHY the import above is dynamic.
+    const result = await importsWithoutDom("./src/mainview/ControllerBoot.client.ts")
+    expect(result.code).not.toBe(0)
+  })
+})

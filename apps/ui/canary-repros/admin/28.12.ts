@@ -16,47 +16,61 @@
  *   PROF=/tmp/canary-admin-profile bun 28.11.ts
  *   exit 1 while the bug is present, 0 once the session is clean.
  */
-import { open, run, body } from "./_lib";
+import { body, open, run } from "./_lib"
 
-const { context, page } = await open();
+const { context, page } = await open()
 
-await page.reload({ waitUntil: "domcontentloaded" });
-await page.waitForTimeout(6000);
+await page.reload({ waitUntil: "domcontentloaded" })
+await page.waitForTimeout(6000)
 
 // Everything below is the measured window.
-const consoleMessages: Array<string> = [];
-const failedRequests: Array<string> = [];
+const consoleMessages: Array<string> = []
+const failedRequests: Array<string> = []
 page.on("console", (message) => {
-	if (message.type() === "error" || message.type() === "warning") consoleMessages.push(`${message.type()}: ${message.text()}`);
-});
-page.on("pageerror", (error) => consoleMessages.push(`pageerror: ${String(error)}`));
+  if (message.type() === "error" || message.type() === "warning") {
+    consoleMessages.push(`${message.type()}: ${message.text()}`)
+  }
+})
+page.on("pageerror", (error) => consoleMessages.push(`pageerror: ${String(error)}`))
 page.on("response", (response) => {
-	if (response.status() >= 400) failedRequests.push(`${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`);
-});
+  if (response.status() >= 400) {
+    failedRequests.push(`${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`)
+  }
+})
 
-for (const flow of ["/billing.balance", "/repos.list", "/notifications", "/help", "/connectors", "/world", "/keys.list"]) {
-	await run(page, flow, 6000);
+for (
+  const flow of ["/billing.balance", "/repos.list", "/notifications", "/help", "/connectors", "/world", "/keys.list"]
+) {
+  await run(page, flow, 6000)
 }
-const composer = page.locator("textarea.sui-chat-composer-input");
-await composer.click();
-await composer.fill("Say PONG.");
-await page.keyboard.press("Enter");
-await page.waitForTimeout(30_000);
+const composer = page.locator("textarea.sui-chat-composer-input")
+await composer.click()
+await composer.fill("Say PONG.")
+await page.keyboard.press("Enter")
+await page.waitForTimeout(30_000)
 
-const text = await body(page);
-console.log("28.11 console errors/warnings:", JSON.stringify([...new Set(consoleMessages)], null, 1));
-console.log("28.12 responses >= 400      :", JSON.stringify([...new Set(failedRequests)], null, 1));
-console.log('raw upstream body shown to the user:', text.includes("404 page not found"));
-await page.screenshot({ path: "/tmp/canary-28.11.png", fullPage: true });
-console.log("screenshot: /tmp/canary-28.11.png");
-await context.close();
+const text = await body(page)
+console.log("28.11 console errors/warnings:", JSON.stringify([...new Set(consoleMessages)], null, 1))
+console.log("28.12 responses >= 400      :", JSON.stringify([...new Set(failedRequests)], null, 1))
+console.log("raw upstream body shown to the user:", text.includes("404 page not found"))
+await page.screenshot({ path: "/tmp/canary-28.11.png", fullPage: true })
+console.log("screenshot: /tmp/canary-28.11.png")
+await context.close()
 
-const failures: Array<string> = [];
-if (consoleMessages.length > 0) failures.push(`${consoleMessages.length} console error/warning in a normal session: ${[...new Set(consoleMessages)].join(" | ")}`);
-if (failedRequests.length > 0) failures.push(`${failedRequests.length} response >= 400 in a normal session: ${[...new Set(failedRequests)].join(" | ")}`);
+const failures: Array<string> = []
+if (consoleMessages.length > 0) {
+  failures.push(
+    `${consoleMessages.length} console error/warning in a normal session: ${[...new Set(consoleMessages)].join(" | ")}`
+  )
+}
+if (failedRequests.length > 0) {
+  failures.push(
+    `${failedRequests.length} response >= 400 in a normal session: ${[...new Set(failedRequests)].join(" | ")}`
+  )
+}
 if (failures.length === 0) {
-	console.log("PASS — the session is clean.");
-	process.exit(0);
+  console.log("PASS — the session is clean.")
+  process.exit(0)
 }
-for (const failure of failures) console.error(`FAIL: ${failure}`);
-process.exit(1);
+for (const failure of failures) console.error(`FAIL: ${failure}`)
+process.exit(1)

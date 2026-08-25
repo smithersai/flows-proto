@@ -25,10 +25,10 @@
  */
 
 /** The Worker route. Must equal `CLIENT_ERRORS_PATH` in apps/server/src/index.ts. */
-export const CLIENT_ERRORS_PATH = "/api/client-errors";
+export const CLIENT_ERRORS_PATH = "/api/client-errors"
 
 /** Reports one page may send. An error inside a render loop fires without end. */
-export const CLIENT_ERROR_REPORT_LIMIT = 20;
+export const CLIENT_ERROR_REPORT_LIMIT = 20
 
 /**
  * The largest body this client will post, in UTF-8 bytes.
@@ -49,23 +49,23 @@ export const CLIENT_ERROR_REPORT_LIMIT = 20;
  * stated, and the full text is still in the worker tail, so the client posts
  * up to the route's cap rather than pre-cutting to the log's.
  */
-export const CLIENT_ERROR_BODY_MAX_BYTES = 16 * 1024;
+export const CLIENT_ERROR_BODY_MAX_BYTES = 16 * 1024
 
 /**
  * Bytes of page path kept. The path is overhead on every report and a path
  * longer than this is not one anyone reads; capping it first leaves the rest
  * of the budget to the stack, which is the part worth having.
  */
-export const CLIENT_ERROR_URL_MAX_BYTES = 1024;
+export const CLIENT_ERROR_URL_MAX_BYTES = 1024
 
-export type ClientErrorKind = "error" | "unhandledrejection";
+export type ClientErrorKind = "error" | "unhandledrejection"
 
 /** Exactly what is posted. The Worker stores this verbatim under `report`. */
 export interface ClientErrorReport {
-	readonly kind: ClientErrorKind;
-	readonly message: string;
-	readonly url: string;
-	readonly at: string;
+  readonly kind: ClientErrorKind
+  readonly message: string
+  readonly url: string
+  readonly at: string
 }
 
 /*
@@ -73,21 +73,21 @@ export interface ClientErrorReport {
  * string path, and the wide type drags in the platform's extra statics
  * (`preconnect`), which no test double can satisfy.
  */
-export type ClientErrorFetch = (input: string, init: RequestInit) => Promise<Response>;
+export type ClientErrorFetch = (input: string, init: RequestInit) => Promise<Response>
 
 export interface ClientErrorReporterOptions {
-	/** Injected for tests. Defaults to the global fetch. */
-	readonly fetchImpl?: ClientErrorFetch;
-	readonly limit?: number;
-	readonly now?: () => Date;
-	/** The page the report came from. Defaults to the current pathname. */
-	readonly pathname?: () => string;
+  /** Injected for tests. Defaults to the global fetch. */
+  readonly fetchImpl?: ClientErrorFetch
+  readonly limit?: number
+  readonly now?: () => Date
+  /** The page the report came from. Defaults to the current pathname. */
+  readonly pathname?: () => string
 }
 
 export interface ClientErrorReporter {
-	readonly report: (kind: ClientErrorKind, error: unknown) => void;
-	/** Reports sent so far, for asserting the cap. */
-	readonly reported: () => number;
+  readonly report: (kind: ClientErrorKind, error: unknown) => void
+  /** Reports sent so far, for asserting the cap. */
+  readonly reported: () => number
 }
 
 /*
@@ -97,12 +97,12 @@ export interface ClientErrorReporter {
  * rather than dropping them.
  */
 export const errorMessage = (error: unknown): string =>
-	error instanceof Error ? (error.stack ?? error.message) : String(error);
+  error instanceof Error ? (error.stack ?? error.message) : String(error)
 
-const encoder = new TextEncoder();
+const encoder = new TextEncoder()
 
 /** UTF-8 bytes, the unit the Worker measures a request body in. */
-export const byteLength = (text: string): number => encoder.encode(text).length;
+export const byteLength = (text: string): number => encoder.encode(text).length
 
 /*
  * Cutting to a byte budget cannot be done by counting characters: a UTF-16
@@ -113,14 +113,14 @@ export const byteLength = (text: string): number => encoder.encode(text).length;
  * character count does on non-ASCII input.
  */
 const cutToBytes = (text: string, maxBytes: number): string => {
-	let head = text.length > maxBytes ? text.slice(0, maxBytes) : text;
-	let size = byteLength(head);
-	while (size > maxBytes && head.length > 0) {
-		head = head.slice(0, Math.min(head.length - 1, Math.floor((head.length * maxBytes) / size)));
-		size = byteLength(head);
-	}
-	return head;
-};
+  let head = text.length > maxBytes ? text.slice(0, maxBytes) : text
+  let size = byteLength(head)
+  while (size > maxBytes && head.length > 0) {
+    head = head.slice(0, Math.min(head.length - 1, Math.floor((head.length * maxBytes) / size)))
+    size = byteLength(head)
+  }
+  return head
+}
 
 /**
  * The exact bytes posted for one report, already inside the route's cap.
@@ -131,71 +131,70 @@ const cutToBytes = (text: string, maxBytes: number): string => {
  * report body that skips this bound.
  */
 export const clientErrorBody = (
-	kind: ClientErrorKind,
-	error: unknown,
-	at: Date,
-	url: string,
+  kind: ClientErrorKind,
+  error: unknown,
+  at: Date,
+  url: string
 ): string => {
-	const page = cutToBytes(url, CLIENT_ERROR_URL_MAX_BYTES);
-	const stamp = at.toISOString();
-	const bodyFor = (message: string): string =>
-		JSON.stringify({ kind, message, url: page, at: stamp } satisfies ClientErrorReport);
-	// Cheap pre-cut: a code unit costs at least one byte in the body, so
-	// nothing past the cap can survive it, and a 5 MB stack is never
-	// serialized whole.
-	let message = errorMessage(error).slice(0, CLIENT_ERROR_BODY_MAX_BYTES);
-	let body = bodyFor(message);
-	// The message is what gives, because the other three fields are the
-	// report's identity: a body with no kind, page or time reports nothing.
-	const fixed = byteLength(bodyFor(""));
-	while (byteLength(body) > CLIENT_ERROR_BODY_MAX_BYTES && message.length > 0) {
-		const available = CLIENT_ERROR_BODY_MAX_BYTES - fixed;
-		const used = byteLength(body) - fixed;
-		message = message.slice(
-			0,
-			Math.max(0, Math.min(message.length - 1, Math.floor((message.length * available) / used))),
-		);
-		body = bodyFor(message);
-	}
-	return body;
-};
+  const page = cutToBytes(url, CLIENT_ERROR_URL_MAX_BYTES)
+  const stamp = at.toISOString()
+  const bodyFor = (message: string): string =>
+    JSON.stringify({ kind, message, url: page, at: stamp } satisfies ClientErrorReport)
+  // Cheap pre-cut: a code unit costs at least one byte in the body, so
+  // nothing past the cap can survive it, and a 5 MB stack is never
+  // serialized whole.
+  let message = errorMessage(error).slice(0, CLIENT_ERROR_BODY_MAX_BYTES)
+  let body = bodyFor(message)
+  // The message is what gives, because the other three fields are the
+  // report's identity: a body with no kind, page or time reports nothing.
+  const fixed = byteLength(bodyFor(""))
+  while (byteLength(body) > CLIENT_ERROR_BODY_MAX_BYTES && message.length > 0) {
+    const available = CLIENT_ERROR_BODY_MAX_BYTES - fixed
+    const used = byteLength(body) - fixed
+    message = message.slice(
+      0,
+      Math.max(0, Math.min(message.length - 1, Math.floor((message.length * available) / used)))
+    )
+    body = bodyFor(message)
+  }
+  return body
+}
 
-const currentPathname = (): string =>
-	typeof globalThis.location === "undefined" ? "" : globalThis.location.pathname;
+const currentPathname = (): string => typeof globalThis.location === "undefined" ? "" : globalThis.location.pathname
 
 export const createClientErrorReporter = (
-	options?: ClientErrorReporterOptions,
+  options?: ClientErrorReporterOptions
 ): ClientErrorReporter => {
-	const limit = options?.limit ?? CLIENT_ERROR_REPORT_LIMIT;
-	const now = options?.now ?? ((): Date => new Date());
-	const pathname = options?.pathname ?? currentPathname;
-	let sent = 0;
+  const limit = options?.limit ?? CLIENT_ERROR_REPORT_LIMIT
+  const now = options?.now ?? ((): Date => new Date())
+  const pathname = options?.pathname ?? currentPathname
+  let sent = 0
 
-	const report = (kind: ClientErrorKind, error: unknown): void => {
-		if (sent >= limit) return;
-		// Counted before the send, not after: the cap bounds attempts, so a
-		// route that is failing cannot be retried into a storm.
-		sent += 1;
-		const body = clientErrorBody(kind, error, now(), pathname());
-		try {
-			// keepalive so a report survives the navigation that a crash often
-			// triggers. The browser allows 64 KiB of keepalive bodies in flight
-			// at once, which is four reports at this cap, and a crashing page
-			// sends them one at a time.
-			const post = options?.fetchImpl ?? globalThis.fetch;
-			const sending = post(CLIENT_ERRORS_PATH, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body,
-				keepalive: true,
-			});
-			void Promise.resolve(sending).catch(() => undefined);
-		} catch {
-			// A fetch that throws synchronously (no global fetch, a blocked
-			// origin) must not become a second uncaught error on top of the
-			// first one.
-		}
-	};
+  const report = (kind: ClientErrorKind, error: unknown): void => {
+    if (sent >= limit) return
+    // Counted before the send, not after: the cap bounds attempts, so a
+    // route that is failing cannot be retried into a storm.
+    sent += 1
+    const body = clientErrorBody(kind, error, now(), pathname())
+    try {
+      // keepalive so a report survives the navigation that a crash often
+      // triggers. The browser allows 64 KiB of keepalive bodies in flight
+      // at once, which is four reports at this cap, and a crashing page
+      // sends them one at a time.
+      const post = options?.fetchImpl ?? globalThis.fetch
+      const sending = post(CLIENT_ERRORS_PATH, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        keepalive: true
+      })
+      void Promise.resolve(sending).catch(() => undefined)
+    } catch {
+      // A fetch that throws synchronously (no global fetch, a blocked
+      // origin) must not become a second uncaught error on top of the
+      // first one.
+    }
+  }
 
-	return { report, reported: (): number => sent };
-};
+  return { report, reported: (): number => sent }
+}

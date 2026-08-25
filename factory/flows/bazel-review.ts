@@ -13,14 +13,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Flow } from "../../packages/flow/src/index.ts"
 import { Node } from "../../packages/plan/src/index.ts"
-import {
-  AgentTask,
-  FLOWS_ROOT,
-  REPO_ROOT,
-  REPORTS_DIR,
-  runFlow,
-  type TaskResult
-} from "./harness.ts"
+import { AgentTask, FLOWS_ROOT, REPO_ROOT, REPORTS_DIR, runFlow, type TaskResult } from "./harness.ts"
 
 const MODEL = "claude-fable-5"
 const TIMEOUT_MS = 60 * 60_000

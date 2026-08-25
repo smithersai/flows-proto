@@ -1,4 +1,4 @@
-import type { ChatPhase } from "../state/Transcript";
+import type { ChatPhase } from "../state/Transcript"
 
 /*
  * The composer: a bordered single-line input at the bottom of the screen.
@@ -12,41 +12,41 @@ import type { ChatPhase } from "../state/Transcript";
  * autocomplete/history.
  */
 export const Composer = ({
-	phase,
-	value,
-	inputKey,
-	onInput,
-	onSubmit,
+  phase,
+  value,
+  inputKey,
+  onInput,
+  onSubmit
 }: {
-	readonly phase: ChatPhase;
-	readonly value: string;
-	readonly inputKey: number;
-	readonly onInput: (value: string) => void;
-	readonly onSubmit: (text: string) => void;
+  readonly phase: ChatPhase
+  readonly value: string
+  readonly inputKey: number
+  readonly onInput: (value: string) => void
+  readonly onSubmit: (text: string) => void
 }) => {
-	const responding = phase === "responding";
-	return (
-		<box
-			flexShrink={0}
-			height={3}
-			border
-			borderColor={responding ? "#565f89" : "#7aa2f7"}
-			paddingLeft={1}
-		>
-			<input
-				key={inputKey}
-				focused
-				value={value}
-				placeholder={responding ? "responding… (Esc to cancel)" : "message"}
-				onInput={onInput}
-				onSubmit={(submitted) => {
-					// The JSX catalogue combines the core and React callback shapes;
-					// InputRenderable emits the controlled string value at runtime.
-					if (typeof submitted !== "string") return;
-					if (responding || submitted.trim() === "") return;
-					onSubmit(submitted);
-				}}
-			/>
-		</box>
-	);
-};
+  const responding = phase === "responding"
+  return (
+    <box
+      flexShrink={0}
+      height={3}
+      border
+      borderColor={responding ? "#565f89" : "#7aa2f7"}
+      paddingLeft={1}
+    >
+      <input
+        key={inputKey}
+        focused
+        value={value}
+        placeholder={responding ? "responding… (Esc to cancel)" : "message"}
+        onInput={onInput}
+        onSubmit={(submitted) => {
+          // The JSX catalogue combines the core and React callback shapes;
+          // InputRenderable emits the controlled string value at runtime.
+          if (typeof submitted !== "string") return
+          if (responding || submitted.trim() === "") return
+          onSubmit(submitted)
+        }}
+      />
+    </box>
+  )
+}

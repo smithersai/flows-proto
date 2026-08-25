@@ -20,46 +20,46 @@
  *   bun 27.1.ts
  *   exit 1 while the bug is present, 0 once the built app reaches a backend.
  */
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 
-const UI = "/Users/williamcory/flows/flows/apps/ui";
-const APP = join(UI, "build/canary-macos-arm64/Smithers-canary.app");
-const LAUNCHER = join(APP, "Contents/MacOS/launcher");
+const UI = "/Users/williamcory/flows/flows/apps/ui"
+const APP = join(UI, "build/canary-macos-arm64/Smithers-canary.app")
+const LAUNCHER = join(APP, "Contents/MacOS/launcher")
 
 if (!existsSync(LAUNCHER)) {
-	console.error(`SETUP: no build at ${APP}. Run: cd ${UI} && bun run build:canary`);
-	process.exit(2);
+  console.error(`SETUP: no build at ${APP}. Run: cd ${UI} && bun run build:canary`)
+  process.exit(2)
 }
-console.log("app bundle:", APP);
+console.log("app bundle:", APP)
 
 const log = await new Promise<string>((resolve) => {
-	const child = spawn(LAUNCHER, [], { cwd: join(APP, "Contents/MacOS"), env: { ...process.env, SMITHERS_APP_URL: "" } });
-	let out = "";
-	child.stdout.on("data", (chunk) => (out += String(chunk)));
-	child.stderr.on("data", (chunk) => (out += String(chunk)));
-	setTimeout(() => {
-		child.kill("SIGTERM");
-		resolve(out);
-	}, 20_000);
-});
-console.log("--- launcher output ---");
-console.log(log.trim());
-console.log("-----------------------");
+  const child = spawn(LAUNCHER, [], { cwd: join(APP, "Contents/MacOS"), env: { ...process.env, SMITHERS_APP_URL: "" } })
+  let out = ""
+  child.stdout.on("data", (chunk) => (out += String(chunk)))
+  child.stderr.on("data", (chunk) => (out += String(chunk)))
+  setTimeout(() => {
+    child.kill("SIGTERM")
+    resolve(out)
+  }, 20_000)
+})
+console.log("--- launcher output ---")
+console.log(log.trim())
+console.log("-----------------------")
 
-const launched = log.includes("Smithers app started!");
-const noBackend = log.includes("empty response for URL: views://mainview/api/");
-console.log("launched:", launched, "| api calls resolve against views:// :", noBackend);
+const launched = log.includes("Smithers app started!")
+const noBackend = log.includes("empty response for URL: views://mainview/api/")
+console.log("launched:", launched, "| api calls resolve against views:// :", noBackend)
 
 if (launched && !noBackend) {
-	console.log("PASS — the built app launches and reaches a backend.");
-	process.exit(0);
+  console.log("PASS — the built app launches and reaches a backend.")
+  process.exit(0)
 }
-if (!launched) console.error("FAIL: the built app did not launch.");
+if (!launched) console.error("FAIL: the built app did not launch.")
 if (noBackend) {
-	console.error(
-		"FAIL: the built canary app loads views://mainview/index.html, so every /api/* call resolves against the views:// scheme and returns empty — the app can never sign in.",
-	);
+  console.error(
+    "FAIL: the built canary app loads views://mainview/index.html, so every /api/* call resolves against the views:// scheme and returns empty — the app can never sign in."
+  )
 }
-process.exit(1);
+process.exit(1)

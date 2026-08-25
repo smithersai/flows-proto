@@ -15,41 +15,46 @@
  *
  *   bun canary-repros/money/19.1.ts
  */
-import { chromium } from "playwright";
-import { BASE, PROFILE, ensureSignedIn, report, seam, sendPrompt } from "./_lib";
+import { chromium } from "playwright"
+import { BASE, ensureSignedIn, PROFILE, report, seam, sendPrompt } from "./_lib"
 
-const context = await chromium.launchPersistentContext(PROFILE, { headless: true, viewport: { width: 1400, height: 950 } });
-const page = context.pages()[0] ?? (await context.newPage());
-await page.goto(BASE, { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(4000);
-await ensureSignedIn(page);
-await page.waitForTimeout(2500);
+const context = await chromium.launchPersistentContext(PROFILE, {
+  headless: true,
+  viewport: { width: 1400, height: 950 }
+})
+const page = context.pages()[0] ?? (await context.newPage())
+await page.goto(BASE, { waitUntil: "domcontentloaded" })
+await page.waitForTimeout(4000)
+await ensureSignedIn(page)
+await page.waitForTimeout(2500)
 
-const failures: Array<string> = [];
+const failures: Array<string> = []
 
-const wire = await seam(page, "/api/notifications/list?limit=20&all=true");
-const rows = Array.isArray(wire.body) ? (wire.body as ReadonlyArray<unknown>) : [];
+const wire = await seam(page, "/api/notifications/list?limit=20&all=true")
+const rows = Array.isArray(wire.body) ? (wire.body as ReadonlyArray<unknown>) : []
 if (rows.length === 0) {
-	console.error("SKIP: the platform has no notifications for this account — seed one first (see 19.1.md).");
-	await context.close();
-	process.exit(2);
+  console.error("SKIP: the platform has no notifications for this account — seed one first (see 19.1.md).")
+  await context.close()
+  process.exit(2)
 }
 
-await sendPrompt(page, "/notifications.list");
-await page.waitForTimeout(8000);
+await sendPrompt(page, "/notifications.list")
+await page.waitForTimeout(8000)
 const card = await page.evaluate(() => {
-	const element = document.querySelector('[data-kind="notifications"]');
-	return element === null
-		? null
-		: { text: (element as HTMLElement).innerText, rows: element.querySelectorAll(".world-card-row").length };
-});
-if (card === null) failures.push("/notifications.list rendered no notifications card");
+  const element = document.querySelector("[data-kind=\"notifications\"]")
+  return element === null
+    ? null
+    : { text: (element as HTMLElement).innerText, rows: element.querySelectorAll(".world-card-row").length }
+})
+if (card === null) failures.push("/notifications.list rendered no notifications card")
 else if (card.rows !== rows.length) {
-	failures.push(
-		`the platform answered ${rows.length} notification(s) but the card rendered ${card.rows} row(s): ${JSON.stringify(card.text)}`,
-	);
+  failures.push(
+    `the platform answered ${rows.length} notification(s) but the card rendered ${card.rows} row(s): ${
+      JSON.stringify(card.text)
+    }`
+  )
 }
 
-await page.screenshot({ path: "/tmp/money-19.1.png", fullPage: true });
-await context.close();
-report(failures);
+await page.screenshot({ path: "/tmp/money-19.1.png", fullPage: true })
+await context.close()
+report(failures)

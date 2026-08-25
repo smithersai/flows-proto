@@ -17,26 +17,26 @@
  *
  *   bun apps/ui/canary-repros/flow-sweep/A.67.ts
  */
-import { openApp, report } from "./_lib";
+import { openApp, report } from "./_lib"
 
-const app = await openApp();
-const failures: string[] = [];
+const app = await openApp()
+const failures: string[] = []
 try {
-	const outcome = await app.invoke("/files.read no/such/file-zz.txt codeplanesmithers/canary-sandbox", 9000);
-	console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)");
-	console.log("added lines:", JSON.stringify(outcome.added));
-	const honest = outcome.added.filter(
-		(line) =>
-			line.toLowerCase().includes("no/such/file-zz.txt".toLowerCase()) ||
-			/couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line),
-	);
-	console.log("honest lines:", JSON.stringify(honest));
-	if (honest.length === 0) {
-		failures.push(
-			"/files.read with a failing argument rendered no honest response — expected a file that does not exist is refused by path",
-		);
-	}
+  const outcome = await app.invoke("/files.read no/such/file-zz.txt codeplanesmithers/canary-sandbox", 9000)
+  console.log("net:", outcome.net.join(" | ") || "(no /api/ traffic)")
+  console.log("added lines:", JSON.stringify(outcome.added))
+  const honest = outcome.added.filter(
+    (line) =>
+      line.toLowerCase().includes("no/such/file-zz.txt".toLowerCase()) ||
+      /couldn't|could not|didn't run|not found|no such|isn't|is not|needs |refus/i.test(line)
+  )
+  console.log("honest lines:", JSON.stringify(honest))
+  if (honest.length === 0) {
+    failures.push(
+      "/files.read with a failing argument rendered no honest response — expected a file that does not exist is refused by path"
+    )
+  }
 } finally {
-	await app.close();
+  await app.close()
 }
-report(failures);
+report(failures)
