@@ -6,7 +6,7 @@
  * @since 0.1.0
  */
 
-import { makeCli } from "./Cli.ts"
+import { makeCli, normalizeArgv } from "./Cli.ts"
 
 const cacheUrl = process.env["SMITHERS_CACHE_URL"]
 const cacheToken = process.env["SMITHERS_CACHE_TOKEN"]
@@ -26,7 +26,7 @@ const onSigterm = (): void => interrupt("SIGTERM")
 process.once("SIGINT", onSigint)
 process.once("SIGTERM", onSigterm)
 try {
-  await makeCli({ cacheUrl, cacheToken, signal: controller.signal }).serve(process.argv.slice(2), {
+  await makeCli({ cacheUrl, cacheToken, signal: controller.signal }).serve([...normalizeArgv(process.argv.slice(2))], {
     exit: (code) => {
       process.exitCode = code
     }

@@ -514,7 +514,7 @@ describe("edge classification through nested private locals", () => {
       root,
       "PACKAGE.ts",
       `import { Smithers as S } from "@smthrs/targets"
-const leaf = S.Shell.Run({ command: "echo leaf" })
+const leaf = S.Shell.Test({ command: "echo leaf" })
 const privateInner = S.Suite({ tests: [S.Shell.Test({ command: "echo t", data: [leaf] })] })
 const privateOuter = S.Suite({ tests: [privateInner] })
 const top = S.Shell.Run({ command: "echo top", data: [privateOuter] })

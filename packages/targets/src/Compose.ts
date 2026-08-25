@@ -9,11 +9,19 @@
  *
  * @since 0.1.0
  */
+import type { Action } from "@smthrs/flow"
+import type * as Node from "@smthrs/plan/Node"
 import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
 import * as Input from "./Input.ts"
 import * as Reference from "./Reference.ts"
+import * as Shell from "./Shell.ts"
 import * as Target from "./Target.ts"
+
+/** The actions a Generate plan-time body may plan. */
+type GenerateRequires =
+  | Action.Requirement<"smithers-build/not-implemented">
+  | Action.Requirement<"smithers-build/exec">
 
 /**
  * Schema for a reference to the file rows a resolver-style target produces,
@@ -134,7 +142,27 @@ export const GenerateAttrs = Schema.Struct({
 const generateDefinition = Target.make("Generate", {
   attrs: GenerateAttrs,
   kinds: ["run", "lint"],
-  implementation: () => Target.notImplemented("Generate")
+  // The script and bin forms plan the shared exec node: the generator runs
+  // under the workspace runtime (script) or the referenced tool (bin), and
+  // the package executor brackets the spawn with write-set enforcement in
+  // write mode or a scratch-copy drift check in check mode. The emit form
+  // plans no process at all — the package executor writes or checks the
+  // declared file bytes and symlinks natively — so its node stays the typed
+  // refusal for any path that is not the package executor.
+  implementation: (attrs): Node.Node<unknown, unknown, GenerateRequires> => {
+    if (attrs.script !== undefined) {
+      return Target.runTool({
+        cwd: ".",
+        argv: [Shell.toolToken(Reference.runtimeBin), Shell.scriptToken(attrs.script.path)],
+        env: {},
+        timeoutMs: Shell.packageExecTimeoutMs
+      })
+    }
+    if (attrs.bin !== undefined) {
+      return Target.runTool(Shell.execPayload({ bin: attrs.bin, args: attrs.args }))
+    }
+    return Target.notImplemented("Generate")
+  }
 })
 
 /**

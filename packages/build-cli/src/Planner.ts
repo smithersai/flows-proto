@@ -750,7 +750,18 @@ export const implementationFingerprint = async (signal?: AbortSignal | undefined
   return fingerprint
 }
 
-const attrsValue = (
+/**
+ * Canonicalizes target attrs into key material: target references become
+ * dependency keys and declared inputs become content digests.
+ *
+ * Exported for the package-mode planner, so both planners canonicalize attrs
+ * identically and every key still flows through the one injective encoder.
+ *
+ * @category keys
+ * @since 0.1.0
+ * @slop
+ */
+export const attrsValue = (
   value: unknown,
   depKeys: ReadonlyMap<Target.AnyTarget, string>,
   inputDigests: ReadonlyMap<Input.Declared, string>,

@@ -12,6 +12,7 @@ import { runInstall } from "./engine.ts"
 import * as Executor from "./Executor.ts"
 import * as GraphOutput from "./GraphOutput.ts"
 import * as PackageDiscovery from "./PackageDiscovery.ts"
+import * as PackageExec from "./PackageExec.ts"
 import * as PackageIndex from "./PackageIndex.ts"
 import * as PackageLoader from "./PackageLoader.ts"
 import * as Planner from "./Planner.ts"
@@ -227,28 +228,69 @@ interface CiPlan extends Executor.MergedPlan {
 }
 
 /**
- * Refuses execution verbs in package mode: W1 routes only `query` and
- * `graph` through the PackageIndex, and every package-mode target's
- * implementation is the typed NotImplemented stub. Failing here is the
- * no-fake-green rule at the CLI boundary.
+ * Refuses execution verbs in package mode that stay out of the W2 feature
+ * set (`ci`, `docs`, `install`). Failing here is the no-fake-green rule at
+ * the CLI boundary.
  */
 const refusePackageMode = async (flags: WorkspaceFlags, verb: string): Promise<void> => {
   const root = await PackageDiscovery.findWorkspaceRoot(NodePath.resolve(flags.workspace))
   if (root !== undefined) {
     throw new Error(
-      `NotImplemented: ${verb} does not execute PACKAGE.ts targets yet; query and graph are the package-mode surface`
+      `NotImplemented: ${verb} does not execute PACKAGE.ts targets yet; ` +
+        "query, graph, build, test, lint, run, and the bare-label form are the package-mode surface"
     )
   }
+}
+
+/** The mode flags the package-mode execution surface accepts. */
+interface ModeFlags {
+  readonly write?: boolean | undefined
+  readonly fix?: boolean | undefined
+}
+
+/**
+ * Runs one execution verb through the package-mode executor when the
+ * resolved workspace is a PACKAGE.ts workspace, or returns undefined so the
+ * caller falls through to BUILD mode.
+ */
+const runPackageVerb = async (
+  verb: PackageExec.PackageVerb,
+  pattern: string,
+  flags: ExecutionFlags & ModeFlags,
+  config: RuntimeConfig
+): Promise<Executor.Summary | PackageExec.PlanReport | undefined> => {
+  const index = await openPackageIndex(flags, config)
+  if (index === undefined) return undefined
+  const cacheDirectory = flags.cacheDir === undefined
+    ? index.workspace.cache.directory
+    : Config.normalizeCacheDirectory(flags.cacheDir)
+  return PackageExec.run({
+    index,
+    cacheDirectory,
+    verb,
+    pattern,
+    write: flags.write,
+    fix: flags.fix,
+    plan: flags.plan,
+    jobs: flags.jobs,
+    readCache: flags.cache,
+    signal: config.signal
+  })
 }
 
 /** Plans one verb and executes it unless `--plan` asked for the inert print. */
 const runVerb = async (
   verb: "build" | "test" | "lint" | "run" | "docs",
   pattern: string,
-  flags: ExecutionFlags,
+  flags: ExecutionFlags & ModeFlags,
   config: RuntimeConfig
-): Promise<Planner.Plan | Executor.Summary> => {
-  await refusePackageMode(flags, verb)
+): Promise<Planner.Plan | Executor.Summary | PackageExec.PlanReport> => {
+  if (verb === "docs") {
+    await refusePackageMode(flags, verb)
+  } else {
+    const packaged = await runPackageVerb(verb, pattern, flags, config)
+    if (packaged !== undefined) return packaged
+  }
   const { remoteCache, workspace } = await openWorkspace(flags, config, !flags.plan)
   const plan = await Planner.make(workspace, verb, pattern)
   if (flags.plan) return plan
@@ -317,7 +359,7 @@ const runCi = async (
 
 /** Whether an outcome is an execution summary rather than an inert plan. */
 const failedSummary = (
-  outcome: Planner.Plan | CiPlan | Executor.Summary
+  outcome: Planner.Plan | CiPlan | Executor.Summary | PackageExec.PlanReport
 ): outcome is Executor.Summary => "ok" in outcome && !outcome.ok
 
 const failureMessage = (summary: Executor.Summary): string =>
@@ -367,7 +409,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       options: executionOptions,
       alias: executionAlias,
       async run(context) {
-        let outcome: Planner.Plan | Executor.Summary
+        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
         try {
           outcome = await runVerb("build", context.args.pattern, context.options, config)
         } catch (cause) {
@@ -390,7 +432,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       options: executionOptions,
       alias: executionAlias,
       async run(context) {
-        let outcome: Planner.Plan | Executor.Summary
+        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
         try {
           outcome = await runVerb("test", context.args.pattern, context.options, config)
         } catch (cause) {
@@ -413,7 +455,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       options: executionOptions,
       alias: executionAlias,
       async run(context) {
-        let outcome: Planner.Plan | Executor.Summary
+        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
         try {
           outcome = await runVerb("lint", context.args.pattern, context.options, config)
         } catch (cause) {
@@ -436,7 +478,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       options: executionOptions,
       alias: executionAlias,
       async run(context) {
-        let outcome: Planner.Plan | Executor.Summary
+        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
         try {
           outcome = await runVerb("docs", context.args.pattern, context.options, config)
         } catch (cause) {
@@ -459,11 +501,40 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       options: runOptions,
       alias: { ...executionAlias, name: "n" },
       async run(context) {
-        let outcome: Planner.Plan | Executor.Summary
+        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
         try {
           outcome = await runVerb("run", context.args.pattern, context.options, config)
         } catch (cause) {
           return context.error({ code: "run_failed", exitCode: 1, message: Diagnostic.message(cause) })
+        }
+        if (failedSummary(outcome)) {
+          return context.error({
+            code: "targets_failed",
+            exitCode: 1,
+            message: failureMessage(outcome),
+            retryable: false
+          })
+        }
+        return outcome
+      }
+    })
+    .command("target", {
+      description: "Execute one package-mode label with its flavor-implied verb (the bare-label form)",
+      args: patternArgument,
+      options: executionOptions.extend({
+        write: z.boolean().default(false).describe("Apply Diff/Generate targets instead of checking drift"),
+        fix: z.boolean().default(false).describe("Apply fixes (agent lints later; routes to write mode for now)")
+      }),
+      alias: executionAlias,
+      async run(context) {
+        let outcome: Executor.Summary | PackageExec.PlanReport | undefined
+        try {
+          outcome = await runPackageVerb("auto", context.args.pattern, context.options, config)
+          if (outcome === undefined) {
+            throw new Error("the bare-label form executes PACKAGE.ts targets; this workspace has no WORKSPACE.ts")
+          }
+        } catch (cause) {
+          return context.error({ code: "target_failed", exitCode: 1, message: Diagnostic.message(cause) })
         }
         if (failedSummary(outcome)) {
           return context.error({
@@ -542,6 +613,25 @@ export const makeCli = (config: RuntimeConfig = {}) =>
         }
       }
     })
+
+/**
+ * Rewrites a bare-label argv into the `target` command.
+ *
+ * `smthrs '//src:lint'` — a first argument that is a label rather than a
+ * command — executes the label under its flavor-implied verb. Every other
+ * argv passes through unchanged.
+ *
+ * @category parsing
+ * @since 0.1.0
+ * @slop
+ */
+export const normalizeArgv = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const first = argv[0]
+  if (first !== undefined && (first.startsWith("//") || first.startsWith(":"))) {
+    return ["target", ...argv]
+  }
+  return argv
+}
 
 /**
  * Programmatic CLI without process-scoped remote cache or interruption state.
