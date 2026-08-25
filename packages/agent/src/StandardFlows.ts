@@ -228,11 +228,14 @@ export const clock = (
         flow: waitFlow,
         handler: (input, call) =>
           Effect.as(
-            DurableClock.sleep({
-              name:
-                `harness/wait/${call.identity.session}/${call.identity.frame}/${call.identity.cell}/${call.identity.ordinal}`,
-              duration: Duration.seconds(input.seconds)
-            }),
+            Effect.andThen(
+              Effect.sync(() => (globalThis as any).__dbg?.("wait handler running " + input.seconds)),
+              DurableClock.sleep({
+                name:
+                  `harness/wait/${call.identity.session}/${call.identity.frame}/${call.identity.cell}/${call.identity.ordinal}`,
+                duration: Duration.seconds(input.seconds)
+              })
+            ),
             { waitedSeconds: input.seconds }
           )
       }),
