@@ -31,6 +31,11 @@
  *   wave, and the evidence `VacuousVerification` was designed against:
  *   `django__django-14351` stored one verification script as its proof after
  *   having watched that same script exit 0 on the tree it was handed.
+ * - `packages/harness/test/fixtures/r97Journals.json` — the r97 full-bench
+ *   wave, written by lib/r97-narrow-only-journals.mjs (a sibling of this
+ *   script that also records demand events, the task text, and per-call
+ *   checkpoint marks): the evidence the narrow-only demand's taught-terms
+ *   condition was measured on.
  *
  * The r92 fixture is the one file here that also carries what a transition
  * stored under `state.verification`, because that is the only thing the newest
