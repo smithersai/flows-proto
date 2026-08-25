@@ -61,7 +61,7 @@ The independent drafts disagreed in several places; none is chosen silently:
 - **Eager versus lazy evaluation:** selected eager static identity indexing and lazy selected-closure evaluation. This is the only reading that both indexes every label before planning and preserves no-evaluation metadata discovery. Loading Workspace/every Package merely to list labels is rejected.
 - **Index branding versus index-local identity:** selected index-local WeakMap/maps. Mutating target objects with labels risks cross-workspace and concurrent-snapshot contamination.
 - **Alias semantics:** selected a distinct Alias target node. Two labels on the same non-Alias value remain fatal.
-- **Private visibility:** selected public map members plus omission privacy; reject the unobserved `private` literal until authorization semantics exist.
+- **Private visibility:** there is no visibility field at all (will, 2026-08-25: ship the MVP; `defaultVisibility` removed from the spec and all four prototypes). Omission from the `targets` map is the only privacy mechanism; every listed target is public.
 - **Implicit package synthesis:** selected removal. The explicit Package map supersedes BUILD-era `PackageDefaults`; convenience must be an explicit macro.
 - **Catalog breadth versus routing priority:** selected a routing spine first, with advanced execution capability lanes independently gated. All observed API symbols remain in the coverage contract; none may be faked to unblock routing.
 
@@ -101,6 +101,21 @@ Artsy prototypes and were not reversed by them:
   (`{port}` or `{http, timeout}`), `health` (`{interval, failures}`,
   reusing the readiness probe while dependents run), and `stop`
   (`{signal, grace}`).
+- will, 2026-08-25, answers to this plan's open questions (folded into the
+  body; the questions section is deleted): ship the MVP. No visibility
+  field — omission is privacy, `defaultVisibility` deleted from spec and
+  prototypes; helper exports are normal; discovery walks the filesystem
+  ignore-blind and never consults git (git only for git-derived inputs);
+  symlinked declaration modules are rejected (minimum rule); generated
+  manifests are uncommitted by default with tool-managed `.gitignore`
+  entries; platform access is Effect-layer-injected at every seam;
+  workspace-escape policy is the minimum (relative imports stay inside,
+  npm/builtins allowed); a bare package label resolves only an explicit
+  `default` key; the CLI is `smthrs` and npm publishing is out of scope;
+  both observed CI-generation forms are implemented as written; everything
+  computational caches, agent targets included; OS sandboxing is the
+  Bazel-style default with `sandbox: "none"` as the opt-out; the dogfood
+  migration is per-app-granular immediately.
 
 Reference-corpus routing for the new subsystems (repository rule: consult the
 shelf before designing, and say which reference was read):
@@ -280,7 +295,6 @@ const compileEsm = S.Shell.Build({
 })
 
 export const Package = S.Package({
-  defaultVisibility: "public",
   targets: {
     compileEsm,
     // privateInputs is intentionally omitted and has no label.
@@ -321,7 +335,6 @@ declare const PackageTypeId: unique symbol
 
 interface PackageMetadata {
   readonly abi: "@smthrs/targets/Package/v1"
-  readonly defaultVisibility: "public"
   readonly keys: ReadonlyArray<string>
 }
 
@@ -330,7 +343,6 @@ type PackageValue<T extends Readonly<Record<string, Target.Any>>> =
 
 declare function Package<const T extends Readonly<Record<string, Target.Any>>>(options: {
   readonly targets: T
-  readonly defaultVisibility?: "public"
 }): PackageValue<T>
 
 type NodeRuntimeOptions =
@@ -362,9 +374,9 @@ declare function Workspace<const Name extends string>(
 
 `Package` must return the target properties directly, because every cross-package prototype uses `import { Package as src } ...; src.build`. Its marker and options should be hidden under non-enumerable symbols. Do not expose a public `.targets` property that can collide with a target named `targets`; do not use a Proxy. Copy own enumerable string data properties from a plain, non-proxy `targets` object, validate every value as a target, define immutable properties, attach immutable symbol metadata, then freeze the result. Type inference must preserve exact keys and exact target types.
 
-`defaultVisibility` defaults to and in v1 accepts only `public`: nested Artsy packages omit it while their comments and cross-package imports treat listed targets as public. Omission from `targets` is the privacy mechanism. Reject `private` until an authorization consumer and semantics exist. A future per-target visibility override should be a separate typed wrapper.
+There is no visibility field. will removed `defaultVisibility` from the spec and every prototype on 2026-08-25: omission from `targets` is the only privacy mechanism, every listed target is public, and `S.Package` accepts nothing but the map.
 
-`S.Runtime.Node` accepts the exclusive `NodeRuntimeOptions` union: WhatsABI pins a literal version and Force derives it from the manifest. `Github.Setup` + `Github.Workflow` + `Github.CiGen` is the final primitive CI API; WhatsABI's compact `Github.Ci` is a typed macro that expands into the same declarations and executor path.
+`S.Runtime.Node` accepts the exclusive `NodeRuntimeOptions` union: WhatsABI pins a literal version and Force derives it from the manifest. Both observed CI-generation forms are implemented exactly as the prototypes write them (will, 2026-08-25: implement the spec as specified in artsy) — Force's `Github.Setup`/`Github.Workflow`/`Github.CiGen` and WhatsABI's compact `Github.Ci`. Whether they share an internal representation is an implementation choice, not API surface.
 
 ## 6. Required semantic contract
 
@@ -373,23 +385,32 @@ declare function Workspace<const Name extends string>(
 - Inventory and static extraction perform no repository module evaluation. Accept only direct `export const Package = S.Package({ targets: { ... } })` syntax with statically enumerable direct object keys; reject spreads, computed keys, accessors, conditional construction, later mutation, and re-exports. Target values may be identifiers or direct expressions because only keys are extracted.
 - Static extraction returns format version, relative module/package paths, sorted keys, direct Package imports/resolutions, and spans. Use a TypeScript-compatible parser behind `PackageMetadataExtractor`; do not extend registry's flow tokenizer into a general evaluator.
 - Build the complete label/import graph before loading Workspace or Package code. Metadata/list/unknown-label operations execute no author code. After lazy evaluation, byte-compare runtime Package keys to static keys; mismatch is fatal `package_static_runtime_mismatch`.
+- Discovery walks the filesystem from the canonical root and never consults
+  git (will, 2026-08-25: some declaration files are gitignored; git is only
+  for git-specific inputs). The walk visits every directory except `.git`,
+  `node_modules`, and the workspace cache/CAS directories; gitignore status
+  is irrelevant, so a gitignored or generated PACKAGE.ts participates like
+  any other. Git is consulted only by git-derived inputs (`S.gitDiff`,
+  `S.gitCommit`, affected mode). This replaces the BUILD-era `git ls-files`
+  inventory and matches File Dependency Hardening's ignore-blind boundary
+  expansion.
 - The workspace root contains exactly one regular, admitted `WORKSPACE.ts` with exactly one runtime `Workspace` export.
 - Any admitted directory may contain at most one exact-case `PACKAGE.ts`. The path relative to the canonical workspace root is its package name; root is the empty package.
-- A package module must export exactly one runtime `Package` value named `Package`. Type-only exports are irrelevant. Additional helper runtime exports may be allowed only if they are not Targets, Package values, or Workspace values; exporting a naked target is a fatal `legacy_target_export` diagnostic so accidental public exposure cannot return.
+- A package module must export exactly one runtime `Package` value named `Package`. Type-only exports are irrelevant. Additional helper runtime exports are allowed and expected (will, 2026-08-25: most of the API is helpers wrapping the internals) provided they are not Targets, Package values, or Workspace values; exporting a naked target is a fatal `legacy_target_export` diagnostic so accidental public exposure cannot return.
 - Only keys in the explicit package map create labels. Construction call sites and local variable names never create identities.
 - Importing a `Package` and reading a target property creates a dependency edge through normal target object identity; it does not create a second label.
-- The router records canonical source module, package directory, target key, label, declaration object, content/import-closure digest, and visibility as separate facts.
+- The router records canonical source module, package directory, target key, label, declaration object, and content/import-closure digest as separate facts.
 - Target computation context is bound by the validated package index, not guessed from the target constructor's stack. When indexing a package, traverse each explicit target's dependency closure. Bind unowned, reachable local targets to that package (this covers omitted private helper targets); preserve the existing owner of targets reached through an imported Package; reject an unbound target reachable as a local of two packages. The executor supplies the bound package directory to the target implementation. This requires refactoring the current Flow body, which captures `sourceSite()` at construction, into an implementation callable evaluated with index-owned context.
 
 ### 6.2 Labels and precedence
 
 - Canonical labels remain `//<posix-package-path>:<target>`, with root `//:<target>`.
-- Existing shorthand `//pkg` may select a documented default target only. Do not guess from object insertion order. Recommended order remains explicit `default`, then a sole public target; otherwise return `ambiguous_default_target`.
+- Shorthand `//pkg` resolves only an explicit `default` key in that package's map (will, 2026-08-25: only explicit default). There is no sole-target or insertion-order fallback; a bare package label with no `default` key fails with `no_default_target`.
 - Subtree patterns are selection syntax, never route identities.
 - Package path segments are normalized workspace-relative POSIX segments. Reject empty, `.`, `..`, backslash, NUL, absolute/drive/UNC paths, and Unicode strings that are not NFC.
 - Target keys should use a portable ASCII grammar such as `[A-Za-z_][A-Za-z0-9._-]*`; reject `:`, `/`, `\\`, whitespace, controls, and reserved CLI syntax. Package directory segments must allow real examples such as `.github`, `.storybook`, and hyphens but must still reject `.`/`..` and separators.
 - Compare and emit using an explicit UTF-16 code-unit comparator, not locale-sensitive `localeCompare`. Detect case-fold collisions (`Foo`/`foo`) even on a case-sensitive host so a graph cannot be checked out differently on Windows/macOS.
-- Two labels for the same target object are fatal. Two Package modules for the same canonical directory are fatal. Two physical paths canonicalizing to one module are fatal unless they are the same admitted in-workspace symlink and policy explicitly permits it.
+- Two labels for the same target object are fatal. Two Package modules for the same canonical directory are fatal. Two physical paths canonicalizing to one module are fatal. A `PACKAGE.ts` or `WORKSPACE.ts` that is itself a symbolic link is rejected outright (will, 2026-08-25: the minimum rule; revisit only when a real layout needs links).
 
 ### 6.3 Module graph and cycles
 
@@ -403,9 +424,13 @@ Package imports are a real directed module graph. Force imports `src.Package` at
 
 Workspace importing root Package for hook targets is allowed and is one-way: no Package module may import `WORKSPACE.ts`.
 
+The whole import-escape policy is one rule (will, 2026-08-25: minimum
+complexity): local relative imports must resolve inside the workspace; npm
+and builtin specifiers are allowed. Nothing more elaborate ships.
+
 ### 6.4 Privacy
 
-An omitted local target is constructible and usable inside its module but has no label and cannot be imported through the Package object. V1 permits only public map members and rejects `defaultVisibility:"private"` as an unsupported option. The examples use omission for privacy, and accepting an unenforced private literal would be a false access-control promise. A future private/visibility feature requires an authorization consumer and must enforce at graph resolution, manifest disclosure, completion, and CLI access—not display filtering.
+An omitted local target is constructible and usable inside its module but has no label and cannot be imported through the Package object. That is the entire privacy model: there is no visibility field (will, 2026-08-25 — `defaultVisibility` deleted from the spec), every listed target is public, and omission is enforcement, not display filtering — an omitted target must be unreachable from labels, query, completion, and generated manifests alike.
 
 ### 6.5 Workspace configuration
 
@@ -415,9 +440,10 @@ The existing `Config.Workspace({cacheDirectory,gitignored})` and separate root R
 
 ### 6.6 CLI invocation surface and git hooks
 
-Force's `AGENTS.md` (lines 31-40) fixes the partner-facing CLI form: the
-binary is `smithers`, invoked with a bare label and no verb (`smithers
-//:prePush`), and `--fix` may be added to any lint target. The contract:
+The CLI ships as `smthrs` (will, 2026-08-25; Force's `AGENTS.md` updated to
+match), invoked with a bare label and no verb (`smthrs //:prePush`), and
+`--fix` may be added to any lint target. npm publishing of the packages is
+out of scope for now. The contract:
 
 - A bare exact label resolves the target's flavor to its primary verb and
   runs it: a Suite runs its tests, a Test tests, a Build builds, a
@@ -451,7 +477,7 @@ Own `Package`, `Workspace`, their symbol brands, strict guards, schemas, and exa
 
 Own workspace discovery, source-module execution, labels, query/planner adapter, watch mode, and generated manifest commands. Split the current 1,300-line `Workspace.ts` into explicit modules so security and cache invariants are reviewable:
 
-- `WorkspaceInventory.ts` — Git/fallback inventory and deterministic normalized paths.
+- `WorkspaceInventory.ts` — bounded, ignore-blind filesystem walk (prunes `.git`, `node_modules`, cache/CAS) with deterministic normalized paths; git is never consulted for discovery (2026-08-25), only by git-derived inputs.
 - `ModuleAdmission.ts` — canonical root, safe regular files, symlink/hardlink policy, bounded reads.
 - `PackageDiscovery.ts` — exact file discovery and case/canonical collision checks, no evaluation.
 - `PackageMetadataExtractor.ts` — narrow TypeScript key/import/span extraction, no evaluation.
@@ -477,6 +503,7 @@ Factor a small platform-neutral module only if duplication proves real: normaliz
 - `@smthrs/kernel` owns host-neutral Workspace/FileSystem/ChildProcess contracts and confinement semantics. `@smthrs/platform-node` supplies Git/process/module evaluation and descriptor-relative atomic filesystem behavior. Bun conforms to the same contract; browser consumes manifests but never declaration source.
 - `@smthrs/build` resolves Workspace declarations into Runtime/PackageManager/Install Layers and owns execution services, not labels or source routing.
 - `@smthrs/artifacts` owns immutable content-addressed bytes and output-tree storage. PackageIndex refers to artifacts; it does not implement another CAS.
+- Ruled 2026-08-25: platform access is dependency-injected behind Effect layers at every internal seam, per the repository's standing Layer rule. Where a portable schema lives is an implementation convenience, not an architecture decision — browser and Bun support fall out of the layering, never out of special packages.
 
 ## 8. Generated code and type strategy
 
@@ -488,7 +515,7 @@ Cross-package TypeScript types flow through ordinary ESM imports because `Packag
 
 Generate two deterministic artifacts from a successfully validated snapshot:
 
-1. a JSON-safe manifest containing format version, workspace name, canonical labels, relative module paths, target keys, target kind/schema identity digests, visibility, and dependency labels; never absolute paths, functions, secrets, or target attrs that are not explicitly serializable;
+1. a JSON-safe manifest containing format version, workspace name, canonical labels, relative module paths, target keys, target kind/schema identity digests, and dependency labels (indexed public targets only — omitted locals never appear); never absolute paths, functions, secrets, or target attrs that are not explicitly serializable;
 2. an ESM loader table with statically spelled imports for targets a bundler must include.
 
 Example shape:
@@ -505,7 +532,7 @@ export const targets = {
 
 The source loader is for CLI/dev; the generated module is for packaged CLI, browser graph viewers, Vite/Rspack, and environments with no filesystem traversal. `generate --check` renders in memory and byte-compares. Publication is temp-file + fsync where supported + atomic rename, retaining the old file on failure. Headers include generator ABI, but timestamps and absolute roots are forbidden.
 
-Generated files should be ignored by default if they are cache artifacts, consistent with the later Flows3 decision; applications may opt into a checked-in mirror with `@generated` and a drift gate. Force's `appRoutes.gen.ts` is application output of an ordinary `S.Generate` target and remains separate from the router manifest.
+Generated files should be ignored by default if they are cache artifacts, consistent with the later Flows3 decision; applications may opt into a checked-in mirror with `@generated` and a drift gate. The tool maintains the `.gitignore` entries for artifacts marked ignored, the way the cache directory is gitignored today (will, 2026-08-25). Force's `appRoutes.gen.ts` is application output of an ordinary `S.Generate` target and remains separate from the router manifest.
 
 The JSON manifest, static loader, and optional declarations carry the same generator ABI and validated snapshot digest. A consumer must refuse an unknown ABI or mismatched/stale artifact set and request regeneration; it may never pair an old loader with a new manifest. Watch publication swaps the in-memory snapshot first only after validation, then publishes one complete digest-bound artifact set without invalidating the last-good set on failure.
 
@@ -517,7 +544,7 @@ Both Artsy repositories must remove `smithers.d.ts` after installing the real pa
 
 ### 9.1 Trust model
 
-`PACKAGE.ts` and `WORKSPACE.ts` are trusted repository code. Evaluating them can read environment variables, import Node modules, or spawn work if authors write side effects. The loader must state this honestly; it is not a sandbox. Constructors should be inert, and lint/tests should forbid obvious declaration-time side effects, but security isolation requires a separate process/VM policy.
+`PACKAGE.ts` and `WORKSPACE.ts` are trusted repository code. Evaluating them can read environment variables, import Node modules, or spawn work if authors write side effects. The loader must state this honestly; it is not a sandbox. Constructors should be inert, and lint/tests should forbid obvious declaration-time side effects, but security isolation requires a separate process/VM policy. (Target *execution* is different: it is sandboxed by default — §15.2.)
 
 ### 9.2 Node
 
@@ -544,10 +571,10 @@ Use tagged errors with stable codes, phase, relative path, optional label, sourc
 - static/load: `package_syntax_unsupported`, `workspace_syntax_unsupported`, `module_compile_failed`, `module_import_failed`, `package_import_cycle`, `runtime_import_cycle`, `unsupported_module_specifier`, `package_static_runtime_mismatch`;
 - exports: `workspace_export_missing`, `workspace_export_duplicate`, `package_export_missing`, `invalid_package_export`, `legacy_target_export`;
 - declarations: `invalid_package_options`, `invalid_target_key`, `invalid_target_value`, `invalid_workspace_options`, `package_mutated_after_declare`;
-- identity: `duplicate_package_path`, `case_collision`, `duplicate_label`, `target_multiple_labels`, `unknown_label`, `ambiguous_default_target`, `visibility_denied`;
+- identity: `duplicate_package_path`, `case_collision`, `duplicate_label`, `target_multiple_labels`, `unknown_label`, `no_default_target`;
 - generation/watch: `manifest_encode_failed`, `manifest_drift`, `manifest_write_failed`, `watch_refresh_failed`.
 
-Malformed PACKAGE/WORKSPACE declarations, collisions, containment failures, and cycles are fatal. Warnings are limited to actionable non-lossy migration notices, such as an unused `defaultVisibility` or a legacy BUILD file that will be ignored after the cutoff. On watch refresh, diagnostics belong to the failed candidate snapshot; the last valid snapshot remains active.
+Malformed PACKAGE/WORKSPACE declarations, collisions, containment failures, and cycles are fatal. Warnings are limited to actionable non-lossy migration notices, such as a `defaultVisibility` field surviving from an older prototype (the field was removed 2026-08-25) or a legacy BUILD file that will be ignored after the cutoff. On watch refresh, diagnostics belong to the failed candidate snapshot; the last valid snapshot remains active.
 
 Bound diagnostic detail and ensure malformed UTF-16 is made well-formed, following `Target.declarationRejected`. Never invoke getters, inspect Proxies, call `toString`, or serialize arbitrary author values while formatting an error.
 
@@ -587,7 +614,7 @@ Gate: `tsd`/`tsc` positive and `@ts-expect-error` fixtures, CJS/ESM duplicate-co
 
 Failure modes: PACKAGE link escapes root; case-insensitive alias duplicates a module; symlink target changes between validation and import; Git emits hostile path framing; relative import escapes the workspace; Windows drive/UNC path is treated as relative.
 
-Chosen design: reuse current canonical-root/admission machinery, validate every discovered module and every local module import, compare real paths, use bounded NUL-delimited Git output, and either compile/evaluate bytes already read or revalidate digest immediately after load. Treat declaration modules outside root as fatal even if reachable by symlink.
+Chosen design: reuse current canonical-root/admission machinery, validate every discovered module and every local module import, compare real paths, keep bounded NUL-delimited Git output validation for git-derived inputs (discovery itself never reads git), and either compile/evaluate bytes already read or revalidate digest immediately after load. Treat declaration modules outside root as fatal even if reachable by symlink, and reject symlinked declaration modules outright.
 
 Why alternatives fail: lexical `startsWith` containment is bypassable; validating only top-level PACKAGE leaves transitive imports as an escape; stat-then-import has a TOCTOU gap; recursive glob follows platform-specific links inconsistently.
 
@@ -633,15 +660,15 @@ Why alternatives fail: `instanceof` fails across package copies; JSON serializat
 
 Gate: forged markers, duplicate installed package copies, proxy arrays/objects, cyclic attrs, schema version change, and round-trip manifest schema tests. Planner/executor conformance must prove the same decoded attrs and declared outputs.
 
-### 11.8 Visibility and imports
+### 11.8 Omission privacy and imports
 
-Failure modes: omitted target still addressable by guessed label; private target imported transitively; generated manifest exposes it; CLI completion leaks its description/name.
+Failure modes: omitted target still addressable by guessed label; generated manifest exposes it; CLI completion leaks its description/name; an omitted local reachable from two packages acquires two owners.
 
-Chosen design: index only explicit map keys; enforce any private visibility in `PackageIndex` before planning; generated public manifest filters by audience, while an internal execution snapshot can retain authorized private references.
+Chosen design: index only explicit map keys; omission is the only privacy mechanism (no visibility field, 2026-08-25) and is enforced in `PackageIndex` before planning; generated manifests, disclosure, and completion list only indexed labels, while the internal execution snapshot retains the owner bindings of omitted locals reached through public closures.
 
-Why alternatives fail: display-only filtering is not access control; TypeScript `private` has no runtime effect; file-local variable naming is not discoverable safely.
+Why alternatives fail: display-only filtering is not access control; TypeScript `private` has no runtime effect; file-local variable naming is not discoverable safely; a visibility field without an authorization consumer is a false promise.
 
-Gate: omitted target by CLI/query/direct guessed label; an allowed public target depending on an omitted same-package private local; a rejected external/private cross-package dependency; manifest/disclosure leakage; and default-target selection with private candidates.
+Gate: omitted target by CLI/query/direct guessed label; a public target depending on an omitted same-package local; the same omitted local reachable from two packages (fatal); manifest/disclosure leakage; and bare-package selection with no `default` key.
 
 ### 11.9 Trusted execution and secrets
 
@@ -790,7 +817,7 @@ Files:
 - extend target flavor/mode/edge metadata and planner/executor views;
 - integrate output-tree manifests and atomic materialization with `@smthrs/artifacts`;
 - implement the Shell Build/Test/Run/Diff, Generate, Copy, Materialize, Suite, Test, and Alias subset required for representative dogfood;
-- add toolchain keying and write-set enforcement before enabling shared cache admission.
+- add toolchain keying, OS sandbox enforcement (network-deny default, `sandbox: "none"` opt-out), and write-set enforcement before enabling shared cache admission.
 
 Gate: artifact/edge/write-set and key/secret gates in §15.3 pass; shell/generator conformance reaches L3; a restored artifact builds a dependent without producer re-execution; no cacheable target lacks measured toolchain identity.
 
@@ -809,7 +836,7 @@ Each lane lands real schemas, types, implementation tests, key-material tests, d
 
 Files:
 
-- add root `WORKSPACE.ts` and `PACKAGE.ts` plus per-directory PACKAGE files;
+- add root `WORKSPACE.ts` and `PACKAGE.ts` plus per-directory PACKAGE files at per-app/per-subsystem granularity from the start (will, 2026-08-25: do it immediately), so an undeclared cross-boundary import is a missing edge on day one;
 - update root TypeScript build-file include gate and package scripts;
 - replace direct BUILD imports with `Package` imports;
 - intentionally map every old public label or record its removal;
@@ -827,7 +854,7 @@ Files:
 - delete BUILD export scanning, stack ownership and synthesis branches;
 - remove/replace old `@smthrs/fs` sources, tests, Vite peer, broken exports, docs, and lockfile dependencies;
 - update `packages/build/{DESIGN,API-REVIEW,WIRING}.md`, label/workspace docs, implementation status, changelogs, and release notes;
-- make `@smthrs/targets` and `@smthrs/build-cli` publishable if Artsy is to install them (`private:true` currently contradicts that use).
+- npm publishing is out of scope for now (will, 2026-08-25); external validation installs locally built tarballs or links without a registry.
 
 Gate: repository search finds no production `BUILD.ts`, `FileRouter`, `Route.load`, old `Route.Name/Input/Output`, or broken `@smthrs/fs/vite` reference; package tarball export tests pass for ESM/CJS/types; two Artsy fixture graphs load and typecheck strictly.
 
@@ -918,7 +945,7 @@ Do not add `S.Go.*` or optimism/viem-only surfaces in this routing drive; those 
 
 Resolve the two prototype disagreements explicitly:
 
-- Force's `Github.Setup` + `Github.Workflow` + `Github.CiGen` is the canonical primitive because it models reusable setup, separate workflows, preserved handwritten files, and drift checking. WhatsABI's `Github.Ci` is a typed macro lowering to the same intermediate representation, not a second executor.
+- Both CI-generation forms are canonical spec and implemented as written (will, 2026-08-25): Force's `Github.Setup` + `Github.Workflow` + `Github.CiGen` and WhatsABI's compact `Github.Ci`. Internal sharing between them is an implementation choice, never a second executor path.
 - `Runtime.Node({version})` and `Runtime.Node({manifest})` are both canonical and form an exclusive union.
 - `Npm.NodeModules({packageJson})` replaces the old authoring-level `Install`; runtime, manager, and lockfile arrive through Layer requirements.
 - Plain TypeScript functions create target matrices. Do not introduce dynamic in-graph fan-out.
@@ -945,11 +972,20 @@ Output directories become CAS tree manifests of relative path, blob digest, and 
 
 Agent targets use DI-provided agents; empty expanded diff/data is green without spawning. Candidate writes occur in an overlay and are mechanically limited by `changes`/`fixes`, including symlink resolution. Gates run after every bounded round against the exact candidate. Decode payload and test MCP reachability before model spend. Exhaustion preserves diff/gate artifacts.
 
+Agent targets cache like everything else (will, 2026-08-25: everything
+computational caches — that is the point of the Bazel-like architecture). A
+green agent result is admitted under its full key — diff digest, prompt
+digest, agent identity, mode, gate identities — and replays on identical
+inputs; the gates green at admission are the validation flows3-design
+requires for generative output. The one exception is outward side effects:
+a cached computation never replays a publish, PR, or commit — idempotency
+guards own re-invocation.
+
 Serve targets are scoped resources with a full probe contract, demonstrated in the revised prototypes (Force `src/PACKAGE.ts` dev/startProd, `.storybook`, whatsabi `serveDocs`): `readiness` gates dependents and takes a `{port}` or `{http, timeout}` probe; `health` repeats the same probe on an `interval` while anything depends on the service, and `failures` consecutive misses fail the dependent (with the service's log tail) instead of hanging it — a target may omit `health` when liveness must not be probed, as `startProdDebug` does because a debugger pause is not an unhealthy server; `stop` is the graceful-exit contract (`{signal, grace}`) applied before the process group is killed. Per-command refcount sharing and guaranteed teardown apply regardless of probes. Publish/release/PR/pages/commit targets are explicit roots, freshly gated, idempotency-guarded where possible, side-effect-tiered, and use durable approval for `approval:"required"`. Secret values substitute only at the final process/provider edge.
 
 Resolver rows key on file digest, resolver-config digest, and implementation fingerprint; unresolved/dynamic outcomes are explicit and dead-code checks fail closed. Bundler builds key on the resolved graph, not the declared universe. CI affected selection uses the same expanded-input implementation as keying, so affected must equal would-re-key. Cron projects onto generated GitHub schedules and the existing trigger door; it does not add a scheduler.
 
-Sandbox declarations are policy/key material, but current subprocess execution is not generally OS-hermetic (`packages/build/DESIGN.md:20-21,248-260`). V1 narrows env/secrets and documents this Tier-0 truth. OS network/filesystem isolation is a later gated capability.
+Sandboxing is the Bazel-style default (will, 2026-08-25): a target's process runs workspace-confined with no network unless it declares `sandbox: { network: true }` (network only) or `sandbox: "none"` (the full opt-out for host-coupled tools — the Force prototype marks its yalc, hokusai, kubectl, and afplay targets `"none"`). Enforcement is OS-level where the platform supports it (macOS `sandbox-exec`, Linux namespaces) and lands with the executor work in Phase 5A, before shared cache admission. The declaration is key material in every form. A platform without enforcement runs declared-and-revalidated and says so; documentation never claims hermeticity beyond what is enforced. If usage shows the sandbox surface still underspecified, extend the options in the prototypes first, then here.
 
 ### 15.3 Capability risks and gates
 
@@ -973,7 +1009,7 @@ Selected design: vacuous green before spawn, bounded candidate/gate loop, scoped
 
 Rejected alternatives: prompt-only safety, unbounded retry, global service daemon, autonomous invocation as irreversible consent, ephemeral approval prompt.
 
-Adversarial tests: fake-agent never-spawn/converge/exhaust/flake/missing-input/MCP/write escape; shared service/readiness timeout/mid-run health failure (server dies or stops answering while a dependent runs)/probe-flap below the failures threshold/SIGINT and stop-grace expiry; provider double invoke/crash after green/deny/resume/secret scan.
+Adversarial tests: fake-agent never-spawn/converge/exhaust/flake/missing-input/MCP/write escape; cached-verdict replay on an identical diff (no second spawn) and re-spawn on any key change; shared service/readiness timeout/mid-run health failure (server dies or stops answering while a dependent runs)/probe-flap below the failures threshold/SIGINT and stop-grace expiry; provider double invoke/crash after green/deny/resume/secret scan.
 
 Gate: deterministic fake conformance proves hard bounds, teardown, at-most-one outward effect, and durable decision replay.
 
@@ -1017,12 +1053,13 @@ Run the core matrix on Node 22/26 on Linux, macOS, and Windows; run portable sna
 
 | Area | Required cases | Pass condition |
 |---|---|---|
-| Inventory | Git tracked, untracked, ignored, nested ignore, no Git, non-worktree, malformed NUL, duplicate path, oversized output | exact deterministic set or stable fatal code; never silent fallback on corrupt Git |
+| Inventory | tracked, untracked, and gitignored declaration files (all participate), repo with no git at all, pruned roots (`.git`, `node_modules`, cache/CAS), deep/oversized trees, duplicate canonical paths | exact deterministic set or stable fatal code; gitignore never affects discovery; corrupt git output fails git-derived inputs only, never discovery |
 | Static extraction | direct/shorthand/string keys, helper exports, spread/computed/accessor/mutation/re-export, top-level sentinel | complete metadata or exact code/span; zero evaluation |
 | Names | root, `.github`, `.storybook`, hyphen, Unicode NFC/NFD, case pairs, colon/slash/backslash/control, reserved defaults | portable canonical labels; ambiguous/colliding inputs fatal |
 | Files | regular, directory, FIFO, socket, hardlink, in-root/out-root symlink, link race | only admitted regular contained modules execute |
 | Modules | ESM, CommonJS host package, `.js` to `.ts`, top-level await, syntax error, throw, helper imports, missing export, extra naked target | same snapshot or exact diagnostic with chain/span |
-| Graph | acyclic diamonds, self/two/long cycles, imported Package property, one target twice, public-to-private dependency | immutable graph; cycles/identity/visibility enforced before planning |
+| Graph | acyclic diamonds, self/two/long cycles, imported Package property, one target twice, dependency on an omitted local | immutable graph; cycles/identity/omission-privacy enforced before planning |
+| Sandbox | undeclared network attempt, write outside the workspace under confinement, `sandbox: "none"` passthrough, unsupported platform | denied/confined where enforced; declaration always keys; unenforced platforms report honestly |
 | Cache | same mtime rewrite, dependency-only change, loader ABI change, workspace recreated at same path | no stale namespace; unchanged closure evaluates once per command |
 | Watch | burst add/change/delete/rename, transient syntax error, cycle then repair, concurrent readers | atomic last-good snapshots; one deterministic successor |
 | Types | exact target keys, misspelling, wrong attrs, wrong imported property, forged `any`, duplicate package copies | strict expected successes/failures without ambient declarations |
@@ -1040,7 +1077,7 @@ Performance/resource gates: bounded Git output, bounded declaration file reads, 
 
 Before cutover, update canonical docs and then regenerate site copies:
 
-- exact PACKAGE/WORKSPACE source grammar, exact-case and Git-aware discovery;
+- exact PACKAGE/WORKSPACE source grammar, exact-case ignore-blind filesystem discovery (git never consulted);
 - pure inventory/static extraction versus trusted evaluation and its trust boundary;
 - labels, defaults, imports, omission privacy, Alias nodes, and collision rules;
 - Workspace direct fields, Layer dependency wiring, and both Runtime.Node forms;
@@ -1060,30 +1097,20 @@ Types.md` (the three edges), `Artifact Store.md` (CAS trees and
 materialization), `Resolver.md` (rows, closures, affected equivalence), and
 `Agent Targets.md` (payloads, write-sets, gate loops, approval). Every
 `[[wikilink]]` must resolve; `vaultCheck` enforces it. `HQ.md` gets the
-in-flight entry this work currently lacks.
+in-flight entry this work currently lacks. The overlapping flows3 open
+questions (`~/Smithers-Ops/HQ.md` line 27) are closed by this plan's rulings
+(best-judgment fold, per will 2026-08-25): cache doctrine — everything
+computational caches, with toolchain identity in keys and gates/validate as
+admission; the builder-vocabulary register — PACKAGE.ts/WORKSPACE.ts and
+`smthrs` replace BUILD.ts-era naming; the external-OSS shape —
+design-partner repos as vendored conformance fixtures; cache unification —
+one CAS plus action-cache namespace.
 
 Every phase/batch emits a machine-readable graph/label/key delta and records its rollback checkpoint. Documentation must not call generation, Vite, source-mode Bun, sandbox enforcement, a catalog capability, or an outward action implemented before its gate passes.
 
 Conformance levels are: L0 strict types; L1 static/evaluated load plus labels/privacy; L2 normalized query/plan; L3 stub-tool/fake-agent execution; L4 real repository dogfood. External validation uses disposable clean Force/WhatsABI copies, never their dirty worktrees.
 
-## 18. Unresolved questions and recommended defaults
-
-1. **Does `defaultVisibility:"private"` ship in v1?** Evidence proves only the `public` literal and no private consumer. Default: type/accept `public`, reject `private`, use omission-based privacy until authorization semantics exist. Consequence: no false access-control promise. ANSWER: no just ship mvp in fact remove defaultVisibility from spec
-2. **Are helper runtime exports allowed?** Default: yes for inert non-target values, but reject naked Target/Package/Workspace exports. Consequence: ordinary constants/functions remain possible without reopening target discovery. ANSWER: Of course most of our api are helpers that wrap the internal stuff
-3. **Must PACKAGE discovery use Git?** Default: preserve current Git-aware inventory with bounded fallback. Consequence: ignored PACKAGE files do not participate; untracked nonignored files do. Document this because a raw filesystem glob would differ. ANSWER: no it shouldn't use git because some of these files are git ignored only use git for git specific stuff
-4. **Are in-workspace symlinked PACKAGE files allowed?** Current BUILD admission allows an in-root link. Default: allow only when canonical module identity is unique, and label comes from the lexical containing directory; reject any second alias. Consequence: monorepo link layouts work without duplicate targets.ANSWER: just do whatever the minimum spec is for this 
-5. **Should manifest files be committed?** Default: cache artifact, uncommitted; optional checked-in mirror plus `--check`. Consequence: source authoring has no generated-file prerequisite, while bundler consumers can require the target. ANSWER: Usually no it should be an option too where we can update git ignore to ignore things that are marked as ignored
-6. **Which package owns portable graph schemas?** Default: a Node-free subpath of build-cli initially; extract only after a second consumer. Consequence: no premature package while browser UI can import safely. ANSWER we als
-7. **Can arbitrary local imports leave the workspace?** Default: package-to-package declarations and workspace-local helpers must stay inside; npm/builtin imports are allowed by policy. Consequence: trusted declarations can use libraries but cannot smuggle a second workspace tree through relative paths.
-8. **What is a root shorthand `//` default?** Default: explicit `default`, then sole public target, otherwise ambiguity. Consequence: no insertion-order API.
-9. **Which CLI binary ships?** Default: partner-facing `smithers`; retain `smthrs` only during repository dogfood. This does not change labels.
-10. **Does compact `Github.Ci` remain?** Default: yes as typed sugar lowering to Setup/Workflow/CiGen's one intermediate representation, never as a separate execution path.
-11. **May Agent.Lint cache?** Default: no in v1; enable only after validate-gated admission proves the nondeterministic result safe.
-12. **Does OS network sandboxing block routing?** Default: no; ship and document honest Tier-0 declared/revalidated policy, with OS enforcement as a separate capability gate.
-13. **Dogfood granularity:** does this repository's migration create PACKAGE.ts files 1:1 with today's BUILD.ts files, or split per app/subsystem now (the per-route vision in Force's SMITHERS-NOTES.md, where an undeclared cross-boundary import becomes a missing edge)? Default: 1:1 now; per-app splits are follow-up refactors once the router is proven.
-14. **Overlap with the eight open flows3 questions** (`~/Smithers-Ops/HQ.md` line 27: cache doctrine, naming register, OSS-repo shape, cache unification): which does this plan's defaults settle? Needs an explicit pass with will so HQ and this plan do not answer the same question differently.
-
-## 19. Definition of done
+## 18. Definition of done
 
 The replacement is done only when all of the following are true:
 
@@ -1099,7 +1126,7 @@ The replacement is done only when all of the following are true:
 - the repository has a reviewed old/new public-label delta and dogfoods PACKAGE/WORKSPACE;
 - old BUILD export scanning, stack-derived routing identity, and the unused `@smthrs/fs` public routing/command surface are removed;
 - flow discovery and flow UI metadata remain correctly owned and tested in registry/framework code;
-- package manifests export existing files only, tarball ESM/CJS/type tests pass, and installable packages are no longer marked private when external use is intended;
+- package manifests export existing files only and tarball ESM/CJS/type tests pass (npm publishing itself is out of scope for now);
 - docs and changelogs label implemented/prototype/proposed behavior accurately and contain no generation/Vite claim unsupported by a gate;
 - a final repository-wide symbol/file inventory finds no unaccounted routing consumer or legacy entry file.
 
