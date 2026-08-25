@@ -373,9 +373,10 @@ node breach-scan.mjs --ledger fullbench/rerun-r98/manifest.jsonl \
   --require none --out fullbench/rerun-r98
 ```
 
-It imports `egress`, `breaches` and `webSearches` from `compare-codex-lanes.mjs`
-rather than restating them, so the two reports cannot drift apart on what counts
-as an attempt or a breach. The one thing that differs per arm is **where the
+It imports `egress`, `inContainerEgress`, `provedUnnetworked` and
+`countedBreaches` from `compare-codex-lanes.mjs` rather than restating them, so
+the two reports cannot drift apart on what counts as an attempt or a breach. The
+one thing that differs per arm is **where the
 trace lives**: a codex run writes one transcript at `logs/<id>.run.log`, and a
 flows run writes a driver log of that name plus a journal at
 `journals/<id>/engine.db`, whose `flows_journal_events.payload_json` holds every
@@ -398,6 +399,40 @@ Four rules, and each is a way a scan could clear a lane it should fail:
 
 `fixtures/check-breach-scan.mjs` pins all four offline, and `./verify.sh` runs
 it.
+
+#### An attempt is not an outcome
+
+Under `--network none` this distinction is the whole report, and getting it wrong
+failed the first sealed lane that ran.
+
+`breaches` deliberately does not read a command's result. On a `bridge` lane that
+is right: a `docker exec … curl` would have worked, so the attempt is the
+finding. Under `none` it cannot have worked — the container has `lo` and nothing
+else, which is the fact `./network-dryrun.sh` establishes against a real daemon.
+On 2026-08-25 the `r90n` lane's first scan therefore reported **6 successful
+in-container fetches** and a `FAILED` verdict, while every one of those six died
+in the transcript on `Could not resolve host` or `Temporary failure in name
+resolution`. The gate was contradicting its own premise, in a message that said
+so out loud: *"which a --network none container cannot do."*
+
+So on a container **observed** `none`, an in-container fetch is read to its
+outcome, and the reading fails closed:
+
+- a fetch the trace shows failing is the seal working, not a breach;
+- a fetch with no recorded outcome is still a breach — **unless** another fetch
+  in the same container is shown dying on a name that does not resolve. The seal
+  is a property of the container, not of each command: `curl --silent | grep`
+  prints no diagnostic and exits with `grep`'s status, so a fetch that returned
+  nothing can leave no evidence at all. `sphinx-doc__sphinx-7590` did exactly
+  that one second before the identical URL in the identical container came back
+  `curl: (6)`;
+- that container-level reading is withdrawn by **any** `docker network connect`
+  in the trace, which is the only way a running container can acquire a network,
+  and it is never granted to a container that is shown refusing nothing. A quiet
+  trace proves nothing and is given nothing.
+
+Anywhere the container was not observed `none`, the old rule stands untouched, so
+no `bridge` or unrecorded lane's report moves.
 
 ## The prompts
 

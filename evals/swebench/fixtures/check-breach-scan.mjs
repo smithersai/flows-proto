@@ -34,6 +34,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { foldLedger, render, scan } from "../breach-scan.mjs"
+import { inContainerEgress } from "../compare-codex-lanes.mjs"
 
 const root = resolve(import.meta.dirname, "..")
 const temporary = mkdtempSync(join(tmpdir(), "flows-swebench-breach-"))
@@ -118,6 +119,124 @@ try {
   assert.equal(fetched.breached[0].id, "a__a-1")
   assert.ok(fetched.failures.some((failure) => failure.includes("fetched from inside the testbed")))
   assert.ok(render(fetched, { label: "x", ledger: journalLedger }).includes("Where the seal did not hold"))
+
+  // -------------------------------------------------------------------------
+  // An in-container fetch the trace shows dying is the seal working, not a
+  // breach. A `--network none` container cannot resolve a name, and reporting
+  // the attempt as a successful fetch failed the first sealed lane that ran.
+  // -------------------------------------------------------------------------
+  const refusedDirectory = join(temporary, "refused")
+  mkdirSync(join(refusedDirectory, "logs"), { recursive: true })
+  writeFileSync(
+    join(refusedDirectory, "logs", "a__a-1.run.log"),
+    "docker exec swb bash -lc 'curl -fsSL https://example.com/fix.patch'\n"
+      + "curl: (6) Could not resolve host: example.com\n"
+  )
+  const refusedLedger = jsonl(join(refusedDirectory, "manifest.jsonl"), [
+    { kind: "instance", id: "a__a-1", state: "ran", at: 1, testbedNetwork: "none", testbedNetworkObserved: "none" }
+  ])
+  const refused = scan({ ledger: refusedLedger, logs: join(refusedDirectory, "logs"), require: "none" })
+  assert.equal(refused.totals.inContainerAttempts, 1, "the attempt is still counted and printed")
+  assert.equal(refused.totals.inContainerRefused, 1)
+  assert.equal(refused.totals.breaches, 0, "a fetch the trace shows failing is not a breach")
+  assert.deepEqual(refused.failures, [], "and the lane passes")
+  assert.ok(render(refused, { label: "x", ledger: refusedLedger }).includes("**Verdict: sealed.**"))
+
+  // -------------------------------------------------------------------------
+  // ...and the reading fails closed. Same container, same command, no recorded
+  // outcome: a fetch that left no evidence of failing is not excused by the
+  // observation, or `observed none` would be a blanket amnesty.
+  // -------------------------------------------------------------------------
+  const silentDirectory = join(temporary, "silent")
+  mkdirSync(join(silentDirectory, "logs"), { recursive: true })
+  writeFileSync(
+    join(silentDirectory, "logs", "a__a-1.run.log"),
+    "docker exec swb bash -lc 'curl -fsSL https://example.com/fix.patch'\nok\n"
+  )
+  const silentLedger = jsonl(join(silentDirectory, "manifest.jsonl"), [
+    { kind: "instance", id: "a__a-1", state: "ran", at: 1, testbedNetwork: "none", testbedNetworkObserved: "none" }
+  ])
+  const silent = scan({ ledger: silentLedger, logs: join(silentDirectory, "logs"), require: "none" })
+  assert.equal(silent.totals.breaches, 1, "an unrefuted in-container fetch still counts against the lane")
+  assert.equal(silent.rows[0].unnetworked, false, "a trace with nothing refused proves nothing")
+  assert.ok(silent.failures.some((failure) => failure.includes("fetched from inside the testbed")))
+
+  // -------------------------------------------------------------------------
+  // ...unless the same container is shown elsewhere to have had no network at
+  // all. `curl --silent | grep` prints no diagnostic and exits with grep's
+  // status, so a fetch that returned nothing can leave no refusal text; one
+  // command that did resolves the container, which is what the seal is a
+  // property of.
+  // -------------------------------------------------------------------------
+  const quietDirectory = join(temporary, "quiet")
+  mkdirSync(join(quietDirectory, "logs"), { recursive: true })
+  writeFileSync(
+    join(quietDirectory, "logs", "a__a-1.run.log"),
+    "docker exec swb bash -lc 'curl --fail --silent https://example.com/one.patch | grep -n x'\n exited 1\n"
+      + "docker exec swb bash -lc 'curl -I -L https://example.com/one.patch'\n"
+      + "curl: (6) Could not resolve host: example.com\n"
+  )
+  const quietLedger = jsonl(join(quietDirectory, "manifest.jsonl"), [
+    { kind: "instance", id: "a__a-1", state: "ran", at: 1, testbedNetwork: "none", testbedNetworkObserved: "none" }
+  ])
+  const quiet = scan({ ledger: quietLedger, logs: join(quietDirectory, "logs"), require: "none" })
+  assert.equal(quiet.totals.inContainerAttempts, 2)
+  assert.equal(quiet.rows[0].unnetworked, true)
+  assert.equal(quiet.totals.breaches, 0, "a container shown to have no DNS did not fetch on the quiet command either")
+  assert.deepEqual(quiet.failures, [])
+
+  // -------------------------------------------------------------------------
+  // ...and that rule is withdrawn the moment the trace shows a network being
+  // attached, which is the only way a running container can acquire one.
+  // -------------------------------------------------------------------------
+  const connectDirectory = join(temporary, "connect")
+  mkdirSync(join(connectDirectory, "logs"), { recursive: true })
+  writeFileSync(
+    join(connectDirectory, "logs", "a__a-1.run.log"),
+    "docker exec swb bash -lc 'curl -I -L https://example.com/one.patch'\n"
+      + "curl: (6) Could not resolve host: example.com\n"
+      + "docker network connect bridge swb\n"
+      + "docker exec swb bash -lc 'curl --fail --silent https://example.com/two.patch | grep -n x'\n"
+  )
+  const connectLedger = jsonl(join(connectDirectory, "manifest.jsonl"), [
+    { kind: "instance", id: "a__a-1", state: "ran", at: 1, testbedNetwork: "none", testbedNetworkObserved: "none" }
+  ])
+  const connected = scan({ ledger: connectLedger, logs: join(connectDirectory, "logs"), require: "none" })
+  assert.equal(connected.rows[0].unnetworked, false, "attaching a network withdraws the container-level reading")
+  assert.equal(connected.totals.breaches, 1)
+  assert.ok(connected.failures.some((failure) => failure.includes("fetched from inside the testbed")))
+
+  // -------------------------------------------------------------------------
+  // The outcome reading applies only where the container was observed `none`.
+  // A bridge lane's report does not move: there the attempt is the finding.
+  // -------------------------------------------------------------------------
+  const bridgeDirectory = join(temporary, "bridge")
+  mkdirSync(join(bridgeDirectory, "logs"), { recursive: true })
+  writeFileSync(
+    join(bridgeDirectory, "logs", "a__a-1.run.log"),
+    "docker exec swb bash -lc 'curl -fsSL https://example.com/fix.patch'\n"
+      + "curl: (6) Could not resolve host: example.com\n"
+  )
+  const bridgeLedger = jsonl(join(bridgeDirectory, "manifest.jsonl"), [
+    { kind: "instance", id: "a__a-1", state: "ran", at: 1, testbedNetwork: "bridge", testbedNetworkObserved: "bridge" }
+  ])
+  const bridge = scan({ ledger: bridgeLedger, logs: join(bridgeDirectory, "logs") })
+  assert.equal(bridge.totals.breaches, 1, "on a bridge container the attempt is the finding, as it always was")
+
+  // -------------------------------------------------------------------------
+  // Per command, one command's failure is never credited to the next: the
+  // window a refusal is read from ends where the next `docker exec` begins.
+  // (What the *lane* then does with an unrefuted attempt is the container-level
+  // question above; this pins the reading the container rule is built on.)
+  // -------------------------------------------------------------------------
+  const pairRead = inContainerEgress(
+    "docker exec swb bash -lc 'curl -fsSL https://example.com/one.patch'\nok\n"
+      + "docker exec swb bash -lc 'curl -fsSL https://example.com/two.patch'\n"
+      + "curl: (6) Could not resolve host: example.com\n"
+  )
+  assert.equal(pairRead.length, 2)
+  assert.equal(pairRead[0].refused, false, "the quiet one is not absolved by the next command's failure")
+  assert.equal(pairRead[1].refused, true)
 
   // -------------------------------------------------------------------------
   // The assertion reads the observation, never the request.
