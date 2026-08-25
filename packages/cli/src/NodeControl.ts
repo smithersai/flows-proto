@@ -37,6 +37,7 @@ import * as Workspace from "@smthrs/kernel/Workspace"
 import * as MemoryStore from "@smthrs/memory/MemoryStore"
 import * as Recall from "@smthrs/memory/Recall"
 import type * as ModelError from "@smthrs/model/ModelError"
+import * as OpenAIChatGPT from "@smthrs/model/OpenAIChatGPT"
 import * as OpenAICompatible from "@smthrs/model/OpenAICompatible"
 import * as RequestExecutor from "@smthrs/model/RequestExecutor"
 import * as Route from "@smthrs/model/Route"
@@ -56,11 +57,12 @@ import { HttpRouter } from "effect/unstable/http"
 import { RpcSerialization } from "effect/unstable/rpc"
 import { Socket } from "effect/unstable/socket"
 import type { SqlClient } from "effect/unstable/sql/SqlClient"
-import { mkdirSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
 import { createServer } from "node:http"
 import type { ListenOptions } from "node:net"
 import { dirname, join } from "node:path"
 import * as Application from "./Application.ts"
+import * as CodexAuth from "./CodexAuth.ts"
 import * as Output from "./Output.ts"
 
 /**
@@ -390,6 +392,15 @@ const apiKeyVariable: Readonly<Record<string, string>> = {
 }
 
 /**
+ * How the `openai` provider authenticates. `api-key` is the default and the
+ * only mode the other providers have. `chatgpt` routes the same seat strings
+ * to the ChatGPT-subscription backend on the codex CLI's OAuth session, so a
+ * lane opts in through the environment without respelling any seat — the
+ * journaled seat, its context window, and its committed price stay identical.
+ */
+const openaiAuthVariable = "FLOWS_OPENAI_AUTH"
+
+/**
  * The Node seat resolver: it turns a `provider:modelId` seat into a live model
  * route, with the API key read from the given environment — usually
  * `process.env`, passed in as a value so nothing below this composition touches
@@ -398,14 +409,28 @@ const apiKeyVariable: Readonly<Record<string, string>> = {
  * A seat with no separator is a bare model id on the Anthropic route, which is
  * the one provider convention this host assumes.
  *
+ * `FLOWS_OPENAI_AUTH=chatgpt` swaps the `openai` provider's credential source
+ * from `OPENAI_API_KEY` to the codex CLI's ChatGPT session
+ * (`$CODEX_HOME/auth.json`); the token store is shared across every seat that
+ * resolves against the same file so its refresh stays single-flight.
+ *
  * @category constructors
  * @since 0.1.0
  */
 export const seatResolver = (
   environment: Readonly<Record<string, string | undefined>>,
   executor: RequestExecutor.RequestExecutor
-): SeatResolver.Service =>
-  SeatResolver.make({
+): SeatResolver.Service => {
+  const codexStores = new Map<string, CodexAuth.Store>()
+  const codexStore = (file: string): CodexAuth.Store => {
+    let store = codexStores.get(file)
+    if (store === undefined) {
+      store = CodexAuth.make({ file, executor })
+      codexStores.set(file, store)
+    }
+    return store
+  }
+  return SeatResolver.make({
     resolve: (seat) =>
       Effect.gen(function*() {
         const separator = seat.indexOf(":")
@@ -417,6 +442,35 @@ export const seatResolver = (
             seat,
             message: `No route is configured for the ${provider} provider`
           })
+        }
+        // An empty value is treated exactly like an unset variable, the same
+        // convention the key variables follow below.
+        const configured = environment[openaiAuthVariable]
+        const authMode = provider === "openai" && configured !== undefined && configured !== ""
+          ? configured
+          : "api-key"
+        if (authMode !== "api-key" && authMode !== "chatgpt") {
+          return yield* new Seat.SeatUnresolved({
+            seat,
+            message: `${openaiAuthVariable} must be "api-key" or "chatgpt" to run the ${seat} seat`
+          })
+        }
+        if (authMode === "chatgpt") {
+          // The ChatGPT mode needs a provisioned session, not an API key: the
+          // refusal names the store so a detached lane fails before spending.
+          const file = CodexAuth.locate(environment)
+          if (!existsSync(file)) {
+            return yield* new Seat.SeatUnresolved({
+              seat,
+              message: `Sign in with \`codex login\` to run the ${seat} seat: no ChatGPT credentials at ${file}`
+            })
+          }
+          return yield* seatOf(
+            OpenAIChatGPT.make({ auth: codexStore(file).auth({ modelId }) }),
+            executor,
+            seat,
+            modelId
+          )
         }
         const key = environment[variable]
         if (key === undefined || key.length === 0) {
@@ -446,6 +500,7 @@ export const seatResolver = (
           : seatOf(Route.openai({ apiKey: Redacted.make(key) }), executor, seat, modelId)
       })
   })
+}
 
 const seatOf = <Body, Frame, Event, State>(
   configured: Result.Result<Route.Route<Body, Frame, Event, State>, ModelError.ModelError>,

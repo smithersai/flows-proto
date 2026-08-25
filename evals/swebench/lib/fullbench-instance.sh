@@ -30,6 +30,8 @@
 #   SWB_FULLBENCH_DISK_INTERVAL   how often the gate re-checks
 #   SWB_FULLBENCH_PINNED          ids whose images are never deleted
 #   SWB_SEAT, SWB_FULLBENCH_BUDGET, SWB_MODEL_NAME
+#   SWB_FLOWS_OPENAI_AUTH         api-key (default) or chatgpt; run-instance.sh
+#                                 reads it from the environment directly
 #
 # Two stubs exist for the rig's own dry run, and they are the same convention
 # `run-matrix.sh` already uses for `SWB_RUN_CMD`:

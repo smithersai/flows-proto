@@ -53,6 +53,11 @@ MIN_FREE_MIB="${SWB_FULLBENCH_MIN_FREE_MIB:-8192}"
 RUN_ID="${SWB_FULLBENCH_RUN_ID:-fullbench}"
 INDEX="${SWB_FULLBENCH_INDEX:-r90}"
 SEAT="${SWB_SEAT:-openai:gpt-5.6-sol}"
+# `api-key` bills OPENAI_API_KEY credits; `chatgpt` runs the same seat on the
+# operator's ChatGPT plan through the codex CLI's session. Ledger dollars under
+# `chatgpt` are derived at API list prices, not billed; the header records the
+# mode. See run-45.sh for the full note.
+OPENAI_AUTH="${SWB_FLOWS_OPENAI_AUTH:-api-key}"
 INSTANCE_BUDGET="${SWB_FULLBENCH_BUDGET:-1200}"
 DATASET="${SWB_DATASET:-$S/swb-verified.json}"
 MODEL_NAME="${SWB_MODEL_NAME:-flows-cell-harness}"
@@ -78,6 +83,10 @@ for PAIR in "JOBS:$JOBS" "CHECKPOINT_EVERY:$CHECKPOINT_EVERY" "MIN_FREE_MIB:$MIN
 done
 case "$BUDGET_USD" in
   ''|*[!0-9.]*|*.*.*|.|*.) echo "fullbench.sh: SWB_FULLBENCH_BUDGET_USD must be a number, got '$BUDGET_USD'"; exit 2 ;;
+esac
+case "$OPENAI_AUTH" in
+  api-key|chatgpt) ;;
+  *) echo "fullbench.sh: SWB_FLOWS_OPENAI_AUTH must be 'api-key' or 'chatgpt', got '$OPENAI_AUTH'"; exit 2 ;;
 esac
 if [ -n "$SESSION_LIMIT" ]; then
   case "$SESSION_LIMIT" in
@@ -286,7 +295,7 @@ HEAD_AT_START="$(cd "$S" && git rev-parse HEAD 2>/dev/null || printf 'unknown')"
 
 append "$MANIFEST" "$(row --kind header --at "$(now_ms)" --runId "$RUN_ID" --index "$INDEX" \
   --subject "$SUBJECT" --subjectSource "$SUBJECT_SOURCE" --head "$HEAD_AT_START" \
-  --seat "$SEAT" --jobs "$JOBS" --instanceBudgetSeconds "$INSTANCE_BUDGET" \
+  --seat "$SEAT" --openaiAuth "$OPENAI_AUTH" --jobs "$JOBS" --instanceBudgetSeconds "$INSTANCE_BUDGET" \
   --budgetUsd "$BUDGET_USD" --minFreeMiB "$MIN_FREE_MIB" --checkpointEvery "$CHECKPOINT_EVERY" \
   --pinnedImages "$PINNED" --dataset "$DATASET")"
 
@@ -343,6 +352,7 @@ export SWB_FULLBENCH_MIN_FREE_MIB="$MIN_FREE_MIB"
 export SWB_FULLBENCH_PINNED="$PINNED"
 export SWB_FULLBENCH_BUDGET="$INSTANCE_BUDGET"
 export SWB_SEAT="$SEAT"
+export SWB_FLOWS_OPENAI_AUTH="$OPENAI_AUTH"
 
 QUEUE="$(node "$S/lib/fullbench-queue.mjs" "$DATASET" "$MANIFEST" --remaining)" || {
   log "could not build the queue"; exit 1; }

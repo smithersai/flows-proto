@@ -58,4 +58,11 @@ export * as ExecutorOwnership from "./ExecutorOwnership.ts"
  * @since 0.1.0
  * @slop
  */
+export * as CodexAuth from "./CodexAuth.ts"
+
+/**
+ * @category node
+ * @since 0.1.0
+ * @slop
+ */
 export * as NodeControl from "./NodeControl.ts"

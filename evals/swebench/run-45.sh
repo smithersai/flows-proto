@@ -109,6 +109,13 @@ BASELINE="${SWB_RERUN_BASELINE:-$S/fullbench/manifest.jsonl}"
 LANE="${SWB_RERUN_LANE:-r91}"
 JOBS="${SWB_RERUN_JOBS:-3}"
 SEAT="${SWB_SEAT:-openai:gpt-5.6-sol}"
+# How the seat's provider authenticates. `api-key` bills OPENAI_API_KEY
+# credits; `chatgpt` runs the same seat on the operator's ChatGPT plan through
+# the codex CLI's session (CODEX_HOME names the store, `codex login` provisions
+# it). The seat string, and so the committed price table, is identical either
+# way — under `chatgpt` the ledger's dollars are DERIVED at API list prices,
+# not billed, and the header row records the mode so the scoreboard can say so.
+OPENAI_AUTH="${SWB_FLOWS_OPENAI_AUTH:-api-key}"
 INSTANCE_BUDGET="${SWB_FULLBENCH_BUDGET:-1200}"
 BUDGET_USD="${SWB_RERUN_BUDGET_USD:-60}"
 MIN_FREE_MIB="${SWB_FULLBENCH_MIN_FREE_MIB:-8192}"
@@ -131,6 +138,10 @@ for PAIR in "JOBS:$JOBS" "INSTANCE_BUDGET:$INSTANCE_BUDGET" "MIN_FREE_MIB:$MIN_F
 done
 case "$BUDGET_USD" in
   ''|*[!0-9.]*|*.*.*|.|*.) echo "run-45.sh: SWB_RERUN_BUDGET_USD must be a number, got '$BUDGET_USD'"; exit 2 ;;
+esac
+case "$OPENAI_AUTH" in
+  api-key|chatgpt) ;;
+  *) echo "run-45.sh: SWB_FLOWS_OPENAI_AUTH must be 'api-key' or 'chatgpt', got '$OPENAI_AUTH'"; exit 2 ;;
 esac
 MODE=start
 FOREGROUND=0
@@ -242,7 +253,7 @@ SUBJECT="$(node -e '
 
 append "$MANIFEST" "$(row --kind header --at "$(now_ms)" --run-id "$RUN_ID" --index "$INDEX" \
   --lane "$LANE" --testbedNetwork "$TESTBED_NETWORK" \
-  --subject "$SUBJECT" --head "$HEAD_AT_START" --seat "$SEAT" --jobs "$JOBS" \
+  --subject "$SUBJECT" --head "$HEAD_AT_START" --seat "$SEAT" --openai-auth "$OPENAI_AUTH" --jobs "$JOBS" \
   --instance-budget-seconds "$INSTANCE_BUDGET" --budget-usd "$BUDGET_USD" \
   --min-free-mib "$MIN_FREE_MIB" --baseline "$BASELINE" --dataset "$DATASET")"
 
@@ -253,6 +264,7 @@ export SWB_FULLBENCH_MIN_FREE_MIB="$MIN_FREE_MIB"
 export SWB_FULLBENCH_BUDGET="$INSTANCE_BUDGET"
 export SWB_MODEL_NAME="$MODEL_NAME"
 export SWB_SEAT="$SEAT"
+export SWB_FLOWS_OPENAI_AUTH="$OPENAI_AUTH"
 # Handed down rather than left to default, for the same reason effort is: a
 # condition a child derives is a condition that moves when the default moves.
 export SWB_TESTBED_NETWORK="$TESTBED_NETWORK"
@@ -263,7 +275,7 @@ export SWB_FULLBENCH_PINNED=""
 
 QUEUE="$(queue --remaining)"
 set -- $(queue --count)
-log "run-45: $1 of $3 already re-run, $2 to go, $JOBS in flight, ${INSTANCE_BUDGET}s each, $TESTBED_NETWORK testbed"
+log "run-45: $1 of $3 already re-run, $2 to go, $JOBS in flight, ${INSTANCE_BUDGET}s each, $TESTBED_NETWORK testbed, $OPENAI_AUTH auth"
 
 # ---------------------------------------------------------------------------
 # The budget gate, read from this re-run's own ledger before every launch. A
