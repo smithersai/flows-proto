@@ -105,10 +105,12 @@ export const sleep: (
     const engine = yield* FlowRuntime
     const instance = yield* FlowInstance
     const clock = make(options)
+    ;(globalThis as any).__dbg?.("clock.sleep arming " + clock.name)
     yield* engine.scheduleClock(instance.flow, {
       executionId: instance.executionId,
       clock
     })
+    ;(globalThis as any).__dbg?.("clock.sleep armed " + clock.name)
     return yield* DurableDeferred.await(clock.deferred)
   })
 
