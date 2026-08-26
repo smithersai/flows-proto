@@ -115,6 +115,49 @@ const refusalFor = (rule: string): string =>
   "Bundler.Rspack.*, Agent.*, Git.Commit, Github.*, and Memory.Retain"
 
 /**
+ * The placeholder a bundler build's key template carries where the graph
+ * dependency's key goes. Execution substitutes the resolved graph digest
+ * (`bundler-graph:<digest>`) once the resolve node has settled, so a build
+ * keys on the graph it bundles rather than on the declared universe; the
+ * plan-time preview substitutes the digest when the cache already holds it
+ * and the resolve node's own key otherwise.
+ */
+const graphKeySentinel = "{smthrs:bundler-graph-key}"
+
+const replaceGraphKey = (value: unknown, key: string): unknown => {
+  if (value === graphKeySentinel) return key
+  if (typeof value !== "object" || value === null) return value
+  if (Array.isArray(value)) return value.map((entry) => replaceGraphKey(entry, key))
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return value
+  const out: Record<string, unknown> = {}
+  for (const [name, entry] of Object.entries(value)) out[name] = replaceGraphKey(entry, key)
+  return out
+}
+
+/**
+ * Substitutes the graph key into a bundler build's key template: the `graph`
+ * attr reference and the dependency row both carry the sentinel.
+ *
+ * @category keys
+ * @since 0.1.0
+ */
+export const keyMaterialWithGraph = (template: Planner.KeyMaterial, key: string): Planner.KeyMaterial => {
+  const inputs = template.inputs as {
+    readonly attrs: unknown
+    readonly dependencies: ReadonlyArray<{ readonly label: string; readonly key: string }>
+  }
+  return {
+    ...template,
+    inputs: {
+      ...inputs,
+      attrs: replaceGraphKey(inputs.attrs, key),
+      dependencies: inputs.dependencies.map((row) => row.key === graphKeySentinel ? { label: row.label, key } : row)
+    }
+  }
+}
+
+/**
  * One planned package-mode node. Structurally a {@link Planner.PlannedTarget}
  * so the existing scheduler accepts the work list unchanged.
  *
@@ -168,6 +211,12 @@ export interface PackageNode extends Planner.PlannedTarget {
   /** Labels of the Serve targets this node's `services` attr acquires. */
   readonly serviceDeps: ReadonlyArray<string>
   readonly lane: LaneData | undefined
+  /**
+   * Bundler builds only: the key material with the graph dependency's key
+   * left as {@link graphKeySentinel}. Execution derives the effective key
+   * from it once the resolved graph digest is known.
+   */
+  readonly keyTemplate: Planner.KeyMaterial | undefined
   readonly refusal: string | undefined
   readonly sandbox: "none" | { readonly network?: boolean | undefined } | undefined
   readonly secrets: ReadonlyArray<string>
@@ -833,7 +882,10 @@ const staticPrefixOf = (pattern: string): string => {
 
 const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox"]): ReadonlyArray<string> => {
   const capabilities = ["fs:read", "proc:spawn"]
-  if (mode === "write" || rule === "Shell.Build" || rule === "Materialize" || rule === "Clean") {
+  if (
+    mode === "write" || rule === "Shell.Build" || rule === "Bundler.Rspack.build" || rule === "Materialize" ||
+    rule === "Clean"
+  ) {
     capabilities.push("fs:write")
   }
   if (sandbox === "none" || (typeof sandbox === "object" && sandbox.network === true)) capabilities.push("net:open")
@@ -864,6 +916,7 @@ const visit = async (
   const depKeys = new Map<Target.AnyTarget, string>()
   const dependencyRows: Array<{ readonly label: string; readonly key: string }> = []
   const depLabels = new Map<Target.AnyTarget, string>()
+  let graphResolveNode: PackageNode | undefined
   for (const dependency of metadata.dependencies) {
     const depMetadata = Target.metadata(dependency)
     const depRule = depMetadata.target
@@ -878,12 +931,14 @@ const visit = async (
       const result = await closureResultOf(context, planned.label, dependency)
       depKey = `import-closure:${closureResultDigest(result)}`
     }
-    // A bundler build keys on the RESOLVED graph digest of its resolve target
-    // when the cache already holds one under the resolve node's key; with no
-    // cached result it keys conservatively on the resolve target's own key.
+    // A bundler build keys on the RESOLVED graph digest of its resolve target.
+    // The digest is known only once the resolve node has settled, so the key
+    // material carries a sentinel here; execution substitutes the digest, and
+    // the plan-time preview substitutes it when the cache already holds one
+    // (conservatively the resolve node's own key otherwise).
     if (rule === "Bundler.Rspack.build" && depRule === "Bundler.Rspack.resolve" && planned.refusal === undefined) {
-      const digest = await graphDigestOf(context, planned)
-      if (digest !== undefined) depKey = `bundler-graph:${digest}`
+      depKey = graphKeySentinel
+      graphResolveNode = planned
     }
     depKeys.set(dependency, depKey)
     depLabels.set(dependency, planned.label)
@@ -907,15 +962,28 @@ const visit = async (
   // The services edge: every declared service must be a Serve target; the
   // consumer acquires it (readiness-gated) before dispatch and releases it
   // when done. Serve targets stay in the dependency rows (service identity is
-  // key material) and are also recorded as service labels for acquisition.
+  // key material) and are recorded as service labels for acquisition. They
+  // are never execution edges: a Serve target is acquire-only, so its own
+  // execution dependencies (the data its process needs) are hoisted onto the
+  // consumer instead, and a service's own services are acquired first.
   const services = attrTargets(attrs, "services")
   const serviceDeps: Array<string> = []
+  const hoistedDeps: Array<string> = []
   for (const service of services) {
     if (Target.metadata(service).target !== "Shell.Serve") {
       noteRefusal(`services entries must be Shell.Serve targets; ${depLabels.get(service) ?? "a member"} is not`)
       continue
     }
-    serviceDeps.push(depLabels.get(service) ?? labelOf(context, service))
+    const serviceLabel = depLabels.get(service) ?? labelOf(context, service)
+    const serviceNode = context.nodes.get(serviceLabel)
+    if (serviceNode !== undefined) {
+      if (serviceNode.refusal !== undefined) noteRefusal(`service ${serviceLabel}: ${serviceNode.refusal}`)
+      for (const nested of serviceNode.serviceDeps) {
+        if (!serviceDeps.includes(nested)) serviceDeps.push(nested)
+      }
+      hoistedDeps.push(...serviceNode.dependencies)
+    }
+    if (!serviceDeps.includes(serviceLabel)) serviceDeps.push(serviceLabel)
   }
 
   const resolveToken = async (entry: string): Promise<string> => {
@@ -1175,6 +1243,8 @@ const visit = async (
         noteRefusal(`the graph of a bundler build must be a Bundler.Rspack.resolve target: ${labelFor(buildAttrs.graph)}`)
         break
       }
+      const buildOutDirs = buildAttrs.outDirs.map((dir) => Input.resolvePath(packagePath, dir))
+      outDirs.push(...buildOutDirs)
       lane = {
         kind: "bundler-build",
         graphLabel: labelFor(buildAttrs.graph),
@@ -1183,7 +1253,7 @@ const visit = async (
           environment: buildAttrs.environment,
           mode: buildAttrs.mode,
           env: buildAttrs.env === undefined ? {} : { ...buildAttrs.env },
-          outDirs: buildAttrs.outDirs.map((dir) => Input.resolvePath(packagePath, dir))
+          outDirs: buildOutDirs
         }
       }
       break
@@ -1289,13 +1359,22 @@ const visit = async (
   } else if (rule === "Suite") {
     executionDeps = [...members]
   } else {
-    executionDeps = [...new Set(dependencyRows.map((row) => row.label))]
+    const serviceSet = new Set(serviceDeps)
+    executionDeps = [
+      ...new Set([
+        ...dependencyRows.map((row) => row.label).filter((depLabel) => !serviceSet.has(depLabel)),
+        ...hoistedDeps
+      ])
+    ]
   }
 
   const cacheable = refusal === undefined && (
     (rule === "Shell.Test" && mode === "execute") ||
     rule === "Shell.Build" ||
-    (rule === "Generate" && mode === "check")
+    (rule === "Generate" && mode === "check") ||
+    rule === "Test" ||
+    rule === "Bundler.Rspack.resolve" ||
+    rule === "Bundler.Rspack.build"
   )
 
   const keyMaterial: Planner.KeyMaterial = {
@@ -1326,12 +1405,25 @@ const visit = async (
     capabilities: capabilitiesFor(rule, mode, sandbox)
   }
 
+  // A bundler build's preview key substitutes the cached graph digest when
+  // the store holds one; the template keeps the sentinel for execution.
+  let keyTemplate: Planner.KeyMaterial | undefined
+  let previewMaterial = keyMaterial
+  if (graphResolveNode !== undefined) {
+    keyTemplate = keyMaterial
+    const digest = await graphDigestOf(context, graphResolveNode)
+    previewMaterial = keyMaterialWithGraph(
+      keyTemplate,
+      digest === undefined ? graphResolveNode.keyPreview : `bundler-graph:${digest}`
+    )
+  }
+
   // Key-material forensics: SMTHRS_DEBUG_KEYS=<file> appends every node's
   // injective encoding, so two runs' keys can be diffed byte for byte.
   if (process.env["SMTHRS_DEBUG_KEYS"] !== undefined) {
     NodeFs.appendFileSync(
       process.env["SMTHRS_DEBUG_KEYS"],
-      `=== ${label}\n${Planner.encodeKeyMaterial(keyMaterial)}\n`
+      `=== ${label}\n${Planner.encodeKeyMaterial(previewMaterial)}\n`
     )
   }
   const node: PackageNode = {
@@ -1345,14 +1437,15 @@ const visit = async (
     cacheable,
     cacheLookup: "not-wired",
     wouldRun: true,
-    keyMaterial,
-    keyPreview: Planner.keyOf(keyMaterial),
+    keyMaterial: previewMaterial,
+    keyPreview: Planner.keyOf(previewMaterial),
     rule,
     mode,
     packagePath,
     declaration: target,
     serviceDeps,
     lane,
+    keyTemplate,
     refusal,
     sandbox,
     secrets,
@@ -1401,6 +1494,11 @@ export interface PackagePlan {
   readonly roots: ReadonlyArray<string>
   readonly workList: ReadonlyArray<PackageNode>
   readonly nodes: ReadonlyMap<string, PackageNode>
+  /**
+   * ImportClosure label → the closure computed at plan time to key its
+   * consumers. Execution reports the same result rather than resolving twice.
+   */
+  readonly closures: ReadonlyMap<string, Compose.ClosureResult>
 }
 
 /**
@@ -1491,7 +1589,7 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     for (const gate of node.gateDeps) queue.push(gate)
   }
   const workList = [...workLabels].map((label) => context.nodes.get(label)!)
-  return { roots, workList, nodes: context.nodes }
+  return { roots, workList, nodes: context.nodes, closures: context.closureResults }
 }
 
 /** Renders a duration for status lines. */
@@ -1500,11 +1598,19 @@ const formatDuration = (durationMs: number): string =>
 
 const sandboxProfile = "(version 1)(allow default)(deny network*)"
 
+/**
+ * The profile of a consumer that declared `services`: the network stays
+ * denied except outbound loopback, which is how the consumer reaches the
+ * service the executor started for it.
+ */
+const sandboxProfileWithLoopback = `${sandboxProfile}(allow network-outbound (remote ip "localhost:*"))`
+
 const wrapSandbox = (
   argv: ReadonlyArray<string>,
   sandbox: PackageNode["sandbox"],
   label: string,
-  log: (line: string) => void
+  log: (line: string) => void,
+  loopback = false
 ): ReadonlyArray<string> => {
   if (sandbox === "none") return argv
   if (typeof sandbox === "object" && sandbox !== null && sandbox.network === true) return argv
@@ -1512,8 +1618,47 @@ const wrapSandbox = (
     log(`${label}  sandbox: unenforced on this platform`)
     return argv
   }
-  return ["/usr/bin/sandbox-exec", "-p", sandboxProfile, ...argv]
+  return ["/usr/bin/sandbox-exec", "-p", loopback ? sandboxProfileWithLoopback : sandboxProfile, ...argv]
 }
+
+/** Joins the invocation's abort signal with a per-consumer one, when both exist. */
+const joinSignals = (...signals: ReadonlyArray<AbortSignal | undefined>): AbortSignal | undefined => {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined)
+  if (present.length === 0) return undefined
+  if (present.length === 1) return present[0]
+  return AbortSignal.any(present)
+}
+
+const isServiceError = (value: unknown): value is ServiceSupervisor.ServiceError =>
+  typeof value === "object" && value !== null &&
+  (value as { readonly _tag?: unknown })._tag === "smithers-build/ServiceError"
+
+const serviceErrorText = (error: ServiceSupervisor.ServiceError): string => {
+  const tail = error.outputTail.trim()
+  return `service ${error.key} ${error.reason}: ${error.message}${
+    tail === "" ? "" : `\n--- ${error.key} output tail ---\n${tail}`
+  }`
+}
+
+const isFilesTestError = (value: unknown): value is Compose.FilesTestError =>
+  typeof value === "object" && value !== null &&
+  (value as { readonly _tag?: unknown })._tag === "smithers-build/FilesTestError"
+
+/** How many rows a file-set verdict names before summarizing the rest. */
+const sampleLimit = 20
+
+const sampleRows = (title: string, rows: ReadonlyArray<string>): string =>
+  rows.length === 0
+    ? ""
+    : `\n  ${title}: ${rows.slice(0, sampleLimit).join(", ")}${
+      rows.length > sampleLimit ? ` (+${rows.length - sampleLimit} more)` : ""
+    }`
+
+const filesTestErrorText = (error: Compose.FilesTestError): string =>
+  error.message +
+  sampleRows("leftover", error.leftover) +
+  sampleRows("unresolved", error.unresolved.map((issue) => `${issue.file} -> ${issue.specifier}`)) +
+  sampleRows("dynamic", error.dynamic.map((issue) => `${issue.file} -> ${issue.specifier}`))
 
 const execErrorText = (error: Exec.ExecError): string => {
   const stderr = error.stderr.trim()
@@ -1556,14 +1701,40 @@ export const execute = async (
     log(entry.error === undefined ? line : `${line}  ${entry.error}`)
   }
 
-  const spawnNode = async (node: PackageNode, workspaceRoot: string): Promise<ExecOutcome> => {
-    if (node.argv === undefined) return { ok: false, error: `${node.rule} planned no executable` }
+  /** The supervisor of this invocation's services; set once the scheduler's scope opens. */
+  const supervisorRef: { current: ServiceSupervisor.ServiceSupervisor | undefined } = { current: undefined }
+  const supervisorOf = (): ServiceSupervisor.ServiceSupervisor => {
+    if (supervisorRef.current === undefined) throw new Error("the service supervisor is not open")
+    return supervisorRef.current
+  }
+  /** Bundler resolve label → the graph settled (ran or hit) in this invocation. */
+  const resolveResults = new Map<string, BundlerTarget.ResolveResult>()
+  /** Label → the key a node actually executed and cached under, when it differs from the preview. */
+  const effectiveKeys = new Map<string, string>()
+  const keyFor = (node: PackageNode): string => effectiveKeys.get(node.label) ?? node.keyPreview
+  const resolverOptions: Resolver.LiveOptions = { workspaceRoot: root, cacheDirectory, cache: store }
+  const runnerOptions: RspackRunner.RunnerOptions = {
+    workspaceRoot: root,
+    scratchDirectory: bundlerScratchDirectory(root, cacheDirectory)
+  }
+
+  /**
+   * Resolves the argv and environment one node spawns with: secrets from the
+   * host environment, the generated bun program for `bun:` templates. Shared
+   * by tool runs and by service acquisition, so a Serve target spawns exactly
+   * the process its declaration plans.
+   */
+  const resolveSpawn = async (
+    node: PackageNode
+  ): Promise<
+    { readonly argv: [string, ...Array<string>]; readonly env: Record<string, string> } | { readonly error: string }
+  > => {
+    if (node.argv === undefined) return { error: `${node.rule} planned no executable` }
     const secretEnv: Record<string, string> = {}
     for (const name of node.secrets) {
       const value = process.env[name]
       if (value === undefined) {
         return {
-          ok: false,
           error: `missing secret: environment variable ${name} is not set (declared as S.Secret(${
             JSON.stringify(name)
           }))`
@@ -1585,18 +1756,28 @@ export const execute = async (
       await Fs.writeFile(program, lines.join("\n"), "utf8")
       argv = argv.map((entry) => entry === Shell.bunProgramToken ? program : entry)
     }
-    const wrapped = wrapSandbox(argv, node.sandbox, node.label, log)
+    return { argv: argv as [string, ...Array<string>], env: { ...node.env, ...secretEnv } }
+  }
+
+  const spawnNode = async (
+    node: PackageNode,
+    workspaceRoot: string,
+    signal: AbortSignal | undefined = options.signal
+  ): Promise<ExecOutcome> => {
+    const resolved = await resolveSpawn(node)
+    if ("error" in resolved) return { ok: false, error: resolved.error }
+    const wrapped = wrapSandbox(resolved.argv, node.sandbox, node.label, log, node.serviceDeps.length > 0)
     const payload: Exec.Payload = {
       cwd: node.cwd,
       argv: wrapped as [string, ...Array<string>],
-      env: { ...node.env, ...secretEnv },
+      env: resolved.env,
       secrets: [],
       expectedExitCodes: [0],
       timeoutMs: Shell.packageExecTimeoutMs
     }
     const exit = await Effect.runPromiseExit(
       Exec.run({ workspaceRoot, cacheDirectory }, payload),
-      { signal: options.signal }
+      { signal }
     )
     if (Exit.isSuccess(exit)) return { ok: true, result: exit.value }
     // Exec.run fails only with ExecError; render whatever the cause carries.
@@ -1645,19 +1826,22 @@ export const execute = async (
     return true
   }
 
-  const cacheGet = async (node: PackageNode): Promise<{ readonly output: unknown } | undefined> => {
+  const cacheGet = async (
+    node: PackageNode,
+    key: string = node.keyPreview
+  ): Promise<{ readonly output: unknown } | undefined> => {
     if (!readCache || !node.cacheable) return undefined
-    const cached = await store.get(node.keyPreview).catch(() => null)
+    const cached = await store.get(key).catch(() => null)
     if (cached === null || !cached.exitOk || cached.target !== node.rule || cached.label !== node.label) {
       return undefined
     }
     return { output: cached.output }
   }
 
-  const cachePut = async (node: PackageNode, output: unknown): Promise<void> => {
+  const cachePut = async (node: PackageNode, output: unknown, key: string = node.keyPreview): Promise<void> => {
     if (!node.cacheable) return
-    await store.put(node.keyPreview, {
-      key: node.keyPreview,
+    await store.put(key, {
+      key,
       target: node.rule,
       label: node.label,
       exitOk: true,
@@ -1668,11 +1852,144 @@ export const execute = async (
     })
   }
 
+  /**
+   * Restores a build's captured outDirs from a cache entry: the manifests
+   * must bind to the declared outputs and every blob must verify before any
+   * tree is materialized. Returns false on any doubt, which is a miss.
+   */
+  const restoreBuild = async (node: PackageNode, output: unknown): Promise<boolean> => {
+    const manifests = decodeBuildOutput(output)
+    if (manifests === undefined || !manifestsBindToDeclared(manifests, node.outDirs)) return false
+    for (const manifest of manifests) {
+      const problem = await PackageTree.verifyManifestBlobs(root, cacheDirectory, manifest)
+      if (problem !== undefined) {
+        log(`${node.label}  cache miss: ${problem}`)
+        return false
+      }
+    }
+    for (const manifest of manifests) {
+      await PackageTree.materializeManifest(root, cacheDirectory, manifest)
+    }
+    return true
+  }
+
+  const captureBuild = async (node: PackageNode, key: string): Promise<void> => {
+    const manifests: Array<PackageTree.OutDirManifest> = []
+    for (const outDir of node.outDirs) {
+      manifests.push(await PackageTree.captureOutDir(root, cacheDirectory, outDir))
+    }
+    await cachePut(node, { kind: "build", manifests }, key)
+  }
+
+  /** Resolves one Serve node to the spec the supervisor spawns and probes. */
+  const serviceSpecOf = async (
+    label: string
+  ): Promise<ServiceSupervisor.ServiceSpec | { readonly error: string }> => {
+    const serveNode = planned.nodes.get(label)
+    if (serveNode === undefined) return { error: `service ${label} was not planned` }
+    if (serveNode.refusal !== undefined) return { error: `service ${label}: ${serveNode.refusal}` }
+    if (serveNode.lane?.kind !== "serve") return { error: `service ${label} is not a Shell.Serve target` }
+    const resolved = await resolveSpawn(serveNode)
+    if ("error" in resolved) return { error: `service ${label}: ${resolved.error}` }
+    if (serveNode.sandbox !== "none") {
+      // A service exists to be reached over the network, so it spawns without
+      // the tool sandbox; said once per acquisition so the log never implies
+      // confinement the supervisor does not apply.
+      log(`${label}  sandbox: services spawn unconfined`)
+    }
+    return {
+      key: label,
+      cwd: Exec.resolveWorkspacePath(root, serveNode.cwd),
+      argv: resolved.argv,
+      env: resolved.env,
+      readiness: serveNode.lane.readiness,
+      health: serveNode.lane.health,
+      stop: serveNode.lane.stop
+    }
+  }
+
+  /** The outcome one node settles with; `runOne` reports it exactly once. */
+  type Outcome =
+    | { readonly status: "hit" | "ran"; readonly error?: undefined }
+    | { readonly status: "failed" | "skipped"; readonly error: string }
+  const fail = (error: string): Outcome => ({ status: "failed", error })
+  const green = (status: "hit" | "ran"): Outcome => ({ status })
+
+  const outcomeOfExit = (exit: Exit.Exit<Outcome, unknown>, what: string): Outcome => {
+    if (Exit.isSuccess(exit)) return exit.value
+    if (Cause.hasInterruptsOnly(exit.cause)) return fail(`${what} interrupted`)
+    const value: unknown = Cause.squash(exit.cause)
+    if (typeof value === "string") return fail(value)
+    if (isServiceError(value)) return fail(serviceErrorText(value))
+    return fail(Diagnostic.message(value, `${what} failed`))
+  }
+
+  /**
+   * Runs a consumer under its declared services: every service is acquired
+   * (readiness-gated) inside the consumer's scope, the consumer runs raced
+   * against their health, and the scope closes in every outcome so the last
+   * consumer's release applies each service's stop contract.
+   */
+  const underServices = (
+    node: PackageNode,
+    body: (signal: AbortSignal | undefined) => Promise<Outcome>
+  ): Promise<Outcome> => {
+    const program = Effect.scoped(Effect.gen(function*() {
+      const supervisor = supervisorOf()
+      const handles: Array<ServiceSupervisor.ServiceHandle> = []
+      for (const serviceLabel of node.serviceDeps) {
+        const spec = yield* Effect.promise(() => serviceSpecOf(serviceLabel))
+        if ("error" in spec) return yield* Effect.fail(spec.error)
+        log(`${node.label}  service ${serviceLabel}: starting`)
+        const handle = yield* supervisor.acquire(spec)
+        log(`${node.label}  service ${serviceLabel}: ready (pid ${handle.pid})`)
+        handles.push(handle)
+      }
+      const consumer = Effect.promise((signal) => body(joinSignals(options.signal, signal)))
+      return yield* handles.reduce<Effect.Effect<Outcome, ServiceSupervisor.ServiceError>>(
+        (effect, handle) => handle.whileHealthy(effect),
+        consumer
+      )
+    }))
+    return Effect.runPromiseExit(program, { signal: options.signal })
+      .then((exit) => outcomeOfExit(exit, `${node.label} under services`))
+  }
+
+  /** Reduces one `S.Test` operand to its workspace-relative path set. */
+  const testOperandPaths = async (operand: TestOperandPlan, side: "left" | "right"): Promise<ReadonlyArray<string>> => {
+    switch (operand.kind) {
+      case "sources":
+        return Resolver.expandAnchoredSources({
+          workspaceRoot: root,
+          cacheDirectory,
+          sources: operand.sources,
+          requireFiles: false
+        })
+      case "closure":
+        return Resolver.operandPaths(resolverOptions, { _tag: "Closure", entries: operand.entries }, side)
+      case "bundler-files": {
+        const graph = resolveResults.get(operand.label)
+        if (graph === undefined) {
+          throw new Error(`bundler graph ${operand.label} settled no result in this invocation`)
+        }
+        return graph.files.map((file) => file.path)
+      }
+    }
+  }
+
+  const closureSummary = (result: Compose.ClosureResult): string =>
+    `${result.files.length} files, ${result.packages.length} packages, ` +
+    `${result.unresolved.length} unresolved, ${result.dynamic.length} dynamic`
+
+  const graphSummary = (result: BundlerTarget.ResolveResult): string =>
+    `${result.moduleCount} modules, ${result.files.length} workspace files, ` +
+    `${result.packages.length} packages, graph ${result.graphDigest.slice(0, 16)}`
+
   const matchesWriteSet = (path: string, patterns: ReadonlyArray<string>): boolean =>
     patterns.some((pattern) => minimatch(path, pattern, { dot: true }) || path === pattern)
 
   /** Runs one mutating tool with mechanical write-set confinement. */
-  const runWriteEnforced = async (node: PackageNode): Promise<ExecOutcome> => {
+  const runWriteEnforced = async (node: PackageNode, signal: AbortSignal | undefined): Promise<ExecOutcome> => {
     const snapshot = await PackageTree.snapshotTree(root, cacheDirectory)
     // Git omits gitignored paths, so a cheap content-free guard records them
     // separately; an out-of-set write to a gitignored path would otherwise be
@@ -1686,7 +2003,7 @@ export const execute = async (
       (link) => log(`${node.label}  portal left unconfined (target too large): ${link}`)
     )
     try {
-      const spawned = await spawnNode(node, root)
+      const spawned = await spawnNode(node, root, signal)
       const changed = await PackageTree.changedSinceSnapshot(snapshot, cacheDirectory)
       const changedIgnored = await PackageTree.changedIgnored(ignored, cacheDirectory)
       // Any write through an escaping-symlink portal is out of the workspace and
@@ -1734,7 +2051,7 @@ export const execute = async (
   }
 
   /** Runs one check-mode tool against a scratch copy and reports drift. */
-  const runCheckViaScratch = async (node: PackageNode): Promise<ExecOutcome> => {
+  const runCheckViaScratch = async (node: PackageNode, signal: AbortSignal | undefined): Promise<ExecOutcome> => {
     // The scratch copy carries the real tree's escaping symlinks verbatim, so a
     // dry-run write through one lands in the same external target the real tree
     // points at. Measure those portals against the real tree: check mode must
@@ -1746,7 +2063,7 @@ export const execute = async (
     )
     const scratch = await PackageTree.scratchCopy(root, cacheDirectory)
     try {
-      const spawned = await spawnNode(node, scratch)
+      const spawned = await spawnNode(node, scratch, signal)
       const escapedPortals = await PackageTree.revertChangedPortals(portals)
       if (!spawned.ok) return spawned
       if (escapedPortals.length > 0) {
@@ -1813,55 +2130,12 @@ export const execute = async (
     return { ok: true }
   }
 
-  const runOne = async (label: string): Promise<void> => {
-    const node = byLabel.get(label)!
-    const started = performance.now()
-    const fail = (error: string): void => {
-      notGreen.add(label)
-      report({
-        label,
-        target: node.rule,
-        status: "failed",
-        durationMs: performance.now() - started,
-        key: node.keyPreview,
-        error
-      })
-    }
-    const green = (status: "hit" | "ran"): void => {
-      report({
-        label,
-        target: node.rule,
-        status,
-        durationMs: performance.now() - started,
-        key: node.keyPreview
-      })
-    }
-    // A red gate is a refusal with the gate report attached; a red data or
-    // plain dependency skips the consumer. A suite aggregates its members
-    // instead of skipping.
-    if (node.rule !== "Suite") {
-      const redGate = node.gateDeps.find((gate) => notGreen.has(gate))
-      if (redGate !== undefined) {
-        const gateReport = node.gateDeps
-          .map((gate) => `${gate}=${reports.get(gate)?.status ?? "unscheduled"}`)
-          .join(", ")
-        return fail(`refused: gate ${redGate} is not green (gates: ${gateReport})`)
-      }
-      const blocked = node.dependencies.find((dependency) => notGreen.has(dependency))
-      if (blocked !== undefined) {
-        notGreen.add(label)
-        report({
-          label,
-          target: node.rule,
-          status: "skipped",
-          durationMs: 0,
-          key: node.keyPreview,
-          error: `dependency ${blocked} did not succeed`
-        })
-        return
-      }
-    }
-    if (node.refusal !== undefined) return fail(node.refusal)
+  /**
+   * Executes one node's rule body and settles its outcome. `signal` is the
+   * abort signal the node's processes honor: the invocation's own, joined
+   * with the service race for a consumer running under services.
+   */
+  const dispatch = async (node: PackageNode, signal: AbortSignal | undefined): Promise<Outcome> => {
     try {
       switch (node.rule) {
         case "Filegroup":
@@ -1888,7 +2162,7 @@ export const execute = async (
           if (node.materializeOf === undefined) return fail("materialize names no target")
           const producer = planned.nodes.get(node.materializeOf)
           if (producer === undefined) return fail(`materialize target ${node.materializeOf} was not planned`)
-          const cached = await store.get(producer.keyPreview).catch(() => null)
+          const cached = await store.get(keyFor(producer)).catch(() => null)
           const manifests = cached !== null && cached.exitOk ? decodeBuildOutput(cached.output) : undefined
           if (manifests !== undefined) {
             // Bind the untrusted manifests to the producer's declared outputs
@@ -1938,51 +2212,139 @@ export const execute = async (
         }
         case "Shell.Build": {
           const cached = await cacheGet(node)
-          if (cached !== undefined) {
-            const manifests = decodeBuildOutput(cached.output)
-            if (manifests !== undefined && manifestsBindToDeclared(manifests, node.outDirs)) {
-              let usable = true
-              for (const manifest of manifests) {
-                const problem = await PackageTree.verifyManifestBlobs(root, cacheDirectory, manifest)
-                if (problem !== undefined) {
-                  log(`${node.label}  cache miss: ${problem}`)
-                  usable = false
-                  break
-                }
-              }
-              if (usable) {
-                for (const manifest of manifests) {
-                  await PackageTree.materializeManifest(root, cacheDirectory, manifest)
-                }
-                return green("hit")
-              }
-            }
-          }
-          const spawned = await spawnNode(node, root)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          const spawned = await spawnNode(node, root, signal)
           if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
-          const manifests: Array<PackageTree.OutDirManifest> = []
-          for (const outDir of node.outDirs) {
-            manifests.push(await PackageTree.captureOutDir(root, cacheDirectory, outDir))
-          }
-          await cachePut(node, { kind: "build", manifests })
+          await captureBuild(node, node.keyPreview)
           return green("ran")
         }
         case "Shell.Test": {
           const cached = await cacheGet(node)
           if (cached !== undefined) return green("hit")
-          const spawned = await spawnNode(node, root)
+          const spawned = await spawnNode(node, root, signal)
           if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
           await cachePut(node, { kind: "shell-test" })
           return green("ran")
         }
         case "Shell.Run": {
-          const spawned = await spawnNode(node, root)
+          const spawned = await spawnNode(node, root, signal)
           if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
           return green("ran")
         }
+        case "Shell.Serve": {
+          // Direct invocation: start, await readiness, hold the foreground
+          // until the invocation is interrupted (or the service dies), then
+          // let the scope's release apply the declared stop contract.
+          const program = Effect.scoped(Effect.gen(function*() {
+            const spec = yield* Effect.promise(() => serviceSpecOf(node.label))
+            if ("error" in spec) return yield* Effect.fail(spec.error)
+            const handle = yield* supervisorOf().acquire(spec)
+            log(`${node.label}  ready (pid ${handle.pid}); serving until interrupted`)
+            yield* handle.whileHealthy(Effect.never)
+            return green("ran")
+          }))
+          const exit = await Effect.runPromiseExit(program, { signal })
+          if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+            log(`${node.label}  stopped`)
+            return green("ran")
+          }
+          return outcomeOfExit(exit, "serve")
+        }
         case "Shell.Diff": {
-          const outcome = node.mode === "write" ? await runWriteEnforced(node) : await runCheckViaScratch(node)
+          const outcome = node.mode === "write"
+            ? await runWriteEnforced(node, signal)
+            : await runCheckViaScratch(node, signal)
           if (!outcome.ok) return fail(outcome.error ?? "diff run failed")
+          return green("ran")
+        }
+        case "ImportClosure": {
+          if (node.lane?.kind !== "closure") return fail("import closure planned no entries")
+          const result = planned.closures.get(node.label) ??
+            await Resolver.closureOfEntries(resolverOptions, node.lane.entries)
+          log(`${node.label}  closure: ${closureSummary(result)}`)
+          return green("ran")
+        }
+        case "Test": {
+          if (node.lane?.kind !== "files-test") return fail("file-set test planned no operands")
+          const cached = await cacheGet(node)
+          if (cached !== undefined) return green("hit")
+          let left: ReadonlyArray<string>
+          let right: Set<string>
+          try {
+            left = await testOperandPaths(node.lane.left, "left")
+            right = new Set(await testOperandPaths(node.lane.right, "right"))
+          } catch (cause) {
+            return fail(isFilesTestError(cause) ? filesTestErrorText(cause) : Diagnostic.message(cause))
+          }
+          const leftover = left.filter((path) => !right.has(path))
+          if (leftover.length > 0) {
+            return fail(
+              `expected the file-set difference to be empty, but ${leftover.length} of ${left.length} file(s) ` +
+                `in the left set are missing from the right set${sampleRows("leftover", leftover)}`
+            )
+          }
+          log(`${node.label}  difference empty: ${left.length} left, ${right.size} right`)
+          await cachePut(node, { kind: "files-test" })
+          return green("ran")
+        }
+        case "Bundler.Rspack.resolve": {
+          if (node.lane?.kind !== "bundler-resolve") return fail("bundler resolve planned no payload")
+          const cached = await cacheGet(node)
+          if (cached !== undefined) {
+            const result = decodeStoredResolve(cached.output)
+            if (result !== undefined) {
+              resolveResults.set(node.label, result)
+              log(`${node.label}  graph: ${graphSummary(result)}`)
+              return green("hit")
+            }
+          }
+          const exit = await Effect.runPromiseExit(
+            RspackRunner.resolveGraph(runnerOptions, node.lane.payload),
+            { signal }
+          )
+          if (Exit.isFailure(exit)) {
+            const value: unknown = Cause.squash(exit.cause)
+            return fail(
+              typeof value === "object" && value !== null &&
+                (value as { readonly _tag?: unknown })._tag === "smithers-build/ExecError"
+                ? execErrorText(value as Exec.ExecError)
+                : Diagnostic.message(value, "bundler resolve failed")
+            )
+          }
+          const stored: StoredResolve = { kind: "bundler-resolve", result: exit.value }
+          resolveResults.set(node.label, exit.value)
+          await cachePut(node, stored)
+          log(`${node.label}  graph: ${graphSummary(exit.value)}`)
+          return green("ran")
+        }
+        case "Bundler.Rspack.build": {
+          if (node.lane?.kind !== "bundler-build" || node.keyTemplate === undefined) {
+            return fail("bundler build planned no payload")
+          }
+          const graph = resolveResults.get(node.lane.graphLabel)
+          if (graph === undefined) {
+            return fail(`bundler graph ${node.lane.graphLabel} settled no result in this invocation`)
+          }
+          // The effective key carries the resolved graph digest: an edit that
+          // leaves the resolved file set unchanged replays the build.
+          const key = Planner.keyOf(keyMaterialWithGraph(node.keyTemplate, `bundler-graph:${graph.graphDigest}`))
+          effectiveKeys.set(node.label, key)
+          const cached = await cacheGet(node, key)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          const exit = await Effect.runPromiseExit(
+            RspackRunner.runBuild(runnerOptions, node.lane.payload),
+            { signal }
+          )
+          if (Exit.isFailure(exit)) {
+            const value: unknown = Cause.squash(exit.cause)
+            return fail(
+              typeof value === "object" && value !== null &&
+                (value as { readonly _tag?: unknown })._tag === "smithers-build/ExecError"
+                ? execErrorText(value as Exec.ExecError)
+                : Diagnostic.message(value, "bundler build failed")
+            )
+          }
+          await captureBuild(node, key)
           return green("ran")
         }
         case "Generate": {
@@ -1995,12 +2357,12 @@ export const execute = async (
           if (node.mode === "check") {
             const cached = await cacheGet(node)
             if (cached !== undefined) return green("hit")
-            const outcome = await runCheckViaScratch(node)
+            const outcome = await runCheckViaScratch(node, signal)
             if (!outcome.ok) return fail(outcome.error ?? "generate check failed")
             await cachePut(node, { kind: "generate-check" })
             return green("ran")
           }
-          const outcome = await runWriteEnforced(node)
+          const outcome = await runWriteEnforced(node, signal)
           if (!outcome.ok) return fail(outcome.error ?? "generate failed")
           return green("ran")
         }
@@ -2012,11 +2374,57 @@ export const execute = async (
     }
   }
 
-  try {
-    await Executor.schedule(planned.workList, jobs, runOne, options.signal)
-  } finally {
-    await store.close().catch(() => undefined)
+  /** Settles one node: gate and dependency checks, refusal, then dispatch. */
+  const settle = async (node: PackageNode): Promise<Outcome> => {
+    // A red gate is a refusal with the gate report attached; a red data or
+    // plain dependency skips the consumer. A suite aggregates its members
+    // instead of skipping.
+    if (node.rule !== "Suite") {
+      const redGate = node.gateDeps.find((gate) => notGreen.has(gate))
+      if (redGate !== undefined) {
+        const gateReport = node.gateDeps
+          .map((gate) => `${gate}=${reports.get(gate)?.status ?? "unscheduled"}`)
+          .join(", ")
+        return fail(`refused: gate ${redGate} is not green (gates: ${gateReport})`)
+      }
+      const blocked = node.dependencies.find((dependency) => notGreen.has(dependency))
+      if (blocked !== undefined) return { status: "skipped", error: `dependency ${blocked} did not succeed` }
+    }
+    if (node.refusal !== undefined) return fail(node.refusal)
+    if (node.serviceDeps.length > 0) return underServices(node, (signal) => dispatch(node, signal))
+    return dispatch(node, options.signal)
   }
+
+  const runOne = async (label: string): Promise<void> => {
+    const node = byLabel.get(label)!
+    const started = performance.now()
+    const outcome = await settle(node)
+    if (outcome.status === "failed" || outcome.status === "skipped") notGreen.add(label)
+    report({
+      label,
+      target: node.rule,
+      status: outcome.status,
+      durationMs: outcome.status === "skipped" ? 0 : performance.now() - started,
+      key: keyFor(node),
+      ...(outcome.error === undefined ? {} : { error: outcome.error })
+    })
+  }
+
+  // The scheduler runs inside one scope that owns the service supervisor:
+  // every service a consumer acquired is released through its stop contract
+  // by the time the scope closes, whether the run settled or was interrupted.
+  const exit = await Effect.runPromiseExit(
+    Effect.scoped(Effect.gen(function*() {
+      supervisorRef.current = yield* ServiceSupervisor.make
+      yield* Effect.tryPromise({
+        try: () => Executor.schedule(planned.workList, jobs, runOne, options.signal),
+        catch: (cause) => cause
+      })
+    }))
+  )
+  supervisorRef.current = undefined
+  await store.close().catch(() => undefined)
+  if (Exit.isFailure(exit)) throw Cause.squash(exit.cause)
 
   const results = planned.workList
     .map((node) => reports.get(node.label))
