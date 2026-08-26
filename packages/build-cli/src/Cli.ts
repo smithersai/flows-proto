@@ -10,6 +10,7 @@ import * as NodePath from "node:path"
 import * as Diagnostic from "./Diagnostic.ts"
 import { runInstall } from "./engine.ts"
 import * as Executor from "./Executor.ts"
+import * as GitHooks from "./GitHooks.ts"
 import * as GraphOutput from "./GraphOutput.ts"
 import * as PackageDiscovery from "./PackageDiscovery.ts"
 import * as PackageExec from "./PackageExec.ts"
@@ -38,11 +39,20 @@ const executionOptions = workspaceOption.extend({
   cache: z.boolean().default(true).describe("Consult the result cache before running; --no-cache bypasses reads")
 })
 
+/** The flags outward and agent targets take: the commit message override and payload inputs. */
+const invocationOptions = {
+  message: z.string().optional().describe("Commit message for a Git.Commit target; wins over the declared message"),
+  input: z.array(z.string()).optional().describe("Payload input for agent targets as name=value; repeatable")
+}
+
 const runOptions = executionOptions.extend({
-  name: z.string().optional().describe("Package name supplied to scaffold targets")
+  name: z.string().optional().describe("Package name supplied to scaffold targets"),
+  ...invocationOptions
 })
 
 const executionAlias = { workspace: "w", jobs: "j" }
+
+const invocationAlias = { message: "m", input: "i" }
 
 const patternArgument = z.object({
   pattern: z.string().describe("Bazel label or recursive pattern")
@@ -72,6 +82,12 @@ export interface RuntimeConfig {
   readonly cacheUrl?: string | undefined
   readonly cacheToken?: string | undefined
   readonly signal?: AbortSignal | undefined
+  /**
+   * The environment package-mode execution reads for agent-fake selection
+   * (`SMTHRS_AGENT_FAKE`), backend PATH lookups, and outward preconditions.
+   * Defaults to `process.env`; tests inject a hermetic record.
+   */
+  readonly environment?: Readonly<Record<string, string | undefined>> | undefined
 }
 
 interface PreparedWorkspace {
@@ -242,10 +258,26 @@ const refusePackageMode = async (flags: WorkspaceFlags, verb: string): Promise<v
   }
 }
 
-/** The mode flags the package-mode execution surface accepts. */
+/** The mode and invocation flags the package-mode execution surface accepts. */
 interface ModeFlags {
   readonly write?: boolean | undefined
   readonly fix?: boolean | undefined
+  readonly message?: string | undefined
+  readonly input?: ReadonlyArray<string> | undefined
+}
+
+/** Parses repeated `--input name=value` flags into the agent payload record. */
+const parseInputs = (entries: ReadonlyArray<string> | undefined): Readonly<Record<string, string>> | undefined => {
+  if (entries === undefined || entries.length === 0) return undefined
+  const values: Record<string, string> = {}
+  for (const entry of entries) {
+    const separator = entry.indexOf("=")
+    if (separator <= 0) throw new Error(`--input expects name=value, received ${JSON.stringify(entry)}`)
+    const name = entry.slice(0, separator)
+    if (name in values) throw new Error(`--input names ${JSON.stringify(name)} twice`)
+    values[name] = entry.slice(separator + 1)
+  }
+  return values
 }
 
 /**
@@ -274,8 +306,37 @@ const runPackageVerb = async (
     plan: flags.plan,
     jobs: flags.jobs,
     readCache: flags.cache,
-    signal: config.signal
+    signal: config.signal,
+    message: flags.message,
+    inputs: parseInputs(flags.input),
+    environment: config.environment
   })
+}
+
+/**
+ * The `gitHooks` command: renders the WORKSPACE.ts hook bindings to
+ * `.git/hooks` scripts, byte-checks them by default, installs them under
+ * `--write`. Drift is a red exit, like every other generated file.
+ */
+const runGitHooks = async (
+  flags: WorkspaceFlags & { readonly write: boolean },
+  config: RuntimeConfig
+): Promise<
+  | { readonly mode: "check"; readonly clean: boolean; readonly entries: ReadonlyArray<GitHooks.CheckEntry> }
+  | { readonly mode: "install"; readonly installed: ReadonlyArray<string> }
+> => {
+  const index = await openPackageIndex(flags, config)
+  if (index === undefined) {
+    throw new Error("gitHooks renders PACKAGE.ts workspace bindings; this workspace has no WORKSPACE.ts")
+  }
+  const bindings = GitHooks.resolveHookLabels(index.workspace, index)
+  const rendered = GitHooks.render(bindings)
+  if (flags.write) {
+    const { wrote } = await GitHooks.install(index.root, rendered)
+    return { mode: "install", installed: wrote }
+  }
+  const report = await GitHooks.check(index.root, rendered)
+  return { mode: "check", clean: report.clean, entries: report.entries }
 }
 
 /** Plans one verb and executes it unless `--plan` asked for the inert print. */
@@ -452,7 +513,9 @@ export const makeCli = (config: RuntimeConfig = {}) =>
     .command("lint", {
       description: "Execute the lint targets selected by a pattern",
       args: patternArgument,
-      options: executionOptions,
+      options: executionOptions.extend({
+        fix: z.boolean().default(false).describe("Apply agent lint fixes inside the declared fixes write-set")
+      }),
       alias: executionAlias,
       async run(context) {
         let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
@@ -499,7 +562,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       description: "Execute run targets selected by a pattern",
       args: patternArgument,
       options: runOptions,
-      alias: { ...executionAlias, name: "n" },
+      alias: { ...executionAlias, ...invocationAlias, name: "n" },
       async run(context) {
         let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
         try {
@@ -522,10 +585,11 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       description: "Execute one package-mode label with its flavor-implied verb (the bare-label form)",
       args: patternArgument,
       options: executionOptions.extend({
-        write: z.boolean().default(false).describe("Apply Diff/Generate targets instead of checking drift"),
-        fix: z.boolean().default(false).describe("Apply fixes (agent lints later; routes to write mode for now)")
+        write: z.boolean().default(false).describe("Apply Diff/Generate/CiGen targets instead of checking drift"),
+        fix: z.boolean().default(false).describe("Apply agent lint fixes inside the declared fixes write-set"),
+        ...invocationOptions
       }),
-      alias: executionAlias,
+      alias: { ...executionAlias, ...invocationAlias },
       async run(context) {
         let outcome: Executor.Summary | PackageExec.PlanReport | undefined
         try {
@@ -541,6 +605,35 @@ export const makeCli = (config: RuntimeConfig = {}) =>
             code: "targets_failed",
             exitCode: 1,
             message: failureMessage(outcome),
+            retryable: false
+          })
+        }
+        return outcome
+      }
+    })
+    .command("gitHooks", {
+      description: "Check the WORKSPACE.ts gitHooks scripts against .git/hooks, or install them with --write",
+      options: workspaceOption.extend({
+        write: z.boolean().default(false).describe("Install the rendered hook scripts into .git/hooks")
+      }),
+      alias: { workspace: "w" },
+      async run(context) {
+        let outcome: Awaited<ReturnType<typeof runGitHooks>>
+        try {
+          outcome = await runGitHooks(context.options, config)
+        } catch (cause) {
+          return context.error({ code: "git_hooks_failed", exitCode: 1, message: Diagnostic.message(cause) })
+        }
+        if (outcome.mode === "check" && !outcome.clean) {
+          return context.error({
+            code: "git_hooks_drift",
+            exitCode: 1,
+            message: `git hooks drift (run with --write to install): ${
+              outcome.entries.filter((entry) => entry.status !== "clean").map((entry) =>
+                `${entry.file}=${entry.status}`
+              )
+                .join(", ")
+            }`,
             retryable: false
           })
         }

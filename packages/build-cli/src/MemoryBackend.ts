@@ -133,25 +133,43 @@ export const pathLocator = (environment: Readonly<Record<string, string | undefi
 })
 
 /**
+ * Options for {@link spawnCli}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface SpawnCliOptions {
+  /** Wall-clock cap on one backend invocation; the process is killed past it and the run fails. */
+  readonly timeoutMs?: number | undefined
+}
+
+/**
  * The default runner: spawns the resolved binary with no shell.
  *
  * @category constructors
  * @since 0.1.0
  */
-export const spawnCli = (): MemoryCli => ({
+export const spawnCli = (options: SpawnCliOptions = {}): MemoryCli => ({
   run: (binary, args, cwd) =>
     new Promise((resolve) => {
       NodeChildProcess.execFile(
         binary,
         [...args],
-        { cwd, maxBuffer: 8 * 1024 * 1024 },
+        { cwd, maxBuffer: 8 * 1024 * 1024, ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }) },
         (error, stdout, stderr) => {
           const exitCode = error === null
             ? 0
             : typeof (error as { code?: unknown }).code === "number"
             ? (error as { code: number }).code
             : 1
-          resolve({ exitCode, stdout, stderr })
+          const killed = error !== null && (error as { killed?: unknown }).killed === true
+          resolve({
+            exitCode,
+            stdout,
+            stderr: killed && options.timeoutMs !== undefined
+              ? `${stderr}\nsmithers memory timed out after ${options.timeoutMs}ms`.trim()
+              : stderr
+          })
         }
       )
     })
