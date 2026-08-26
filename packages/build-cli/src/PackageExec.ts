@@ -1443,7 +1443,15 @@ const visit = async (
   // also reached as a check-mode gate or dependency is planned once, in write
   // mode, and applies. See `PlanContext.rootModes`.
   const mode = context.rootModes.get(label) ?? options.mode
-  const gateDeps = attrTargets(attrs, "gates").map((gate) => depLabels.get(gate) ?? labelOf(context, gate))
+  const declaredGates = attrTargets(attrs, "gates").map((gate) => depLabels.get(gate) ?? labelOf(context, gate))
+  // An Agent.Diff or Agent.Pr runs its gates inside the candidate/gate loop,
+  // against each candidate, so they are not pre-act gates of the node: a gate
+  // that is red on the pre-candidate tree (the test the fix must make pass)
+  // is exactly what the loop exists to turn green. Their own execution
+  // dependencies (the data a gate needs materialized) hoist onto the agent
+  // node so the loop finds them settled.
+  const loopGated = rule === "Agent.Diff" || rule === "Agent.Pr"
+  const gateDeps = loopGated ? [] : declaredGates
 
   // Execution edges: what must settle green before this node runs.
   let executionDeps: Array<string>
@@ -1457,10 +1465,17 @@ const visit = async (
     executionDeps = [...members]
   } else {
     const serviceSet = new Set(serviceDeps)
+    const loopGateSet = new Set(loopGated ? declaredGates : [])
+    const loopGateNeeds = loopGated
+      ? declaredGates.flatMap((gateLabel) => context.nodes.get(gateLabel)?.dependencies ?? [])
+      : []
     executionDeps = [
       ...new Set([
-        ...dependencyRows.map((row) => row.label).filter((depLabel) => !serviceSet.has(depLabel)),
-        ...hoistedDeps
+        ...dependencyRows.map((row) => row.label).filter((depLabel) =>
+          !serviceSet.has(depLabel) && !loopGateSet.has(depLabel)
+        ),
+        ...hoistedDeps,
+        ...loopGateNeeds
       ])
     ]
   }
@@ -1684,7 +1699,9 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     const node = context.nodes.get(label)
     if (node === undefined) throw new Error(`planned execution edge names an unplanned node: ${label}`)
     for (const dependency of node.dependencies) queue.push(dependency)
-    for (const gate of node.gateDeps) queue.push(gate)
+    // A refused consumer never acts, so its gates are not scheduled: running
+    // them would be work in the name of a check nothing will consume.
+    if (node.refusal === undefined) { for (const gate of node.gateDeps) queue.push(gate) }
   }
   const workList = [...workLabels].map((label) => context.nodes.get(label)!)
   return { roots, workList, nodes: context.nodes, closures: context.closureResults }
@@ -2947,7 +2964,7 @@ export const execute = async (
             return green("ran")
           }
           log(
-            `${node.label}  ${payload.mode === "fix" ? "fixed" : "reviewed"} ${report.files.length} file(s)` +
+            `${node.label}  reviewed ${report.files.length} file(s)` +
               `${report.fixed.length === 0 ? "" : `; wrote ${report.fixed.join(", ")}`}` +
               `${counted.runs() === 0 ? " (cached verdict)" : ""}`
           )
