@@ -161,13 +161,11 @@ export const keyMaterialWithGraph = (template: Planner.KeyMaterial, key: string)
 }
 
 /**
- * One planned package-mode node. Structurally a {@link Planner.PlannedTarget}
- * so the existing scheduler accepts the work list unchanged.
+ * One reduced `S.Test` operand as the executor evaluates it.
  *
  * @category models
  * @since 0.1.0
  */
-/** One reduced `S.Test` operand as the executor evaluates it. */
 export type TestOperandPlan =
   | { readonly kind: "sources"; readonly sources: ReadonlyArray<Compose.AnchoredSource> }
   | { readonly kind: "closure"; readonly entries: ReadonlyArray<Compose.AnchoredSource> }
@@ -205,6 +203,13 @@ export type LaneData =
   | { readonly kind: "github-pr" }
   | { readonly kind: "memory-retain" }
 
+/**
+ * One planned package-mode node. Structurally a {@link Planner.PlannedTarget}
+ * so the existing scheduler accepts the work list unchanged.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface PackageNode extends Planner.PlannedTarget {
   readonly rule: string
   readonly mode: Mode
@@ -461,7 +466,13 @@ const planStore = async (context: PlanContext): Promise<CacheStore | undefined> 
 
 const sha256Hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex")
 
-/** The canonical digest of one closure result: files, packages, and issue rows. */
+/**
+ * The canonical digest of one closure result: files, packages, and issue
+ * rows. Consumers of an ImportClosure key on it.
+ *
+ * @category keys
+ * @since 0.1.0
+ */
 export const closureResultDigest = (result: Compose.ClosureResult): string =>
   sha256Hex(JSON.stringify({
     files: result.files,
@@ -1243,7 +1254,9 @@ const visit = async (
     case "Bundler.Rspack.build": {
       const buildAttrs = attrs as (typeof BundlerTarget.BuildAttrs)["Type"]
       if (Target.metadata(buildAttrs.graph).target !== "Bundler.Rspack.resolve") {
-        noteRefusal(`the graph of a bundler build must be a Bundler.Rspack.resolve target: ${labelFor(buildAttrs.graph)}`)
+        noteRefusal(
+          `the graph of a bundler build must be a Bundler.Rspack.resolve target: ${labelFor(buildAttrs.graph)}`
+        )
         break
       }
       const buildOutDirs = buildAttrs.outDirs.map((dir) => Input.resolvePath(packagePath, dir))
