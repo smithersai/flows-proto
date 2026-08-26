@@ -121,8 +121,11 @@ const refusalFor = (rule: string): string =>
  * keys on the graph it bundles rather than on the declared universe; the
  * plan-time preview substitutes the digest when the cache already holds it
  * and the resolve node's own key otherwise.
+ *
+ * @category keys
+ * @since 0.1.0
  */
-const graphKeySentinel = "{smthrs:bundler-graph-key}"
+export const graphKeySentinel = "{smthrs:bundler-graph-key}"
 
 const replaceGraphKey = (value: unknown, key: string): unknown => {
   if (value === graphKeySentinel) return key
