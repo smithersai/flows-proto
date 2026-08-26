@@ -2,6 +2,7 @@ node_modules/
 dist/
 /flows
 .smithers/
+!packages/build-cli/test/fixtures/force-spec/.smithers/
 .artifacts/
 *.log
 .DS_Store

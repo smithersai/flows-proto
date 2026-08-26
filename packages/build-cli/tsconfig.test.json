@@ -9,5 +9,5 @@
     "resolveJsonModule": true
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["test/fixtures/force-spec/**/*"]
+  "exclude": ["test/fixtures/force-spec/**/*", "test/fixtures/rsbuild-mini/**/*"]
 }

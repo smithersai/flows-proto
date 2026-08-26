@@ -128,7 +128,8 @@ export const CiGen = (attrs: (typeof CiGenAttrs)["~type.make.in"]): Target.AnyTa
 export const PrAttrs = Schema.Struct({
   gates: Attr.Gates,
   secrets: Schema.optional(Attr.Secrets),
-  sandbox: Schema.optional(Attr.Sandbox)
+  sandbox: Schema.optional(Attr.Sandbox),
+  approval: Schema.optional(Attr.Approval)
 })
 
 const prDefinition = Target.make("Github.Pr", {
@@ -145,3 +146,146 @@ const prDefinition = Target.make("Github.Pr", {
  * @since 0.1.0
  */
 export const Pr = (attrs: (typeof PrAttrs)["~type.make.in"]): Target.AnyTarget => prDefinition(attrs)
+
+/** Reads validated attrs back out of one target of the named rule. */
+const attrsOf = <A>(target: Target.AnyTarget, rule: string): A => {
+  const metadata = Target.metadata(target)
+  if (metadata.target !== rule) {
+    throw new TypeError(`expected a ${rule} target, received ${metadata.target}`)
+  }
+  return metadata.attrs as A
+}
+
+/**
+ * The validated attrs of one `Github.Setup` target.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const setupAttrsOf = (target: Target.AnyTarget): (typeof SetupAttrs)["Type"] => attrsOf(target, "Github.Setup")
+
+/**
+ * The validated attrs of one `Github.Workflow` target.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const workflowAttrsOf = (target: Target.AnyTarget): (typeof WorkflowAttrs)["Type"] =>
+  attrsOf(target, "Github.Workflow")
+
+/**
+ * The validated attrs of one `Github.CiGen` target.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const ciGenAttrsOf = (target: Target.AnyTarget): (typeof CiGenAttrs)["Type"] => attrsOf(target, "Github.CiGen")
+
+/**
+ * The validated attrs of one `Github.Pr` target.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const prAttrsOf = (target: Target.AnyTarget): (typeof PrAttrs)["Type"] => attrsOf(target, "Github.Pr")
+
+/**
+ * The secret name a `Github.Pr` invocation must declare and satisfy.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const prTokenSecret = "GITHUB_TOKEN"
+
+/**
+ * A `Github.Pr` invocation was refused before any outward action.
+ *
+ * `missing_token_secret` covers both a declaration that never names
+ * {@link prTokenSecret} and an environment that carries no value for it.
+ * `approval_unsatisfied` covers `approval: "required"` with no granted
+ * approval. Refusal happens before any provider call, so a refused
+ * invocation has no side effect to undo.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class PrRefused extends Error {
+  override readonly name = "PrRefused"
+  readonly code: "missing_token_secret" | "approval_unsatisfied"
+
+  constructor(code: "missing_token_secret" | "approval_unsatisfied", message: string) {
+    super(`${code}: ${message}`)
+    this.code = code
+  }
+}
+
+/**
+ * Checks whether a value is a {@link PrRefused} refusal.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
+export const isPrRefused = (value: unknown): value is PrRefused => value instanceof PrRefused
+
+/**
+ * The facts one `Github.Pr` invocation presents to the refusal gate.
+ *
+ * `environment` is the invoking process environment (values are read for
+ * presence only and never logged). `approvalGranted` reports whether a
+ * durable approval satisfied `approval: "required"`.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface PrInvocation {
+  readonly environment: Readonly<Record<string, string | undefined>>
+  readonly approvalGranted: boolean
+}
+
+/**
+ * Returns the refusal one `Github.Pr` invocation earns, or undefined when
+ * every precondition is satisfied.
+ *
+ * @category validation
+ * @since 0.1.0
+ */
+export const refusePr = (target: Target.AnyTarget, invocation: PrInvocation): PrRefused | undefined => {
+  const attrs = prAttrsOf(target)
+  const token = (attrs.secrets ?? []).find((secret) => secret.env === prTokenSecret)
+  if (token === undefined) {
+    return new PrRefused(
+      "missing_token_secret",
+      `Github.Pr declares no S.Secret(${JSON.stringify(prTokenSecret)}) in secrets`
+    )
+  }
+  const value = invocation.environment[token.env]
+  if (value === undefined || value === "") {
+    return new PrRefused(
+      "missing_token_secret",
+      `the declared ${token.env} secret has no value in the invoking environment`
+    )
+  }
+  if (attrs.approval === "required" && !invocation.approvalGranted) {
+    return new PrRefused(
+      "approval_unsatisfied",
+      "Github.Pr declares approval: \"required\" and no approval was granted"
+    )
+  }
+  return undefined
+}
+
+/**
+ * Runs the `Github.Pr` refusal gate and refuses everything past it.
+ *
+ * This lane ships the refusal paths only. An invocation that satisfies the
+ * gate does not silently succeed: opening the pull request is not
+ * implemented, and saying so loudly is the no-fake-green rule.
+ *
+ * @category execution
+ * @since 0.1.0
+ */
+export const openPr = (target: Target.AnyTarget, invocation: PrInvocation): never => {
+  const refusal = refusePr(target, invocation)
+  if (refusal !== undefined) throw refusal
+  throw new Error("NotImplemented: Github.Pr passed its refusal gate, and opening the pull request is not implemented")
+}

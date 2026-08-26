@@ -36,3 +36,20 @@ const commitDefinition = Target.make("Git.Commit", {
  * @since 0.1.0
  */
 export const Commit = (attrs: (typeof CommitAttrs)["~type.make.in"]): Target.AnyTarget => commitDefinition(attrs)
+
+/**
+ * The validated attrs of one `Git.Commit` target.
+ *
+ * `message` is either the fixed commit text or the {@link Reference.AgentRef}
+ * naming the workspace agent that writes it at execution time.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const commitAttrsOf = (target: Target.AnyTarget): (typeof CommitAttrs)["Type"] => {
+  const metadata = Target.metadata(target)
+  if (metadata.target !== "Git.Commit") {
+    throw new TypeError(`expected a Git.Commit target, received ${metadata.target}`)
+  }
+  return metadata.attrs as (typeof CommitAttrs)["Type"]
+}

@@ -14,24 +14,39 @@
  *
  * @since 0.1.0
  */
+import * as AgentTarget from "@smthrs/targets/AgentTarget"
+import * as BundlerTarget from "@smthrs/targets/BundlerTarget"
+import * as Compose from "@smthrs/targets/Compose"
 import * as Exec from "@smthrs/targets/Exec"
+import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as Input from "@smthrs/targets/Input"
 import * as Shell from "@smthrs/targets/Shell"
 import * as Target from "@smthrs/targets/Target"
 import * as Cause from "effect/Cause"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
+import * as Schema from "effect/Schema"
 import { minimatch } from "minimatch"
+import { createHash } from "node:crypto"
 import * as NodeFs from "node:fs"
 import * as Fs from "node:fs/promises"
 import * as NodePath from "node:path"
 import { performance } from "node:perf_hooks"
-import { openCache } from "./Cache.ts"
+import * as AgentFake from "./AgentFake.ts"
+import * as AgentSession from "./AgentSession.ts"
+import { type CacheStore, openCache } from "./Cache.ts"
 import * as Diagnostic from "./Diagnostic.ts"
 import * as Executor from "./Executor.ts"
+import * as GitCommit from "./GitCommit.ts"
+import * as GithubRender from "./GithubRender.ts"
+import * as MemoryBackend from "./MemoryBackend.ts"
 import type * as PackageIndexModule from "./PackageIndex.ts"
 import * as PackageTree from "./PackageTree.ts"
 import * as Planner from "./Planner.ts"
+import * as Resolver from "./Resolver.ts"
+import * as RspackRunner from "./RspackRunner.ts"
+import * as ServiceSupervisor from "./ServiceSupervisor.ts"
 import type * as Workspace from "./Workspace.ts"
 
 const posix = (value: string): string => value.split(NodePath.sep).join("/")
@@ -63,26 +78,41 @@ export type Mode = "execute" | "check" | "write"
  */
 export type PackageVerb = "build" | "test" | "lint" | "run" | "auto"
 
-/** The rules the W2 executor implements. */
+/** The rules the package executor implements (W2 core plus the W3 lanes). */
 const implementedRules: ReadonlySet<string> = new Set([
   "Shell.Build",
   "Shell.Test",
   "Shell.Run",
+  "Shell.Serve",
   "Shell.Diff",
   "Generate",
   "Materialize",
   "Clean",
   "Suite",
   "Alias",
-  "Filegroup"
+  "Filegroup",
+  "ImportClosure",
+  "Test",
+  "Bundler.Rspack.resolve",
+  "Bundler.Rspack.build",
+  "Agent.Lint",
+  "Agent.Diff",
+  "Agent.Pr",
+  "Git.Commit",
+  "Github.Setup",
+  "Github.Workflow",
+  "Github.CiGen",
+  "Github.Pr",
+  "Memory.Retain"
 ])
 
 /** Rules whose default mode is the non-mutating check. */
-const checkModeRules: ReadonlySet<string> = new Set(["Shell.Diff", "Generate"])
+const checkModeRules: ReadonlySet<string> = new Set(["Shell.Diff", "Generate", "Github.CiGen", "Agent.Lint"])
 
 const refusalFor = (rule: string): string =>
-  `NotImplemented: ${rule} execution is a later capability lane; ` +
-  "W2 implements Shell.Build, Shell.Test, Shell.Run, Shell.Diff, Generate, Materialize, Clean, Suite, and Alias"
+  `NotImplemented: ${rule} has no package-mode execution; ` +
+  "the implemented set is Shell.*, Generate, Materialize, Clean, Suite, Alias, ImportClosure, Test, " +
+  "Bundler.Rspack.*, Agent.*, Git.Commit, Github.*, and Memory.Retain"
 
 /**
  * One planned package-mode node. Structurally a {@link Planner.PlannedTarget}
@@ -91,10 +121,53 @@ const refusalFor = (rule: string): string =>
  * @category models
  * @since 0.1.0
  */
+/** One reduced `S.Test` operand as the executor evaluates it. */
+export type TestOperandPlan =
+  | { readonly kind: "sources"; readonly sources: ReadonlyArray<Compose.AnchoredSource> }
+  | { readonly kind: "closure"; readonly entries: ReadonlyArray<Compose.AnchoredSource> }
+  | { readonly kind: "bundler-files"; readonly label: string }
+
+/**
+ * The per-rule execution data a lane node carries beyond the shared shell
+ * fields. Exactly one variant per lane rule; `undefined` for the W2 core
+ * rules.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type LaneData =
+  | {
+    readonly kind: "serve"
+    readonly readiness?: ServiceSupervisor.Readiness | undefined
+    readonly health?: ServiceSupervisor.Health | undefined
+    readonly stop?: ServiceSupervisor.Stop | undefined
+  }
+  | { readonly kind: "closure"; readonly entries: ReadonlyArray<Compose.AnchoredSource> }
+  | { readonly kind: "files-test"; readonly left: TestOperandPlan; readonly right: TestOperandPlan }
+  | { readonly kind: "bundler-resolve"; readonly payload: BundlerTarget.ResolvePayload }
+  | { readonly kind: "bundler-build"; readonly payload: BundlerTarget.BuildPayload; readonly graphLabel: string }
+  | {
+    readonly kind: "agent"
+    readonly flavor: "lint" | "diff" | "pr"
+    readonly payload: AgentTarget.LintPayload | AgentTarget.DiffPayload
+    /** Structural gate identity → planned gate label, in declared order. */
+    readonly gateLabels: ReadonlyArray<readonly [string, string]>
+  }
+  | { readonly kind: "git-commit" }
+  | { readonly kind: "ci-gen" }
+  | { readonly kind: "github-decl" }
+  | { readonly kind: "github-pr" }
+  | { readonly kind: "memory-retain" }
+
 export interface PackageNode extends Planner.PlannedTarget {
   readonly rule: string
   readonly mode: Mode
   readonly packagePath: string
+  /** The declaration object itself, for rule bodies that consume validated attrs. */
+  readonly declaration: Target.AnyTarget
+  /** Labels of the Serve targets this node's `services` attr acquires. */
+  readonly serviceDeps: ReadonlyArray<string>
+  readonly lane: LaneData | undefined
   readonly refusal: string | undefined
   readonly sandbox: "none" | { readonly network?: boolean | undefined } | undefined
   readonly secrets: ReadonlyArray<string>
@@ -169,6 +242,10 @@ export interface RunOptions {
   readonly readCache?: boolean | undefined
   readonly signal?: AbortSignal | undefined
   readonly log?: ((line: string) => void) | undefined
+  /** `-m` override for `Git.Commit`; wins over the declared message. */
+  readonly message?: string | undefined
+  /** `--input name=value` payload values for agent targets. */
+  readonly inputs?: Readonly<Record<string, string>> | undefined
 }
 
 /** Collects targets reachable inside one attr value, without user code. */
@@ -237,10 +314,42 @@ type ToolOutcome = { readonly _tag: "resolved"; readonly tool: ResolvedTool } | 
   readonly tool: RefusedTool
 }
 
-const binNameOf = (packageName: string, bin: string | undefined): string => {
-  if (bin !== undefined) return bin
+/**
+ * Resolves the `.bin` entry name of one `S.NodeModule.Bin` reference.
+ *
+ * With no explicit `bin` argument the package's own manifest decides: a
+ * string-form `bin` names the package basename; an object `bin` with one
+ * entry names its sole key; more than one entry is ambiguous and requires
+ * the explicit second argument. An unreadable manifest falls back to the
+ * package basename, which the executable probe then refuses if absent.
+ */
+const binNameOf = async (
+  root: string,
+  packageName: string,
+  bin: string | undefined
+): Promise<{ readonly name: string } | { readonly problem: string }> => {
+  if (bin !== undefined) return { name: bin }
   const parts = packageName.split("/")
-  return parts[parts.length - 1]!
+  const basename = parts[parts.length - 1]!
+  let declared: unknown
+  try {
+    const manifest = NodePath.join(root, "node_modules", ...packageName.split("/"), "package.json")
+    declared = (JSON.parse(await Fs.readFile(manifest, "utf8")) as { readonly bin?: unknown }).bin
+  } catch {
+    return { name: basename }
+  }
+  if (typeof declared === "string") return { name: basename }
+  if (typeof declared === "object" && declared !== null) {
+    const names = Object.keys(declared)
+    if (names.length === 1) return { name: names[0]! }
+    if (names.length > 1) {
+      return {
+        problem: `package ${JSON.stringify(packageName)} exposes ${names.length} binaries (${names.join(", ")}); ` +
+          "name one explicitly: S.NodeModule.Bin(package, bin)"
+      }
+    }
+  }
+  return { name: basename }
 }
 
 interface PlanContext {
@@ -269,6 +378,139 @@ interface PlanContext {
    * distinct keys because each invocation plans the label in exactly one mode.
    */
   readonly rootModes: ReadonlyMap<string, Mode>
+  /** Lazily opened cache store for plan-time closure rows and graph digests. */
+  store: CacheStore | undefined
+  storeWarned: boolean
+  /** ImportClosure label → canonical result digest (plan-time, memoized). */
+  readonly closureDigests: Map<string, string>
+  /** ImportClosure label → computed closure result (plan-time, memoized). */
+  readonly closureResults: Map<string, Compose.ClosureResult>
+  /** Bundler resolve label → resolved graph digest (plan-time, memoized). */
+  readonly graphDigests: Map<string, string>
+}
+
+/** Opens (once) the cache store the planner uses for closure rows and graph digests. */
+const planStore = async (context: PlanContext): Promise<CacheStore | undefined> => {
+  if (context.store !== undefined) return context.store
+  if (context.storeWarned) return undefined
+  try {
+    context.store = await openCache({
+      workspaceRoot: context.root,
+      cacheDirectory: context.cacheDirectory,
+      warn: context.log
+    })
+    return context.store
+  } catch (cause) {
+    context.storeWarned = true
+    context.log(`smthrs: plan-time cache unavailable: ${Diagnostic.message(cause)}`)
+    return undefined
+  }
+}
+
+const sha256Hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex")
+
+/** The canonical digest of one closure result: files, packages, and issue rows. */
+export const closureResultDigest = (result: Compose.ClosureResult): string =>
+  sha256Hex(JSON.stringify({
+    files: result.files,
+    packages: result.packages,
+    unresolved: result.unresolved,
+    dynamic: result.dynamic
+  }))
+
+/** The implementation context payload accessors expect for one declaration. */
+const contextOf = (metadata: Target.Metadata): Target.ImplementationContext => ({
+  sourceFile: metadata.sourceFile,
+  packageDirectory: metadata.sourceFile === undefined ? undefined : NodePath.dirname(metadata.sourceFile)
+})
+
+/**
+ * Computes (memoized per label) the closure result of one ImportClosure
+ * target. Runs the resolver at plan time: the result digest is what keys the
+ * closure's consumers, so an edit to any file in the closure re-keys them
+ * while an unrelated edit does not.
+ */
+const closureResultOf = async (
+  context: PlanContext,
+  label: string,
+  closureTarget: Target.AnyTarget
+): Promise<Compose.ClosureResult> => {
+  const known = context.closureResults.get(label)
+  if (known !== undefined) return known
+  const metadata = Target.metadata(closureTarget)
+  const entries = Compose.closureEntrySources(
+    (metadata.attrs as { readonly entries: never }).entries,
+    contextOf(metadata)
+  )
+  if (typeof entries === "string") throw new Error(`ImportClosure: ${entries}`)
+  const store = await planStore(context)
+  const result = await Resolver.closureOfEntries(
+    {
+      workspaceRoot: context.root,
+      cacheDirectory: context.cacheDirectory,
+      cache: store
+    },
+    entries
+  )
+  context.closureResults.set(label, result)
+  context.closureDigests.set(label, closureResultDigest(result))
+  return result
+}
+
+/** Cache-output shape one bundler resolve stores. */
+interface StoredResolve {
+  readonly kind: "bundler-resolve"
+  readonly result: BundlerTarget.ResolveResult
+}
+
+const decodeStoredResolve = (output: unknown): BundlerTarget.ResolveResult | undefined => {
+  if (typeof output !== "object" || output === null) return undefined
+  if ((output as { readonly kind?: unknown }).kind !== "bundler-resolve") return undefined
+  const result = (output as { readonly result?: unknown }).result
+  try {
+    return Schema.decodeUnknownSync(BundlerTarget.ResolveResult)(result)
+  } catch {
+    return undefined
+  }
+}
+
+/** The scratch directory bundler children redirect resolve emit and caches into. */
+const bundlerScratchDirectory = (root: string, cacheDirectory: string): string =>
+  NodePath.join(root, ...cacheDirectory.split("/"), "bundler-scratch")
+
+/**
+ * Reads (memoized per label) the resolved graph digest of one bundler
+ * resolve node from the cache, under the resolve node's own key. The digest
+ * substitutes for the graph dependency's key in every `Bundler.Rspack.build`
+ * consumer, which is the caching win the spec names: an edit that does not
+ * change the resolved file set replays the build from cache.
+ *
+ * Plan time is cache-only: the resolve target's universe (relay artifacts
+ * and other data producers) may not be materialized before execution, so a
+ * plan-time compile could be wrong or fail on a cold tree. With no cached
+ * result the build keys conservatively on the resolve target's own key and
+ * the execution of the resolve node stores the result for the next
+ * invocation.
+ */
+const graphDigestOf = async (
+  context: PlanContext,
+  resolveNode: PackageNode
+): Promise<string | undefined> => {
+  const known = context.graphDigests.get(resolveNode.label)
+  if (known !== undefined) return known
+  if (resolveNode.lane?.kind !== "bundler-resolve") {
+    throw new Error(`the graph of a bundler build must be a Bundler.Rspack.resolve target: ${resolveNode.label}`)
+  }
+  const store = await planStore(context)
+  const cached = store === undefined ? null : await store.get(resolveNode.keyPreview).catch(() => null)
+  if (cached !== null && cached.exitOk) {
+    const result = decodeStoredResolve(cached.output)
+    if (result !== undefined) {
+      context.graphDigests.set(resolveNode.label, result.graphDigest)
+      return result.graphDigest
+    }
+  }
+  return undefined
 }
 
 const probeOnce = async (context: PlanContext, path: string): Promise<PackageTree.Probe> => {
@@ -297,7 +539,23 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
   let outcome: ToolOutcome
   if (tag === "NodeModuleBin") {
     const packageName = String(reference["package"])
-    const bin = binNameOf(packageName, typeof reference["bin"] === "string" ? reference["bin"] : undefined)
+    const resolvedBin = await binNameOf(
+      context.root,
+      packageName,
+      typeof reference["bin"] === "string" ? reference["bin"] : undefined
+    )
+    if ("problem" in resolvedBin) {
+      outcome = {
+        _tag: "refused",
+        tool: {
+          refusal: resolvedBin.problem,
+          identity: { tag: "NodeModuleBin", package: packageName, ambiguous: true }
+        }
+      }
+      context.tools.set(key, outcome)
+      return outcome
+    }
+    const bin = resolvedBin.name
     const path = NodePath.join(context.root, "node_modules", ".bin", bin)
     const version = await moduleVersion(context.root, packageName)
     const identity = { tag: "NodeModuleBin", package: packageName, bin, version }
@@ -607,12 +865,29 @@ const visit = async (
   const dependencyRows: Array<{ readonly label: string; readonly key: string }> = []
   const depLabels = new Map<Target.AnyTarget, string>()
   for (const dependency of metadata.dependencies) {
-    const depRule = Target.metadata(dependency).target
+    const depMetadata = Target.metadata(dependency)
+    const depRule = depMetadata.target
     const depMode: Mode = checkModeRules.has(depRule) ? "check" : "execute"
     const planned = await visit(context, dependency, { mode: depMode })
-    depKeys.set(dependency, planned.keyPreview)
+    let depKey = planned.keyPreview
+    // An ImportClosure dependency keys its consumer on the RESOLVED closure
+    // (the sorted path+digest set), not on the closure declaration: editing a
+    // file inside the closure re-keys the consumer, editing an unrelated file
+    // does not. The closure itself carries no such key (it is not cacheable).
+    if (depRule === "ImportClosure" && rule !== "Clean" && planned.refusal === undefined) {
+      const result = await closureResultOf(context, planned.label, dependency)
+      depKey = `import-closure:${closureResultDigest(result)}`
+    }
+    // A bundler build keys on the RESOLVED graph digest of its resolve target
+    // when the cache already holds one under the resolve node's key; with no
+    // cached result it keys conservatively on the resolve target's own key.
+    if (rule === "Bundler.Rspack.build" && depRule === "Bundler.Rspack.resolve" && planned.refusal === undefined) {
+      const digest = await graphDigestOf(context, planned)
+      if (digest !== undefined) depKey = `bundler-graph:${digest}`
+    }
+    depKeys.set(dependency, depKey)
     depLabels.set(dependency, planned.label)
-    dependencyRows.push({ label: planned.label, key: planned.keyPreview })
+    dependencyRows.push({ label: planned.label, key: depKey })
   }
 
   const declaredInputs = await expandInputs(context, packagePath, metadata.inputs)
@@ -627,13 +902,20 @@ const visit = async (
     refusal ??= message
   }
   if (!implementedRules.has(rule)) {
-    noteRefusal(
-      rule === "Shell.Serve" ? "NotImplemented: Shell.Serve execution is a later lane (services)" : refusalFor(rule)
-    )
+    noteRefusal(refusalFor(rule))
   }
+  // The services edge: every declared service must be a Serve target; the
+  // consumer acquires it (readiness-gated) before dispatch and releases it
+  // when done. Serve targets stay in the dependency rows (service identity is
+  // key material) and are also recorded as service labels for acquisition.
   const services = attrTargets(attrs, "services")
-  if (services.length > 0 && rule !== "Shell.Serve") {
-    noteRefusal(`NotImplemented: ${rule} declares services, and the services edge is a later lane`)
+  const serviceDeps: Array<string> = []
+  for (const service of services) {
+    if (Target.metadata(service).target !== "Shell.Serve") {
+      noteRefusal(`services entries must be Shell.Serve targets; ${depLabels.get(service) ?? "a member"} is not`)
+      continue
+    }
+    serviceDeps.push(depLabels.get(service) ?? labelOf(context, service))
   }
 
   const resolveToken = async (entry: string): Promise<string> => {
@@ -714,7 +996,8 @@ const visit = async (
   // by walking upward behave identically. Package scoping happens through
   // declared inputs and write sets, not the process cwd.
   const cwd = "."
-  const isShellExec = rule === "Shell.Build" || rule === "Shell.Test" || rule === "Shell.Run" || rule === "Shell.Diff"
+  const isShellExec = rule === "Shell.Build" || rule === "Shell.Test" || rule === "Shell.Run" ||
+    rule === "Shell.Serve" || rule === "Shell.Diff"
   if (isShellExec && refusal === undefined) {
     const shellAttrs = attrs as Shell.ExecAttrs
     const payload = Shell.execPayload(shellAttrs)
@@ -832,6 +1115,129 @@ const visit = async (
     }
   }
 
+  // Lane data: the per-rule execution payload of each W3 lane rule, reduced
+  // from the validated attrs at plan time so execution never re-reads
+  // declarations. A reduction that cannot settle is a typed refusal on the
+  // node, never a partial payload.
+  const implementationContext = contextOf(metadata)
+  const labelFor = (member: Target.AnyTarget): string => depLabels.get(member) ?? labelOf(context, member)
+  const testOperandPlan = (operand: Compose.FileSet): TestOperandPlan | string => {
+    const operandTarget = Target.isTarget(operand) ? operand : operand.target
+    if (Target.metadata(operandTarget).target === "Bundler.Rspack.resolve") {
+      return { kind: "bundler-files", label: labelFor(operandTarget) }
+    }
+    const reduced = Compose.checkOperand(operand)
+    if (typeof reduced === "string") return reduced
+    return reduced._tag === "SourceSet"
+      ? { kind: "sources", sources: reduced.sources }
+      : { kind: "closure", entries: reduced.entries }
+  }
+  const gateLabelsOf = (gates: ReadonlyArray<Target.AnyTarget>): ReadonlyArray<readonly [string, string]> =>
+    gates.map((gate) => [AgentTarget.targetIdentity(gate), labelFor(gate)] as const)
+  let lane: LaneData | undefined
+  switch (rule) {
+    case "Shell.Serve": {
+      const serveAttrs = attrs as (typeof Shell.ServeAttrs)["Type"]
+      lane = { kind: "serve", readiness: serveAttrs.readiness, health: serveAttrs.health, stop: serveAttrs.stop }
+      break
+    }
+    case "ImportClosure": {
+      const closureAttrs = attrs as (typeof Compose.ImportClosureAttrs)["Type"]
+      const entries = Compose.closureEntrySources(closureAttrs.entries, implementationContext)
+      if (typeof entries === "string") noteRefusal(`ImportClosure: ${entries}`)
+      else lane = { kind: "closure", entries }
+      break
+    }
+    case "Test": {
+      const testAttrs = attrs as (typeof Compose.TestAttrs)["Type"]
+      const left = testOperandPlan(testAttrs.expect.left)
+      const right = testOperandPlan(testAttrs.expect.right)
+      if (typeof left === "string") noteRefusal(`Test: ${left}`)
+      else if (typeof right === "string") noteRefusal(`Test: ${right}`)
+      else lane = { kind: "files-test", left, right }
+      break
+    }
+    case "Bundler.Rspack.resolve": {
+      const resolveAttrs = attrs as (typeof BundlerTarget.ResolveAttrs)["Type"]
+      lane = {
+        kind: "bundler-resolve",
+        payload: {
+          configPath: Input.resolvePath(packagePath, resolveAttrs.config.path),
+          entries: [...resolveAttrs.entries],
+          mode: "development"
+        }
+      }
+      break
+    }
+    case "Bundler.Rspack.build": {
+      const buildAttrs = attrs as (typeof BundlerTarget.BuildAttrs)["Type"]
+      if (Target.metadata(buildAttrs.graph).target !== "Bundler.Rspack.resolve") {
+        noteRefusal(`the graph of a bundler build must be a Bundler.Rspack.resolve target: ${labelFor(buildAttrs.graph)}`)
+        break
+      }
+      lane = {
+        kind: "bundler-build",
+        graphLabel: labelFor(buildAttrs.graph),
+        payload: {
+          configPath: Input.resolvePath(packagePath, buildAttrs.config.path),
+          environment: buildAttrs.environment,
+          mode: buildAttrs.mode,
+          env: buildAttrs.env === undefined ? {} : { ...buildAttrs.env },
+          outDirs: buildAttrs.outDirs.map((dir) => Input.resolvePath(packagePath, dir))
+        }
+      }
+      break
+    }
+    case "Agent.Lint": {
+      const lintAttrs = attrs as (typeof AgentTarget.LintAttrs)["Type"]
+      lane = {
+        kind: "agent",
+        flavor: "lint",
+        payload: AgentTarget.lintPayload(lintAttrs, implementationContext),
+        gateLabels: []
+      }
+      break
+    }
+    case "Agent.Diff": {
+      const diffAttrs = attrs as (typeof AgentTarget.DiffAttrs)["Type"]
+      lane = {
+        kind: "agent",
+        flavor: "diff",
+        payload: AgentTarget.diffPayload(diffAttrs, implementationContext),
+        gateLabels: gateLabelsOf(diffAttrs.gates)
+      }
+      break
+    }
+    case "Agent.Pr": {
+      const prAttrs = attrs as (typeof AgentTarget.PrAttrs)["Type"]
+      lane = {
+        kind: "agent",
+        flavor: "pr",
+        payload: AgentTarget.prPayload(prAttrs, implementationContext),
+        gateLabels: gateLabelsOf(prAttrs.gates)
+      }
+      break
+    }
+    case "Git.Commit":
+      lane = { kind: "git-commit" }
+      break
+    case "Github.CiGen":
+      lane = { kind: "ci-gen" }
+      break
+    case "Github.Setup":
+    case "Github.Workflow":
+      lane = { kind: "github-decl" }
+      break
+    case "Github.Pr":
+      lane = { kind: "github-pr" }
+      break
+    case "Memory.Retain":
+      lane = { kind: "memory-retain" }
+      break
+    default:
+      lane = undefined
+  }
+
   // NodeModule dependency references key the installed package version.
   const moduleRefs: Array<Record<string, unknown>> = []
   collectTagged(attrs, "NodeModule", moduleRefs, new Set())
@@ -944,6 +1350,9 @@ const visit = async (
     rule,
     mode,
     packagePath,
+    declaration: target,
+    serviceDeps,
+    lane,
     refusal,
     sandbox,
     secrets,
@@ -1049,13 +1458,23 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
       arch: process.arch,
       lockfile: lockfileDigest ?? null,
       implementation: await Planner.implementationFingerprint(options.signal)
-    }
+    },
+    store: undefined,
+    storeWarned: false,
+    closureDigests: new Map(),
+    closureResults: new Map(),
+    graphDigests: new Map()
   }
   const roots: Array<string> = []
-  for (const row of selected) {
-    const rule = Target.metadata(row.target).target
-    const node = await visit(context, row.target, { mode: rootMode(rule, options) })
-    roots.push(node.label)
+  try {
+    for (const row of selected) {
+      const rule = Target.metadata(row.target).target
+      const node = await visit(context, row.target, { mode: rootMode(rule, options) })
+      roots.push(node.label)
+    }
+  } finally {
+    // The plan-time store is scoped to planning; execution opens its own.
+    if (context.store !== undefined) await context.store.close().catch(() => undefined)
   }
   // The work list is the closure of the roots over execution edges only;
   // key-only dependencies (a Clean's targets, a refused rule's attrs) stay

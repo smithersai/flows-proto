@@ -40,6 +40,20 @@ const retainDefinition = Target.make("Memory.Retain", {
 export const Retain = (attrs: (typeof RetainAttrs)["~type.make.in"]): Target.AnyTarget => retainDefinition(attrs)
 
 /**
+ * The validated attrs of one `Memory.Retain` target.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const retainAttrsOf = (target: Target.AnyTarget): (typeof RetainAttrs)["Type"] => {
+  const metadata = Target.metadata(target)
+  if (metadata.target !== "Memory.Retain") {
+    throw new TypeError(`expected a Memory.Retain target, received ${metadata.target}`)
+  }
+  return metadata.attrs as (typeof RetainAttrs)["Type"]
+}
+
+/**
  * Schema for the Smithers Cloud memory workspace declaration.
  *
  * @category schemas

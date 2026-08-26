@@ -3,18 +3,646 @@
  * `S.Agent.Lint`, `S.Agent.Diff`, `S.Agent.Pr`, `S.Agent.ClaudeCode`,
  * `S.Agent.Codex`, `S.Agent.Pool`, and the `S.Agents` reference surface.
  *
- * Phase W1 is construct-only: the target constructors validate attrs by
- * schema and install {@link Target.notImplemented} implementations. Agent
- * references (`S.Agents.<name>`) are inert records validated against the
- * workspace `S.Agents({ ... })` declaration when the package index loads.
+ * The target bodies are one sealed action call each: `Agent.Lint` plans an
+ * {@link AgentLint} call, `Agent.Diff` plans an {@link AgentDiff} call, and
+ * `Agent.Pr` plans an {@link AgentPr} call. The action payloads carry only
+ * inert data — declared diffs, the prompt file path, payload input specs,
+ * MCP declarations, write-set globs, and gate identities — so plan-time stays
+ * pure. Execution is provided by the agent session layers in
+ * `@smthrs/build-cli/AgentSession`.
+ *
+ * Agent references (`S.Agents.<name>`) are inert records validated against
+ * the workspace `S.Agents({ ... })` declaration when the package index loads.
  *
  * @since 0.1.0
  */
+import { Action } from "@smthrs/flow"
 import * as Schema from "effect/Schema"
+import { createHash } from "node:crypto"
 import * as Attr from "./Attr.ts"
 import * as Input from "./Input.ts"
 import * as Reference from "./Reference.ts"
 import * as Target from "./Target.ts"
+
+/**
+ * Maximum bytes of one agent prompt file.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumPromptBytes = 1024 * 1024
+
+/**
+ * Maximum findings accepted from one agent response.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumFindings = 10_000
+
+/**
+ * Maximum UTF-16 code units of one finding message.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumFindingMessage = 16 * 1024
+
+/**
+ * Maximum UTF-16 code units of one workspace-relative path.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumPathLength = 16 * 1024
+
+/**
+ * Maximum UTF-16 code units of one candidate edit's contents.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumEditLength = 4 * 1024 * 1024
+
+/**
+ * Maximum candidate edits accepted from one agent response.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumEdits = 4_096
+
+/**
+ * Maximum bounded rounds one Agent.Diff or Agent.Pr loop may declare.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumRounds = 16
+
+/**
+ * Rounds an Agent.Pr declaration runs when it omits `maxRounds`.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const defaultPrRounds = 3
+
+/**
+ * Maximum UTF-16 code units of one gate report detail.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const maximumGateDetail = 64 * 1024
+
+/**
+ * Finding severity, ordered `info` below `warning` below `error`.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const Severity = Schema.Literals(["info", "warning", "error"])
+
+/**
+ * Finding severity.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Severity = typeof Severity.Type
+
+/**
+ * One agent finding against a file in the reviewed diff slice.
+ *
+ * `line` is 1-based; whole-file findings report line 1.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const Finding = Schema.Struct({
+  file: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
+  line: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  severity: Severity,
+  message: Schema.NonEmptyString.check(Schema.isMaxLength(maximumFindingMessage))
+})
+
+/**
+ * One agent finding against a file in the reviewed diff slice.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Finding = typeof Finding.Type
+
+/**
+ * The execution mode of one Agent.Lint run: `check` reports findings and
+ * `fix` also applies candidate edits confined to the `fixes` write-set.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const Mode = Schema.Literals(["check", "fix"])
+
+/**
+ * The execution mode of one Agent.Lint run.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Mode = typeof Mode.Type
+
+/**
+ * One candidate file edit an agent session proposes: the complete next
+ * contents of a workspace-relative path, or null to delete it.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const CandidateEdit = Schema.Struct({
+  path: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
+  contents: Schema.NullOr(Schema.String.check(Schema.isMaxLength(maximumEditLength)))
+})
+
+/**
+ * One candidate file edit an agent session proposes.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type CandidateEdit = typeof CandidateEdit.Type
+
+/**
+ * The verdict of one gate run against a candidate tree.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const GateStatus = Schema.Literals(["green", "red"])
+
+/**
+ * The verdict of one gate run against a candidate tree.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type GateStatus = typeof GateStatus.Type
+
+/**
+ * One gate's verdict against the exact candidate tree of one round.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const GateReportEntry = Schema.Struct({
+  gate: Schema.NonEmptyString,
+  status: GateStatus,
+  detail: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumGateDetail)))
+})
+
+/**
+ * One gate's verdict against the exact candidate tree of one round.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type GateReportEntry = typeof GateReportEntry.Type
+
+/**
+ * An agent execution step failed: resolving the agent, reading the prompt or
+ * diff slice, spawning or parsing a session, applying edits, running gates,
+ * settling, or consulting the verdict cache.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class AgentSessionError extends Schema.TaggedError<AgentSessionError>()(
+  "smithers-build/AgentSessionError",
+  {
+    phase: Schema.Literals(["resolve", "diff", "read", "spawn", "parse", "apply", "gate", "settle", "cache"]),
+    message: Schema.NonEmptyString
+  }
+) {}
+
+/**
+ * A required payload input is missing or invalid; raised before any session
+ * spawn.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class AgentNeedsInput extends Schema.TaggedError<AgentNeedsInput>()(
+  "smithers-build/AgentNeedsInput",
+  {
+    field: Schema.NonEmptyString,
+    expected: Schema.NonEmptyString,
+    message: Schema.NonEmptyString
+  }
+) {}
+
+/**
+ * A declared MCP server did not answer the reachability precheck; raised
+ * before any session spawn.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class AgentMcpUnreachable extends Schema.TaggedError<AgentMcpUnreachable>()(
+  "smithers-build/AgentMcpUnreachable",
+  {
+    name: Schema.NonEmptyString,
+    url: Schema.NonEmptyString,
+    message: Schema.NonEmptyString
+  }
+) {}
+
+/**
+ * An agent session proposed a write outside its declared write-set. The
+ * candidate is rejected whole; no file changes.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class AgentWriteEscape extends Schema.TaggedError<AgentWriteEscape>()(
+  "smithers-build/AgentWriteEscape",
+  {
+    path: Schema.NonEmptyString,
+    writeSet: Schema.Array(Schema.String),
+    message: Schema.NonEmptyString
+  }
+) {}
+
+/**
+ * A check-mode Agent.Lint completed and the agent reported findings.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class AgentFindingsError extends Schema.TaggedError<AgentFindingsError>()(
+  "smithers-build/AgentFindingsError",
+  {
+    findings: Schema.Array(Finding).check(Schema.isMaxLength(maximumFindings)),
+    message: Schema.NonEmptyString
+  }
+) {}
+
+/**
+ * The bounded candidate/gate loop exhausted `maxRounds` without a green gate
+ * set. `diff` and `gateReport` preserve the final candidate as artifacts.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class AgentRoundsExhausted extends Schema.TaggedError<AgentRoundsExhausted>()(
+  "smithers-build/AgentRoundsExhausted",
+  {
+    rounds: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+    diff: Schema.String,
+    gateReport: Schema.Array(GateReportEntry),
+    message: Schema.NonEmptyString
+  }
+) {}
+
+/**
+ * The Agent.Pr loop converged but the PR settle action is not bound. The
+ * candidate and its gate report are preserved as artifacts. Opening the pull
+ * request is the Github lane's interface; this build refuses rather than
+ * faking the outward action.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class AgentPrSettleRefused extends Schema.TaggedError<AgentPrSettleRefused>()(
+  "smithers-build/AgentPrSettleRefused",
+  {
+    diff: Schema.String,
+    gateReport: Schema.Array(GateReportEntry),
+    message: Schema.NonEmptyString
+  }
+) {}
+
+/**
+ * Every failure one Agent.Lint execution can produce.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const LintError = Schema.Union([AgentSessionError, AgentWriteEscape, AgentFindingsError])
+
+/**
+ * Every failure one Agent.Lint execution can produce.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type LintError = typeof LintError.Type
+
+/**
+ * Every failure one Agent.Diff execution can produce.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const DiffError = Schema.Union([
+  AgentNeedsInput,
+  AgentMcpUnreachable,
+  AgentWriteEscape,
+  AgentRoundsExhausted,
+  AgentSessionError
+])
+
+/**
+ * Every failure one Agent.Diff execution can produce.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type DiffError = typeof DiffError.Type
+
+/**
+ * Every failure one Agent.Pr execution can produce.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const PrError = Schema.Union([
+  AgentNeedsInput,
+  AgentMcpUnreachable,
+  AgentWriteEscape,
+  AgentRoundsExhausted,
+  AgentPrSettleRefused,
+  AgentSessionError
+])
+
+/**
+ * Every failure one Agent.Pr execution can produce.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type PrError = typeof PrError.Type
+
+/**
+ * Payload of one {@link AgentLint} call.
+ *
+ * `promptPath` is the declared prompt file path (`//`-prefixed paths resolve
+ * from the workspace root, everything else from `packageDirectory`).
+ * `diffs` are the `S.gitDiff` declarations found in the target's `data`; the
+ * expanded slice is the review subject and an empty expansion settles green
+ * with zero session spawns. `fixes` is the write-set candidate fixes are
+ * confined to in `fix` mode.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const LintPayload = Schema.Struct({
+  agent: Schema.optional(Reference.AgentRef),
+  promptPath: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
+  packageDirectory: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPathLength))),
+  diffs: Schema.Array(Input.GitDiff),
+  fixes: Schema.Array(Schema.NonEmptyString),
+  mode: Mode
+})
+
+/**
+ * Payload of one {@link AgentLint} call.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type LintPayload = typeof LintPayload.Type
+
+/**
+ * Result of one green Agent.Lint execution.
+ *
+ * `vacuous` is true when the expanded diff slice was empty and no agent
+ * session was invoked; `note` then says so explicitly. `fixed` lists the
+ * paths a `fix`-mode run rewrote.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const LintReport = Schema.Struct({
+  vacuous: Schema.Boolean,
+  note: Schema.optional(Schema.String),
+  files: Schema.Array(Schema.String),
+  findings: Schema.Array(Finding).check(Schema.isMaxLength(maximumFindings)),
+  fixed: Schema.Array(Schema.String)
+})
+
+/**
+ * Result of one green Agent.Lint execution.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type LintReport = typeof LintReport.Type
+
+/**
+ * Payload of one {@link AgentDiff} or {@link AgentPr} call.
+ *
+ * `payloadSpec` declares the invoker inputs; the values arrive at execution
+ * time and are validated against this spec before any session spawn. `mcp`
+ * lists the declared MCP servers prechecked for reachability before model
+ * spend. `changes` is the write-set every candidate edit must stay inside.
+ * `gateIdentities` are the structural identities of the declared gates, in
+ * order; the gate runner resolves them back to executable targets.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const DiffPayload = Schema.Struct({
+  agent: Schema.optional(Reference.AgentRef),
+  promptPath: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
+  packageDirectory: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPathLength))),
+  payloadSpec: Schema.Record(Schema.String, Reference.InputSpec),
+  mcp: Schema.Array(Reference.McpHttp),
+  diffs: Schema.Array(Input.GitDiff),
+  changes: Schema.Array(Schema.NonEmptyString),
+  gateIdentities: Schema.Array(Schema.NonEmptyString),
+  maxRounds: Schema.Int.check(
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(maximumRounds)
+  )
+})
+
+/**
+ * Payload of one {@link AgentDiff} or {@link AgentPr} call.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type DiffPayload = typeof DiffPayload.Type
+
+/**
+ * Result of one green Agent.Diff execution: the accepted candidate and the
+ * gate report that admitted it.
+ *
+ * `vacuous` is true when the target declared `S.gitDiff` data and its
+ * expansion was empty, so no session was invoked. `diff` is a rendered
+ * listing of the candidate tree; `edits` is the exact accepted edit set.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const DiffResult = Schema.Struct({
+  vacuous: Schema.Boolean,
+  rounds: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  diff: Schema.String,
+  edits: Schema.Array(CandidateEdit).check(Schema.isMaxLength(maximumEdits)),
+  gateReport: Schema.Array(GateReportEntry)
+})
+
+/**
+ * Result of one green Agent.Diff execution.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type DiffResult = typeof DiffResult.Type
+
+/**
+ * Result of one green Agent.Pr execution: the accepted candidate plus the
+ * opened pull request reference.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const PrResult = Schema.Struct({
+  vacuous: Schema.Boolean,
+  rounds: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  diff: Schema.String,
+  edits: Schema.Array(CandidateEdit).check(Schema.isMaxLength(maximumEdits)),
+  gateReport: Schema.Array(GateReportEntry),
+  pr: Schema.optional(Schema.String)
+})
+
+/**
+ * Result of one green Agent.Pr execution.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type PrResult = typeof PrResult.Type
+
+/**
+ * The sealed action one Agent.Lint target plans.
+ *
+ * @category actions
+ * @since 0.1.0
+ */
+export const AgentLint = Action.make("smithers-build/agent-lint", {
+  payload: LintPayload,
+  success: LintReport,
+  error: LintError,
+  tier: "sealed"
+})
+
+/**
+ * The sealed action one Agent.Diff target plans.
+ *
+ * @category actions
+ * @since 0.1.0
+ */
+export const AgentDiff = Action.make("smithers-build/agent-diff", {
+  payload: DiffPayload,
+  success: DiffResult,
+  error: DiffError,
+  tier: "sealed"
+})
+
+/**
+ * The sealed action one Agent.Pr target plans.
+ *
+ * @category actions
+ * @since 0.1.0
+ */
+export const AgentPr = Action.make("smithers-build/agent-pr", {
+  payload: DiffPayload,
+  success: PrResult,
+  error: PrError,
+  tier: "sealed"
+})
+
+const isGitDiff = Schema.is(Input.GitDiff)
+
+/**
+ * Collects every `S.gitDiff` declaration from a `data` attr, in declaration
+ * order, descending nested arrays.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const collectGitDiffs = (data: (typeof Attr.Data)["Type"]): ReadonlyArray<Input.GitDiff> => {
+  const found: Array<Input.GitDiff> = []
+  const walk = (value: unknown): void => {
+    if (isGitDiff(value)) {
+      found.push(value)
+      return
+    }
+    if (Array.isArray(value)) { for (const entry of value) walk(entry) }
+  }
+  walk(data)
+  return found
+}
+
+/**
+ * Canonically encodes one attr value for {@link targetIdentity}.
+ *
+ * Nested targets encode as their own recursive identity record, declared
+ * inputs and references as their frozen data, and object keys sort so the
+ * encoding is order-independent. Functions and symbols have no canonical
+ * encoding and collapse to one marker; a cyclic value is a construction-time
+ * impossibility for schema-validated attrs and fails loudly.
+ */
+const canonicalize = (value: unknown, seen: Set<object>): unknown => {
+  if (Target.isTarget(value)) {
+    const metadata = Target.metadata(value)
+    return {
+      $attrs: canonicalize(metadata.attrs, seen),
+      $implementation: metadata.implementationDigest,
+      $target: metadata.target
+    }
+  }
+  if (
+    typeof value === "function" ||
+    typeof value === "symbol" ||
+    typeof value === "bigint" ||
+    value === undefined
+  ) return "$unencodable"
+  if (typeof value !== "object" || value === null) return value
+  if (seen.has(value)) throw new Error("agent gate identity cannot encode a cyclic attr value")
+  seen.add(value)
+  try {
+    if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, seen))
+    const output: Record<string, unknown> = {}
+    for (const key of Object.getOwnPropertyNames(value).sort()) {
+      output[key] = canonicalize((value as Record<string, unknown>)[key], seen)
+    }
+    return output
+  } finally {
+    seen.delete(value)
+  }
+}
+
+/**
+ * The structural identity of one target: its definition name plus a digest of
+ * its implementation digest and canonically encoded attrs.
+ *
+ * Agent gate identities are key material for the agent verdict cache, so two
+ * instances of the same definition with different attrs must not collide.
+ * This is a plan-time stand-in for the planner's full target key, which also
+ * digests expanded file inputs; the integration point swaps it for the
+ * planner key without changing the payload shape.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const targetIdentity = (target: Target.AnyTarget): string => {
+  const metadata = Target.metadata(target)
+  const encoded = JSON.stringify(canonicalize(target, new Set()))
+  return `${metadata.target}#${createHash("sha256").update(encoded).digest("hex")}`
+}
 
 /**
  * Attrs for {@link Lint}.
@@ -29,10 +657,34 @@ export const LintAttrs = Schema.Struct({
   fixes: Schema.optional(Schema.Array(Schema.NonEmptyString))
 })
 
+/**
+ * Projects decoded Agent.Lint attrs into the {@link AgentLint} payload.
+ *
+ * The mode is `check`; the `--fix` invocation reaches execution as a payload
+ * override wired by the CLI, not as a second declaration.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const lintPayload = (
+  attrs: (typeof LintAttrs)["Type"],
+  context: Target.ImplementationContext
+): LintPayload => ({
+  ...(attrs.agent === undefined ? {} : { agent: attrs.agent }),
+  promptPath: attrs.prompt.path,
+  ...(context.packageDirectory === undefined ? {} : { packageDirectory: context.packageDirectory }),
+  diffs: collectGitDiffs(attrs.data),
+  fixes: [...(attrs.fixes ?? [])],
+  mode: "check"
+})
+
 const lintDefinition = Target.make("Agent.Lint", {
   attrs: LintAttrs,
   kinds: ["lint"],
-  implementation: () => Target.notImplemented("Agent.Lint")
+  success: LintReport,
+  error: LintError,
+  cache: false,
+  implementation: (attrs, context) => AgentLint.call(lintPayload(attrs, context))
 })
 
 /**
@@ -61,13 +713,40 @@ export const DiffAttrs = Schema.Struct({
   secrets: Schema.optional(Attr.Secrets),
   sandbox: Schema.optional(Attr.Sandbox),
   approval: Schema.optional(Attr.Approval),
-  maxRounds: Schema.Number
+  maxRounds: Schema.Number.check(
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(maximumRounds)
+  )
+})
+
+/**
+ * Projects decoded Agent.Diff attrs into the {@link AgentDiff} payload.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const diffPayload = (
+  attrs: (typeof DiffAttrs)["Type"],
+  context: Target.ImplementationContext
+): DiffPayload => ({
+  ...(attrs.agent === undefined ? {} : { agent: attrs.agent }),
+  promptPath: attrs.prompt.path,
+  ...(context.packageDirectory === undefined ? {} : { packageDirectory: context.packageDirectory }),
+  payloadSpec: attrs.payload ?? {},
+  mcp: [...(attrs.mcp ?? [])],
+  diffs: collectGitDiffs(attrs.data),
+  changes: [...attrs.changes],
+  gateIdentities: attrs.gates.map((gate) => targetIdentity(gate)),
+  maxRounds: attrs.maxRounds
 })
 
 const diffDefinition = Target.make("Agent.Diff", {
   attrs: DiffAttrs,
   kinds: ["run"],
-  implementation: () => Target.notImplemented("Agent.Diff")
+  success: DiffResult,
+  error: DiffError,
+  cache: false,
+  implementation: (attrs, context) => AgentDiff.call(diffPayload(attrs, context))
 })
 
 /**
@@ -92,13 +771,43 @@ export const PrAttrs = Schema.Struct({
   changes: Schema.Array(Schema.NonEmptyString),
   gates: Attr.Gates,
   approval: Schema.optional(Attr.Approval),
-  maxRounds: Schema.optional(Schema.Number)
+  maxRounds: Schema.optional(Schema.Number.check(
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(maximumRounds)
+  ))
+})
+
+/**
+ * Projects decoded Agent.Pr attrs into the {@link AgentPr} payload.
+ *
+ * A Pr declaration has no payload inputs or MCP servers; `maxRounds`
+ * defaults to {@link defaultPrRounds}.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const prPayload = (
+  attrs: (typeof PrAttrs)["Type"],
+  context: Target.ImplementationContext
+): DiffPayload => ({
+  ...(attrs.agent === undefined ? {} : { agent: attrs.agent }),
+  promptPath: attrs.prompt.path,
+  ...(context.packageDirectory === undefined ? {} : { packageDirectory: context.packageDirectory }),
+  payloadSpec: {},
+  mcp: [],
+  diffs: collectGitDiffs(attrs.data),
+  changes: [...attrs.changes],
+  gateIdentities: attrs.gates.map((gate) => targetIdentity(gate)),
+  maxRounds: attrs.maxRounds ?? defaultPrRounds
 })
 
 const prDefinition = Target.make("Agent.Pr", {
   attrs: PrAttrs,
   kinds: ["run"],
-  implementation: () => Target.notImplemented("Agent.Pr")
+  success: PrResult,
+  error: PrError,
+  cache: false,
+  implementation: (attrs, context) => AgentPr.call(prPayload(attrs, context))
 })
 
 /**

@@ -426,6 +426,87 @@ export const Package = S.Package({ targets: { check: S.Shell.Test({ command: "tr
   })
 })
 
+describe("NodeModule.Bin resolution through the package bin map", () => {
+  /** Writes one installed fixture package plus the `.bin` entries it exposes. */
+  const installFixturePackage = async (
+    root: string,
+    packageName: string,
+    bin: string | Readonly<Record<string, string>>,
+    binNames: ReadonlyArray<string>
+  ): Promise<void> => {
+    await write(
+      root,
+      NodePath.join("node_modules", ...packageName.split("/"), "package.json"),
+      `${JSON.stringify({ name: packageName, version: "1.0.0", bin })}\n`
+    )
+    for (const name of binNames) {
+      await write(root, NodePath.join("node_modules", ".bin", name), "#!/bin/sh\nexit 0\n")
+      await Fs.chmod(NodePath.join(root, "node_modules", ".bin", name), 0o755)
+    }
+  }
+
+  it("resolves a string-form bin to the package basename", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { stringy: S.Shell.Test({ bin: S.NodeModule.Bin("@scope/stringy") }) } })
+`
+    )
+    // Only the basename entry exists: resolving any other name would refuse.
+    await installFixturePackage(root, "@scope/stringy", "./cli.js", ["stringy"])
+    commitAll(root)
+    const { exitCode, logs } = await serve(root, ["//:stringy"])
+    expect(exitCode).toBe(0)
+    expect(logs).toContain("//:stringy  ran")
+  })
+
+  it("resolves a one-entry bin map to its key, not the package basename", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { pw: S.Shell.Test({ bin: S.NodeModule.Bin("@playwright/test") }) } })
+`
+    )
+    // `.bin/playwright` exists; `.bin/test` (the basename) deliberately does not.
+    await installFixturePackage(root, "@playwright/test", { playwright: "cli.js" }, ["playwright"])
+    commitAll(root)
+    const { exitCode, logs } = await serve(root, ["//:pw"])
+    expect(exitCode).toBe(0)
+    expect(logs).toContain("//:pw  ran")
+    expect(logs).not.toContain("node_modules/.bin/test")
+  })
+
+  it("refuses a multi-entry bin map without an explicit name and accepts the named one", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+const ambiguous = S.Shell.Test({ bin: S.NodeModule.Bin("multi") })
+const explicit = S.Shell.Test({ bin: S.NodeModule.Bin("multi", "beta") })
+export const Package = S.Package({ targets: { ambiguous, explicit } })
+`
+    )
+    await installFixturePackage(root, "multi", { alpha: "a.js", beta: "b.js" }, ["alpha", "beta"])
+    commitAll(root)
+    const refused = await serve(root, ["//:ambiguous"])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.logs).toContain("//:ambiguous  failed")
+    expect(refused.logs).toContain(`package "multi" exposes 2 binaries (alpha, beta)`)
+    expect(refused.logs).toContain("S.NodeModule.Bin(package, bin)")
+    const named = await serve(root, ["//:explicit"])
+    expect(named.exitCode).toBe(0)
+    expect(named.logs).toContain("//:explicit  ran")
+  })
+})
+
 describe("toolchain identity in keys", () => {
   it("re-keys a target when the resolved node_modules package version changes", async () => {
     const root = await temporaryWorkspace()
