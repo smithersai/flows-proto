@@ -157,7 +157,9 @@ describe("services edge", () => {
       "PACKAGE.ts",
       `import { Smithers as S } from "@smthrs/targets"
 const svc = ${serveDeclaration(port, mark, "--delay-listen 500", `readiness: { port: ${port} }`)}
-const probe = S.Shell.Test({ command: ${JSON.stringify(probeCommand(`http://127.0.0.1:${port}/health`))}, services: [svc] })
+const probe = S.Shell.Test({ command: ${
+        JSON.stringify(probeCommand(`http://127.0.0.1:${port}/health`))
+      }, services: [svc] })
 export const Package = S.Package({ targets: { svc, probe } })
 `
     )
@@ -235,7 +237,8 @@ export const Package = S.Package({ targets: { svc, probe } })
     await write(root, "WORKSPACE.ts", workspaceModule())
     // The consumer wedges the server (every later /health answers 500) and
     // then sleeps far longer than the health contract takes to trip.
-    const consumer = `${process.execPath} -e "fetch('http://127.0.0.1:${port}/wedge').then(() => setTimeout(() => {}, 60000))" ${consumerMark}`
+    const consumer =
+      `${process.execPath} -e "fetch('http://127.0.0.1:${port}/wedge').then(() => setTimeout(() => {}, 60000))" ${consumerMark}`
     await write(
       root,
       "PACKAGE.ts",
@@ -324,8 +327,8 @@ export const Package = S.Package({ targets: { assets, svc, probe } })
     // The consumer's execution edges name the service's data producer, not
     // the service; the plan never lists the service as work.
     expect(output).toMatch(/label: "\/\/:probe"[\s\S]*?dependencies\[1\]: "\/\/:assets"/)
-    expect(output).toContain('label: "//:assets"')
-    expect(output).not.toContain('"//:svc"')
+    expect(output).toContain("label: \"//:assets\"")
+    expect(output).not.toContain("\"//:svc\"")
     expect(pgrep(mark)).toHaveLength(0)
   }, 60_000)
 })
@@ -361,41 +364,45 @@ export const Package = S.Package({ targets: { closure, t } })
     expect(outside.logs).toContain("//:t  hit")
   }, 60_000)
 
-  it("checks Files.difference against a closure: leftover named, verdict cached, dynamic import fails closed", async () => {
-    const root = await temporaryWorkspace()
-    await write(root, "WORKSPACE.ts", workspaceModule())
-    await write(root, "src/a.ts", `import { b } from "./b"\nexport const a = b + 1\n`)
-    await write(root, "src/b.ts", `export const b = 1\n`)
-    await write(root, "src/unrelated.ts", `export const u = 1\n`)
-    await write(
-      root,
-      "PACKAGE.ts",
-      `import { Smithers as S } from "@smthrs/targets"
+  it(
+    "checks Files.difference against a closure: leftover named, verdict cached, dynamic import fails closed",
+    async () => {
+      const root = await temporaryWorkspace()
+      await write(root, "WORKSPACE.ts", workspaceModule())
+      await write(root, "src/a.ts", `import { b } from "./b"\nexport const a = b + 1\n`)
+      await write(root, "src/b.ts", `export const b = 1\n`)
+      await write(root, "src/unrelated.ts", `export const u = 1\n`)
+      await write(
+        root,
+        "PACKAGE.ts",
+        `import { Smithers as S } from "@smthrs/targets"
 const srcs = S.Filegroup({ srcs: S.glob(["src/**"]) })
 const closure = S.ImportClosure({ entries: S.glob(["src/a.ts"]) })
 const dead = S.Test({ expect: S.Files.difference(srcs, closure.files), toBe: "empty" })
 export const Package = S.Package({ targets: { srcs, closure, dead } })
 `
-    )
-    commitAll(root)
-    const red = await serve(root, ["//:dead"])
-    expect(red.exitCode).toBe(1)
-    expect(red.logs).toContain("//:dead  failed")
-    expect(red.logs).toContain("1 of 3 file(s) in the left set are missing from the right set")
-    expect(red.logs).toContain("leftover: src/unrelated.ts")
-    await Fs.rm(NodePath.join(root, "src/unrelated.ts"))
-    const green = await serve(root, ["//:dead"])
-    expect(green.exitCode).toBe(0)
-    expect(green.logs).toContain("//:dead  difference empty: 2 left, 2 right")
-    expect(green.logs).toContain("//:dead  ran")
-    const again = await serve(root, ["//:dead"])
-    expect(again.logs).toContain("//:dead  hit")
-    await write(root, "src/a.ts", `import { b } from "./b"\nexport const a = () => import(b ? "./x" : "./y")\n`)
-    const closed = await serve(root, ["//:dead"])
-    expect(closed.exitCode).toBe(1)
-    expect(closed.logs).toContain("fails closed")
-    expect(closed.logs).toContain("dynamic: src/a.ts ->")
-  }, 60_000)
+      )
+      commitAll(root)
+      const red = await serve(root, ["//:dead"])
+      expect(red.exitCode).toBe(1)
+      expect(red.logs).toContain("//:dead  failed")
+      expect(red.logs).toContain("1 of 3 file(s) in the left set are missing from the right set")
+      expect(red.logs).toContain("leftover: src/unrelated.ts")
+      await Fs.rm(NodePath.join(root, "src/unrelated.ts"))
+      const green = await serve(root, ["//:dead"])
+      expect(green.exitCode).toBe(0)
+      expect(green.logs).toContain("//:dead  difference empty: 2 left, 2 right")
+      expect(green.logs).toContain("//:dead  ran")
+      const again = await serve(root, ["//:dead"])
+      expect(again.logs).toContain("//:dead  hit")
+      await write(root, "src/a.ts", `import { b } from "./b"\nexport const a = () => import(b ? "./x" : "./y")\n`)
+      const closed = await serve(root, ["//:dead"])
+      expect(closed.exitCode).toBe(1)
+      expect(closed.logs).toContain("fails closed")
+      expect(closed.logs).toContain("dynamic: src/a.ts ->")
+    },
+    60_000
+  )
 })
 
 describe("bundler build key template", () => {

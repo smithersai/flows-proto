@@ -92,15 +92,16 @@ Test command: `pnpm -C packages/build-cli exec vitest run test/PackageExecution.
 
 Lane A (services): Serve readiness {port|http,timeout} / health {interval,
 failures} / stop {signal,grace}; services edge refcount+teardown
-- [ ] proof: `//src:dev` starts, /health readiness gates, SIGTERM stop; `//playwright:smoke` boots dev as service ([b] acceptable if app needs .env.shared)
-- [ ] mid-run health failure fails dependent (kill dev mid-test fixture)
+- [b] proof: `//src:dev` starts, /health readiness gates, SIGTERM stop; `//playwright:smoke` boots dev as service ([b] acceptable if app needs .env.shared) — 2026-08-25 e2e clone (cold .flows): `//playwright:smoke` hoists dev's data edges (`//src:srcs`, `//src:relayArtifacts`, `//data:schema`; relayArtifacts hit 2.0s), the supervisor spawns `//src:dev` (real `bun` template → `node -r @swc-node/register ./src/dev.ts`, process listened on :4000) and probes GET /health for the declared 90s; the snapshot app cannot answer — its compiled `dist/server/index.js` requires `@sentry/profiling-node`'s missing `sentry_cpu_profiler-darwin-arm64-137.node` — so the consumer failed with the typed `readiness-timeout` carrying that server tail, exit 1 in 92.0s, and teardown proven (0 `dev.ts`/bun processes, :4000 released). The same acquire/readiness/stop path is green on the fixture server in `test/LaneExecution.test.ts` (readiness-gated success, release on consumer failure, foreground Serve root stopped via the stop contract on interrupt).
+- [x] mid-run health failure fails dependent (kill dev mid-test fixture) — proven on the fixture server: consumer wedges `/health`, `health {interval: "150ms", failures: 2}` fails the running consumer with `unhealthy` + "answered 500" + the server tail, and the consumer's own process is killed (`test/LaneExecution.test.ts`, 2026-08-25).
 
 Lane B (resolver): S.ImportClosure per-file rows, S.Files.difference, S.Test({expect,toBe})
-- [ ] proof: `//src/Server:test` keyed on closure — edit unrelated app file = cache hit, edit imported file = miss
-- [ ] `//src:unreachableCode` end-to-end once importGraph lands
+- [x] proof: `//src/Server:test` keyed on closure — edit unrelated app file = cache hit, edit imported file = miss — 2026-08-25 e2e clone (cold .flows): closure 3062 files / 91 packages / 1 unresolved (`src/Server/PACKAGE.ts` → `@smthrs/targets`, not installed in force) / 0 dynamic; cold run REALLY ran jest scoped to src/Server (`ran 6.4s`; hand-run of the identical argv under the identical sandbox-exec profile: 31 suites / 225 tests green in 5.2s); warm run `hit`; `src/Server/config.ts` (inside the closure) touched → `ran`; `src/Apps/Auction/__tests__/AuctionApp.jest.tsx` (outside; `src/Apps/Auction/index.tsx` does not exist in the snapshot) touched → `hit`. One intermediate miss was self-inflicted: reformatting PackageExec.ts between runs changed the implementation fingerprint, which is key material by design.
+- [x] `//src:unreachableCode` end-to-end once importGraph lands — 2026-08-25: honest red, `1001 of 2982 file(s) in the left set are missing from the right set` (tests, stories, mocks, READMEs unreached by the bundler graph), leftover sample printed, exit 1 in 1.5s with importGraph replayed from cache (22ms). Closure operands fail closed on unresolved/dynamic rows (fixture proof in `test/LaneExecution.test.ts`).
 
 Lane C (bundler): S.Bundler.Rspack({config}), .resolve({entries,universe}), .build({environment,mode,graph,outDirs})
-- [ ] proof: importGraph resolves force's client.tsx/server; `//src:buildClientDev` real rspack build keyed on graph digest
+- [x] proof: importGraph resolves force's client.tsx/server — 2026-08-25 e2e clone (cold .flows): `//src:importGraph` ran the real rspack resolve in 12.0s (relayArtifacts ran 2.1s first): 5148 modules / 3228 workspace files / 233 packages, graph digest `f4cf7e159f0ac9f2…` byte-identical to the lane's live-force measurement; warm run `hit` in 27ms.
+- [ ] `//src:buildClientDev` real rspack build keyed on graph digest — not run on force (production-scale rspack build; deferred as heavy). The keying is proven through the CLI on the rsbuild-mini fixture (`test/LaneExecution.test.ts`): build keys on `bundler-graph:<digest>` at execution (key template + sentinel), warm run hits, a universe-only edit re-resolves the graph but replays the build, an in-graph edit re-runs it; outputs captured through the CAS path and restored on hit.
 
 Lane D (agents): S.Agents registry, Agent.Lint (vacuous green, fixes write-set, --fix), Agent.Diff (payload/S.Input.*, S.Mcp.Http, gates loop, maxRounds), Agent.Pr shape, agent caching
 - [ ] proof: clean-diff `//src:ssrLint` vacuously green with zero spawns; staged bad-SSR edit in e2e clone triggers real luna run (or scripted fake with --agent-fake); cached verdict replays
@@ -120,6 +121,17 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
 ## Log
 
 - 2026-08-25: checklist created; fixtures frozen (18 files); e2e clone built.
+- 2026-08-25 slice 2 (resolver/bundler/services dispatch): `PackageExec`
+  executes ImportClosure, Test, Bundler.Rspack.resolve/build, Shell.Serve
+  (foreground root) and the `services` edge (per-invocation
+  ServiceSupervisor inside the scheduler's scope; Serve targets are
+  acquire-only, their data edges hoist onto the consumer; consumers get
+  loopback-only network in the sandbox profile). Proofs above; suites:
+  build-cli green incl. 10 new `LaneExecution` tests, targets 629/629.
+  Known: `pnpm lint` in build-cli still reports the seven unused lane
+  imports (AgentFake, AgentSession, GitCommit, GithubRender, MemoryBackend,
+  GithubTarget, Deferred) that the agents/github/memory dispatch slice
+  consumes.
 - 2026-08-25 host probe: PRESENT bun, node, yarn, git, aws, kubectl, afplay,
   sandbox-exec, and every force node_modules bin (biome, tsc, jest,
   relay-compiler, prettier, knip, storybook, playwright, danger,
