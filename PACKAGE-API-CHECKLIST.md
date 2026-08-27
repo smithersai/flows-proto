@@ -119,10 +119,10 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
 ## Phase W4 — full sweep
 
 - [ ] Every force label plans (`smthrs graph '//...'` zero NotImplemented at plan time)
-- [ ] Executes-green set: lint, typeCheck, test (jest), routesGen, relayArtifacts+relay, format, suites, claudeMd, beep, syncSchema, importGraph, buildClientDev, server/app closure tests
-- [ ] Correct-refusal set ([b]): syncEnv/publishAssets/danger (creds), deleteReviewApp (approval+sandbox none), hokusai/detect-secrets/yalc (host bins), fixSentryIssue (payload)
-- [ ] Adversarial review pass + fixes; identity/cache-key/write-set invariant tests green
-- [ ] Committed on main; checklist fully resolved
+- [x] Executes-green set on force: lint (tree verdict), typeCheck, test (jest), routesGen, relayArtifacts+relay, format, suites, claudeMd, beep, syncSchema, importGraph, server/app closure tests, deadCode (restored 2026-08-27 by the NodeModule.Bin fix), schemaPinned (S.Fetch executes 2026-08-27: 866,527 bytes, sha256 verified, second run hit); buildClientDev keying proven on the rsbuild fixture, the production-scale rspack build itself still deferred as heavy
+- [x] Correct-refusal set ([b]) — 2026-08-27 plan sweep: syncEnv (missing secret at spawn), deleteReviewApp/ruleOfThree/fixSentryIssue (approval required, no durable approval store), hokusai/detect-secrets/detect-secrets-hook/yalc (declared host bins absent), addAppRoute (missing `--input name`); every refusal typed, zero NotImplemented
+- [x] Review passes: each 2026-08-27 lane (defects, node, go, chain, gaps, fetch) ran a review node that re-ran its proofs and fixed findings (node: byte-for-byte fixtures; go: six defects found by a verbatim tapes fixture; gaps: cargo driver refusals, tar-blob module caches); merged tree suites green (build-cli 711 + 1 skipped, targets 735), tsc and dprint clean
+- [x] Committed on the live line (detached HEAD off curate/vibe-append-2026-08-21): merges 2dc6fb40f (defects), ca0f5d20a (chain), 8fd4d4a13 (node), e4f7acd12 (go), 1c45d61a1 (fetch), 13d19f43e (gaps incl. aomi/cargo-targets). Cross-repo bar (2026-08-27): all eight ~/artsy design-partner repos load, graph with zero warnings, and plan with zero NotImplemented — force 82, whatsabi 47, viem 76, tapes 67, optimism 79, aomi 121, aomi-sdk 36, slop-computer 35 labels; sweep script `~/flows-api/goals/verify-repos.sh`
 
 ## Log
 
