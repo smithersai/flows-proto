@@ -501,8 +501,8 @@ file and atomic rename, then the existing single-file CAS path captures them.
 | Owned symbol | Status | Exact proof command | Output tail |
 | --- | --- | --- | --- |
 | `S.Fetch({url, sha256, out})` plan | [x] | `cd ~/artsy/force && node /Users/williamcory/flows-api/fetch/packages/build-cli/src/main.js '//data:schemaPinned' --plan --format json` | `rule: Fetch`; `cacheable: true`; `sandbox.network: true`; no `refusal` |
-| `S.Fetch` execute/cache | [x] | `cd ~/artsy-e2e/force && node /Users/williamcory/flows-api/fetch/packages/build-cli/src/main.js '//data:schemaPinned'` twice | first: `fetched 866527 byte(s)`, `ran`; second: `hit 13ms`; `shasum -a 256` = `7f60276646f651505e048961954fa97c7ad8501b284ac3db362c04f1d23c72e0` |
-| `S.Fetch` local HTTP contract | [x] | `pnpm -C packages/build-cli exec vitest run test/FetchTarget.test.ts --coverage.enabled=false` | `7 passed`; key varies with url/sha256/out; package output law; typed mismatch expected/actual with absent destination and unchanged pre-existing file; warm hit; deleted output restored byte-for-byte |
+| `S.Fetch` execute/cache | [x] | `cd ~/artsy-e2e/force && cp ~/artsy/force/data/PACKAGE.ts data/PACKAGE.ts && rm -rf .flows && node /Users/williamcory/flows-api/fetch/packages/build-cli/src/main.js '//data:schemaPinned'` — twice, then `rm data/schema.upstream.graphql` and a third time, then `rm -f data/schema.upstream.graphql; rm -rf .flows; git checkout -- data/PACKAGE.ts` | cold `ran 429ms`; warm `hit 4.7ms`; post-delete `hit 4.8ms` and the file is back; `shasum -a 256` = `7f60276646f651505e048961954fa97c7ad8501b284ac3db362c04f1d23c72e0`, 866527 bytes, mode 644 all three times; clone `git status` clean afterwards. The `data/PACKAGE.ts` copy is required: the `e2e snapshot of force spec + sources` commit predates `schemaPinned`, so the bare form answers `unknown_label`. |
+| `S.Fetch` local HTTP contract | [x] | `pnpm -C packages/build-cli exec vitest run test/FetchTarget.test.ts --coverage.enabled=false` | `8 passed`; key varies with url/sha256/out; package output law; typed mismatch expected/actual with absent destination and unchanged pre-existing file; typed `unexpected_status` on HTTP 404 and `request_failed` naming `ECONNREFUSED`; warm hit; deleted output restored byte-for-byte and mode-for-mode |
 
 | Repository | Load / graph / plan proof | Execute / refusal proof | Result |
 | --- | --- | --- | --- |
@@ -530,3 +530,16 @@ constructor.
 Not done: no unobserved headers, secrets, optional-sha, extraction, or BUILD.ts
 execution surface was added. Those are not present in the design-partner
 corpus and would widen the contract without a declaration to prove.
+
+Review pass (same day, same lane): three defects found and fixed in place.
+(1) A transport failure reported the generic fallback `HTTP transport failed`
+and dropped the reason entirely, because Effect's `HttpClientError` keeps
+`message` on its prototype and `Diagnostic.message` reads own data properties
+only, by design. `FetchExec.transportReason` now walks the own-`cause` chain
+(bounded to four hops, accessors never invoked) so a dead host reports
+`connect ECONNREFUSED 127.0.0.1:1`. (2) A fresh download took its mode from the
+process umask while a CAS restore chmods to `0o644`, so a warm tree could
+differ from a cold one in metadata; `atomicWrite` now chmods explicitly.
+(3) The `unexpected_status` and `request_failed` branches had no coverage; the
+fixture server answers 404 on `/missing*` and the suite asserts both typed
+failures write nothing. Suites, `tsc`, eslint, and dprint re-run green.

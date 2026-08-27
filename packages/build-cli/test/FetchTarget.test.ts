@@ -38,8 +38,13 @@ afterAll(async () => {
 const schemaBytes = Buffer.from("type Query { artwork: String }\n")
 const schemaSha256 = createHash("sha256").update(schemaBytes).digest("hex")
 let requests = 0
-const server = createServer((_request, response) => {
+const server = createServer((request, response) => {
   requests += 1
+  if (request.url?.startsWith("/missing") === true) {
+    response.writeHead(404, { "content-type": "text/plain" })
+    response.end("no such schema\n")
+    return
+  }
   response.writeHead(200, { "content-type": "application/octet-stream", "content-length": schemaBytes.byteLength })
   response.end(schemaBytes)
 })
@@ -282,12 +287,53 @@ describe("S.Fetch in a PACKAGE.ts workspace", () => {
     expect(second.logs).toContain("//data:schemaPinned  hit")
     expect(requests).toBe(requestsBefore + 1)
 
+    const downloadedMode = (await Fs.stat(destination)).mode & 0o777
+
     await Fs.rm(destination)
     const restored = await serve(root, ["//data:schemaPinned"])
     expect(restored.exitCode).toBe(0)
     expect(restored.logs).toContain("//data:schemaPinned  hit")
     expect(await Fs.readFile(destination)).toEqual(schemaBytes)
     expect(requests).toBe(requestsBefore + 1)
+    // The download and the CAS restore agree on mode as well as bytes, so a
+    // restrictive umask cannot make a warm tree differ from a cold one.
+    expect(downloadedMode).toBe(0o644)
+    expect((await Fs.stat(destination)).mode & 0o777).toBe(downloadedMode)
+  })
+
+  it("reports the HTTP status and the transport reason as typed failures without writing", async () => {
+    const missingUrl = `${serverUrl.replace("/schema.graphql", "/missing.graphql")}`
+    const root = await fixtureWorkspace({ url: missingUrl })
+    const destination = NodePath.join(root, "data/schema.upstream.graphql")
+    const executed = await serve(root, ["//data:schemaPinned"])
+    expect(executed.exitCode).toBe(1)
+    expect(executed.logs).toContain("answered HTTP 404")
+    await expect(Fs.access(destination)).rejects.toThrow()
+
+    const status = await FetchExec.execute({
+      root,
+      target: FetchTarget.Fetch({ url: missingUrl, sha256: schemaSha256, out: "status.graphql" }),
+      outFile: "data/status.graphql"
+    }).then(() => undefined, (cause: unknown) => cause)
+    expect(status).toBeInstanceOf(FetchExec.FetchError)
+    expect(status).toMatchObject({ code: "unexpected_status" })
+
+    // A transport failure must name what actually went wrong. Effect's
+    // HttpClientError keeps `message` on its prototype, so the reason has to
+    // be recovered from the Node error in its `cause` chain.
+    const refused = await FetchExec.execute({
+      root,
+      target: FetchTarget.Fetch({
+        url: "http://127.0.0.1:1/schema.graphql",
+        sha256: schemaSha256,
+        out: "down.graphql"
+      }),
+      outFile: "data/down.graphql"
+    }).then(() => undefined, (cause: unknown) => cause)
+    expect(refused).toBeInstanceOf(FetchExec.FetchError)
+    expect(refused).toMatchObject({ code: "request_failed" })
+    expect((refused as Error).message).toContain("ECONNREFUSED")
+    await expect(Fs.access(NodePath.join(root, "data/down.graphql"))).rejects.toThrow()
   })
 
   it("reports a typed digest mismatch with expected and actual hashes and writes no file", async () => {

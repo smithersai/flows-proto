@@ -22,6 +22,7 @@ import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import { createHash, randomBytes } from "node:crypto"
 import * as Fs from "node:fs/promises"
 import * as NodePath from "node:path"
+import * as NodeUtil from "node:util/types"
 import * as Diagnostic from "./Diagnostic.ts"
 
 /**
@@ -123,6 +124,30 @@ export const plan = (options: {
   readonly target: Target.AnyTarget
 }): Plan => planAttrs({ packagePath: options.packagePath, attrs: FetchTarget.fetchAttrsOf(options.target) })
 
+/**
+ * The most specific readable text in a rejected value's own `cause` chain.
+ *
+ * Effect's `HttpClientError` keeps its `message` on the prototype, so
+ * {@link Diagnostic.message} — which reads own data properties only, on
+ * purpose — sees nothing on the outermost value and would report every
+ * transport failure with the same generic fallback. The underlying Node error
+ * one or two `cause` hops down does carry an own `message`
+ * (`connect ECONNREFUSED …`), so the walk recovers the actual reason without
+ * ever invoking an accessor.
+ */
+const transportReason = (cause: unknown, fallback: string): string => {
+  let current = cause
+  for (let hop = 0; hop < 4; hop += 1) {
+    const rendered = Diagnostic.message(current, "")
+    if (rendered !== "") return rendered
+    if (typeof current !== "object" || current === null || NodeUtil.isProxy(current)) break
+    const descriptor = Object.getOwnPropertyDescriptor(current, "cause")
+    if (descriptor === undefined || !("value" in descriptor)) break
+    current = descriptor.value
+  }
+  return fallback
+}
+
 const downloadedBytes = async (
   url: string,
   signal: AbortSignal | undefined
@@ -144,7 +169,7 @@ const downloadedBytes = async (
   if (cause instanceof FetchError) throw cause
   throw new FetchError(
     "request_failed",
-    `Fetch request failed for ${url}: ${Diagnostic.message(cause, "HTTP transport failed")}`,
+    `Fetch request failed for ${url}: ${transportReason(cause, "HTTP transport failed")}`,
     undefined,
     undefined,
     { cause }
@@ -158,6 +183,11 @@ const atomicWrite = async (destination: string, bytes: Uint8Array): Promise<void
     const handle = await Fs.open(temporary, "wx", 0o644)
     try {
       await handle.writeFile(bytes)
+      // `open`'s mode is masked by the process umask, but a CAS restore of the
+      // same file chmods it to 0o644. Setting the mode explicitly keeps a
+      // fresh download and a restored one identical in metadata as well as
+      // bytes, whatever umask the run inherited.
+      await handle.chmod(0o644)
       await handle.sync()
     } finally {
       await handle.close()
