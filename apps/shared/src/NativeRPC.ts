@@ -1,4 +1,3 @@
-import type { ElectrobunRPCSchema } from "electrobun"
 import type { PickLocalRepositoryResult, RepositoryAccess } from "./NativeRepository"
 
 /*
@@ -7,7 +6,13 @@ import type { PickLocalRepositoryResult, RepositoryAccess } from "./NativeReposi
  * agent requests and the agentFrame message are gone; both doors here have
  * HTTP fallbacks so the SPA runs unchanged in Playwright chromium.
  */
-export interface SmithersNativeRPC extends ElectrobunRPCSchema {
+/*
+ * Structurally an Electrobun `ElectrobunRPCSchema` (`{ bun, webview }`, each
+ * with `requests` and `messages`); apps/shared does not depend on the SDK,
+ * which in 2.x lives only in apps/ui's Hutch devkit. apps/ui's
+ * `BrowserView.defineRPC<SmithersNativeRPC>` checks the shape at the use site.
+ */
+export interface SmithersNativeRPC {
   readonly bun: {
     readonly requests: {
       readonly pickLocalRepository: {
