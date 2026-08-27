@@ -262,4 +262,40 @@ describe.skipIf(!hasCargo)("cargo package-mode planning", () => {
     expect(plugins.argv?.slice(1)).toEqual(["compile"])
     expect(plugins.dependencies).toContain("//sdk:buildCli")
   })
+
+  it("refuses an underspecified container build instead of silently running it on the host", async () => {
+    const root = await fixture()
+    await write(
+      root,
+      "sdk/PACKAGE.ts",
+      sdkPackage.replace(
+        "export const Package",
+        `const cross = S.Cargo.Build({ package: "aomi-sdk", target: "mips64-unknown-none", container: "docker", data: [], outDirs: ["//target/prestates"] })
+export const Package`
+      ).replace("targets: { buildCli", "targets: { cross, buildCli")
+    )
+    expect(nodeOf(await planOf(root, "//sdk:cross"), "//sdk:cross").refusal)
+      .toContain("declares no image or container command")
+  })
+
+  it("keys cargo plugins when present and refuses a missing one by executable name", async () => {
+    const root = await fixture()
+    await write(root, "deny.toml", "[licenses]\nallow = []\n")
+    await write(
+      root,
+      "sdk/PACKAGE.ts",
+      sdkPackage.replace(
+        "export const Package",
+        `const deny = S.Cargo.Deny({ config: S.file("//deny.toml"), data: [] })
+export const Package`
+      ).replace("targets: { buildCli", "targets: { deny, buildCli")
+    )
+    const deny = nodeOf(await planOf(root, "//sdk:deny"), "//sdk:deny")
+    if (PackageTree.findOnPath("cargo-deny") === undefined) {
+      expect(deny.refusal).toContain("host binary \"cargo-deny\" is not present on PATH")
+    } else {
+      expect(deny.refusal).toBeUndefined()
+      expect(commandsOf(deny)[0]!.slice(1)).toEqual(["deny", "--config", "deny.toml", "check"])
+    }
+  })
 })

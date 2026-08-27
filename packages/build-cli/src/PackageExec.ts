@@ -1846,6 +1846,21 @@ const visit = async (
   // run: it plans no process at all.
   if (rule.startsWith("Cargo.") && rule !== "Cargo.AppSet" && refusal === undefined) {
     const cargoPath = await resolveToken(Shell.toolToken({ _tag: "CargoBin" }))
+    if (rule === "Cargo.Build" && attrMember(attrs, "container") === "docker") {
+      noteRefusal(
+        "Cargo.Build container \"docker\" declares no image or container command; a reproducible build cannot be inferred"
+      )
+    }
+    const cargoPlugin = rule === "Cargo.Nextest" ? "cargo-nextest" : rule === "Cargo.Deny" ? "cargo-deny" : undefined
+    if (cargoPlugin !== undefined) {
+      const pluginPath = PackageTree.findOnPath(cargoPlugin)
+      if (pluginPath === undefined) {
+        noteRefusal(`host binary ${JSON.stringify(cargoPlugin)} is not present on PATH; ${rule} cannot run`)
+      } else {
+        const probe = await PackageTree.probeVersion(pluginPath)
+        toolchain.push({ tag: cargoPlugin, version: probe.output, exitCode: probe.exitCode })
+      }
+    }
     let selections: ReadonlyArray<Cargo.CrateSelection> | undefined
     const declared = Cargo.selectionOf(attrs)
     if (declared !== undefined) {
@@ -1879,7 +1894,18 @@ const visit = async (
       }
     }
     if (selections !== undefined && refusal === undefined) {
-      commands = selections.map((selection) => [cargoPath, ...Cargo.packageArgs(rule, attrs, selection, mode)])
+      const config = attrMember(attrs, "config")
+      const commandAttrs = rule === "Cargo.Deny" && typeof config === "object" && config !== null &&
+          typeof (config as { readonly path?: unknown }).path === "string"
+        ? {
+          ...attrs as Record<string, unknown>,
+          config: {
+            ...config as Record<string, unknown>,
+            path: Input.resolvePath(packagePath, (config as { readonly path: string }).path)
+          }
+        }
+        : attrs
+      commands = selections.map((selection) => [cargoPath, ...Cargo.packageArgs(rule, commandAttrs, selection, mode)])
       if (commands.length === 1) argv = [...commands[0]!]
     }
     const declaredOut = attrMember(attrs, "outDirs")
