@@ -26,8 +26,8 @@ import * as PackageIndex from "./PackageIndex.ts"
 import * as PackageLoader from "./PackageLoader.ts"
 import * as Planner from "./Planner.ts"
 import * as Query from "./Query.ts"
-import * as Reporter from "./Reporter.ts"
 import * as RepoResolution from "./RepoResolution.ts"
+import * as Reporter from "./Reporter.ts"
 import {
   ensureGitignored,
   resolveConfig,
