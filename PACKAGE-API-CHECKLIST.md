@@ -406,7 +406,14 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   selector so that second one is a one-line declaration fix
   (`S.Cargo.Fetch({ crates, outDirs: ["//.cargo-home"], sandbox: { network: true } })`,
   named in the apps targets' `data`); proved in `CargoPlan.test.ts`, not applied, because
-  the design-partner files are read-only here.
+  the design-partner files are read-only here. Mid-pass the live design partner moved:
+  aomi-sdk 5d2adbc..542c6d0 (2026-08-27 03:14-03:17) added five agent lanes and three
+  guard scripts, and four of the new lanes name `S.Agents.luna`/`S.Agents.sol` while
+  WORKSPACE.ts still declares no `agents` map, so every command against that revision
+  refuses at index time with `unknown_agent`. The measurements above are the revision
+  before it. On the new revision, with `agents: S.Agents({ default, luna, sol })` added
+  to a read-only `git archive` copy and nothing else changed, `query '//...'` lists 48
+  labels and `test '//:ci' --plan` reports zero refusals.
 ### Lane api/go 2026-08-27
 
 Status: targets 654/654; build-cli 654 passed + 1 skipped; both package `tsc --noEmit` checks green; changed-file eslint and dprint green. The full tapes graph now reaches the foreign `S.Docker.Build` namespace; optimism reaches the foreign `S.Mise` constructor. No file under `~/artsy` was edited.
