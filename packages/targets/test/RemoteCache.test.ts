@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import * as RemoteCache from "../src/RemoteCache.ts"
 import { Secret } from "../src/Secret.ts"
+import * as WorkspaceDeclaration from "../src/WorkspaceDeclaration.ts"
 
 describe("RemoteCache.make", () => {
   it("defaults the declared secret and stays inert", () => {
@@ -86,5 +87,65 @@ describe("RemoteCache.make", () => {
     expect(RemoteCache.isRemoteCache(declaration)).toBe(false)
     expect(RemoteCache.isRemoteCache(proxy)).toBe(false)
     expect(invoked).toBe(false)
+  })
+})
+
+describe("RemoteCache.make split read/write form", () => {
+  it("accepts read as the token slot and carries a separate write secret", () => {
+    const declaration = RemoteCache.make({
+      endpoint: "https://build.smithers.sh",
+      read: Secret("SMITHERS_CACHE_READ_TOKEN"),
+      write: Secret("SMITHERS_CACHE_WRITE_TOKEN")
+    })
+    expect(declaration.token).toEqual({ _tag: "Secret", env: "SMITHERS_CACHE_READ_TOKEN" })
+    expect(declaration.write).toEqual({ _tag: "Secret", env: "SMITHERS_CACHE_WRITE_TOKEN" })
+    expect(RemoteCache.isRemoteCache(declaration)).toBe(true)
+    expect(Object.isFrozen(declaration)).toBe(true)
+  })
+
+  it("leaves write undefined in the single-token form", () => {
+    expect(RemoteCache.make({ endpoint: "https://cache.example.test" }).write).toBeUndefined()
+  })
+
+  it("refuses token together with read, a non-secret write, and the reserved write variable", () => {
+    expect(() =>
+      RemoteCache.make({
+        endpoint: "https://cache.example.test",
+        token: Secret("A_TOKEN"),
+        read: Secret("B_TOKEN")
+      })
+    ).toThrow(/declare one, not both/)
+    expect(() => RemoteCache.make({ endpoint: "https://cache.example.test", write: "WRITE_TOKEN" as never })).toThrow(
+      /option write must be a Secret declaration/
+    )
+    expect(() => RemoteCache.make({ endpoint: "https://cache.example.test", write: Secret("SMITHERS_CACHE_URL") }))
+      .toThrow(/must not be SMITHERS_CACHE_URL/)
+  })
+
+  it("rejects a forged declaration whose write slot is not a secret", () => {
+    const forged = {
+      ...RemoteCache.make({ endpoint: "https://cache.example.test" }),
+      [RemoteCache.TypeId]: RemoteCache.TypeId,
+      write: "leak"
+    }
+    expect(RemoteCache.isRemoteCache(forged)).toBe(false)
+  })
+})
+
+describe("S.Cache with a remote declaration", () => {
+  it("carries the remote declaration and stays a Cache declaration", () => {
+    const remote = RemoteCache.make({ endpoint: "https://build.smithers.sh", read: Secret("R"), write: Secret("W") })
+    const cache = WorkspaceDeclaration.Cache({ directory: ".flows", remote })
+    expect(WorkspaceDeclaration.isCacheDeclaration(cache)).toBe(true)
+    expect(cache.remote).toBe(remote)
+    expect(WorkspaceDeclaration.Cache({ directory: ".flows" }).remote).toBeUndefined()
+  })
+
+  it("rejects a remote that is not an S.RemoteCache.make declaration and unknown options", () => {
+    expect(() => WorkspaceDeclaration.Cache({ directory: ".flows", remote: { endpoint: "x" } as never })).toThrow(
+      /S\.RemoteCache\.make/
+    )
+    expect(() => WorkspaceDeclaration.Cache({ directory: ".flows", remotes: 1 } as never)).toThrow(/unknown option/)
+    expect(() => WorkspaceDeclaration.Cache(null as never)).toThrow(/must be an object/)
   })
 })
