@@ -41,7 +41,33 @@ const setupDefinition = Target.make("Github.Setup", {
 export const Setup = (attrs: (typeof SetupAttrs)["~type.make.in"]): Target.AnyTarget => setupDefinition(attrs)
 
 /**
- * Schema for a generated workflow's trigger table.
+ * Schema for a `release` trigger's activity types, GitHub's own set.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const ReleaseActivity = Schema.Literals([
+  "published",
+  "unpublished",
+  "created",
+  "edited",
+  "deleted",
+  "prereleased",
+  "released"
+])
+
+/**
+ * A `release` trigger activity type.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type ReleaseActivity = typeof ReleaseActivity.Type
+
+/**
+ * Schema for a generated workflow's trigger table. `schedule` takes
+ * five-field cron expressions (rendered as GitHub's `schedule: [{ cron }]`
+ * list); `release` takes the activity types that fire it.
  *
  * @category schemas
  * @since 0.1.0
@@ -49,6 +75,8 @@ export const Setup = (attrs: (typeof SetupAttrs)["~type.make.in"]): Target.AnyTa
 export const On = Schema.Struct({
   pullRequest: Schema.optional(Schema.Boolean),
   push: Schema.optional(Schema.Struct({ branches: Schema.Array(Schema.NonEmptyString) })),
+  schedule: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+  release: Schema.optional(Schema.Array(ReleaseActivity)),
   workflowDispatch: Schema.optional(Schema.Boolean)
 })
 

@@ -185,6 +185,13 @@ describe("unknown attr keys are rejected, never stripped", () => {
     )
   })
 
+  it("admits the three sandbox network values and rejects a misspelled one", () => {
+    expect(Target.isTarget(Shell.Test({ command: "go test ./...", sandbox: { network: "loopback" } }))).toBe(true)
+    expect(Target.isTarget(Shell.Test({ command: "go test ./...", sandbox: { network: true } }))).toBe(true)
+    expect(Target.isTarget(Shell.Test({ command: "go test ./...", sandbox: { network: false } }))).toBe(true)
+    expect(() => Shell.Test({ command: "go test ./...", sandbox: { network: "lopback" } } as never)).toThrow()
+  })
+
   it("rejects unknown Bundler.Rspack method options that named-key rebuilding would drop", () => {
     const bundler = BundlerTarget.Rspack({ config: Input.file("//webpack.config.ts") })
     expect(() => bundler.resolve({ entries: ["src/client.tsx"], universe: [], entry: "typo" } as never)).toThrow(

@@ -334,6 +334,45 @@ describe("render refusals", () => {
   })
 })
 
+describe("triggers", () => {
+  it("renders schedule and release triggers in GitHub's shape", () => {
+    const workflow = S.Github.Workflow({
+      name: "nightly",
+      on: { schedule: ["0 6 * * *"], release: ["published"], workflowDispatch: true },
+      run: []
+    })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"]]),
+      packageDir: ".github"
+    })
+    const nightly = rendered.files.find((file) => file.path === "workflows/nightly.yml")
+    expect(nightly).toBeDefined()
+    expect(nightly!.content).toContain(
+      "on:\n  schedule:\n    - cron: \"0 6 * * *\"\n  release:\n    types:\n      - published\n  workflow_dispatch:\n"
+    )
+  })
+
+  it("refuses a schedule entry that is not a five-field cron expression", () => {
+    const workflow = S.Github.Workflow({ name: "nightly", on: { schedule: ["daily"] }, run: [] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    expect(thrownCode(() =>
+      GithubRender.render({
+        ciGen,
+        workspace: unitWorkspace,
+        resolve: resolver([[ciGen, "//.github:github"]]),
+        packageDir: ".github"
+      })
+    )).toBe("invalid_schedule")
+  })
+
+  it("rejects a release activity GitHub does not define", () => {
+    expect(() => S.Github.Workflow({ name: "release", on: { release: ["tagged"] }, run: [] } as never)).toThrow()
+  })
+})
+
 describe("toolchain variants", () => {
   it("renders the pnpm setup action with the pinned manager and lockfile key", () => {
     const setup = S.Github.Setup({})

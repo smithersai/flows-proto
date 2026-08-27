@@ -64,8 +64,11 @@ export const Gates = Schema.Array(Target.Target)
 export const Services = Schema.Array(Target.Target)
 
 /**
- * Schema for the sandbox policy: the default confinement, a network-only
- * opening, or the full opt-out. The declaration is key material in every
+ * Schema for the sandbox policy: the default confinement, a loopback-only
+ * opening (`{ network: "loopback" }`: bind, accept, and connect on the
+ * loopback interface, no egress; what a test suite that starts its own
+ * local listeners needs), the full network opening (`{ network: true }`),
+ * or the full opt-out (`"none"`). The declaration is key material in every
  * form.
  *
  * @category schemas
@@ -73,7 +76,7 @@ export const Services = Schema.Array(Target.Target)
  */
 export const Sandbox = Schema.Union([
   Schema.Literal("none"),
-  Schema.Struct({ network: Schema.optional(Schema.Boolean) })
+  Schema.Struct({ network: Schema.optional(Schema.Union([Schema.Boolean, Schema.Literal("loopback")])) })
 ])
 
 /**
