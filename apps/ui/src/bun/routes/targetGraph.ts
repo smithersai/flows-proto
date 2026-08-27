@@ -5,6 +5,7 @@ import type { LocalServer } from "../server"
 import { queryTargetGraph } from "../TargetGraph"
 import type { TargetRunHistory } from "../TargetRunHistory"
 import { changedFiles, computeAffected, declarationInputs } from "../Affected"
+import { renderCiMatrix } from "../CiMatrix"
 
 export interface TargetGraphRoutesOptions {
   readonly repos: RepoStore
@@ -81,6 +82,23 @@ export const registerTargetGraphRoutes = (
     return json(computeAffected({
       repoId, base: changes.base, changedFiles: changes.files, nodes: graph.nodes, edges: graph.edges,
       declarations: declarationInputs(repo.path, repo.smithers.declarationFiles), durationMs: Date.now() - started
+    }))
+  })
+
+  server.router.add("POST", "/api/targets/ci", async ({ request }) => {
+    const parsed = await readJson(request)
+    if ("error" in parsed) return parsed.error
+    const repoId = stringField(parsed.body, "repoId")
+    if (repoId === undefined) return jsonError(400, "invalid_request", "Body must be { repoId }.")
+    const repo = options.repos.get(repoId)
+    if (repo === undefined) return jsonError(404, "repo_not_found", `No open repository with id ${repoId}.`)
+    const node = await options.node
+    const graph = await queryTargetGraph({ repoId, repo: repo.path, node, ...(options.cli === undefined ? {} : { cli: options.cli }) })
+    return json(await renderCiMatrix({
+      repoId, repo: repo.path, node,
+      labels: graph.nodes.filter((entry) => entry.rule === "Github.CiGen").map((entry) => entry.label),
+      declarationFiles: repo.smithers.declarationFiles,
+      ...(options.cli === undefined ? {} : { cli: options.cli })
     }))
   })
 

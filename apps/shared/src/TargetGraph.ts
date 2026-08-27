@@ -177,6 +177,8 @@ export const CiMatrixResponseSchema = z.object({
       name: z.string(),
       path: z.string(),
       yaml: z.string(),
+      /** Scratch-rendered when possible; on-disk is an explicit fallback. */
+      source: z.enum(["scratch-render", "on-disk"]).optional(),
       jobs: z.array(
         z.object({
           name: z.string(),
