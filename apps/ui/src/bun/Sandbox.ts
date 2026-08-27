@@ -19,6 +19,14 @@ export interface SandboxPolicy {
   readonly writableDirs: ReadonlyArray<string>
   /** Single files the spawn may write. Absolute paths. */
   readonly writableFiles: ReadonlyArray<string>
+  /**
+   * Path prefixes the spawn may write: the file itself and every sibling
+   * that extends its name. Atomic saves write `<file>.tmp.<pid>` then
+   * rename, and zsh keeps `<HISTFILE>.new`, `<HISTFILE>.LOCK` and one
+   * `.zcompdump-<host>-<version>` per shell version, so a literal rule
+   * for the file alone breaks the save.
+   */
+  readonly writablePrefixes: ReadonlyArray<string>
 }
 
 /** What a policy is built from: the repository and the host's well-known dirs. */
@@ -30,21 +38,39 @@ export interface SandboxPaths {
 
 const HOME_DOT_DIRS = [".claude", ".codex", ".gemini", ".kimi", ".config", ".cache", ".local"] as const
 const HOME_DOT_FILES = [".claude.json"] as const
+/** Claude Code saves `~/.claude.json` through `~/.claude.json.tmp.<pid>.<random>` plus rename. */
+const HOME_DOT_PREFIXES = [".claude.json"] as const
+/** zsh's history (`HISTFILE`, its `.new` and `.LOCK` siblings) and the completion dump. */
+const ZSH_PREFIXES = [".zsh_history", ".zcompdump"] as const
 
 const unique = (paths: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(paths.filter((path) => path !== ""))]
 
-const scratchDirs = (paths: SandboxPaths): ReadonlyArray<string> => [paths.tmpdir, "/private/tmp"]
+/**
+ * macOS keeps `/var`, `/tmp` and `/etc` as symlinks into `/private`, and
+ * seatbelt matches the resolved path, so a rule for `$TMPDIR`
+ * (`/var/folders/...`) only holds when its `/private` twin is listed too.
+ */
+export const privateAliases = (dirs: ReadonlyArray<string>): ReadonlyArray<string> =>
+  unique(dirs.flatMap((dir) => (/^\/(var|tmp|etc)(\/|$)/.test(dir) ? [dir, `/private${dir}`] : [dir])))
+
+const scratchDirs = (paths: SandboxPaths): ReadonlyArray<string> => privateAliases([paths.tmpdir, "/private/tmp"])
 
 const homeDotDirs = (paths: SandboxPaths): ReadonlyArray<string> => HOME_DOT_DIRS.map((dir) => `${paths.home}/${dir}`)
 
 const homeDotFiles = (paths: SandboxPaths): ReadonlyArray<string> => HOME_DOT_FILES.map((file) => `${paths.home}/${file}`)
+
+const homeDotPrefixes = (paths: SandboxPaths): ReadonlyArray<string> =>
+  HOME_DOT_PREFIXES.map((prefix) => `${paths.home}/${prefix}`)
+
+const zshPrefixes = (paths: SandboxPaths): ReadonlyArray<string> => ZSH_PREFIXES.map((prefix) => `${paths.home}/${prefix}`)
 
 /** `smthrs query`: no network; writes only the repo's `.flows` cache and scratch. */
 export const loaderPolicy = (paths: SandboxPaths): SandboxPolicy => ({
   id: "loader",
   network: "deny",
   writableDirs: unique([`${paths.repo}/.flows`, ...scratchDirs(paths)]),
-  writableFiles: []
+  writableFiles: [],
+  writablePrefixes: []
 })
 
 /** A harness tab (claude, codex, ...): network on; writes the repo, its config dirs and scratch. */
@@ -52,15 +78,17 @@ export const harnessPolicy = (paths: SandboxPaths): SandboxPolicy => ({
   id: "harness",
   network: "allow",
   writableDirs: unique([paths.repo, ...homeDotDirs(paths), ...scratchDirs(paths)]),
-  writableFiles: unique(homeDotFiles(paths))
+  writableFiles: unique(homeDotFiles(paths)),
+  writablePrefixes: unique(homeDotPrefixes(paths))
 })
 
-/** A terminal tab: the same confinement as a harness tab. */
+/** A terminal tab: the harness confinement plus the shell's own history and completion dump. */
 export const terminalPolicy = (paths: SandboxPaths): SandboxPolicy => ({
   id: "terminal",
   network: "allow",
   writableDirs: unique([paths.repo, ...homeDotDirs(paths), ...scratchDirs(paths)]),
-  writableFiles: unique(homeDotFiles(paths))
+  writableFiles: unique(homeDotFiles(paths)),
+  writablePrefixes: unique([...homeDotPrefixes(paths), ...zshPrefixes(paths)])
 })
 
 export const sandboxPolicies: Readonly<Record<SandboxPolicyId, (paths: SandboxPaths) => SandboxPolicy>> = {
@@ -71,6 +99,10 @@ export const sandboxPolicies: Readonly<Record<SandboxPolicyId, (paths: SandboxPa
 
 /** Seatbelt string literal: backslashes and double quotes escaped. */
 const seatbeltString = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`
+
+/** Seatbelt regex literal anchored at the start of the path: metacharacters escaped, quotes too. */
+const seatbeltPrefixRegex = (value: string): string =>
+  `#"^${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/"/g, "\\\"")}"`
 
 /**
  * The seatbelt profile for a policy. Later rules win in seatbelt, so the
@@ -87,7 +119,8 @@ export const renderProfile = (policy: SandboxPolicy): string => {
     "(deny file-write*)",
     "(allow file-write* (literal \"/dev/null\") (regex #\"^/dev/tty\") (regex #\"^/dev/pty\") (regex #\"^/dev/fd/\"))",
     ...policy.writableDirs.map((dir) => `(allow file-write* (subpath ${seatbeltString(dir)}))`),
-    ...policy.writableFiles.map((file) => `(allow file-write* (literal ${seatbeltString(file)}))`)
+    ...policy.writableFiles.map((file) => `(allow file-write* (literal ${seatbeltString(file)}))`),
+    ...policy.writablePrefixes.map((prefix) => `(allow file-write* (regex ${seatbeltPrefixRegex(prefix)}))`)
   ]
   return `${lines.join("\n")}\n`
 }

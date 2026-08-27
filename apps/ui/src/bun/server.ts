@@ -7,6 +7,7 @@
  */
 import type { Server, ServerWebSocket } from "bun"
 import { existsSync } from "node:fs"
+import { homedir } from "node:os"
 import { join, normalize, resolve } from "node:path"
 import {
   AUTH_ROUTE_PREFIX,
@@ -22,10 +23,15 @@ import type { AgentTurnFrame, StartAgentTurnRequest } from "smithers-shared/Nati
 import { createChatStub } from "./ChatStub"
 import { createCloudAgent } from "./CloudAgent"
 import type { CloudAgent } from "./CloudAgent"
+import { detectHarnesses } from "./Harnesses"
 import { findNode } from "./Node"
 import type { NodeSidecar } from "./Node"
+import { binDirOf, createPtyManager } from "./Pty"
+import type { PtyManager } from "./Pty"
 import { json, jsonError, notImplemented, readJson, Router } from "./routes"
-import { registerRepoTargetRoutes } from "./routes/repoTargets"
+import { registerHarnessRoutes } from "./routes/harnesses"
+import type { HarnessDetector } from "./routes/harnesses"
+import { registerPtyRoutes } from "./routes/pty"
 import { currentSandboxHost, sandboxEnforced } from "./Sandbox"
 
 /** chat.smithers.sh accepts this origin anonymously (verified 2026-08-26). */
@@ -60,8 +66,12 @@ export interface LocalServerOptions {
   readonly openExternal?: (url: string) => Promise<boolean>
   /** A pre-resolved Node sidecar; the default probes once at startup. */
   readonly node?: NodeSidecar | null
-  /** The smthrs build-cli entry for the targets lane; the default resolves it from the checkout (or SMITHERS_BUILD_CLI). */
-  readonly buildCli?: string
+  /** The home directory `cwd: "~"` expands to and `/api/health` reports; default `os.homedir()`. */
+  readonly home?: string
+  /** The harness table behind `GET /api/harnesses` and harness tabs; default `detectHarnesses`. */
+  readonly harnesses?: HarnessDetector
+  /** The PTY manager behind `/api/pty*`; the default spawns real sessions. */
+  readonly pty?: (deps: { readonly publish: LocalServer["publish"]; readonly harnesses: HarnessDetector; readonly home: string; readonly pathPrepend: () => Promise<ReadonlyArray<string>>; readonly log: (line: string) => void }) => PtyManager
   readonly log?: (line: string) => void
 }
 
@@ -196,6 +206,8 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
   const nodeProbe: Promise<NodeSidecar | null> = options.node === undefined ? findNode() : Promise.resolve(options.node)
   const identityUpstream = options.chatStub === true ? null : options.identityUpstream === undefined ? DEFAULT_IDENTITY_UPSTREAM : options.identityUpstream
   const openExternal = options.openExternal ?? defaultOpenExternal
+  const home = options.home ?? homedir()
+  const harnesses: HarnessDetector = options.harnesses ?? (() => detectHarnesses())
 
   const writers = new Map<string, TurnWriter>()
   const publishFrame = (frame: AgentTurnFrame): void => writers.get(frame.runId)?.write(frame)
@@ -217,6 +229,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
       ok: true,
       version,
       pid: process.pid,
+      home,
       node: await nodeProbe,
       sandbox: { platform: process.platform, enforced: sandboxEnforced(sandboxHost) }
     }))
@@ -322,15 +335,24 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
     return json({ status: "accepted" }, 202)
   })
 
-  // Lane placeholders (L4 harnesses/pty). A lane replaces a placeholder by
-  // registering the same method and path; L3 (repo/targets) registers below.
-  router.add("GET", "/api/harnesses", () => json({ harnesses: [] }))
-  router.add("GET", "/api/pty", () => notImplemented("GET /api/pty"))
-  router.add("POST", "/api/pty", () => notImplemented("POST /api/pty"))
-  router.add("POST", "/api/pty/:id/resize", () => notImplemented("POST /api/pty/:id/resize"))
-  router.add("DELETE", "/api/pty/:id", () => notImplemented("DELETE /api/pty/:id"))
+  // Lane placeholders (L3 repo/targets). A lane replaces a placeholder by
+  // registering the same method and path.
+  router.add("GET", "/api/repos", () => json({ repos: [] }))
+  router.add("POST", "/api/repo/open", () => notImplemented("POST /api/repo/open"))
+  router.add("POST", "/api/repo/close", () => notImplemented("POST /api/repo/close"))
+  router.add("POST", "/api/targets/query", () => notImplemented("POST /api/targets/query"))
+  router.add("POST", "/api/targets/run", () => notImplemented("POST /api/targets/run"))
+  router.add("POST", "/api/targets/cancel", () => notImplemented("POST /api/targets/cancel"))
 
   const messageHandlers = new Map<string, Set<WsMessageHandler>>()
+  const onMessage: LocalServer["onMessage"] = (type, handler) => {
+    const set = messageHandlers.get(type) ?? new Set<WsMessageHandler>()
+    set.add(handler)
+    messageHandlers.set(type, set)
+    return () => {
+      set.delete(handler)
+    }
+  }
 
   const serveStatic = async (pathname: string): Promise<Response> => {
     const index = join(distDir, "index.html")
@@ -437,38 +459,32 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
   const origin = `http://127.0.0.1:${port}`
   log(`SMITHERS_LOCAL_ORIGIN=${origin}`)
 
-  const local: LocalServer = {
+  const publish: LocalServer["publish"] = (topic, message) => {
+    server.publish(topic, JSON.stringify(message))
+  }
+
+  // L4: the harness table and the PTY sessions (routes/harnesses.ts, routes/pty.ts).
+  registerHarnessRoutes(router, harnesses)
+  const ptyDeps = { publish, harnesses, home, pathPrepend: async () => binDirOf((await nodeProbe)?.path), log }
+  const pty = options.pty === undefined ? createPtyManager(ptyDeps) : options.pty(ptyDeps)
+  registerPtyRoutes({ router, onMessage }, pty)
+
+  return {
     origin,
     port,
     router,
     server,
-    publish: (topic, message) => {
-      server.publish(topic, JSON.stringify(message))
-    },
-    onMessage: (type, handler) => {
-      const set = messageHandlers.get(type) ?? new Set<WsMessageHandler>()
-      set.add(handler)
-      messageHandlers.set(type, set)
-      return () => {
-        set.delete(handler)
-      }
-    },
+    publish,
+    onMessage,
     stop: () => {
       for (const [runId, writer] of writers) {
         agent.cancel(runId)
         writer.end()
       }
       writers.clear()
+      // Every child dies with the server; nothing keeps a shell alive past the app.
+      void pty.killAll()
       server.stop(true)
-    }
-  }
-  // Lane L3: /api/repo/*, /api/targets/* and the target-run topics.
-  const repoTargets = registerRepoTargetRoutes(local, { node: nodeProbe, log, ...(options.buildCli === undefined ? {} : { cli: options.buildCli }) })
-  return {
-    ...local,
-    stop: () => {
-      repoTargets.stop()
-      local.stop()
     }
   }
 }
