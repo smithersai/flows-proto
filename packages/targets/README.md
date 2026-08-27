@@ -109,7 +109,18 @@ vendored registry are its declared deliverables, its first `outDirs` entry
 becomes the `CARGO_HOME` every dependent reads, and a dependent keys on the
 lockfile content it delivered rather than on the fetch declaration. That is the
 `node_modules` rule applied to Cargo: a dynamic install and static dependents
-that run `--locked --offline` against what it produced.
+that run `--locked --offline` against what it produced. A fetch may name a
+crate set instead of one manifest (`S.Cargo.Fetch({ crates })`), which is what
+a repository whose crates are excluded from the root workspace needs: each of
+those crates is its own lockfile domain, and one workspace manifest cannot
+deliver what they resolve against.
+
+`offline: true` reaches the child processes a cargo run spawns, not only the
+run itself: the `--offline` flag speaks for one cargo, and a test that shells
+out to a nested cargo — trybuild's compile-fail suites are the common case —
+would otherwise reach for the registry and fail against the sandbox. The
+planner sets `CARGO_NET_OFFLINE` alongside the flag so the declaration's
+statement holds all the way down.
 
 `Cargo.Fmt` checks by default and applies under `--write`/`--fix`, confined to
 its declared `changes` write set. It is the one cargo rule with no

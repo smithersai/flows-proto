@@ -86,8 +86,13 @@ const skippedApps = S.Cargo.AppSet({
   metadata: { aomi: { skip: true } }
 })
 const crates = S.Files.difference(allApps, skippedApps)
+// Every app crate is its own lockfile domain, so the crate set is what the
+// fetch locks: one workspace manifest cannot deliver what 35 excluded crates
+// resolve against.
+const fetch = S.Cargo.Fetch({ crates, outDirs: ["//.cargo-home"], sandbox: { network: true } })
 const format = S.Cargo.Fmt({ crates, data: [srcs], changes: ["**/*.rs"] })
-export const Package = S.Package({ targets: { format, srcs } })
+const compile = S.Cargo.Build({ crates, lib: true, locked: true, offline: true, data: [srcs, fetch] })
+export const Package = S.Package({ targets: { compile, fetch, format, srcs } })
 `
 
 const manifest = (name: string, skip: boolean): string =>
@@ -167,7 +172,23 @@ describe.skipIf(!hasCargo)("cargo package-mode planning", () => {
     expect(commandsOf(clippy)[0]!.slice(1))
       .toEqual(["clippy", "--workspace", "--lib", "--locked", "--offline", "--", "-D", "warnings"])
     expect(clippy.env["CARGO_HOME"]).toBe(".cargo-home")
+    // `--offline` says "resolve only from the fetch" to this cargo alone; the
+    // environment says it to every cargo the run spawns underneath it.
+    expect(clippy.env["CARGO_NET_OFFLINE"]).toBe("true")
     expect(clippy.dependencies).toContain("//sdk:fetch")
+  })
+
+  it("locks each crate of a set when the fetch names the set, not one manifest", async () => {
+    const root = await fixture()
+    const planned = await planOf(root, "//apps:compile")
+    expect(commandsOf(nodeOf(planned, "//apps:fetch")).map((command) => command.slice(1))).toEqual([
+      ["fetch", "--manifest-path", "apps/alpha/Cargo.toml"]
+    ])
+    const compile = nodeOf(planned, "//apps:compile")
+    expect(compile.env["CARGO_HOME"]).toBe(".cargo-home")
+    expect(commandsOf(compile).map((command) => command.slice(1))).toEqual([
+      ["build", "--manifest-path", "apps/alpha/Cargo.toml", "--lib", "--locked", "--offline"]
+    ])
   })
 
   it("subtracts the skipped crate set and runs cargo once per remaining crate", async () => {

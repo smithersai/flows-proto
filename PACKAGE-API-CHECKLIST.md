@@ -395,7 +395,18 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   setup step; a local host installs it with `rustup toolchain install <channel>`), and
   a crate-set target is one node running N cargo commands rather than N keyed nodes
   (per-crate node fan-out needs planner-level synthesis of labels that no Package map
-  declares).
+  declares). Two `//:ci` members stay red against the live design-partner tree, both
+  because the declaration says something the tree does not support, and neither is a
+  loader refusal: `//ext:test` has two `aomi-ext` unit tests that call
+  `https://blue-api.morpho.org/graphql` for real while the declaration opens no network
+  (the fix is `sandbox: { network: true }` on that target, or `#[ignore]` on the two
+  tests), and `//apps:{compile,clippy,test}` pass `--locked` against 35 crates excluded
+  from the root workspace, so each is its own lockfile domain that `//sdk:fetch` — one
+  fetch over one workspace manifest — never locked. `S.Cargo.Fetch` now takes a `crates`
+  selector so that second one is a one-line declaration fix
+  (`S.Cargo.Fetch({ crates, outDirs: ["//.cargo-home"], sandbox: { network: true } })`,
+  named in the apps targets' `data`); proved in `CargoPlan.test.ts`, not applied, because
+  the design-partner files are read-only here.
 ### Lane api/go 2026-08-27
 
 Status: targets 654/654; build-cli 654 passed + 1 skipped; both package `tsc --noEmit` checks green; changed-file eslint and dprint green. The full tapes graph now reaches the foreign `S.Docker.Build` namespace; optimism reaches the foreign `S.Mise` constructor. No file under `~/artsy` was edited.
