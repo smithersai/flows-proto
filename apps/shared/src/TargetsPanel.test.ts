@@ -4,6 +4,7 @@ import {
   buildTargetsInstructions,
   defaultTargetsMessage,
   groupTargets,
+  groupTargetsByWorkspace,
   parseTargetsInstructions,
   parseTargetsPanelReply,
   renderTargetsPanel,
@@ -11,9 +12,9 @@ import {
 } from "./TargetsPanel"
 
 const targets: ReadonlyArray<Target> = [
-  { label: "//src:lint", target: "Shell.Test", kinds: ["lint"], package: "//src", name: "lint" },
-  { label: "//src:test", target: "Shell.Test", kinds: ["test"], package: "//src", name: "test" },
-  { label: "//:detectSecrets", target: "Shell.Test", kinds: ["test"], package: "//", name: "detectSecrets" }
+  { label: "//src:lint", target: "Shell.Test", kinds: ["lint"], package: "//src", name: "lint", workspace: "." },
+  { label: "//src:test", target: "Shell.Test", kinds: ["test"], package: "//src", name: "test", workspace: "." },
+  { label: "//:detectSecrets", target: "Shell.Test", kinds: ["test"], package: "//", name: "detectSecrets", workspace: "aomi-sdk" }
 ]
 
 describe("the targets-panel instruction", () => {
@@ -61,7 +62,7 @@ describe("the built-in template", () => {
   })
 
   test("escapes markup in labels", () => {
-    const html = renderTargetsPanel([{ label: "//a:<b>", target: "X\"Y", kinds: [], package: "//a", name: "<b>" }])
+    const html = renderTargetsPanel([{ label: "//a:<b>", target: "X\"Y", kinds: [], package: "//a", name: "<b>", workspace: "." }])
     expect(html).not.toContain("<b>")
     expect(html).toContain("&lt;b&gt;")
     expect(html).toContain("X&quot;Y")
@@ -70,5 +71,16 @@ describe("the built-in template", () => {
   test("the default message counts", () => {
     expect(defaultTargetsMessage(1, "x")).toBe("Loaded 1 target for x.")
     expect(defaultTargetsMessage(82, "artsy/force")).toBe("Loaded 82 targets for artsy/force.")
+  })
+})
+
+describe("workspace grouping", () => {
+  test("groups workspace then package, in first-seen order at both levels", () => {
+    const grouped = groupTargetsByWorkspace(targets)
+    expect(grouped.map((group) => [group.workspace, group.packages.map((pkg) => [pkg.package, pkg.targets.length])])).toEqual([
+      [".", [["//src", 2]]],
+      ["aomi-sdk", [["//", 1]]]
+    ])
+    expect(grouped[0]?.packages[0]?.targets[0]?.label).toBe("//src:lint")
   })
 })
