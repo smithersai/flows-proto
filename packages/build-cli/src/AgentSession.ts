@@ -448,6 +448,51 @@ interface EngineAdapter {
   readonly executable: string
   readonly args: (model: string, mcp: ReadonlyArray<Reference.McpHttp>) => ReadonlyArray<string>
   readonly text: (stdout: string) => string
+  /** The failure text of a non-zero exit: stderr when the CLI wrote any, else what stdout carried. */
+  readonly failureText: (output: { readonly stdout: string; readonly stderr: string }) => string
+}
+
+/** The last `limit` characters of a stream, for a failure text with nothing better. */
+const tailOf = (text: string, limit = 1024): string => {
+  const trimmed = text.trim()
+  return trimmed.length <= limit ? trimmed : `…${trimmed.slice(-limit)}`
+}
+
+/**
+ * The error messages a codex JSONL stream carries: `error` events,
+ * `turn.failed` events, and completed items of type `error`. Codex reports a
+ * rejected model or request this way on stdout and exits 1 with an empty
+ * stderr, so without this the failure text is blank.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const codexErrorMessages = (stdout: string): ReadonlyArray<string> => {
+  const messages: Array<string> = []
+  for (const line of stdout.split("\n")) {
+    let event: unknown
+    try {
+      event = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (typeof event !== "object" || event === null) continue
+    const record = event as {
+      readonly type?: unknown
+      readonly message?: unknown
+      readonly error?: { readonly message?: unknown }
+      readonly item?: { readonly type?: unknown; readonly message?: unknown }
+    }
+    const message = record.type === "error"
+      ? record.message
+      : record.type === "turn.failed"
+      ? record.error?.message
+      : record.type === "item.completed" && record.item?.type === "error"
+      ? record.item.message
+      : undefined
+    if (typeof message === "string" && message !== "" && !messages.includes(message)) messages.push(message)
+  }
+  return messages
 }
 
 /**
@@ -487,7 +532,8 @@ const adapters: Record<"claude" | "codex", EngineAdapter> = {
       "",
       "--no-chrome"
     ],
-    text: extractClaudeText
+    text: extractClaudeText,
+    failureText: (output) => output.stderr.trim() === "" ? tailOf(output.stdout) : output.stderr.trim()
   },
   codex: {
     executable: "codex",
@@ -505,7 +551,12 @@ const adapters: Record<"claude" | "codex", EngineAdapter> = {
       model,
       "-"
     ],
-    text: extractCodexText
+    text: extractCodexText,
+    failureText: (output) => {
+      if (output.stderr.trim() !== "") return output.stderr.trim()
+      const messages = codexErrorMessages(output.stdout)
+      return messages.length === 0 ? tailOf(output.stdout) : messages.join("; ")
+    }
   }
 }
 
@@ -567,7 +618,7 @@ export const makeCliSessionFactory = (options: CliSessionOptions): SessionFactor
                       catch: (cause) => new Error(messageOf(cause))
                     })
                     : Effect.fail(
-                      new Error(`${executable} exited ${output.exitCode}: ${output.stderr}`)
+                      new Error(`${executable} exited ${output.exitCode}: ${adapter.failureText(output)}`)
                     )
                 ),
                 Effect.match({

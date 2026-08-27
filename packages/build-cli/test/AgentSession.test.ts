@@ -676,6 +676,43 @@ describe("CLI engine adapters", () => {
     })
   })
 
+  it("reports codex's stdout error events when it exits non-zero with an empty stderr", async () => {
+    const stream = [
+      `{"type":"thread.started","thread_id":"t"}`,
+      `{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for \`luna\` not found."}}`,
+      `{"type":"turn.started"}`,
+      `{"type":"error","message":"The luna model is not supported when using Codex with a ChatGPT account."}`,
+      `{"type":"turn.failed","error":{"message":"The luna model is not supported when using Codex with a ChatGPT account."}}`
+    ]
+    const codex = await fakeExecutable(
+      "fake-codex-error",
+      `cat > /dev/null\n${stream.map((line) => `echo '${line}'`).join("\n")}\nexit 1`
+    )
+    const factory = AgentSession.makeCliSessionFactory({
+      workspaceRoot: root,
+      agents: AgentTarget.Agents({ default: AgentTarget.Codex({ model: "luna" }) }),
+      executables: { codex },
+      timeoutMs: 10_000
+    })
+    const session = await Effect.runPromise(factory.open(undefined))
+    const error = await Effect.runPromise(Effect.flip(session.run({ purpose: "lint", prompt: "p" })))
+    expect(error.message).toContain("exited 1: Model metadata for `luna` not found.; The luna model is not supported")
+    expect(AgentSession.codexErrorMessages("not json\n{\"type\":\"turn.completed\"}")).toEqual([])
+  })
+
+  it("falls back to the stdout tail when claude exits non-zero with nothing on stderr", async () => {
+    const claude = await fakeExecutable("fake-claude-quiet", `echo 'rate limited, try later'\nexit 2`)
+    const factory = AgentSession.makeCliSessionFactory({
+      workspaceRoot: root,
+      agents: AgentTarget.Agents({ default: AgentTarget.ClaudeCode({ model: "m" }) }),
+      executables: { claude },
+      timeoutMs: 10_000
+    })
+    const session = await Effect.runPromise(factory.open(undefined))
+    const error = await Effect.runPromise(Effect.flip(session.run({ purpose: "lint", prompt: "p" })))
+    expect(error.message).toContain("exited 2: rate limited, try later")
+  })
+
   it("claudeMcpConfig renders every declared server as a streamable-HTTP entry", () => {
     expect(JSON.parse(AgentSession.claudeMcpConfig([]))).toEqual({ mcpServers: {} })
     expect(
