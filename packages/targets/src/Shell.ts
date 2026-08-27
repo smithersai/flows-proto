@@ -15,6 +15,7 @@
 import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
 import type * as Exec from "./Exec.ts"
+import * as Input from "./Input.ts"
 import * as Reference from "./Reference.ts"
 import * as Runtime from "./Runtime.ts"
 import type * as Secret from "./Secret.ts"
@@ -25,6 +26,7 @@ const sharedFields = {
   bin: Schema.optional(Attr.Executable),
   bun: Schema.optional(Schema.NonEmptyString),
   command: Schema.optional(Schema.NonEmptyString),
+  script: Schema.optional(Input.File),
   using: Schema.optional(Attr.Using),
   args: Schema.optional(Attr.Args),
   runtimeArgs: Schema.optional(Schema.Array(Schema.String)),
@@ -32,7 +34,8 @@ const sharedFields = {
   data: Schema.optional(Attr.Data),
   secrets: Schema.optional(Attr.Secrets),
   sandbox: Schema.optional(Attr.Sandbox),
-  runtime: Schema.optional(Schema.Union([Runtime.Runtime, Runtime.NodeDeclaration, Runtime.BunDeclaration]))
+  runtime: Schema.optional(Schema.Union([Runtime.Runtime, Runtime.NodeDeclaration, Runtime.BunDeclaration])),
+  timeout: Schema.optional(Schema.NonEmptyString.check(Schema.isPattern(/^\d+(?:ms|s|m|h)$/)))
 } as const
 
 /**
@@ -56,7 +59,8 @@ export const BuildAttrs = Schema.Struct({
 export const TestAttrs = Schema.Struct({
   ...sharedFields,
   services: Schema.optional(Attr.Services),
-  gates: Schema.optional(Attr.Gates)
+  gates: Schema.optional(Attr.Gates),
+  shards: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)))
 })
 
 /**
@@ -80,6 +84,7 @@ export const RunAttrs = Schema.Struct({
  */
 export const ServeAttrs = Schema.Struct({
   ...sharedFields,
+  services: Schema.optional(Attr.Services),
   readiness: Schema.optional(Attr.Readiness),
   health: Schema.optional(Attr.Health),
   stop: Schema.optional(Attr.Stop)
@@ -179,6 +184,7 @@ export interface ExecAttrs {
   readonly bin?: Reference.Tool | Target.AnyTarget | undefined
   readonly bun?: string | undefined
   readonly command?: string | undefined
+  readonly script?: Input.File | undefined
   readonly using?: Readonly<Record<string, Reference.Tool>> | undefined
   readonly args?: ReadonlyArray<string | Reference.FlagRef> | undefined
   readonly runtimeArgs?: ReadonlyArray<string> | undefined
@@ -216,6 +222,8 @@ export const execPayload = (attrs: ExecAttrs): Exec.CallPayload => {
   let argv: [string, ...Array<string>]
   if (attrs.command !== undefined) {
     argv = ["/bin/sh", "-c", attrs.command]
+  } else if (attrs.script !== undefined) {
+    argv = ["/bin/sh", scriptToken(attrs.script.path), ...args]
   } else if (attrs.bun !== undefined) {
     argv = [bunToken, bunProgramToken]
   } else if (attrs.bin !== undefined) {
@@ -292,7 +300,7 @@ const withOneExecutable = <A>(id: string, attrs: unknown, construct: () => A): A
   if (typeof attrs !== "object" || attrs === null) {
     throw new TypeError(`${id} attrs must be an object`)
   }
-  Attr.requireOneExecutable(id, attrs as Record<string, unknown>, ["bin", "bun", "command"])
+  Attr.requireOneExecutable(id, attrs as Record<string, unknown>, ["bin", "bun", "command", "script"])
   return construct()
 }
 

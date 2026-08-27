@@ -198,6 +198,24 @@ describe("check and write", () => {
   })
 })
 
+describe("graph-derived shard matrices", () => {
+  it("renders a suite's Shell.Test shard fan-out into the job matrix", () => {
+    const test = S.Shell.Test({ command: "true", shards: 3 })
+    const suite = S.Suite({ tests: [test] })
+    const workflow = S.Github.Workflow({ name: "verify", on: { pullRequest: true }, run: [suite] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//:github"], [suite, "//:verify"]]),
+      packageDir: ".github"
+    })
+    const content = rendered.files.find((file) => file.path === "workflows/verify.yml")!.content
+    expect(content).toContain("        shard: [1, 2, 3]\n        total-shards: [3]\n")
+    expect(content).toContain("      SMTHRS_SHARD: \"${{ matrix.shard }}/${{ matrix.total-shards }}\"\n")
+  })
+})
+
 describe("render refusals", () => {
   it("refuses an unlabeled CiGen target", () => {
     const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [] })

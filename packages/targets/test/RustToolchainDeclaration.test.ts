@@ -45,6 +45,14 @@ describe("Rust.Toolchain", () => {
     ])
   })
 
+  it("keys an enclosing version authority without requiring its brand", () => {
+    const versions = { _tag: "Mise", config: Input.file("//mise.toml") }
+    const declaration = RustToolchain.Toolchain({ channel: "1.91", versions })
+    expect(declaration.versions).toBe(versions)
+    expect(RustToolchain.toolchainInputs(declaration)).toEqual([{ _tag: "File", path: "//mise.toml" }])
+    expect(() => RustToolchain.Toolchain({ channel: "1.91", versions: {} as never })).toThrow()
+  })
+
   it("refuses a declaration that names both pins, or neither", () => {
     expect(() => RustToolchain.Toolchain({ channel: "1.91", toolchain: Input.file("//rust-toolchain.toml") }))
       .toThrow(/exactly one of channel, toolchain/)

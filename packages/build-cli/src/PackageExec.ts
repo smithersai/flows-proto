@@ -20,12 +20,19 @@
  * @since 0.1.0
  */
 import * as AgentTarget from "@smthrs/targets/AgentTarget"
+import type * as Anvil from "@smthrs/targets/Anvil"
 import * as BundlerTarget from "@smthrs/targets/BundlerTarget"
 import * as Cargo from "@smthrs/targets/Cargo"
 import * as Compose from "@smthrs/targets/Compose"
+import * as CronTarget from "@smthrs/targets/CronTarget"
+import type * as Docker from "@smthrs/targets/Docker"
 import * as Exec from "@smthrs/targets/Exec"
 import * as GithubTarget from "@smthrs/targets/GithubTarget"
+import type * as GitTarget from "@smthrs/targets/GitTarget"
 import * as Input from "@smthrs/targets/Input"
+import type * as NodeArtifact from "@smthrs/targets/NodeArtifact"
+import type * as NpmTarget from "@smthrs/targets/NpmTarget"
+import * as Outward from "@smthrs/targets/Outward"
 import type * as Reference from "@smthrs/targets/Reference"
 import * as RustToolchain from "@smthrs/targets/RustToolchain"
 import * as Shell from "@smthrs/targets/Shell"
@@ -43,11 +50,15 @@ import * as NodePath from "node:path"
 import { performance } from "node:perf_hooks"
 import * as AgentFake from "./AgentFake.ts"
 import * as AgentSession from "./AgentSession.ts"
+import * as AnvilExec from "./AnvilExec.ts"
 import { type CacheStore, openCache } from "./Cache.ts"
 import * as Diagnostic from "./Diagnostic.ts"
+import * as DockerExec from "./DockerExec.ts"
 import * as Executor from "./Executor.ts"
+import * as FoundryExec from "./FoundryExec.ts"
 import * as GitCommit from "./GitCommit.ts"
 import * as GithubRender from "./GithubRender.ts"
+import * as GoExec from "./GoExec.ts"
 import * as MemoryBackend from "./MemoryBackend.ts"
 import type * as PackageIndexModule from "./PackageIndex.ts"
 import * as PackageTree from "./PackageTree.ts"
@@ -55,6 +66,7 @@ import * as Planner from "./Planner.ts"
 import * as Resolver from "./Resolver.ts"
 import * as RspackRunner from "./RspackRunner.ts"
 import * as ServiceSupervisor from "./ServiceSupervisor.ts"
+import * as StampExec from "./StampExec.ts"
 import type * as Workspace from "./Workspace.ts"
 
 const posix = (value: string): string => value.split(NodePath.sep).join("/")
@@ -112,13 +124,49 @@ const implementedRules: ReadonlySet<string> = new Set([
   "Github.CiGen",
   "Github.Pr",
   "Memory.Retain",
+  "Foundry.Build",
+  "Foundry.Test",
+  "Foundry.Fmt",
+  "Anvil.Fork",
+  "Docker.Serve",
+  "Docker.Service",
+  "Docker.Build",
+  "Docker.Push",
+  "Docker.Bake",
+  "Npm.Pack",
+  "Npm.Publish",
+  "Npm.Published",
+  "Npm.Downstream",
+  "Changesets.Version",
+  "Changesets.Publish",
+  "Github.Release",
+  "Github.Pages",
+  "Git.Pr",
+  "Git.Submodules",
+  "Git.Submodule",
+  "Cron",
+  "Copy",
+  "Literal",
+  "Overlay",
+  "Markdown.CodeBlocks",
+  "Api.Compat",
+  "Size.Budgets",
+  "Go.Packages",
+  "Go.Test",
+  "Go.Binary",
+  "Go.ModDownload",
+  "Go.Lint",
+  "Go.Generate",
+  "Go.Fuzz",
   "Cargo.Fetch",
   "Cargo.Build",
   "Cargo.Test",
+  "Cargo.Nextest",
   "Cargo.Clippy",
   "Cargo.Fmt",
   "Cargo.Doc",
-  "Cargo.AppSet"
+  "Cargo.AppSet",
+  "Cargo.Deny"
 ])
 
 /** Rules whose default mode is the non-mutating check. */
@@ -127,6 +175,10 @@ const checkModeRules: ReadonlySet<string> = new Set([
   "Generate",
   "Github.CiGen",
   "Agent.Lint",
+  "Foundry.Fmt",
+  "Changesets.Version",
+  "Go.Lint",
+  "Go.Generate",
   "Cargo.Fmt"
 ])
 
@@ -142,9 +194,18 @@ const outwardRules: ReadonlySet<string> = new Set([
   "Clean",
   "Git.Commit",
   "Github.Pr",
+  "Npm.Publish",
+  "Changesets.Publish",
+  "Github.Release",
+  "Github.Pages",
+  "Git.Pr",
   "Memory.Retain",
   "Agent.Diff",
-  "Agent.Pr"
+  "Agent.Pr",
+  "Anvil.Fork",
+  "Docker.Serve",
+  "Docker.Service",
+  "Docker.Push"
 ])
 
 /**
@@ -156,7 +217,8 @@ const keyOnlyDependencyRules: ReadonlySet<string> = new Set([
   "Clean",
   "Github.CiGen",
   "Github.Workflow",
-  "Github.Setup"
+  "Github.Setup",
+  "Cron"
 ])
 
 /** Wall-clock cap on one `smithers memory` backend invocation. */
@@ -165,7 +227,14 @@ const memoryBackendTimeoutMs = 60_000
 const refusalFor = (rule: string): string =>
   `NotImplemented: ${rule} has no package-mode execution; ` +
   "the implemented set is Shell.*, Generate, Materialize, Clean, Suite, Alias, ImportClosure, Test, " +
-  "Bundler.Rspack.*, Agent.*, Git.Commit, Github.*, Memory.Retain, and Cargo.*"
+  "Bundler.Rspack.*, Agent.*, Git.Commit, Github.*, Memory.Retain, Cargo.*, Go.*, Foundry.*, Docker.*, and Npm.*"
+
+const serviceRules: ReadonlySet<string> = new Set([
+  "Shell.Serve",
+  "Anvil.Fork",
+  "Docker.Serve",
+  "Docker.Service"
+])
 
 /**
  * The placeholder a bundler build's key template carries where the graph
@@ -239,8 +308,11 @@ export type LaneData =
     readonly health?: ServiceSupervisor.Health | undefined
     readonly stop?: ServiceSupervisor.Stop | undefined
   }
+  | { readonly kind: "docker-service"; readonly attrs: (typeof Docker.ServeAttrs)["Type"] }
+  | { readonly kind: "anvil-fork"; readonly attrs: (typeof Anvil.ForkAttrs)["Type"] }
   | { readonly kind: "closure"; readonly entries: ReadonlyArray<Compose.AnchoredSource> }
   | { readonly kind: "files-test"; readonly left: TestOperandPlan; readonly right: TestOperandPlan }
+  | { readonly kind: "files-digest"; readonly targetLabel: string; readonly expectedPath: string }
   | { readonly kind: "bundler-resolve"; readonly payload: BundlerTarget.ResolvePayload }
   | { readonly kind: "bundler-build"; readonly payload: BundlerTarget.BuildPayload; readonly graphLabel: string }
   | {
@@ -256,6 +328,21 @@ export type LaneData =
   | { readonly kind: "ci-gen" }
   | { readonly kind: "github-decl" }
   | { readonly kind: "github-pr" }
+  | { readonly kind: "npm-pack"; readonly manifestPath: string }
+  | {
+    readonly kind: "native-file"
+    readonly flavor: "copy" | "literal"
+    readonly source?: string
+    readonly sourceLabel?: string
+    readonly text?: string
+  }
+  | { readonly kind: "submodules" }
+  | { readonly kind: "markdown-code-blocks"; readonly file: string; readonly languages: ReadonlyArray<string> }
+  | { readonly kind: "published"; readonly manifestPath: string }
+  | { readonly kind: "api-compat" }
+  | { readonly kind: "overlay" }
+  | { readonly kind: "outward"; readonly required: ReadonlyArray<string> }
+  | { readonly kind: "inert" }
   | { readonly kind: "memory-retain" }
   | {
     readonly kind: "cargo"
@@ -295,6 +382,10 @@ export interface PackageNode extends Planner.PlannedTarget {
   readonly sandbox: "none" | { readonly network?: boolean | "loopback" | undefined } | undefined
   readonly secrets: ReadonlyArray<string>
   readonly argv: ReadonlyArray<string> | undefined
+  /** Shell.Test fan-out count; each shard owns a distinct key and execution. */
+  readonly shards: number
+  /** Declaration-specific process timeout, already reduced to milliseconds. */
+  readonly timeoutMs: number
   /**
    * The workspace-relative directory the tool spawns in. `bin`-form tools
    * run from the declaring package (their configs resolve upward and their
@@ -315,6 +406,7 @@ export interface PackageNode extends Planner.PlannedTarget {
     | undefined
   readonly writeSet: ReadonlyArray<string>
   readonly outDirs: ReadonlyArray<string>
+  readonly outFiles: ReadonlyArray<string>
   readonly emit:
     | ReadonlyArray<{
       readonly path: string
@@ -324,6 +416,8 @@ export interface PackageNode extends Planner.PlannedTarget {
       }
     }>
     | undefined
+  /** Generate stdout form: workspace-relative destination for captured stdout. */
+  readonly stdoutPath: string | undefined
   readonly members: ReadonlyArray<string>
   readonly aliasOf: string | undefined
   readonly materializeOf: string | undefined
@@ -350,6 +444,7 @@ export interface PlanReport {
     readonly cacheable: boolean
     readonly dependencies: ReadonlyArray<string>
     readonly argv?: ReadonlyArray<string> | undefined
+    readonly shards?: number | undefined
     /** A cargo target's per-crate commands, when it renders more than one. */
     readonly commands?: ReadonlyArray<ReadonlyArray<string>> | undefined
     readonly refusal?: string | undefined
@@ -455,11 +550,14 @@ type ToolOutcome = { readonly _tag: "resolved"; readonly tool: ResolvedTool } | 
 /**
  * Resolves the `.bin` entry name of one `S.NodeModule.Bin` reference.
  *
- * With no explicit `bin` argument the package's own manifest decides: a
- * string-form `bin` names the package basename; an object `bin` with one
- * entry names its sole key; more than one entry is ambiguous and requires
- * the explicit second argument. An unreadable manifest falls back to the
- * package basename, which the executable probe then refuses if absent.
+ * With no explicit `bin` argument the package's own manifest decides, the
+ * npm/npx way: a string-form `bin` names the package basename; an object
+ * `bin` selects the entry named after the package's unscoped name when the
+ * map has one (`knip`, `@biomejs/biome` → `biome`); an object with exactly
+ * one entry names its sole key whatever it is called; only a multi-entry
+ * map with no package-name entry is ambiguous and requires the explicit
+ * second argument. An unreadable manifest falls back to the package
+ * basename, which the executable probe then refuses if absent.
  */
 const binNameOf = async (
   root: string,
@@ -480,6 +578,7 @@ const binNameOf = async (
   if (typeof declared === "object" && declared !== null) {
     const names = Object.keys(declared)
     if (names.length === 1) return { name: names[0]! }
+    if (names.includes(basename)) return { name: basename }
     if (names.length > 1) {
       return {
         problem: `package ${JSON.stringify(packageName)} exposes ${names.length} binaries (${names.join(", ")}); ` +
@@ -497,7 +596,7 @@ interface PlanContext {
   readonly signal: AbortSignal | undefined
   readonly log: (line: string) => void
   readonly flags: Readonly<Record<string, string>>
-  readonly managerBinary: string
+  readonly managerBinary: string | undefined
   readonly tools: Map<string, ToolOutcome>
   readonly probes: Map<string, PackageTree.Probe>
   readonly nodes: Map<string, PackageNode>
@@ -518,6 +617,8 @@ interface PlanContext {
   readonly rootModes: ReadonlyMap<string, Mode>
   /** The invoker's `--input name=value` payload values, decoded per agent node at plan time. */
   readonly inputs: Readonly<Record<string, string>>
+  /** Secret presence used only for typed outward refusals; values never enter plans or keys. */
+  readonly environment: Readonly<Record<string, string | undefined>>
   /** Lazily opened cache store for plan-time closure rows and graph digests. */
   store: CacheStore | undefined
   storeWarned: boolean
@@ -550,6 +651,14 @@ const planStore = async (context: PlanContext): Promise<CacheStore | undefined> 
 }
 
 const sha256Hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex")
+
+/** Parses the strict Shell duration syntax admitted by the declaration schema. */
+const durationMs = (text: string): number => {
+  const match = /^(\d+)(ms|s|m|h)$/.exec(text)
+  if (match === null) return Shell.packageExecTimeoutMs
+  const unit = match[2]
+  return Number(match[1]) * (unit === "ms" ? 1 : unit === "s" ? 1_000 : unit === "m" ? 60_000 : 3_600_000)
+}
 
 /**
  * The canonical digest of one closure result: files, packages, and issue
@@ -823,21 +932,20 @@ const targetExecutable = (
 ): { readonly path: string } | { readonly problem: string } => {
   const metadata = Target.metadata(target)
   const label = labelOf(context, target)
-  if (metadata.target !== "Cargo.Build") {
-    return {
-      problem: `bin names ${label}, a ${metadata.target}; a target used as a tool edge must be a ` +
-        "Cargo.Build declaring exactly one bins entry"
+  if (metadata.target === "Cargo.Build") {
+    const paths = Cargo.binaries(metadata.attrs)
+    if (paths.length !== 1) {
+      return {
+        problem: `bin names ${label}, which declares ${paths.length} binaries; a tool edge needs exactly one`
+      }
     }
+    // Cargo puts every member's binaries in the workspace target directory,
+    // so the path is workspace relative, not package relative.
+    return { path: paths[0]! }
   }
-  const paths = Cargo.binaries(metadata.attrs)
-  if (paths.length !== 1) {
-    return {
-      problem: `bin names ${label}, which declares ${paths.length} binaries; a tool edge needs exactly one`
-    }
-  }
-  // Cargo puts every member's binaries in the workspace target directory, so
-  // the path is workspace relative, not package relative.
-  return { path: paths[0]! }
+  const out = attrMember(metadata.attrs, "out")
+  if (typeof out === "string") return { path: Input.resolvePath(packagePathOf(context, target), out) }
+  return { problem: `bin names ${label}, a ${metadata.target} target that declares no executable output` }
 }
 
 /** The declared files one `S.Cargo.Fetch` delivers, workspace relative. */
@@ -918,6 +1026,17 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
     }
   } else if (tag === "PackageManagerBin") {
     const name = context.managerBinary
+    if (name === undefined) {
+      outcome = {
+        _tag: "refused",
+        tool: {
+          refusal: "workspace declares no Node package manager; S.PackageManager.bin is unavailable",
+          identity: { tag: "PackageManagerBin", absent: true }
+        }
+      }
+      context.tools.set(key, outcome)
+      return outcome
+    }
     const path = PackageTree.findOnPath(name)
     if (path === undefined) {
       outcome = {
@@ -942,6 +1061,26 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
         }
       }
     }
+  } else if (tag === "GoBin" || tag === "GoRun") {
+    const resolved = await GoExec.resolveGo({ root: context.root, packagePath: "", workspace: context.index.workspace })
+    outcome = resolved.ok
+      ? {
+        _tag: "resolved",
+        tool: {
+          path: resolved.path,
+          identity: { ...resolved.identity as object, ...(tag === "GoRun" ? { spec: reference["spec"] } : {}) }
+        }
+      }
+      : { _tag: "refused", tool: { refusal: resolved.refusal, identity: resolved.identity } }
+  } else if (tag === "NixBin") {
+    const resolved = await GoExec.resolveNix(String(reference["name"]), {
+      root: context.root,
+      packagePath: "",
+      workspace: context.index.workspace
+    })
+    outcome = resolved.ok
+      ? { _tag: "resolved", tool: { path: resolved.path, identity: resolved.identity } }
+      : { _tag: "refused", tool: { refusal: resolved.refusal, identity: resolved.identity } }
   } else if (tag === "RuntimeBin") {
     outcome = {
       _tag: "resolved",
@@ -1012,6 +1151,11 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
         }
       }
     }
+  } else if (tag === "MiseBin") {
+    const resolved = await FoundryExec.resolveMiseBin(context.root, context.index.workspace, String(reference["name"]))
+    outcome = resolved.ok
+      ? { _tag: "resolved", tool: { path: resolved.path, identity: resolved.identity } }
+      : { _tag: "refused", tool: { refusal: resolved.refusal, identity: resolved.identity } }
   } else {
     outcome = {
       _tag: "refused",
@@ -1193,8 +1337,11 @@ const staticPrefixOf = (pattern: string): string => {
 const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox"]): ReadonlyArray<string> => {
   const capabilities = ["fs:read", "proc:spawn"]
   if (
-    mode === "write" || rule === "Shell.Build" || rule === "Bundler.Rspack.build" || rule === "Materialize" ||
+    mode === "write" || rule === "Shell.Build" || rule === "Foundry.Build" || rule === "Docker.Build" ||
+    rule === "Docker.Bake" || rule === "Bundler.Rspack.build" || rule === "Materialize" ||
     rule === "Clean" || rule === "Agent.Diff" || rule === "Agent.Pr" || rule === "Git.Commit" ||
+    rule === "Npm.Pack" || rule === "Copy" || rule === "Literal" || rule === "Git.Submodules" ||
+    rule === "Git.Submodule" || rule === "Changesets.Version" || rule === "Npm.Published" ||
     // Every cargo run writes `target/` and, when the workspace pins one, the
     // cargo home the fetch resource delivers.
     (rule.startsWith("Cargo.") && rule !== "Cargo.AppSet" && rule !== "Cargo.Fmt")
@@ -1224,6 +1371,7 @@ const visit = async (
   const rule = metadata.target
   const packagePath = packagePathOf(context, target)
   const attrs = metadata.attrs
+  const plannedMode = context.rootModes.get(label) ?? options.mode
 
   // Dependencies: always visited for key material; the execution edges are a
   // per-rule subset decided below.
@@ -1300,8 +1448,8 @@ const visit = async (
   const serviceDeps: Array<string> = []
   const hoistedDeps: Array<string> = []
   for (const service of services) {
-    if (Target.metadata(service).target !== "Shell.Serve") {
-      noteRefusal(`services entries must be Shell.Serve targets; ${depLabels.get(service) ?? "a member"} is not`)
+    if (!serviceRules.has(Target.metadata(service).target)) {
+      noteRefusal(`services entries must be service targets; ${depLabels.get(service) ?? "a member"} is not`)
       continue
     }
     const serviceLabel = depLabels.get(service) ?? labelOf(context, service)
@@ -1371,6 +1519,11 @@ const visit = async (
 
   // Per-rule extraction.
   let argv: Array<string> | undefined
+  const shards = rule === "Shell.Test" && typeof attrMember(attrs, "shards") === "number"
+    ? attrMember(attrs, "shards") as number
+    : 1
+  const timeout = attrMember(attrs, "timeout")
+  const timeoutMs = typeof timeout === "string" ? durationMs(timeout) : Shell.packageExecTimeoutMs
   let commands: ReadonlyArray<ReadonlyArray<string>> | undefined
   let cargoCrates: ReadonlyArray<CrateRow> | undefined
   let cargoOutFiles: ReadonlyArray<string> = []
@@ -1378,8 +1531,10 @@ const visit = async (
   let env: Record<string, string> = {}
   let bunTemplate: PackageNode["bunTemplate"]
   let emit: PackageNode["emit"]
+  let stdoutPath: string | undefined
   const writeSet: Array<string> = []
   const outDirs: Array<string> = []
+  const outFiles: Array<string> = []
   const members: Array<string> = []
   let aliasOf: string | undefined
   let materializeOf: string | undefined
@@ -1391,7 +1546,7 @@ const visit = async (
   for (const record of secretRecords) {
     if (typeof record["env"] === "string") secrets.push(record["env"])
   }
-  const sandbox = attrMember(attrs, "sandbox") as PackageNode["sandbox"]
+  let sandbox = attrMember(attrs, "sandbox") as PackageNode["sandbox"]
 
   const changes = attrMember(attrs, "changes")
   if (Array.isArray(changes)) {
@@ -1418,7 +1573,7 @@ const visit = async (
   // shell text naming workspace paths), and tools that resolve their config
   // by walking upward behave identically. Package scoping happens through
   // declared inputs and write sets, not the process cwd.
-  const cwd = "."
+  let cwd = "."
   const isShellExec = rule === "Shell.Build" || rule === "Shell.Test" || rule === "Shell.Run" ||
     rule === "Shell.Serve" || rule === "Shell.Diff"
   if (isShellExec && refusal === undefined) {
@@ -1426,12 +1581,24 @@ const visit = async (
     const payload = Shell.execPayload(shellAttrs)
     env = { ...(payload.env as Record<string, string>) }
     const resolved: Array<string> = []
-    for (const entry of payload.argv as ReadonlyArray<string>) resolved.push(await resolveToken(entry))
+    for (const entry of payload.argv as ReadonlyArray<string>) {
+      if (entry.startsWith("{smthrs:tool:") && entry.endsWith("}")) {
+        const reference = JSON.parse(entry.slice("{smthrs:tool:".length, -1)) as Record<string, unknown>
+        if (reference["_tag"] === "GoRun") {
+          const outcome = await resolveTool(context, reference)
+          toolchain.push(outcome.tool.identity)
+          if (outcome._tag === "refused") noteRefusal(outcome.tool.refusal)
+          else resolved.push(outcome.tool.path, "run", String(reference["spec"]))
+          continue
+        }
+      }
+      resolved.push(await resolveToken(entry))
+    }
     if (shellAttrs.bun !== undefined) {
       const bun = await resolveBun(context)
       const consts: Record<string, string> = {}
       for (const [name, reference] of Object.entries(shellAttrs.using ?? {})) {
-        const outcome = await resolveTool(context, reference)
+        const outcome = await resolveTool(context, reference as Record<string, unknown>)
         toolchain.push({ slot: `using:${name}`, identity: outcome.tool.identity })
         if (outcome._tag === "refused") noteRefusal(outcome.tool.refusal)
         else consts[name] = outcome.tool.path
@@ -1477,6 +1644,12 @@ const visit = async (
           if (typeof dir === "string") outDirs.push(Input.resolvePath(packagePath, dir))
         }
       }
+      const declaredFiles = attrMember(attrs, "outFiles")
+      if (Array.isArray(declaredFiles)) {
+        for (const file of declaredFiles) {
+          if (typeof file === "string") outFiles.push(Input.resolvePath(packagePath, file))
+        }
+      }
     }
   }
 
@@ -1484,17 +1657,33 @@ const visit = async (
     const script = attrMember(attrs, "script")
     const emitAttr = attrMember(attrs, "emit")
     const bin = attrMember(attrs, "bin")
+    const command = attrMember(attrs, "command")
     if (script !== undefined && typeof (script as { readonly path?: unknown }).path === "string") {
       const resolved: Array<string> = []
       for (
         const entry of [
-          Shell.toolToken({ _tag: "RuntimeBin" } as never),
+          Shell.toolToken({ _tag: "RuntimeBin" }),
           Shell.scriptToken((script as { readonly path: string }).path)
         ]
       ) {
         resolved.push(await resolveToken(entry))
       }
       argv = resolved
+      const declaredEnv = attrMember(attrs, "env")
+      if (typeof declaredEnv === "object" && declaredEnv !== null) env = { ...(declaredEnv as Record<string, string>) }
+      const stdout = attrMember(attrs, "stdout")
+      if (typeof stdout === "string") {
+        stdoutPath = Input.resolvePath(packagePath, stdout)
+        writeSet.push(stdoutPath)
+      }
+    } else if (typeof command === "string") {
+      const payload = Shell.execPayload({
+        command,
+        env: attrMember(attrs, "env") as Shell.ExecAttrs["env"],
+        secrets: attrMember(attrs, "secrets") as Shell.ExecAttrs["secrets"]
+      })
+      argv = [...payload.argv] as Array<string>
+      env = { ...(payload.env as Record<string, string>) }
     } else if (emitAttr !== undefined && typeof emitAttr === "object" && emitAttr !== null) {
       const entries: Array<NonNullable<PackageNode["emit"]>[number]> = []
       for (const [name, value] of Object.entries(emitAttr)) {
@@ -1511,20 +1700,42 @@ const visit = async (
       }
       emit = entries
     } else if (bin !== undefined) {
-      if (attrMember(attrs, "stdout") !== undefined) {
-        noteRefusal("NotImplemented: the Generate stdout form is not implemented")
-      } else {
+      {
         // The bin form plans the exec payload the Shell flavors plan; the
         // check-mode scratch copy and the write-mode write-set bracket around
         // the spawn are form-agnostic, so nothing else differs from the
         // script form.
         const payload = Shell.execPayload({
           bin: bin as Shell.ExecAttrs["bin"],
-          args: attrMember(attrs, "args") as Shell.ExecAttrs["args"]
+          args: attrMember(attrs, "args") as Shell.ExecAttrs["args"],
+          env: attrMember(attrs, "env") as Shell.ExecAttrs["env"],
+          secrets: attrMember(attrs, "secrets") as Shell.ExecAttrs["secrets"]
         })
         env = { ...(payload.env as Record<string, string>) }
+        if (
+          typeof bin === "object" && bin !== null &&
+          ((bin as { readonly _tag?: unknown })._tag === "GoBin" ||
+            (bin as { readonly _tag?: unknown })._tag === "GoRun")
+        ) {
+          env = {
+            ...GoExec.toolchainEnvironment({ root: context.root, packagePath, workspace: context.index.workspace }),
+            ...env
+          }
+        }
         const resolved: Array<string> = []
-        for (const entry of payload.argv as ReadonlyArray<string>) resolved.push(await resolveToken(entry))
+        for (const entry of payload.argv as ReadonlyArray<string>) {
+          if (entry.startsWith("{smthrs:tool:") && entry.endsWith("}")) {
+            const reference = JSON.parse(entry.slice("{smthrs:tool:".length, -1)) as Record<string, unknown>
+            if (reference["_tag"] === "GoRun") {
+              const outcome = await resolveTool(context, reference)
+              toolchain.push(outcome.tool.identity)
+              if (outcome._tag === "refused") noteRefusal(outcome.tool.refusal)
+              else resolved.push(outcome.tool.path, "run", String(reference["spec"]))
+              continue
+            }
+          }
+          resolved.push(await resolveToken(entry))
+        }
         if (resolved.includes(Shell.targetBinToken) && Target.isTarget(bin)) {
           const executable = targetExecutable(context, bin)
           if ("problem" in executable) noteRefusal(executable.problem)
@@ -1536,15 +1747,105 @@ const visit = async (
           }
         }
         argv = resolved
+        const stdout = attrMember(attrs, "stdout")
+        if (typeof stdout === "string") {
+          stdoutPath = Input.resolvePath(packagePath, stdout)
+          writeSet.push(stdoutPath)
+        }
       }
     }
+  }
+
+  if (rule.startsWith("Go.") && refusal === undefined) {
+    const go = await GoExec.resolveGo({ root: context.root, packagePath, workspace: context.index.workspace })
+    toolchain.push(go.identity)
+    if (!go.ok) noteRefusal(go.refusal)
+    else {
+      // `go generate` runs the directives' commands off PATH, so a declared
+      // generator has to be resolved here or the attr is decorative: its
+      // version would never key and an absent one would surface as a
+      // directive failure rather than as the missing tool.
+      const generatorTools = rule === "Go.Generate" ? attrMember(attrs, "tools") : undefined
+      const generatorPath: Array<string> = []
+      if (Array.isArray(generatorTools)) {
+        for (const reference of generatorTools) {
+          const outcome = await resolveTool(context, reference as Record<string, unknown>)
+          toolchain.push({ slot: "tool", identity: outcome.tool.identity })
+          if (outcome._tag === "refused") noteRefusal(outcome.tool.refusal)
+          else generatorPath.push(NodePath.dirname(outcome.tool.path))
+        }
+      }
+      try {
+        const plannedGo = await GoExec.planRule(rule, attrs as Record<string, unknown>, {
+          root: context.root,
+          packagePath,
+          workspace: context.index.workspace
+        }, go.path)
+        if (plannedGo.refusal !== undefined) noteRefusal(plannedGo.refusal)
+        argv = plannedGo.argv === undefined ? undefined : [...plannedGo.argv]
+        env = { ...plannedGo.env }
+        if (generatorPath.length > 0) {
+          // The directories join PATH for the spawn only. Their identities
+          // already key above; a host path in `env` would key nothing extra
+          // and would split the cache per machine.
+          env["PATH"] = [...generatorPath, process.env["PATH"] ?? ""].filter(Boolean).join(NodePath.delimiter)
+        }
+        outDirs.push(...plannedGo.outDirs)
+        writeSet.push(...plannedGo.writeSet)
+        if (plannedGo.closureIdentity !== undefined) {
+          toolchain.push({ tag: "GoClosure", value: plannedGo.closureIdentity })
+        }
+      } catch (cause) {
+        noteRefusal(`Go planning failed: ${Diagnostic.message(cause)}`)
+      }
+    }
+  }
+
+  if (rule === "Foundry.Build" || rule === "Foundry.Test" || rule === "Foundry.Fmt") {
+    const planned = await FoundryExec.plan({
+      root: context.root,
+      packagePath,
+      workspace: context.index.workspace,
+      rule,
+      mode: plannedMode,
+      attrs: attrs as never
+    })
+    toolchain.push(planned.toolchain)
+    cwd = planned.cwd
+    env = { ...planned.env }
+    outDirs.push(...planned.outDirs)
+    argv = planned.argv === undefined ? undefined : [...planned.argv]
+    if (planned.refusal !== undefined) noteRefusal(planned.refusal)
+  }
+
+  if (rule === "Docker.Build" || rule === "Docker.Bake" || rule === "Docker.Push") {
+    const planned = await DockerExec.plan({ rule, packagePath, attrs: attrs as never })
+    toolchain.push(planned.toolchain)
+    outDirs.push(...planned.outDirs)
+    argv = planned.argv === undefined ? undefined : [...planned.argv]
+    if (sandbox === undefined) sandbox = "none"
+    if (planned.refusal !== undefined) noteRefusal(planned.refusal)
+  }
+
+  if (rule === "Anvil.Fork") {
+    const resolved = await AnvilExec.resolveAnvil()
+    toolchain.push(resolved.identity)
+    sandbox = { network: true }
+    if (!resolved.ok) noteRefusal(resolved.refusal)
+  }
+
+  if (rule === "Docker.Serve" || rule === "Docker.Service") {
+    const resolved = await DockerExec.resolveDocker()
+    toolchain.push(resolved.identity)
+    sandbox = "none"
+    if (!resolved.ok) noteRefusal(resolved.refusal)
   }
 
   // Cargo rules: resolve the toolchain layer, expand the crate set, and render
   // one cargo command per selected crate. `Cargo.AppSet` is a value, not a
   // run: it plans no process at all.
   if (rule.startsWith("Cargo.") && rule !== "Cargo.AppSet" && refusal === undefined) {
-    const cargoPath = await resolveToken(Shell.toolToken({ _tag: "CargoBin" } as never))
+    const cargoPath = await resolveToken(Shell.toolToken({ _tag: "CargoBin" }))
     let selections: ReadonlyArray<Cargo.CrateSelection> | undefined
     const declared = Cargo.selectionOf(attrs)
     if (declared !== undefined) {
@@ -1558,6 +1859,10 @@ const visit = async (
       // workspace it runs from: `cargo fetch` with no `--manifest-path`
       // resolves the manifest in its working directory, which is the
       // workspace root every target spawns from.
+      selections = [{ _tag: "Workspace" }]
+    } else if (rule === "Cargo.Deny") {
+      selections = [{ _tag: "Workspace" }]
+    } else if (rule === "Cargo.Fmt" && attrMember(attrs, "crates") === undefined) {
       selections = [{ _tag: "Workspace" }]
     } else {
       const crates = await crateSetOf(context, attrMember(attrs, "crates"))
@@ -1671,6 +1976,13 @@ const visit = async (
       lane = { kind: "serve", readiness: serveAttrs.readiness, health: serveAttrs.health, stop: serveAttrs.stop }
       break
     }
+    case "Docker.Serve":
+    case "Docker.Service":
+      lane = { kind: "docker-service", attrs: attrs as (typeof Docker.ServeAttrs)["Type"] }
+      break
+    case "Anvil.Fork":
+      lane = { kind: "anvil-fork", attrs: attrs as (typeof Anvil.ForkAttrs)["Type"] }
+      break
     case "ImportClosure": {
       const closureAttrs = attrs as (typeof Compose.ImportClosureAttrs)["Type"]
       const entries = Compose.closureEntrySources(closureAttrs.entries, implementationContext)
@@ -1680,6 +1992,21 @@ const visit = async (
     }
     case "Test": {
       const testAttrs = attrs as (typeof Compose.TestAttrs)["Type"]
+      if (testAttrs.expect._tag === "FilesDigest") {
+        if (testAttrs.toBe === "empty") noteRefusal("Files.digest must compare to a declared file")
+        else {
+          lane = {
+            kind: "files-digest",
+            targetLabel: labelFor(testAttrs.expect.target),
+            expectedPath: Input.resolvePath(packagePath, testAttrs.toBe.path)
+          }
+        }
+        break
+      }
+      if (testAttrs.toBe !== "empty") {
+        noteRefusal("Files.difference can only compare to \"empty\"")
+        break
+      }
       const left = testOperandPlan(testAttrs.expect.left)
       const right = testOperandPlan(testAttrs.expect.right)
       if (typeof left === "string") noteRefusal(`Test: ${left}`)
@@ -1768,13 +2095,178 @@ const visit = async (
     case "Github.Pr":
       lane = { kind: "github-pr" }
       break
+    case "Npm.Pack": {
+      if (context.managerBinary === undefined) {
+        noteRefusal(
+          `${rule} needs the workspace Node package manager; declare runtime, packageManager, and nodeModules on S.Workspace`
+        )
+        break
+      }
+      const packAttrs = attrs as (typeof NpmTarget.PackAttrs)["Type"]
+      const manifestPath = Input.resolvePath(packagePath, packAttrs.manifest.path)
+      let manifest: { readonly name?: unknown; readonly version?: unknown }
+      try {
+        manifest = JSON.parse(await Fs.readFile(NodePath.join(context.root, ...manifestPath.split("/")), "utf8"))
+      } catch (cause) {
+        noteRefusal(`could not read package manifest ${manifestPath}: ${Diagnostic.message(cause)}`)
+        break
+      }
+      if (
+        typeof manifest.name !== "string" || manifest.name === "" || typeof manifest.version !== "string" ||
+        manifest.version === ""
+      ) {
+        noteRefusal(`package manifest ${manifestPath} must declare non-empty name and version`)
+        break
+      }
+      const tarball = `${manifest.name.replace(/^@/, "").replaceAll("/", "-")}-${manifest.version}.tgz`
+      cwd = NodePath.posix.dirname(manifestPath)
+      argv = [context.managerBinary, "pack"]
+      outFiles.push(Input.resolvePath(cwd, tarball))
+      lane = { kind: "npm-pack", manifestPath }
+      break
+    }
+    case "Copy": {
+      const copyAttrs = attrs as (typeof NodeArtifact.CopyAttrs)["Type"]
+      const destination = Input.resolvePath(packagePath, copyAttrs.to)
+      outFiles.push(destination)
+      lane = Target.isTarget(copyAttrs.from)
+        ? { kind: "native-file", flavor: "copy", sourceLabel: labelFor(copyAttrs.from) }
+        : { kind: "native-file", flavor: "copy", source: Input.resolvePath(packagePath, copyAttrs.from.path) }
+      break
+    }
+    case "Literal": {
+      const literalAttrs = attrs as (typeof NodeArtifact.LiteralAttrs)["Type"]
+      outFiles.push(Input.resolvePath(packagePath, literalAttrs.path))
+      lane = { kind: "native-file", flavor: "literal", text: literalAttrs.content }
+      break
+    }
+    case "Git.Submodules":
+    case "Git.Submodule": {
+      const git = await resolveToken(Shell.toolToken({ _tag: "HostBin", name: "git" } as never))
+      const paths = rule === "Git.Submodules"
+        ? [...(attrs as (typeof GitTarget.SubmodulesAttrs)["Type"]).paths]
+        : [(attrs as (typeof GitTarget.SubmoduleAttrs)["Type"]).path]
+      argv = [
+        git,
+        "submodule",
+        "update",
+        "--init",
+        "--recursive",
+        "--force",
+        "--",
+        ...paths.map((path) => path.startsWith("//") ? path.slice(2) : path)
+      ]
+      outDirs.push(...paths.map((path) => path.startsWith("//") ? path.slice(2) : Input.resolvePath(packagePath, path)))
+      lane = { kind: "submodules" }
+      break
+    }
+    case "Changesets.Version": {
+      if (context.managerBinary === undefined) {
+        noteRefusal(
+          `${rule} needs the workspace Node package manager; declare runtime, packageManager, and nodeModules on S.Workspace`
+        )
+        break
+      }
+      argv = [context.managerBinary, "exec", "changeset", "version"]
+      lane = { kind: "inert" }
+      break
+    }
+    case "Size.Budgets": {
+      if (context.managerBinary === undefined) {
+        noteRefusal(
+          `${rule} needs the workspace Node package manager; declare runtime, packageManager, and nodeModules on S.Workspace`
+        )
+        break
+      }
+      argv = [context.managerBinary, "exec", "size-limit"]
+      lane = { kind: "inert" }
+      break
+    }
+    case "Markdown.CodeBlocks": {
+      if (context.managerBinary === undefined) {
+        noteRefusal(
+          `${rule} needs the workspace Node package manager; declare runtime, packageManager, and nodeModules on S.Workspace`
+        )
+        break
+      }
+      const codeAttrs = attrs as (typeof NodeArtifact.CodeBlocksAttrs)["Type"]
+      lane = {
+        kind: "markdown-code-blocks",
+        file: Input.resolvePath(packagePath, codeAttrs.file.path),
+        languages: [...codeAttrs.lang]
+      }
+      argv = [
+        context.managerBinary,
+        "exec",
+        "tsc",
+        "--noEmit",
+        "--ignoreConfig",
+        "--strict",
+        "--skipLibCheck",
+        "--module",
+        "Node16",
+        "--moduleResolution",
+        "Node16"
+      ]
+      break
+    }
+    case "Npm.Published": {
+      if (context.managerBinary === undefined) {
+        noteRefusal(
+          `${rule} needs the workspace Node package manager; declare runtime, packageManager, and nodeModules on S.Workspace`
+        )
+        break
+      }
+      const publishedAttrs = attrs as (typeof NpmTarget.PublishedAttrs)["Type"]
+      const manifestPath = Input.resolvePath(packagePath, publishedAttrs.manifest.path)
+      const output = `.smthrs/npm-published/${sha256Hex(label).slice(0, 16)}`
+      let manifest: { readonly name?: unknown }
+      try {
+        manifest = JSON.parse(await Fs.readFile(NodePath.join(context.root, ...manifestPath.split("/")), "utf8"))
+      } catch (cause) {
+        noteRefusal(`could not read package manifest ${manifestPath}: ${Diagnostic.message(cause)}`)
+        break
+      }
+      if (typeof manifest.name !== "string" || manifest.name === "") {
+        noteRefusal(`package manifest ${manifestPath} must declare a non-empty name`)
+        break
+      }
+      outDirs.push(output)
+      argv = [context.managerBinary, "dlx", "pacote@21.0.0", "extract", manifest.name, output]
+      sandbox = { network: true }
+      lane = { kind: "published", manifestPath }
+      break
+    }
+    case "Api.Compat":
+      lane = { kind: "api-compat" }
+      break
+    case "Overlay":
+      lane = { kind: "overlay" }
+      break
+    case "Cron":
+      lane = { kind: "inert" }
+      break
+    case "Npm.Downstream":
+      lane = { kind: "inert" }
+      break
+    case "Npm.Publish":
+    case "Changesets.Publish":
+      lane = { kind: "outward", required: ["NPM_TOKEN"] }
+      break
+    case "Github.Release":
+    case "Github.Pages":
+    case "Git.Pr":
+      lane = { kind: "outward", required: ["GITHUB_TOKEN"] }
+      break
     case "Memory.Retain":
       lane = { kind: "memory-retain" }
       break
     case "Cargo.Fetch":
     case "Cargo.Build":
     case "Cargo.Test":
+    case "Cargo.Nextest":
     case "Cargo.Clippy":
+    case "Cargo.Deny":
     case "Cargo.Fmt":
     case "Cargo.Doc":
       lane = {
@@ -1809,6 +2301,15 @@ const visit = async (
       )
     }
   }
+  if (lane?.kind === "outward") {
+    for (const required of lane.required) {
+      if (!secrets.includes(required)) {
+        noteRefusal(`${rule}: missing secret: declaration requires S.Secret(${JSON.stringify(required)})`)
+      } else if (context.environment[required] === undefined || context.environment[required] === "") {
+        noteRefusal(`${rule}: missing secret: the declared ${required} secret has no value in the invoking environment`)
+      }
+    }
+  }
   if (attrMember(attrs, "approval") === "required") {
     noteRefusal(
       `approval required: ${label} declares approval: "required" and no approval was granted; ` +
@@ -1836,7 +2337,7 @@ const visit = async (
   // Current write-set state keys the check verdict: a hand-edited generated
   // file or a removed emitted symlink must re-key the check.
   let writeSetState: unknown = null
-  if (rule === "Generate" || rule === "Shell.Diff") {
+  if (rule === "Generate" || rule === "Shell.Diff" || rule === "Changesets.Version") {
     if (emit !== undefined) {
       const states: Array<unknown> = []
       for (const entry of emit) {
@@ -1895,7 +2396,12 @@ const visit = async (
     ]
   }
 
-  const cacheable = refusal === undefined && (
+  const movingService = services.some((service) => {
+    const serviceMetadata = Target.metadata(service)
+    return serviceMetadata.target === "Anvil.Fork" &&
+      attrMember(serviceMetadata.attrs, "forkBlockNumber") === "latest"
+  })
+  const cacheable = refusal === undefined && !movingService && (
     // A cargo check replays: its key carries the crate set, the sources, the
     // lockfile slice, and the toolchain, and its product is a verdict.
     // `Cargo.Build` and `Cargo.Doc` do not: their product is a `target/` tree
@@ -1904,13 +2410,33 @@ const visit = async (
     // own incremental compilation is what makes the repeat run cheap.
     // `Cargo.Fetch` is the dynamic resource every other cargo target is keyed
     // against and is never replayed.
-    ((rule === "Cargo.Test" || rule === "Cargo.Clippy" || rule === "Cargo.Fmt") && mode !== "write") ||
+    ((rule === "Cargo.Test" || rule === "Cargo.Nextest" || rule === "Cargo.Clippy" || rule === "Cargo.Fmt" ||
+      rule === "Cargo.Deny") && mode !== "write") ||
     (rule === "Shell.Test" && mode === "execute") ||
     rule === "Shell.Build" ||
     (rule === "Generate" && mode === "check") ||
     rule === "Test" ||
     rule === "Bundler.Rspack.resolve" ||
-    rule === "Bundler.Rspack.build"
+    rule === "Bundler.Rspack.build" ||
+    rule === "Foundry.Build" ||
+    (rule === "Foundry.Test" && mode === "execute") ||
+    (rule === "Foundry.Fmt" && mode === "check") ||
+    rule === "Docker.Build" ||
+    rule === "Docker.Bake" ||
+    rule === "Npm.Pack" ||
+    rule === "Npm.Published" ||
+    rule === "Copy" ||
+    rule === "Literal" ||
+    rule === "Git.Submodules" ||
+    rule === "Git.Submodule" ||
+    rule === "Markdown.CodeBlocks" ||
+    rule === "Api.Compat" ||
+    rule === "Size.Budgets" ||
+    rule === "Npm.Downstream" ||
+    rule === "Overlay" ||
+    (rule === "Changesets.Version" && mode === "check") ||
+    rule === "Go.Test" || rule === "Go.Fuzz" || rule === "Go.Binary" || rule === "Go.ModDownload" ||
+    (rule === "Go.Lint" && mode === "check") || (rule === "Go.Generate" && mode === "check")
   )
 
   const keyMaterial: Planner.KeyMaterial = {
@@ -1925,7 +2451,7 @@ const visit = async (
       schemas: metadata.schemaIdentity,
       mode,
       cwd,
-      outputs: outDirs.length === 0 ? null : [...outDirs],
+      outputs: outDirs.length === 0 && outFiles.length === 0 ? null : { dirs: [...outDirs], files: [...outFiles] },
       executionFormat: Planner.EXECUTION_FORMAT,
       packageFormat: PACKAGE_EXECUTION_FORMAT
     },
@@ -1986,13 +2512,17 @@ const visit = async (
     sandbox,
     secrets,
     argv,
+    shards,
+    timeoutMs,
     cwd,
     env,
     absoluteEnv,
     bunTemplate,
     writeSet,
     outDirs,
+    outFiles,
     emit,
+    stdoutPath,
     members,
     aliasOf,
     materializeOf,
@@ -2063,15 +2593,12 @@ const rootMode = (rule: string, options: RunOptions): Mode => {
   return "check"
 }
 
-const managerBinaryOf = (workspace: PackageIndexModule.PackageIndex["workspace"]): string => {
-  const manager = workspace.packageManager as
-    | { readonly _tag?: unknown; readonly name?: unknown }
-    | undefined
-  // A toolchain-only workspace declares no package manager. Nothing in it can
-  // reference one either, so the name is only ever reported in the refusal a
-  // `S.PackageManager.bin` reference would produce.
-  if (manager === undefined) return "pnpm"
+const managerBinaryOf = (workspace: PackageIndexModule.PackageIndex["workspace"]): string | undefined => {
+  if (workspace.packageManager === undefined) return undefined
+  const manager = workspace.packageManager as { readonly _tag?: unknown; readonly name?: unknown }
+  if (manager === undefined) return undefined
   if (manager._tag === "YarnPackageManager") return "yarn"
+  if (manager._tag === "PnpmPackageManager") return "pnpm"
   if (typeof manager.name === "string") return manager.name
   return "pnpm"
 }
@@ -2121,8 +2648,9 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     rootModes.set(row.label, rootMode(Target.metadata(row.target).target, options))
   }
   const workspace = index.workspace
-  const lockfilePath = (workspace.packageManager as { readonly lockfile?: { readonly path?: unknown } } | undefined)
-    ?.lockfile?.path
+  const lockfilePath = (workspace.packageManager as
+    | { readonly lockfile?: { readonly path?: unknown } }
+    | undefined)?.lockfile?.path
   const lockfileDigest = typeof lockfilePath === "string"
     ? await Input.digestFile(NodePath.join(index.root, Input.resolvePath("", lockfilePath)), {
       workspaceRoot: index.root,
@@ -2145,6 +2673,7 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     visiting: new Set(),
     rootModes,
     inputs: options.inputs ?? {},
+    environment: options.environment ?? process.env,
     ambient: {
       node: process.version,
       platform: process.platform,
@@ -2194,7 +2723,10 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
 const formatDuration = (durationMs: number): string =>
   durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${Math.round(durationMs)}ms`
 
-const sandboxProfile = "(version 1)(allow default)(deny network*)"
+// Local Unix sockets are process IPC (tsx uses one to relay signals), not
+// egress. Keep IP networking denied while allowing tools to coordinate with
+// their own children.
+const sandboxProfile = "(version 1)(allow default)(deny network*)(allow network* (local unix-socket))"
 
 /**
  * The loopback profile: the network stays denied except on the loopback
@@ -2358,9 +2890,10 @@ export const execute = async (
     }
     // The plan keeps workspace-relative paths so two checkouts key alike; the
     // spawn is where they become paths a child process can use.
-    let argv = planned.map((entry) =>
+    const rooted = planned.map((entry) =>
       entry.includes(workspaceRootToken) ? entry.split(workspaceRootToken).join(root) : entry
     )
+    let argv = await StampExec.resolveArgv(root, rooted)
     for (const name of node.absoluteEnv) {
       const value = node.env[name]
       if (value !== undefined) secretEnv[name] = NodePath.join(root, ...value.split("/"))
@@ -2396,13 +2929,20 @@ export const execute = async (
       env: resolved.env,
       secrets: [],
       expectedExitCodes: [0],
-      timeoutMs: Shell.packageExecTimeoutMs
+      timeoutMs: node.timeoutMs
     }
     const exit = await Effect.runPromiseExit(
       Exec.run({ workspaceRoot, cacheDirectory }, payload),
       { signal }
     )
-    if (Exit.isSuccess(exit)) return { ok: true, result: exit.value }
+    if (Exit.isSuccess(exit)) {
+      if (node.stdoutPath !== undefined) {
+        const destination = NodePath.join(workspaceRoot, ...node.stdoutPath.split("/"))
+        await Fs.mkdir(NodePath.dirname(destination), { recursive: true })
+        await Fs.writeFile(destination, exit.value.stdout, "utf8")
+      }
+      return { ok: true, result: exit.value }
+    }
     // Exec.run fails only with ExecError; render whatever the cause carries.
     const value: unknown = Cause.squash(exit.cause)
     if (
@@ -2414,7 +2954,12 @@ export const execute = async (
     return { ok: false, error: Diagnostic.message(value, "tool run failed") }
   }
 
-  const decodeBuildOutput = (output: unknown): ReadonlyArray<PackageTree.OutDirManifest> | undefined => {
+  interface BuildOutput {
+    readonly manifests: ReadonlyArray<PackageTree.OutDirManifest>
+    readonly files: ReadonlyArray<PackageTree.FileManifest>
+  }
+
+  const decodeBuildOutput = (output: unknown): BuildOutput | undefined => {
     if (typeof output !== "object" || output === null) return undefined
     if ((output as { readonly kind?: unknown }).kind !== "build") return undefined
     const manifests = (output as { readonly manifests?: unknown }).manifests
@@ -2425,7 +2970,15 @@ export const execute = async (
       if (valid === undefined) return undefined
       decoded.push(valid)
     }
-    return decoded
+    const filesValue = (output as { readonly files?: unknown }).files ?? []
+    if (!Array.isArray(filesValue)) return undefined
+    const files: Array<PackageTree.FileManifest> = []
+    for (const file of filesValue) {
+      const valid = PackageTree.decodeFileManifest(file)
+      if (valid === undefined) return undefined
+      files.push(valid)
+    }
+    return { manifests: decoded, files }
   }
 
   // A cache entry's own `outDir` is untrusted (a shared remote, a backup, a
@@ -2436,15 +2989,23 @@ export const execute = async (
   // written or rename-swapped, so a poisoned entry cannot place bytes over a
   // directory this target does not own.
   const manifestsBindToDeclared = (
-    manifests: ReadonlyArray<PackageTree.OutDirManifest>,
-    declared: ReadonlyArray<string>
+    output: BuildOutput,
+    declaredDirs: ReadonlyArray<string>,
+    declaredFiles: ReadonlyArray<string>
   ): boolean => {
-    const declaredSet = new Set(declared)
-    if (manifests.length !== declaredSet.size) return false
+    const declaredSet = new Set(declaredDirs)
+    if (output.manifests.length !== declaredSet.size) return false
     const seen = new Set<string>()
-    for (const manifest of manifests) {
+    for (const manifest of output.manifests) {
       if (!declaredSet.has(manifest.outDir) || seen.has(manifest.outDir)) return false
       seen.add(manifest.outDir)
+    }
+    const fileSet = new Set(declaredFiles)
+    if (output.files.length !== fileSet.size) return false
+    const seenFiles = new Set<string>()
+    for (const file of output.files) {
+      if (!fileSet.has(file.path) || seenFiles.has(file.path)) return false
+      seenFiles.add(file.path)
     }
     return true
   }
@@ -2481,18 +3042,26 @@ export const execute = async (
    * tree is materialized. Returns false on any doubt, which is a miss.
    */
   const restoreBuild = async (node: PackageNode, output: unknown): Promise<boolean> => {
-    const manifests = decodeBuildOutput(output)
-    if (manifests === undefined || !manifestsBindToDeclared(manifests, node.outDirs)) return false
-    for (const manifest of manifests) {
+    const decoded = decodeBuildOutput(output)
+    if (decoded === undefined || !manifestsBindToDeclared(decoded, node.outDirs, node.outFiles)) return false
+    for (const manifest of decoded.manifests) {
       const problem = await PackageTree.verifyManifestBlobs(root, cacheDirectory, manifest)
       if (problem !== undefined) {
         log(`${node.label}  cache miss: ${problem}`)
         return false
       }
     }
-    for (const manifest of manifests) {
+    for (const file of decoded.files) {
+      const problem = await PackageTree.verifyFileManifest(root, cacheDirectory, file)
+      if (problem !== undefined) {
+        log(`${node.label}  cache miss: ${problem}`)
+        return false
+      }
+    }
+    for (const manifest of decoded.manifests) {
       await PackageTree.materializeManifest(root, cacheDirectory, manifest)
     }
+    for (const file of decoded.files) await PackageTree.materializeFile(root, cacheDirectory, file)
     return true
   }
 
@@ -2501,7 +3070,79 @@ export const execute = async (
     for (const outDir of node.outDirs) {
       manifests.push(await PackageTree.captureOutDir(root, cacheDirectory, outDir))
     }
-    await cachePut(node, { kind: "build", manifests }, key)
+    const files: Array<PackageTree.FileManifest> = []
+    for (const file of node.outFiles) files.push(await PackageTree.captureFile(root, cacheDirectory, file))
+    await cachePut(node, { kind: "build", manifests, files }, key)
+  }
+
+  /** Captures a very large directory as one CAS tar blob instead of one JSON member per file. */
+  const captureDirectoryArchive = async (node: PackageNode): Promise<string | undefined> => {
+    if (node.outDirs.length !== 1) return "directory archive requires exactly one declared outDir"
+    const tar = PackageTree.findOnPath("tar")
+    if (tar === undefined) return "host binary \"tar\" is not present on PATH; Go.ModDownload cache capture cannot run"
+    const archive = Input.resolvePath(cacheDirectory, `tmp/go-mod-${node.keyPreview}.tgz`)
+    const absoluteArchive = NodePath.join(root, ...archive.split("/"))
+    await Fs.mkdir(NodePath.dirname(absoluteArchive), { recursive: true })
+    const created = await spawnNode(
+      node,
+      root,
+      options.signal,
+      [tar, "-czf", absoluteArchive, "-C", NodePath.join(root, ...node.outDirs[0]!.split("/")), "."]
+    )
+    if (!created.ok) return created.error ?? "tar archive creation failed"
+    const manifest = await PackageTree.captureFile(root, cacheDirectory, archive)
+    await Fs.rm(absoluteArchive, { force: true })
+    await cachePut(node, { kind: "directory-archive", outDir: node.outDirs[0], digest: manifest.digest })
+    return undefined
+  }
+
+  /** Restores a one-blob directory archive after validating every path tar would write. */
+  const restoreDirectoryArchive = async (node: PackageNode, output: unknown): Promise<boolean> => {
+    if (node.outDirs.length !== 1 || typeof output !== "object" || output === null) return false
+    const record = output as { readonly kind?: unknown; readonly outDir?: unknown; readonly digest?: unknown }
+    if (
+      record.kind !== "directory-archive" || record.outDir !== node.outDirs[0] ||
+      typeof record.digest !== "string" || !/^[0-9a-f]{64}$/.test(record.digest)
+    ) return false
+    const tar = PackageTree.findOnPath("tar")
+    if (tar === undefined) return false
+    const archive = Input.resolvePath(cacheDirectory, `tmp/go-mod-${node.keyPreview}.tgz`)
+    const manifest: PackageTree.FileManifest = { path: archive, digest: record.digest, executable: false }
+    if (await PackageTree.verifyFileManifest(root, cacheDirectory, manifest) !== undefined) return false
+    await PackageTree.materializeFile(root, cacheDirectory, manifest)
+    const absoluteArchive = NodePath.join(root, ...archive.split("/"))
+    const listing = `${absoluteArchive}.list`
+    const listed = await spawnNode(node, root, options.signal, [
+      "/bin/sh",
+      "-c",
+      "exec \"$1\" -tzf \"$2\" > \"$3\"",
+      "sh",
+      tar,
+      absoluteArchive,
+      listing
+    ])
+    if (!listed.ok) return false
+    const paths = await Fs.readFile(listing, "utf8").catch(() => undefined)
+    await Fs.rm(listing, { force: true })
+    if (paths === undefined) return false
+    for (const line of paths.split("\n")) {
+      const path = line.replace(/^\.\//, "")
+      if (path === "" || path === ".") continue
+      if (NodePath.isAbsolute(path) || path.split("/").includes("..") || path.includes("\0")) return false
+    }
+    const destination = NodePath.join(root, ...node.outDirs[0]!.split("/"))
+    const makeRemovable = async (path: string): Promise<void> => {
+      const stats = await Fs.lstat(path).catch(() => undefined)
+      if (stats === undefined || !stats.isDirectory()) return
+      await Fs.chmod(path, stats.mode | 0o700)
+      for (const entry of await Fs.readdir(path)) await makeRemovable(NodePath.join(path, entry))
+    }
+    await makeRemovable(destination)
+    await Fs.rm(destination, { recursive: true, force: true })
+    await Fs.mkdir(destination, { recursive: true })
+    const extracted = await spawnNode(node, root, options.signal, [tar, "-xzf", absoluteArchive, "-C", destination])
+    await Fs.rm(absoluteArchive, { force: true })
+    return extracted.ok
   }
 
   /** Resolves one Serve node to the spec the supervisor spawns and probes. */
@@ -2512,7 +3153,24 @@ export const execute = async (
     const serveNode = planned.nodes.get(label)
     if (serveNode === undefined) return { error: `service ${label} was not planned` }
     if (serveNode.refusal !== undefined) return { error: `service ${label}: ${serveNode.refusal}` }
-    if (serveNode.lane?.kind !== "serve") return { error: `service ${label} is not a Shell.Serve target` }
+    if (serveNode.lane?.kind === "docker-service") {
+      const key = treeRoot === root ? label : `${label} @ ${treeRoot}`
+      return DockerExec.serviceSpec({
+        label: key,
+        cwd: Exec.resolveWorkspacePath(treeRoot, serveNode.cwd),
+        attrs: serveNode.lane.attrs
+      })
+    }
+    if (serveNode.lane?.kind === "anvil-fork") {
+      const key = treeRoot === root ? label : `${label} @ ${treeRoot}`
+      return AnvilExec.serviceSpec({
+        label: key,
+        cwd: Exec.resolveWorkspacePath(treeRoot, serveNode.cwd),
+        attrs: serveNode.lane.attrs,
+        environment
+      })
+    }
+    if (serveNode.lane?.kind !== "serve") return { error: `service ${label} is not a service target` }
     const resolved = await resolveSpawn(serveNode)
     if ("error" in resolved) return { error: `service ${label}: ${resolved.error}` }
     if (serveNode.sandbox !== "none") {
@@ -3008,7 +3666,9 @@ export const execute = async (
         return spawned.ok ? { gate: label, status: "green" } : red(spawned.error ?? "tool run failed")
       }
       case "Cargo.Test":
+      case "Cargo.Nextest":
       case "Cargo.Clippy":
+      case "Cargo.Deny":
       case "Cargo.Fmt": {
         if (gateNode.lane?.kind !== "cargo") return red("cargo gate planned no commands")
         for (const command of gateNode.lane.commands) {
@@ -3284,7 +3944,9 @@ export const execute = async (
         case "Cargo.Build":
         case "Cargo.Doc":
         case "Cargo.Test":
+        case "Cargo.Nextest":
         case "Cargo.Clippy":
+        case "Cargo.Deny":
         case "Cargo.Fmt": {
           if (node.lane?.kind !== "cargo") return fail("cargo target planned no commands")
           const cached = await cacheGet(node)
@@ -3338,23 +4000,28 @@ export const execute = async (
           const producer = planned.nodes.get(node.materializeOf)
           if (producer === undefined) return fail(`materialize target ${node.materializeOf} was not planned`)
           const cached = await store.get(keyFor(producer)).catch(() => null)
-          const manifests = cached !== null && cached.exitOk ? decodeBuildOutput(cached.output) : undefined
-          if (manifests !== undefined) {
+          const captured = cached !== null && cached.exitOk ? decodeBuildOutput(cached.output) : undefined
+          if (captured !== undefined) {
             // Bind the untrusted manifests to the producer's declared outputs
             // before materializing any of them: a cache entry whose outDir is a
             // valid relative path the producer never declared must not
             // rename-swap a directory this target does not own.
-            if (!manifestsBindToDeclared(manifests, producer.outDirs)) {
+            if (!manifestsBindToDeclared(captured, producer.outDirs, producer.outFiles)) {
               return fail(
                 `cannot materialize: cached manifests for ${producer.label} do not match its declared outDirs`
               )
             }
-            for (const manifest of manifests) {
+            for (const manifest of captured.manifests) {
               const matches = await PackageTree.treeMatchesManifest(root, manifest)
               if (matches === undefined) continue
               const blobProblem = await PackageTree.verifyManifestBlobs(root, cacheDirectory, manifest)
               if (blobProblem !== undefined) return fail(`cannot materialize: ${blobProblem}`)
               await PackageTree.materializeManifest(root, cacheDirectory, manifest)
+            }
+            for (const file of captured.files) {
+              const problem = await PackageTree.verifyFileManifest(root, cacheDirectory, file)
+              if (problem !== undefined) return fail(`cannot materialize: ${problem}`)
+              await PackageTree.materializeFile(root, cacheDirectory, file)
             }
             return green("ran")
           }
@@ -3366,6 +4033,12 @@ export const execute = async (
               if (!stats.isDirectory()) return fail(`declared outDir is not a directory: ${outDir}`)
             } catch {
               return fail(`no artifacts available to materialize: ${outDir} is absent`)
+            }
+          }
+          for (const file of producer.outFiles) {
+            const stats = await Fs.stat(NodePath.join(root, ...file.split("/"))).catch(() => undefined)
+            if (stats === undefined || !stats.isFile()) {
+              return fail(`no artifacts available to materialize: ${file} is absent`)
             }
           }
           return green("ran")
@@ -3385,7 +4058,8 @@ export const execute = async (
           }
           return green("ran")
         }
-        case "Shell.Build": {
+        case "Shell.Build":
+        case "Foundry.Build": {
           const cached = await cacheGet(node)
           if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
           const spawned = await spawnNode(node, root, signal)
@@ -3393,7 +4067,42 @@ export const execute = async (
           await captureBuild(node, node.keyPreview)
           return green("ran")
         }
-        case "Shell.Test": {
+        case "Shell.Test":
+        case "Foundry.Test": {
+          if (node.rule === "Shell.Test" && node.shards > 1) {
+            const selected = process.env["SMTHRS_SHARD"]
+            const selection = selected === undefined ? undefined : /^(\d+)\/(\d+)$/.exec(selected)
+            if (selection === null) {
+              return fail(`invalid SMTHRS_SHARD ${JSON.stringify(selected)}`)
+            }
+            if (selection !== undefined && Number(selection[2]) !== node.shards) {
+              return fail(`SMTHRS_SHARD total ${selection[2]} does not match declared shards ${node.shards}`)
+            }
+            const shardStart = selection === undefined ? 1 : Number(selection[1])
+            const shardEnd = selection === undefined ? node.shards : shardStart
+            if (shardStart < 1 || shardStart > node.shards) {
+              return fail(`SMTHRS_SHARD index ${shardStart} is out of range`)
+            }
+            let allHit = true
+            for (let shard = shardStart; shard <= shardEnd; shard += 1) {
+              const suffix = `${shard}/${node.shards}`
+              const shardNode: PackageNode = {
+                ...node,
+                label: `${node.label}#${suffix}`,
+                keyPreview: sha256Hex(`${node.keyPreview}\0shard:${suffix}`),
+                argv: [...(node.argv ?? []), `--shard=${suffix}`],
+                env: { ...node.env, VITE_SHARD_ID: String(shard) },
+                shards: 1
+              }
+              const cached = await cacheGet(shardNode)
+              if (cached !== undefined) continue
+              allHit = false
+              const spawned = await spawnNode(shardNode, root, signal)
+              if (!spawned.ok) return fail(spawned.error ?? `shard ${suffix} failed`)
+              await cachePut(shardNode, { kind: "shell-test-shard", shard, total: node.shards })
+            }
+            return green(allHit ? "hit" : "ran")
+          }
           const cached = await cacheGet(node)
           if (cached !== undefined) return green("hit")
           const spawned = await spawnNode(node, root, signal)
@@ -3406,7 +4115,200 @@ export const execute = async (
           if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
           return green("ran")
         }
-        case "Shell.Serve": {
+        case "Npm.Pack": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "pnpm pack failed")
+          await captureBuild(node, node.keyPreview)
+          return green("ran")
+        }
+        case "Copy":
+        case "Literal": {
+          if (node.lane?.kind !== "native-file" || node.outFiles.length !== 1) {
+            return fail(`${node.rule} planned no single output file`)
+          }
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          const destination = NodePath.join(root, ...node.outFiles[0]!.split("/"))
+          await Fs.mkdir(NodePath.dirname(destination), { recursive: true })
+          if (node.lane.flavor === "literal") {
+            await Fs.writeFile(destination, node.lane.text ?? "", "utf8")
+          } else {
+            let source = node.lane.source
+            if (source === undefined && node.lane.sourceLabel !== undefined) {
+              const producer = planned.nodes.get(node.lane.sourceLabel)
+              if (producer === undefined) return fail(`copy source ${node.lane.sourceLabel} was not planned`)
+              if (producer.outFiles.length !== 1) {
+                return fail(`copy source ${node.lane.sourceLabel} must declare exactly one output file`)
+              }
+              source = producer.outFiles[0]
+            }
+            if (source === undefined) return fail("copy source did not resolve to a file")
+            await Fs.copyFile(NodePath.join(root, ...source.split("/")), destination)
+          }
+          await captureBuild(node, node.keyPreview)
+          return green("ran")
+        }
+        case "Git.Submodules":
+        case "Git.Submodule": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "git submodule update failed")
+          await captureBuild(node, node.keyPreview)
+          return green("ran")
+        }
+        case "Changesets.Version": {
+          const outcome = node.mode === "write"
+            ? await runWriteEnforced(node, signal)
+            : await runCheckViaScratch(node, signal)
+          if (!outcome.ok) return fail(outcome.error ?? "changesets version failed")
+          if (node.mode === "check") await cachePut(node, { kind: "changesets-version" })
+          return green("ran")
+        }
+        case "Size.Budgets": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined) return green("hit")
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "size budgets failed")
+          await cachePut(node, { kind: "size-budgets" })
+          return green("ran")
+        }
+        case "Markdown.CodeBlocks": {
+          if (node.lane?.kind !== "markdown-code-blocks") return fail("Markdown.CodeBlocks planned no source")
+          const cached = await cacheGet(node)
+          if (cached !== undefined) return green("hit")
+          const markdown = await Fs.readFile(NodePath.join(root, ...node.lane.file.split("/")), "utf8")
+          const language = node.lane.languages.flatMap((entry) => {
+            const normalized = entry.toLowerCase()
+            if (normalized === "ts") return ["ts", "typescript"]
+            if (normalized === "js") return ["js", "javascript"]
+            return [entry]
+          }).map((entry) => entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")
+          const pattern = new RegExp("^\\s*```(?:" + language + ")\\s*\\n([\\s\\S]*?)^\\s*```\\s*$", "gmi")
+          const blocks = [...markdown.matchAll(pattern)].map((match) => match[1] ?? "")
+          if (blocks.length === 0) {
+            return fail(`no ${node.lane.languages.join("/")} code blocks found in ${node.lane.file}`)
+          }
+          const directory = NodePath.join(
+            root,
+            ...cacheDirectory.split("/"),
+            "tmp",
+            `markdown-${node.keyPreview.slice(0, 16)}`
+          )
+          await Fs.mkdir(directory, { recursive: true })
+          const files: Array<string> = []
+          for (const [index, block] of blocks.entries()) {
+            const file = NodePath.join(directory, `block-${index}.ts`)
+            await Fs.writeFile(file, block, "utf8")
+            files.push(posix(NodePath.relative(root, file)))
+          }
+          const checked = await spawnNode({ ...node, argv: [...(node.argv ?? []), ...files] }, root, signal)
+          if (!checked.ok) return fail(checked.error ?? "Markdown code-block parse failed")
+          log(`${node.label}  checked ${blocks.length} fenced code block(s)`)
+          await cachePut(node, { kind: "markdown-code-blocks", count: blocks.length })
+          return green("ran")
+        }
+        case "Npm.Published": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          for (const outDir of node.outDirs) {
+            await Fs.rm(NodePath.join(root, ...outDir.split("/")), { recursive: true, force: true })
+          }
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "published package fetch failed")
+          await captureBuild(node, node.keyPreview)
+          return green("ran")
+        }
+        case "Api.Compat": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined) return green("hit")
+          const compatAttrs = node.declaration[Target.TargetTypeId]
+            .attrs as (typeof NodeArtifact.ApiCompatAttrs)["Type"]
+          const baselineLabel = index.labelOf(compatAttrs.baseline) ??
+            node.dependencies.find((label) => planned.nodes.get(label)?.rule === "Npm.Published")
+          const surfaceLabel = index.labelOf(compatAttrs.surface) ??
+            node.dependencies.find((label) => label !== baselineLabel)
+          const baseline = baselineLabel === undefined ? undefined : planned.nodes.get(baselineLabel)
+          const surface = surfaceLabel === undefined ? undefined : planned.nodes.get(surfaceLabel)
+          if (baseline === undefined || surface === undefined) {
+            return fail("Api.Compat could not resolve baseline and surface")
+          }
+          const declarationDigest = async (roots: ReadonlyArray<string>): Promise<string> => {
+            const paths: Array<string> = []
+            for (const directory of roots) {
+              paths.push(...(await Input.expandGlob(root, "", `${directory}/**/*.d.ts`, { cacheDirectory, signal })))
+            }
+            const rows = await Input.digestFiles(root, [...new Set(paths)].sort(), { signal })
+            return Input.digestText(JSON.stringify(rows.map((row) => ({ ...row, path: NodePath.basename(row.path) }))))
+          }
+          const baselineDigest = await declarationDigest(baseline.outDirs)
+          const surfaceDigest = await declarationDigest(surface.outDirs)
+          const current = JSON.parse(
+            await Fs.readFile(
+              NodePath.join(root, ...Input.resolvePath(node.packagePath, compatAttrs.manifest.path).split("/")),
+              "utf8"
+            )
+          ) as { readonly version?: unknown }
+          const baselineManifestPath = baseline.outDirs.map((directory) =>
+            NodePath.join(root, directory, "package.json")
+          )
+            .find((path) => NodeFs.existsSync(path))
+          const previous = baselineManifestPath === undefined
+            ? undefined
+            : (JSON.parse(await Fs.readFile(baselineManifestPath, "utf8")) as { readonly version?: unknown }).version
+          if (typeof current.version !== "string" || typeof previous !== "string") {
+            return fail("Api.Compat manifests must declare string versions")
+          }
+          if (baselineDigest !== surfaceDigest && current.version === previous) {
+            return fail(`declaration surface changed without a version bump (${current.version})`)
+          }
+          log(
+            `${node.label}  declarations ${
+              baselineDigest === surfaceDigest ? "unchanged" : `changed across ${previous} -> ${current.version}`
+            }`
+          )
+          await cachePut(node, { kind: "api-compat", baselineDigest, surfaceDigest })
+          return green("ran")
+        }
+        case "Overlay":
+          return fail(
+            "Overlay execution requires a consumer-scoped virtual source mount; this host runner cannot apply it honestly"
+          )
+        case "Npm.Downstream":
+          return fail(
+            "Npm.Downstream execution requires an isolated remote checkout runner; this host runner cannot apply overrides honestly"
+          )
+        case "Cron": {
+          const cron = CronTarget.attrsOf(node.declaration)
+          log(`${node.label}  inert schedule ${cron.schedule}; rendered through generated GitHub CI`)
+          return green("ran")
+        }
+        case "Npm.Publish":
+        case "Changesets.Publish":
+        case "Github.Release":
+        case "Github.Pages":
+        case "Git.Pr": {
+          if (node.lane?.kind !== "outward") return fail(`${node.rule} planned no outward requirements`)
+          try {
+            Outward.act({
+              rule: node.rule,
+              required: node.lane.required,
+              declared: attrMember(Target.metadata(node.declaration).attrs, "secrets") as never,
+              approval: attrMember(Target.metadata(node.declaration).attrs, "approval") === "required"
+                ? "required"
+                : undefined
+            }, { environment, approvalGranted: false })
+          } catch (cause) {
+            return fail(Diagnostic.message(cause))
+          }
+          return fail(`${node.rule} outward gate returned unexpectedly`)
+        }
+        case "Shell.Serve":
+        case "Anvil.Fork":
+        case "Docker.Serve":
+        case "Docker.Service": {
           // Direct invocation: start, await readiness, hold the foreground
           // until the invocation is interrupted (or the service dies), then
           // let the scope's release apply the declared stop contract.
@@ -3432,6 +4334,71 @@ export const execute = async (
           if (!outcome.ok) return fail(outcome.error ?? "diff run failed")
           return green("ran")
         }
+        case "Go.Packages":
+          return green("ran")
+        case "Go.Binary": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "Go build failed")
+          await captureBuild(node, node.keyPreview)
+          return green("ran")
+        }
+        case "Go.ModDownload": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreDirectoryArchive(node, cached.output)) return green("hit")
+          for (const outDir of node.outDirs) {
+            await Fs.mkdir(NodePath.join(root, ...outDir.split("/")), { recursive: true })
+          }
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "Go module download failed")
+          const problem = await captureDirectoryArchive(node)
+          return problem === undefined ? green("ran") : fail(problem)
+        }
+        case "Go.Test":
+        case "Go.Fuzz": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined) return green("hit")
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "Go test failed")
+          await cachePut(node, { kind: "go-test" })
+          return green("ran")
+        }
+        case "Go.Lint":
+        case "Go.Generate": {
+          const outcome = node.mode === "write"
+            ? await runWriteEnforced(node, signal)
+            : await runCheckViaScratch(node, signal)
+          if (!outcome.ok) return fail(outcome.error ?? "Go write-set check failed")
+          if (node.mode === "check") await cachePut(node, { kind: "go-check" })
+          return green("ran")
+        }
+        case "Foundry.Fmt": {
+          if (node.mode === "check") {
+            const cached = await cacheGet(node)
+            if (cached !== undefined) return green("hit")
+            const spawned = await spawnNode(node, root, signal)
+            if (!spawned.ok) return fail(spawned.error ?? "forge fmt --check failed")
+            await cachePut(node, { kind: "foundry-fmt" })
+            return green("ran")
+          }
+          const outcome = await runWriteEnforced(node, signal)
+          return outcome.ok ? green("ran") : fail(outcome.error ?? "forge fmt failed")
+        }
+        case "Docker.Build":
+        case "Docker.Bake": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          await DockerExec.prepareOutputs(root, node.outDirs)
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "docker build failed")
+          await captureBuild(node, node.keyPreview)
+          return green("ran")
+        }
+        case "Docker.Push": {
+          const spawned = await spawnNode(node, root, signal)
+          return spawned.ok ? green("ran") : fail(spawned.error ?? "docker push failed")
+        }
         case "ImportClosure": {
           if (node.lane?.kind !== "closure") return fail("import closure planned no entries")
           const result = planned.closures.get(node.label) ??
@@ -3440,9 +4407,36 @@ export const execute = async (
           return green("ran")
         }
         case "Test": {
-          if (node.lane?.kind !== "files-test") return fail("file-set test planned no operands")
           const cached = await cacheGet(node)
           if (cached !== undefined) return green("hit")
+          if (node.lane?.kind === "files-digest") {
+            const producer = planned.nodes.get(node.lane.targetLabel)
+            if (producer === undefined) return fail(`digest target ${node.lane.targetLabel} was not planned`)
+            const paths: Array<string> = []
+            for (const outDir of producer.outDirs) {
+              paths.push(
+                ...await Input.expandGlob(root, "", `${outDir}/**`, {
+                  cacheDirectory,
+                  signal
+                })
+              )
+            }
+            const actual = await Input.digestFiles(root, [...new Set(paths)].sort(), { signal })
+            let expected: unknown
+            try {
+              expected = JSON.parse(
+                await Fs.readFile(NodePath.join(root, ...node.lane.expectedPath.split("/")), "utf8")
+              )
+            } catch (cause) {
+              return fail(`could not read digest baseline ${node.lane.expectedPath}: ${Diagnostic.message(cause)}`)
+            }
+            if (JSON.stringify(expected) !== JSON.stringify(actual)) {
+              return fail(`file digest differs from ${node.lane.expectedPath}`)
+            }
+            await cachePut(node, { kind: "files-digest" })
+            return green("ran")
+          }
+          if (node.lane?.kind !== "files-test") return fail("file-set test planned no operands")
           let left: ReadonlyArray<string>
           let right: Set<string>
           try {
@@ -3683,12 +4677,18 @@ export const execute = async (
               locator: MemoryBackend.pathLocator(environment),
               cli: MemoryBackend.spawnCli({ timeoutMs: memoryBackendTimeoutMs })
             })
-            log(`${node.label}  retained through ${result.binary} ${result.args.join(" ")}`)
+            for (const fact of result.facts) {
+              log(`${node.label}  retained ${fact.namespace}/${fact.key} through ${result.binary}`)
+            }
             return green("ran")
           } catch (cause) {
-            // Both are typed notices: the target is not green and the
+            // All three are typed notices: the target is not green and the
             // message says what to configure or what the backend answered.
-            if (MemoryBackend.isMemoryBackendUnavailable(cause) || MemoryBackend.isMemoryCommandFailed(cause)) {
+            if (
+              MemoryBackend.isMemoryBackendUnavailable(cause) ||
+              MemoryBackend.isMemoryCommandFailed(cause) ||
+              MemoryBackend.isMemoryCapabilityMissing(cause)
+            ) {
               return fail(cause.message)
             }
             throw cause
@@ -3801,6 +4801,7 @@ export const run = async (options: RunOptions): Promise<Executor.Summary | PlanR
         cacheable: node.cacheable,
         dependencies: node.dependencies,
         ...(node.argv === undefined ? {} : { argv: node.argv }),
+        ...(node.shards === 1 ? {} : { shards: node.shards }),
         ...(node.lane?.kind === "cargo" && node.argv === undefined ? { commands: node.lane.commands } : {}),
         ...(node.refusal === undefined ? {} : { refusal: node.refusal })
       }))

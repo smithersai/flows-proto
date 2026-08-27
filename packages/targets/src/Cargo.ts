@@ -402,6 +402,10 @@ export const BuildAttrs = Schema.Struct({
   lib: Schema.optional(Schema.Boolean),
   /** `"release"` renders `--release`; any other name renders `--profile <name>`. */
   profile: Schema.optional(Schema.NonEmptyString),
+  /** Rust compilation target triple. */
+  target: Schema.optional(Schema.NonEmptyString),
+  /** Cross-compilation driver requested by the declaration. */
+  container: Schema.optional(Schema.Literal("docker")),
   outDirs: Schema.optional(Schema.Array(Schema.NonEmptyString))
 })
 
@@ -438,6 +442,25 @@ export const PackageTestAttrs = Schema.Struct({
  * @since 0.1.0
  */
 export type PackageTestAttrs = typeof PackageTestAttrs.Type
+
+/**
+ * Attrs for cargo-nextest over a workspace, package, or crate set.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const NextestAttrs = PackageTestAttrs
+
+/**
+ * Attrs for cargo-deny.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const DenyAttrs = Schema.Struct({
+  config: Input.File,
+  ...cargoShared
+})
 
 /**
  * Attrs for the package-mode {@link Clippy}.
@@ -479,7 +502,9 @@ export const FmtAttrs = Schema.Struct({
   crates: Schema.optional(CrateSet),
   ...cargoShared,
   /** The write set `--write`/`--fix` is confined to; check mode diffs instead. */
-  changes: Schema.optional(Schema.Array(Schema.NonEmptyString))
+  changes: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+  /** Optional rustup toolchain override, rendered as `cargo +<toolchain>`. */
+  toolchain: Schema.optional(Schema.NonEmptyString)
 })
 
 /**
@@ -542,10 +567,12 @@ export const packageRules = [
   "Cargo.Fetch",
   "Cargo.Build",
   "Cargo.Test",
+  "Cargo.Nextest",
   "Cargo.Clippy",
   "Cargo.Fmt",
   "Cargo.Doc",
-  "Cargo.AppSet"
+  "Cargo.AppSet",
+  "Cargo.Deny"
 ] as const
 
 /**
@@ -581,6 +608,9 @@ const profileArgs = (attrs: Record<string, unknown>): ReadonlyArray<string> => {
   if (typeof profile !== "string" || profile === "dev") return []
   return profile === "release" ? ["--release"] : ["--profile", profile]
 }
+
+const compilationTargetArgs = (attrs: Record<string, unknown>): ReadonlyArray<string> =>
+  typeof attrs["target"] === "string" ? ["--target", attrs["target"]] : []
 
 const resolutionArgs = (attrs: Record<string, unknown>): ReadonlyArray<string> => [
   ...(attrs["locked"] === true ? ["--locked"] : []),
@@ -627,6 +657,7 @@ export const packageArgs = (
         ...targetArgs(values),
         ...featureArgs(values),
         ...profileArgs(values),
+        ...compilationTargetArgs(values),
         ...resolutionArgs(values)
       ]
     case "Cargo.Test":
@@ -636,6 +667,15 @@ export const packageArgs = (
         ...targetArgs(values),
         ...featureArgs(values),
         ...(values["noRun"] === true ? ["--no-run"] : []),
+        ...resolutionArgs(values)
+      ]
+    case "Cargo.Nextest":
+      return [
+        "nextest",
+        "run",
+        ...selectionArgs(selection),
+        ...targetArgs(values),
+        ...featureArgs(values),
         ...resolutionArgs(values)
       ]
     case "Cargo.Clippy":
@@ -651,6 +691,7 @@ export const packageArgs = (
       ]
     case "Cargo.Fmt":
       return [
+        ...(typeof values["toolchain"] === "string" ? [`+${values["toolchain"]}`] : []),
         "fmt",
         ...(selection._tag === "Manifest" ? ["--manifest-path", selection.path] : []),
         "--all",
@@ -658,6 +699,8 @@ export const packageArgs = (
       ]
     case "Cargo.Doc":
       return ["doc", ...selectionArgs(selection), ...featureArgs(values), ...resolutionArgs(values)]
+    case "Cargo.Deny":
+      return ["deny", "--config", (values["config"] as Input.File).path, "check"]
     default:
       throw new Error(`${rule} is not a package-mode cargo rule`)
   }
@@ -871,6 +914,18 @@ const packageTestDefinition = Target.make("Cargo.Test", {
   implementation: () => Target.notImplemented("Cargo.Test")
 })
 
+const nextestDefinition = Target.make("Cargo.Nextest", {
+  attrs: NextestAttrs,
+  kinds: ["test"],
+  implementation: () => Target.notImplemented("Cargo.Nextest")
+})
+
+const denyDefinition = Target.make("Cargo.Deny", {
+  attrs: DenyAttrs,
+  kinds: ["lint"],
+  implementation: () => Target.notImplemented("Cargo.Deny")
+})
+
 const packageClippyDefinition = Target.make("Cargo.Clippy", {
   attrs: PackageClippyAttrs,
   kinds: ["lint"],
@@ -934,6 +989,25 @@ export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTa
   requireOneSelector("Cargo.Build", attrs, crateSelectors)
   return buildDefinition(attrs)
 }
+
+/**
+ * Runs cargo-nextest over the selected crates.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Nextest = (attrs: (typeof NextestAttrs)["~type.make.in"]): Target.AnyTarget => {
+  requireOneSelector("Cargo.Nextest", attrs, crateSelectors)
+  return nextestDefinition(attrs)
+}
+
+/**
+ * Runs cargo-deny against the declared policy.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Deny = (attrs: (typeof DenyAttrs)["~type.make.in"]): Target.AnyTarget => denyDefinition(attrs)
 
 /**
  * A `cargo doc` build over a workspace, one package, or a crate set.
@@ -1012,7 +1086,7 @@ export function Fmt(): FmtCheck
 export function Fmt(attrs: (typeof FmtAttrs)["~type.make.in"]): Target.AnyTarget
 export function Fmt(attrs?: (typeof FmtAttrs)["~type.make.in"]): FmtCheck | Target.AnyTarget {
   if (attrs === undefined) return fmtCheck()
-  requireOneSelector("Cargo.Fmt", attrs, ["workspace", "crates"])
+  requireAtMostOneSelector("Cargo.Fmt", attrs, ["workspace", "crates"])
   return packageFmtDefinition(attrs)
 }
 

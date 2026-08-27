@@ -18,6 +18,12 @@ describe("S.Go", () => {
     expect(S.Go.run("example.test/tool@v1.2.3")).toEqual({ _tag: "GoRun", spec: "example.test/tool@v1.2.3" })
   })
 
+  it("accepts Mise as the version authority", () => {
+    const mise = S.Mise({ config: S.file("//mise.toml") })
+    expect(S.Go.Toolchain({ mod: S.file("//go.mod"), sum: S.file("//go.sum"), versions: mise }).versions)
+      .toBe(mise)
+  })
+
   it.each([
     ["Go.Packages", S.Go.Packages({ pkgs: ["./..."] })],
     ["Go.Test", S.Go.Test({ pkgs: ["./..."] })],

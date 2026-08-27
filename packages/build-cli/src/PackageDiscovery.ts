@@ -117,6 +117,20 @@ const pruned = (walk: Walk, child: string): boolean =>
   child === fixedStoreDirectory ||
   child.startsWith(`${fixedStoreDirectory}/`)
 
+/** Whether a child directory starts a nested package workspace. */
+const nestedWorkspace = async (walk: Walk, child: string): Promise<boolean> => {
+  for (const relative of ["WORKSPACE.ts", ".smithers/WORKSPACE.ts"]) {
+    try {
+      const stats = await Fs.lstat(NodePath.join(walk.root, child, relative))
+      if (stats.isFile() || stats.isSymbolicLink()) return true
+    } catch {
+      // Absent is the common case; admission errors surface when that nested
+      // workspace is selected directly.
+    }
+  }
+  return false
+}
+
 const walkDirectory = async (walk: Walk, relative: string): Promise<void> => {
   walk.signal?.throwIfAborted()
   const depth = relative === "" ? 0 : relative.split("/").length
@@ -158,7 +172,9 @@ const walkDirectory = async (walk: Walk, relative: string): Promise<void> => {
       walk.found.push(childRelative)
       continue
     }
-    if (child.isDirectory()) await walkDirectory(walk, childRelative)
+    if (child.isDirectory() && !(await nestedWorkspace(walk, childRelative))) {
+      await walkDirectory(walk, childRelative)
+    }
   }
 }
 

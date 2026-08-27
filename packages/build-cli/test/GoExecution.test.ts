@@ -74,13 +74,14 @@ export const Workspace = S.Workspace("fixture", { repository: "git+https://examp
     `import { Smithers as S } from "@smthrs/targets"
 const all = S.Go.Packages({ pkgs: ["./..."] })
 const test = S.Go.Test({ pkgs: ["./lib"] })
+const fetch = S.Go.ModDownload({ mod: S.file("//go.mod"), sum: S.file("//go.sum"), outDirs: ["//.gomodcache"], sandbox: { network: true } })
 const binary = S.Go.Binary({ pkg: "./cmd/app", out: "//build/app", stamp: { "main.Version": S.Stamp.version } })
 const smoke = S.Shell.Test({ bin: binary })
 const generate = S.Go.Generate({ pkgs: ["./gen"], changes: ["gen/generated.go"] })
 const fuzz = S.Go.Fuzz({ pkg: "./lib", fuzz: "FuzzValue", time: "1x", parallel: 1 })
 const generateMissingTool = S.Go.Generate({ pkgs: ["./gen"], tools: [S.Host.bin("smthrs-absent-generator")], changes: ["gen/generated.go"] })
 const nixRefusal = S.Shell.Test({ bin: S.Nix.bin("hurl"), args: ["--version"] })
-export const Package = S.Package({ targets: { all, binary, fuzz, generate, generateMissingTool, nixRefusal, smoke, test } })
+export const Package = S.Package({ targets: { all, binary, fetch, fuzz, generate, generateMissingTool, nixRefusal, smoke, test } })
 `
   )
   NodeChildProcess.execFileSync("git", ["-C", root, "init", "-q"])
@@ -149,6 +150,15 @@ describe("Go package execution", () => {
     )
     const changed = await serve(root, ["//:test"])
     expect(changed.logs).toContain("//:test  ran")
+  }, 120_000)
+
+  it("captures the module cache as one tar blob and restores it on a hit", async () => {
+    const root = await fixture()
+    expect((await serve(root, ["//:fetch"])).logs).toContain("//:fetch  ran")
+    await Fs.rm(NodePath.join(root, ".gomodcache"), { recursive: true, force: true })
+    const second = await serve(root, ["//:fetch"])
+    expect(second.logs).toContain("//:fetch  hit")
+    await expect(Fs.stat(NodePath.join(root, ".gomodcache"))).resolves.toMatchObject({})
   }, 120_000)
 })
 

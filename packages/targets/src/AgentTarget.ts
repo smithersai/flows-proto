@@ -869,6 +869,8 @@ export const Diff = (attrs: (typeof DiffAttrs)["~type.make.in"]): Target.AnyTarg
 export const PrAttrs = Schema.Struct({
   agent: Schema.optional(AgentSelector),
   prompt: Input.File,
+  payload: Schema.optional(Schema.Record(Schema.String, Reference.InputSpec)),
+  mcp: Schema.optional(Schema.Array(Reference.McpHttp)),
   data: Attr.Data,
   changes: Schema.Array(Schema.NonEmptyString),
   gates: Attr.Gates,
@@ -882,8 +884,8 @@ export const PrAttrs = Schema.Struct({
 /**
  * Projects decoded Agent.Pr attrs into the {@link AgentPr} payload.
  *
- * A Pr declaration has no payload inputs or MCP servers; `maxRounds`
- * defaults to {@link defaultPrRounds}.
+ * Payload inputs and MCP servers use the same contract as Agent.Diff;
+ * `maxRounds` defaults to {@link defaultPrRounds}.
  *
  * @category accessors
  * @since 0.1.0
@@ -895,8 +897,8 @@ export const prPayload = (
   ...(attrs.agent === undefined ? {} : { agent: attrs.agent }),
   promptPath: attrs.prompt.path,
   ...(context.packageDirectory === undefined ? {} : { packageDirectory: context.packageDirectory }),
-  payloadSpec: {},
-  mcp: [],
+  payloadSpec: attrs.payload ?? {},
+  mcp: [...(attrs.mcp ?? [])],
   diffs: collectGitDiffs(attrs.data),
   changes: [...attrs.changes],
   gateIdentities: attrs.gates.map((gate) => targetIdentity(gate)),

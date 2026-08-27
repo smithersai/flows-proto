@@ -435,6 +435,26 @@ export const Package = S.Package({ targets: { check: S.Shell.Test({ command: "tr
     expect(second.exitCode).toBe(0)
     expect(second.logs).toContain("//:check  hit")
   })
+
+  it("fans Shell.Test shards into independently cached executions", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(root, "test.sh", `test "$1" = "--shard=$VITE_SHARD_ID/3"\n`)
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { check: S.Shell.Test({ script: S.file("//test.sh"), shards: 3 }) } })
+`
+    )
+    commitAll(root)
+    const first = await serve(root, ["//:check"])
+    expect(first.exitCode).toBe(0)
+    expect(first.logs).toContain("//:check  ran")
+    const second = await serve(root, ["//:check"])
+    expect(second.exitCode).toBe(0)
+    expect(second.logs).toContain("//:check  hit")
+  })
 })
 
 describe("NodeModule.Bin resolution through the package bin map", () => {

@@ -229,6 +229,17 @@ describe("unknown attr keys are rejected, never stripped", () => {
     expect(() => Shell.Test({ command: "go test ./...", sandbox: { network: "lopback" } } as never)).toThrow()
   })
 
+  it("admits Shell service edges, shards, scripts, and bounded duration syntax", () => {
+    const service = Shell.Serve({ command: "node server.js" })
+    expect(Target.isTarget(Shell.Serve({ command: "node proxy.js", services: [service] }))).toBe(true)
+    expect(
+      Target.isTarget(Shell.Test({ script: Input.file("//test.sh"), services: [service], shards: 3, timeout: "6h" }))
+    )
+      .toBe(true)
+    expect(() => Shell.Test({ command: "true", shards: 0 })).toThrow()
+    expect(() => Shell.Test({ command: "true", timeout: "tomorrow" })).toThrow()
+  })
+
   it("rejects unknown Bundler.Rspack method options that named-key rebuilding would drop", () => {
     const bundler = BundlerTarget.Rspack({ config: Input.file("//webpack.config.ts") })
     expect(() => bundler.resolve({ entries: ["src/client.tsx"], universe: [], entry: "typo" } as never)).toThrow(

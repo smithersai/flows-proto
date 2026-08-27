@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
 import * as Compose from "./Compose.ts"
 import * as Input from "./Input.ts"
+import * as Mise from "./Mise.ts"
 import * as Reference from "./Reference.ts"
 import type * as Secret from "./Secret.ts"
 import * as Stamp from "./Stamp.ts"
@@ -18,7 +19,7 @@ import * as WorkspaceToolchain from "./Toolchain.ts"
 export interface ToolchainDeclaration extends WorkspaceToolchain.Declaration<"GoToolchain"> {
   readonly mod: Input.File
   readonly sum: Input.File
-  readonly versions: WorkspaceToolchain.Declaration
+  readonly versions: WorkspaceToolchain.Declaration | Mise.Declaration
   readonly cgo: boolean | undefined
   readonly experiments: ReadonlyArray<string>
 }
@@ -27,7 +28,7 @@ export interface ToolchainDeclaration extends WorkspaceToolchain.Declaration<"Go
 export const Toolchain = (options: {
   readonly mod: Input.File
   readonly sum: Input.File
-  readonly versions: WorkspaceToolchain.Declaration
+  readonly versions: WorkspaceToolchain.Declaration | Mise.Declaration
   readonly cgo?: boolean | undefined
   readonly experiments?: ReadonlyArray<string> | undefined
 }): ToolchainDeclaration => {
@@ -40,7 +41,7 @@ export const Toolchain = (options: {
   if (options.mod?._tag !== "File" || options.sum?._tag !== "File") {
     throw new TypeError("Go.Toolchain mod and sum must be S.file declarations")
   }
-  if (!WorkspaceToolchain.isDeclaration(options.versions)) {
+  if (!WorkspaceToolchain.isDeclaration(options.versions) && !Mise.isDeclaration(options.versions)) {
     throw new TypeError("Go.Toolchain versions must be a toolchain declaration")
   }
   if (options.cgo !== undefined && typeof options.cgo !== "boolean") {

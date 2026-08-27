@@ -155,6 +155,7 @@ export const GenerateAttrs = Schema.Struct({
   emit: Schema.optional(Schema.Record(Schema.String, Schema.Union([Schema.String, Reference.Symlink]))),
   script: Schema.optional(Input.File),
   bin: Schema.optional(Attr.Executable),
+  command: Schema.optional(Schema.NonEmptyString),
   args: Schema.optional(Attr.Args),
   env: Schema.optional(Attr.Env),
   secrets: Schema.optional(Attr.Secrets),
@@ -192,6 +193,13 @@ const generateDefinition = Target.make("Generate", {
         secrets: attrs.secrets
       }))
     }
+    if (attrs.command !== undefined) {
+      return Target.runTool(Shell.execPayload({
+        command: attrs.command,
+        env: attrs.env,
+        secrets: attrs.secrets
+      }))
+    }
     return Target.notImplemented("Generate")
   }
 })
@@ -204,7 +212,7 @@ const generateDefinition = Target.make("Generate", {
  */
 export const Generate = (attrs: (typeof GenerateAttrs)["~type.make.in"]): Target.AnyTarget => {
   if (typeof attrs !== "object" || attrs === null) throw new TypeError("Generate attrs must be an object")
-  Attr.requireOneExecutable("Generate", attrs, ["emit", "script", "bin"])
+  Attr.requireOneExecutable("Generate", attrs, ["emit", "script", "bin", "command"])
   return generateDefinition(attrs)
 }
 

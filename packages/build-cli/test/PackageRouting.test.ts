@@ -218,6 +218,23 @@ export const Package = S.Package({ targets: { run: S.Shell.Run({ command: "echo 
     const index = await openIndex(root)
     expect(index.targets().map((row) => row.label)).toEqual(["//generated:run"])
   })
+
+  it("prunes package files owned by a nested workspace", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule)
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"\nexport const Package = S.Package({ targets: { root: S.Shell.Test({ command: "true" }) } })\n`
+    )
+    await write(root, "demo/WORKSPACE.ts", workspaceModule)
+    await write(
+      root,
+      "demo/PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"\nexport const Package = S.Package({ targets: { nested: S.Shell.Test({ command: "true" }) } })\n`
+    )
+    expect((await openIndex(root)).targets().map((row) => row.label)).toEqual(["//:root"])
+  })
 })
 
 describe("error fixtures", () => {

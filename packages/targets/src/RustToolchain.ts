@@ -203,6 +203,11 @@ export const ToolchainDeclaration = Schema.TaggedStruct("RustToolchain", {
   channel: Schema.optional(Schema.NonEmptyString),
   toolchain: Schema.optional(Input.File),
   lockfile: Schema.optional(Input.File),
+  versions: Schema.optional(
+    Schema.declare<{ readonly _tag: string }>((value): value is { readonly _tag: string } =>
+      typeof value === "object" && value !== null && typeof (value as { readonly _tag?: unknown })._tag === "string"
+    )
+  ),
   rustup: Schema.NonEmptyString,
   cargo: Schema.NonEmptyString
 })
@@ -230,6 +235,8 @@ export interface ToolchainOptions {
   readonly toolchain?: Input.File | undefined
   /** The committed lockfile, when the repository commits one. */
   readonly lockfile?: Input.File | undefined
+  /** An enclosing Mise/Nix version authority. */
+  readonly versions?: { readonly _tag: string } | undefined
   /** @default "rustup" */
   readonly rustup?: string | undefined
   /** @default "cargo" */
@@ -250,6 +257,7 @@ const toolchainOptionNames: ReadonlySet<string> = new Set([
   "channel",
   "toolchain",
   "lockfile",
+  "versions",
   "rustup",
   "cargo"
 ])
@@ -298,6 +306,7 @@ export const Toolchain = (options: ToolchainOptions = {}): ToolchainDeclaration 
       ? {}
       : { toolchain: declaredFile(options.toolchain, "Rust.Toolchain toolchain") }),
     ...(options.lockfile === undefined ? {} : { lockfile: declaredFile(options.lockfile, "Rust.Toolchain lockfile") }),
+    ...(options.versions === undefined ? {} : { versions: options.versions }),
     rustup: options.rustup === undefined ? "rustup" : usable(options.rustup, "rustup executable"),
     cargo: options.cargo === undefined ? "cargo" : usable(options.cargo, "cargo executable")
   }))
@@ -335,7 +344,18 @@ export const toolchainInstall = (declaration: ToolchainDeclaration): ReadonlyArr
  * @since 0.1.0
  */
 export const toolchainInputs = (declaration: ToolchainDeclaration): ReadonlyArray<Input.File> =>
-  [declaration.workspace, declaration.toolchain, declaration.lockfile].filter((entry) => entry !== undefined)
+  [
+    declaration.workspace,
+    declaration.toolchain,
+    declaration.lockfile,
+    ...(declaration.versions === undefined
+      ? []
+      : [
+        (declaration.versions as { readonly config?: Input.File }).config,
+        (declaration.versions as { readonly flake?: Input.File }).flake,
+        (declaration.versions as { readonly lock?: Input.File }).lock
+      ])
+  ].filter((entry) => entry !== undefined)
 
 /**
  * The key-material identity of one toolchain layer: what fixes the compiler,
@@ -350,6 +370,7 @@ export const toolchainIdentity = (declaration: ToolchainDeclaration): unknown =>
   toolchain: declaration.toolchain?.path ?? null,
   lockfile: declaration.lockfile?.path ?? null,
   workspace: declaration.workspace?.path ?? null,
+  versions: declaration.versions ?? null,
   cargo: declaration.cargo,
   rustup: declaration.rustup
 })

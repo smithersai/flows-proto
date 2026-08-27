@@ -84,8 +84,12 @@ export const resolveGo = async (context: Context): Promise<
         digest: await Input.digestFile(NodePath.join(context.root, relative), { workspaceRoot: context.root })
       })
     }
-    const versions = declaration.versions as unknown as { readonly flake?: Input.File; readonly lock?: Input.File }
-    for (const input of [versions.flake, versions.lock]) {
+    const versions = declaration.versions as unknown as {
+      readonly config?: Input.File
+      readonly flake?: Input.File
+      readonly lock?: Input.File
+    }
+    for (const input of [versions.config, versions.flake, versions.lock]) {
       if (input === undefined) continue
       const relative = Input.resolvePath("", input.path)
       authorities.push({

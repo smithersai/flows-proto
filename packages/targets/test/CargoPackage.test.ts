@@ -107,6 +107,16 @@ describe("Cargo.Build", () => {
     expect(args(build)).toEqual(["build", "--workspace", "--locked", "--offline"])
   })
 
+  it("renders the cross-compilation target without inventing a container command", () => {
+    const build = Cargo.Build({
+      package: "kona-client",
+      target: "mips64-unknown-linux-gnu",
+      container: "docker",
+      data: []
+    })
+    expect(args(build)).toEqual(["build", "-p", "kona-client", "--target", "mips64-unknown-linux-gnu"])
+  })
+
   it("renders the package form with features and named bins, in cargo's own order", () => {
     const buildCli = Cargo.Build({
       package: "aomi-sdk",
@@ -198,6 +208,15 @@ describe("Cargo.Test", () => {
   })
 })
 
+describe("Cargo.Nextest and Cargo.Deny", () => {
+  it("renders their package-mode commands", () => {
+    expect(args(Cargo.Nextest({ workspace: true, locked: true, data: [] })))
+      .toEqual(["nextest", "run", "--workspace", "--locked"])
+    expect(args(Cargo.Deny({ config: Input.file("//deny.toml"), data: [] })))
+      .toEqual(["deny", "--config", "//deny.toml", "check"])
+  })
+})
+
 describe("Cargo.Clippy", () => {
   it("promotes warnings after the rustc separator", () => {
     const clippy = Cargo.Clippy({
@@ -239,6 +258,11 @@ describe("Cargo.Fmt", () => {
   it("checks by default and writes only when the mode says so", () => {
     expect(args(format, workspaceSelection, "check")).toEqual(["fmt", "--all", "--", "--check"])
     expect(args(format, workspaceSelection, "write")).toEqual(["fmt", "--all"])
+  })
+
+  it("accepts an implicit workspace and a rustup toolchain override", () => {
+    const nightly = Cargo.Fmt({ toolchain: "nightly", data: [], changes: ["**/*.rs"] })
+    expect(args(nightly, workspaceSelection, "check")).toEqual(["+nightly", "fmt", "--all", "--", "--check"])
   })
 
   it("never resolves dependencies, so it renders no locked or offline flag", () => {

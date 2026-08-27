@@ -141,4 +141,19 @@ describe("Agent.Pr", () => {
     expect(Target.metadata(target).target).toBe("Agent.Pr")
     expect(Target.metadata(target).kinds).toEqual(["run"])
   })
+
+  it("projects the same payload and MCP surface as Agent.Diff", () => {
+    const attrs = {
+      prompt: Input.file("prompts/pr.md"),
+      payload: { ticket: Input.String("ticket") },
+      mcp: [],
+      data: [],
+      changes: ["src/**"],
+      gates: [gate]
+    }
+    const payload = AgentTarget.prPayload(attrs, context)
+    expect(payload.payloadSpec).toEqual(attrs.payload)
+    expect(payload.mcp).toEqual([])
+    expect(Target.metadata(AgentTarget.Pr(attrs)).attrs).toMatchObject({ payload: attrs.payload, mcp: [] })
+  })
 })
