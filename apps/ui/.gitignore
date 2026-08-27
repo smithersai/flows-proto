@@ -33,3 +33,7 @@ reports/**/trace.zip
 
 # Cottontail scratch left by the electrobun bootstrap
 .cottontail-tmp/
+
+# Playwright run artifacts
+test-results/
+playwright-report/

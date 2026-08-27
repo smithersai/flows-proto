@@ -32,6 +32,10 @@ export const DEFAULT_CHAT_ORIGIN = "https://canary.smithers.sh"
 /** The deployed identity seam the sign-in device flow talks to. */
 export const DEFAULT_IDENTITY_UPSTREAM = "https://canary.smithers.sh"
 export const APP_VERSION = "0.0.1"
+/** Where the SPA posts uncaught errors; the client half is state/ClientErrors.ts. */
+export const CLIENT_ERRORS_PATH = "/api/client-errors"
+/** Bytes on the wire, the unit the client bounds its report in. */
+export const CLIENT_ERROR_MAX_BODY = 16 * 1024
 
 /** Long conversations are replayed on every turn, so the cap is generous, not tight. */
 const MAX_BODY_BYTES = 1024 * 1024
@@ -304,10 +308,15 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
     return json({ ok: await openExternal(url.toString()) })
   })
 
-  // The runtime error ingest the SPA posts to; logged, never persisted.
-  router.add("POST", "/api/client-errors", async ({ request }) => {
-    log(`client-error: ${(await request.text()).slice(0, 2000)}`)
-    return new Response(null, { status: 202 })
+  // The runtime error ingest the SPA posts to (state/ClientErrors.ts holds
+  // the client half of this contract): logged, never persisted.
+  router.add("POST", CLIENT_ERRORS_PATH, async ({ request }) => {
+    const body = new Uint8Array(await request.arrayBuffer())
+    if (body.byteLength > CLIENT_ERROR_MAX_BODY) {
+      return jsonError(413, "body_too_large", `Client error reports are capped at ${CLIENT_ERROR_MAX_BODY} bytes.`)
+    }
+    log(`client-error: ${new TextDecoder().decode(body)}`)
+    return json({ status: "accepted" }, 202)
   })
 
   // Lane placeholders (L3 repo/targets, L4 harnesses/pty). A lane replaces a
@@ -356,6 +365,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
     fetch: async (request, bunServer) => {
       const url = new URL(request.url)
       const { pathname } = url
+      if (pathname === "/" || pathname.startsWith("/api/")) log(`${request.method} ${pathname}`)
       if (pathname === "/ws") {
         const upgraded = bunServer.upgrade(request, { data: { topics: new Set<string>() } })
         return upgraded ? undefined : jsonError(400, "upgrade_failed", "Expected a WebSocket upgrade.")
