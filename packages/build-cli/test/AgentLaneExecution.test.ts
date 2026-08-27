@@ -88,6 +88,12 @@ const script = async (root: string, responses: ReadonlyArray<Response>, identity
   return logPath
 }
 
+/** The `=== FILES ===` paths the fake saw on its first recorded session run. */
+const filesSeen = async (logPath: string): Promise<ReadonlyArray<string>> => {
+  const [first] = (await Fs.readFile(logPath, "utf8")).split("\n").filter((line) => line !== "")
+  return (JSON.parse(first!) as { files: ReadonlyArray<string> }).files
+}
+
 /** The number of session runs the fake recorded so far. */
 const spawns = async (logPath: string): Promise<number> => {
   try {
@@ -360,6 +366,8 @@ export const Package = S.Package({ targets: { srcs, gate, fix, never, escape, un
       expect(converged.logs).toContain("//:fix  ran")
       expect(await Fs.readFile(NodePath.join(root, "out/generated.txt"), "utf8")).toBe("generated\n")
       expect(await spawns(logPath)).toBe(2)
+      // The prompt rendered the data filegroup's files and not the prompt file.
+      expect(await filesSeen(logPath)).toEqual(["src/a.ts"])
 
       // The same inputs replay the cached verdict with zero spawns; the
       // exhausted script would fail any session run.

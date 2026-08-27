@@ -233,6 +233,8 @@ export type LaneData =
     readonly payload: AgentTarget.LintPayload | AgentTarget.DiffPayload
     /** Structural gate identity → planned gate label, in declared order. */
     readonly gateLabels: ReadonlyArray<readonly [string, string]>
+    /** Planned labels of the `data` members that are targets (filegroups the prompt renders). */
+    readonly dataLabels: ReadonlyArray<string>
   }
   | { readonly kind: "git-commit" }
   | { readonly kind: "ci-gen" }
@@ -1341,7 +1343,8 @@ const visit = async (
         kind: "agent",
         flavor: "lint",
         payload: AgentTarget.lintPayload(lintAttrs, implementationContext),
-        gateLabels: []
+        gateLabels: [],
+        dataLabels: dataLabelsOf(lintAttrs.data, depLabels)
       }
       break
     }
@@ -1351,7 +1354,8 @@ const visit = async (
         kind: "agent",
         flavor: "diff",
         payload: AgentTarget.diffPayload(diffAttrs, implementationContext),
-        gateLabels: gateLabelsOf(diffAttrs.gates)
+        gateLabels: gateLabelsOf(diffAttrs.gates),
+        dataLabels: dataLabelsOf(diffAttrs.data, depLabels)
       }
       break
     }
@@ -1361,7 +1365,8 @@ const visit = async (
         kind: "agent",
         flavor: "pr",
         payload: AgentTarget.prPayload(prAttrs, implementationContext),
-        gateLabels: gateLabelsOf(prAttrs.gates)
+        gateLabels: gateLabelsOf(prAttrs.gates),
+        dataLabels: dataLabelsOf(prAttrs.data, depLabels)
       }
       break
     }
@@ -1594,6 +1599,56 @@ const visit = async (
   context.visiting.delete(target)
   context.nodes.set(label, node)
   return node
+}
+
+/** The planned labels of a lane's `data` members that are targets; declared inputs live on the node itself. */
+const dataLabelsOf = (
+  data: ReadonlyArray<unknown> | undefined,
+  depLabels: ReadonlyMap<Target.AnyTarget, string>
+): ReadonlyArray<string> => {
+  const labels: Array<string> = []
+  for (const member of data ?? []) {
+    for (const entry of Array.isArray(member) ? member : [member]) {
+      if (!Target.isTarget(entry)) continue
+      const label = depLabels.get(entry)
+      if (label !== undefined) labels.push(label)
+    }
+  }
+  return labels
+}
+
+/**
+ * The workspace-relative files an agent lane's prompt renders under
+ * `=== FILES ===`: the lane's own declared file inputs except the prompt and
+ * any git-diff declaration (the diff slice carries that), plus the files of
+ * every Filegroup its `data` names, through nested filegroups. Sorted and
+ * deduplicated so the rendering is stable.
+ */
+const laneDataFiles = (
+  node: PackageNode,
+  nodes: ReadonlyMap<string, PackageNode>,
+  promptPath: string
+): ReadonlyArray<string> => {
+  const files = new Set<string>()
+  const collect = (candidate: PackageNode): void => {
+    for (const input of candidate.declaredInputs) {
+      if (input.declaration._tag === "GitDiff") continue
+      for (const file of input.files) files.add(file.path)
+    }
+  }
+  collect(node)
+  const visited = new Set<string>()
+  const walk = (label: string): void => {
+    if (visited.has(label)) return
+    visited.add(label)
+    const dependency = nodes.get(label)
+    if (dependency === undefined || dependency.rule !== "Filegroup") return
+    collect(dependency)
+    for (const inner of dependency.dependencies) walk(inner)
+  }
+  for (const label of node.lane?.kind === "agent" ? node.lane.dataLabels : []) walk(label)
+  files.delete(promptPath)
+  return [...files].sort()
 }
 
 /** The mode one root executes under, given the invocation. */
@@ -2698,7 +2753,8 @@ export const execute = async (
       writeSets,
       gates: loopGateRunner(node, labelByKey, signal),
       verdicts: verdictStoreFor(node),
-      payloadValues: options.inputs ?? {}
+      payloadValues: options.inputs ?? {},
+      dataFiles: laneDataFiles(node, planned.nodes, Input.resolvePath(node.packagePath, payload.promptPath))
     }
     const exit = await Effect.runPromiseExit(
       flavor === "diff" ? AgentSession.runAgentDiff(runtime, payload) : AgentSession.runAgentPr(runtime, payload),
@@ -2984,7 +3040,8 @@ export const execute = async (
             writeSets: treeWriteSetApplier(node, payload.fixes),
             gates: AgentSession.unavailableGateRunner,
             verdicts: verdictStoreFor(node),
-            payloadValues: options.inputs ?? {}
+            payloadValues: options.inputs ?? {},
+            dataFiles: laneDataFiles(node, planned.nodes, Input.resolvePath(node.packagePath, payload.promptPath))
           }
           const exit = await Effect.runPromiseExit(AgentSession.runAgentLint(runtime, payload), { signal })
           if (Exit.isFailure(exit)) return fail(await agentFailureText(node, exit.cause))
