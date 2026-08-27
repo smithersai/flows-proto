@@ -483,6 +483,65 @@ describe("toolchain variants", () => {
     expect(action!.content).not.toContain("GITHUB_ENV")
   })
 
+  it("renders the workspace-era pnpm declaration with the workspace runtime and its declared lockfile", () => {
+    const pnpmWorkspace = S.Workspace("pnpmunit", {
+      repository: "git+https://example.invalid/pnpmunit.git",
+      cache: S.Cache({ directory: ".flows" }),
+      runtime: S.Runtime.Node({ version: "26" }),
+      packageManager: S.PackageManager.Pnpm({
+        manifest: S.file("//package.json"),
+        lockfile: S.file("//pnpm-lock.yaml"),
+        version: "8"
+      }),
+      nodeModules: S.Npm.NodeModules({ packageJson: S.file("//package.json") })
+    })
+    const setup = S.Github.Setup({})
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: pnpmWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"]]),
+      packageDir: ".github"
+    })
+    const action = rendered.files.find((file) => file.path === "actions/setup/action.yml")
+    expect(action).toBeDefined()
+    expect(action!.content).toContain("pnpm/action-setup@v4")
+    expect(action!.content).toContain("version: \"8\"")
+    expect(action!.content).toContain("node-version: \"26\"")
+    expect(action!.content).toContain("pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}")
+    expect(action!.content).toContain("pnpm install --frozen-lockfile")
+  })
+
+  it("renders an unpinned workspace-era pnpm without a version input", () => {
+    const pnpmWorkspace = S.Workspace("pnpmunit", {
+      repository: "git+https://example.invalid/pnpmunit.git",
+      cache: S.Cache({ directory: ".flows" }),
+      runtime: S.Runtime.Node({ manifest: S.file("//package.json") }),
+      packageManager: S.PackageManager.Pnpm({
+        manifest: S.file("//package.json"),
+        lockfile: S.file("//pnpm-lock.yaml")
+      }),
+      nodeModules: S.Npm.NodeModules({ packageJson: S.file("//package.json") })
+    })
+    const setup = S.Github.Setup({})
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: pnpmWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"]]),
+      packageDir: ".github"
+    })
+    const action = rendered.files.find((file) => file.path === "actions/setup/action.yml")
+    expect(action).toBeDefined()
+    // No declared pin: pnpm/action-setup reads the manifest's packageManager field.
+    expect(action!.content).toContain("pnpm/action-setup@v4")
+    expect(action!.content).not.toContain("version: \"8\"")
+    // The workspace runtime arrives as the manifest-derived node-version-file.
+    expect(action!.content).toContain("node-version-file: package.json")
+  })
+
   it("renders a pnpm run step through pnpm exec", () => {
     const run = anyTarget()
     const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [run] })

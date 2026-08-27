@@ -212,6 +212,23 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
       exec: ["yarn", "exec", "smthrs"]
     }
   }
+  if (PackageManager.isPnpmDeclaration(manager)) {
+    // Workspace-era pnpm: the runtime comes from the workspace like yarn's,
+    // and pnpm/action-setup reads the manifest's packageManager field when
+    // the declaration carries no version pin.
+    return {
+      runtime,
+      managerAction: {
+        uses: "pnpm/action-setup@v4",
+        ...(manager.version === undefined ? {} : { with: { version: manager.version } })
+      },
+      storePath: "~/.pnpm-store",
+      storePrefix: "pnpm-store-",
+      lockfile: workspacePath(manager.lockfile.path),
+      install: "pnpm install --frozen-lockfile",
+      exec: ["pnpm", "exec", "smthrs"]
+    }
+  }
   switch (manager.name) {
     case "pnpm":
       return {

@@ -560,6 +560,42 @@ export const Package = S.Package({ targets: { ambiguous, explicit } })
   })
 })
 
+describe("workspace-era pnpm manager", () => {
+  it("loads, plans, and executes with the pnpm manifest + lockfile declaration", async () => {
+    const root = await temporaryWorkspace()
+    await write(
+      root,
+      "WORKSPACE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+const packageJson = S.file("//package.json")
+export const Workspace = S.Workspace("pnpmfixture", {
+  repository: "git+https://example.invalid/pnpmfixture.git",
+  cache: S.Cache({ directory: ".flows" }),
+  runtime: S.Runtime.Node({ version: "26" }),
+  packageManager: S.PackageManager.Pnpm({ manifest: packageJson, lockfile: S.file("//pnpm-lock.yaml"), version: "8" }),
+  nodeModules: S.Npm.NodeModules({ packageJson }),
+})
+`
+    )
+    await write(root, "package.json", `{ "name": "pnpmfixture", "private": true }\n`)
+    await write(root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { check: S.Shell.Test({ command: "true" }) } })
+`
+    )
+    commitAll(root)
+    const planned = await serve(root, ["//:check", "--plan"])
+    expect(planned.exitCode).toBe(0)
+    expect(planned.output).not.toContain("refusal")
+    const { exitCode, logs } = await serve(root, ["//:check"])
+    expect(exitCode).toBe(0)
+    expect(logs).toContain("//:check  ran")
+  })
+})
+
 describe("toolchain identity in keys", () => {
   it("re-keys a target when the resolved node_modules package version changes", async () => {
     const root = await temporaryWorkspace()

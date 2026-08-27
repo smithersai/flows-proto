@@ -144,6 +144,43 @@ describe("Runtime.Node and PackageManager.Yarn forms", () => {
     })
     expect(PackageManager.isYarnDeclaration(yarn)).toBe(true)
   })
+
+  it("validates the Pnpm workspace declaration like Yarn's", () => {
+    const pnpm = PackageManager.Pnpm({
+      manifest: Input.file("//package.json"),
+      lockfile: Input.file("//pnpm-lock.yaml"),
+      version: "8",
+      audit: { severity: "critical", recursive: true }
+    })
+    expect(PackageManager.isPnpmDeclaration(pnpm)).toBe(true)
+    expect(PackageManager.isPackageManager(pnpm)).toBe(false)
+    // viem's spelling: no version pin, the workspace file as a graph input.
+    const bare = PackageManager.Pnpm({
+      manifest: Input.file("//package.json"),
+      lockfile: Input.file("//pnpm-lock.yaml"),
+      workspaces: Input.file("//pnpm-workspace.yaml")
+    })
+    expect(PackageManager.isPnpmDeclaration(bare)).toBe(true)
+    expect(bare.version).toBeUndefined()
+  })
+
+  it("keeps the BUILD-era Pnpm form and its runtime requirement", () => {
+    const classic = PackageManager.Pnpm({ version: "11.21.0", runtime: Runtime.Node({ version: ">=22.19.0" }) })
+    expect(PackageManager.isPackageManager(classic)).toBe(true)
+    expect(() => PackageManager.Pnpm({ version: "11.21.0" } as never)).toThrow(/runtime/)
+  })
+
+  it("accepts the Pnpm workspace declaration as the Workspace packageManager", () => {
+    const options = workspaceOptions()
+    const workspace = WorkspaceDeclaration.Workspace("pnpmfixture", {
+      ...options,
+      packageManager: PackageManager.Pnpm({
+        manifest: Input.file("//package.json"),
+        lockfile: Input.file("//pnpm-lock.yaml")
+      })
+    })
+    expect(PackageManager.isPnpmDeclaration(workspace.packageManager)).toBe(true)
+  })
 })
 
 describe("input forms", () => {

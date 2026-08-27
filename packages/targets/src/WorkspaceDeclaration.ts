@@ -375,7 +375,10 @@ export interface WorkspaceDeclaration {
   readonly repository: string
   readonly cache: CacheDeclaration
   readonly runtime: Runtime.Runtime | Runtime.NodeDeclaration
-  readonly packageManager: PackageManager.PackageManager | PackageManager.YarnDeclaration
+  readonly packageManager:
+    | PackageManager.PackageManager
+    | PackageManager.YarnDeclaration
+    | PackageManager.PnpmDeclaration
   readonly nodeModules: NodeModulesDeclaration
   readonly flags: FlagsDeclaration | undefined
   readonly host: HostDeclaration | undefined
@@ -412,7 +415,10 @@ export interface WorkspaceOptions {
   readonly repository: string
   readonly cache: CacheDeclaration
   readonly runtime: Runtime.Runtime | Runtime.NodeDeclaration
-  readonly packageManager: PackageManager.PackageManager | PackageManager.YarnDeclaration
+  readonly packageManager:
+    | PackageManager.PackageManager
+    | PackageManager.YarnDeclaration
+    | PackageManager.PnpmDeclaration
   readonly nodeModules: NodeModulesDeclaration
   readonly flags?: FlagsDeclaration | undefined
   readonly host?: HostDeclaration | undefined
@@ -484,7 +490,8 @@ export const Workspace = (name: string, options: WorkspaceOptions): WorkspaceDec
   }
   if (
     !PackageManager.isPackageManager(options.packageManager) &&
-    !PackageManager.isYarnDeclaration(options.packageManager)
+    !PackageManager.isYarnDeclaration(options.packageManager) &&
+    !PackageManager.isPnpmDeclaration(options.packageManager)
   ) {
     throw new TypeError("Workspace packageManager must be an S.PackageManager declaration")
   }

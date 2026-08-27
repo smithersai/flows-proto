@@ -1666,6 +1666,7 @@ const rootMode = (rule: string, options: RunOptions): Mode => {
 const managerBinaryOf = (workspace: PackageIndexModule.PackageIndex["workspace"]): string => {
   const manager = workspace.packageManager as { readonly _tag?: unknown; readonly name?: unknown }
   if (manager._tag === "YarnPackageManager") return "yarn"
+  if (manager._tag === "PnpmPackageManager") return "pnpm"
   if (typeof manager.name === "string") return manager.name
   return "pnpm"
 }

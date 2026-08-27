@@ -188,29 +188,65 @@ const executableFor = (name: Name, executable: string | undefined): string =>
   executable === undefined ? name : usable(executable, `${name} executable`)
 
 /**
+ * Options accepted by the WORKSPACE.ts form of {@link Pnpm}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface PnpmWorkspaceOptions {
+  readonly manifest: Input.File
+  readonly lockfile: Input.File
+  readonly audit?: { readonly severity: string; readonly recursive?: boolean } | undefined
+  readonly version?: string | undefined
+  readonly workspaces?: Input.File | undefined
+}
+
+/**
  * Declares pnpm as the workspace package manager.
+ *
+ * Two forms, one per era. The WORKSPACE.ts form mirrors {@link Yarn}:
+ * `{ manifest, lockfile, version?, audit?, workspaces? }`, no `runtime` —
+ * the Workspace declares the runtime once and the manager reads it from
+ * there. The BUILD.ts form keeps `{ version, runtime }` for BUILD.ts users.
  *
  * @example
  * ```ts
- * import { Smithers } from "@smthrs/targets"
+ * import { Smithers as S } from "@smthrs/targets"
  *
- * const runtime = Smithers.Runtime.Node({ version: ">=22.19.0" })
- *
- * export const packageManager = Smithers.PackageManager.Pnpm({ version: "11.21.0", runtime })
+ * const packageManager = S.PackageManager.Pnpm({
+ *   manifest: S.file("//package.json"),
+ *   lockfile: S.file("//pnpm-lock.yaml"),
+ *   version: "8"
+ * })
  * ```
  *
  * @category constructors
  * @since 0.1.0
  */
-export const Pnpm = (options: Options<PnpmVersion>): PnpmPackageManager => {
-  if (!Runtime.isRuntime(options.runtime)) {
+export function Pnpm(options: PnpmWorkspaceOptions): PnpmDeclaration
+export function Pnpm(options: Options<PnpmVersion>): PnpmPackageManager
+export function Pnpm(
+  options: PnpmWorkspaceOptions | Options<PnpmVersion>
+): PnpmDeclaration | PnpmPackageManager {
+  if ("manifest" in options || "lockfile" in options) {
+    const workspace = options as PnpmWorkspaceOptions
+    return PnpmDeclaration.make({
+      manifest: workspace.manifest,
+      lockfile: workspace.lockfile,
+      ...(workspace.audit === undefined ? {} : { audit: { ...workspace.audit } }),
+      ...(workspace.version === undefined ? {} : { version: usable(workspace.version, "pnpm version") }),
+      ...(workspace.workspaces === undefined ? {} : { workspaces: workspace.workspaces })
+    })
+  }
+  const classic = options as Options<PnpmVersion>
+  if (!Runtime.isRuntime(classic.runtime)) {
     throw new TypeError(`pnpm requires a declared runtime, for example Runtime.Node({ version: ">=22.19.0" })`)
   }
   return PnpmPackageManager.make({
     name: "pnpm",
-    version: options.version,
-    executable: executableFor("pnpm", options.executable),
-    runtime: options.runtime
+    version: classic.version,
+    executable: executableFor("pnpm", classic.executable),
+    runtime: classic.runtime
   })
 }
 
@@ -318,6 +354,44 @@ export const Yarn = (options: {
     ...(options.audit === undefined ? {} : { audit: { ...options.audit } }),
     ...(options.version === undefined ? {} : { version: usable(options.version, "yarn version") })
   })
+
+/**
+ * Schema for the WORKSPACE.ts Pnpm package-manager declaration.
+ *
+ * Like {@link YarnDeclaration}, the workspace form pins the manager through
+ * the repository's own manifest and lockfile rather than an enumerated
+ * version literal, and it carries no `runtime`: the runtime is declared once
+ * on the Workspace and wired to the manager by requirement. `workspaces` is
+ * the optional `pnpm-workspace.yaml` graph input (package globs, catalog
+ * pins, overrides), so an override bump invalidates targets that resolve
+ * through it.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const PnpmDeclaration = Schema.TaggedStruct("PnpmPackageManager", {
+  manifest: Input.File,
+  lockfile: Input.File,
+  audit: Schema.optional(YarnAudit),
+  version: Schema.optional(Schema.NonEmptyString),
+  workspaces: Schema.optional(Input.File)
+})
+
+/**
+ * One WORKSPACE.ts Pnpm package-manager declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type PnpmDeclaration = typeof PnpmDeclaration.Type
+
+/**
+ * Checks whether a value is a WORKSPACE.ts Pnpm declaration.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
+export const isPnpmDeclaration: (value: unknown) => value is PnpmDeclaration = Schema.is(PnpmDeclaration)
 
 /**
  * The workspace package manager's own binary as an inert tool reference,
