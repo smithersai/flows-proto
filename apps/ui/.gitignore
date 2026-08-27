@@ -24,6 +24,9 @@ reports/chat-shell/
 # Playwright trace archives (large binaries, regenerated per run)
 reports/**/trace.zip
 
+# Playwright T1 run artifacts (apps/ui/playwright.config.ts outputDir)
+reports/playwright/
+
 # The monorepo root .gitignore excludes every .smithers/ directory; this app's
 # .smithers/ is a tracked workflow pack (its own .smithers/.gitignore excludes state).
 !.smithers/

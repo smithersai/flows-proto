@@ -49,7 +49,7 @@ export function TabBodies() {
         open={pendingClose !== undefined}
         title={`Close ${pendingClose?.title ?? "this tab"}?`}
         body="Its process is still running and will be stopped."
-        confirmLabel="Close"
+        confirmLabel="Close tab"
         destructive
         onConfirm={() => controller.runCommand("tab.close.confirm")}
         onCancel={() => controller.runCommand("tab.close.cancel")}

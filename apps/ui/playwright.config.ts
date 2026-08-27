@@ -1,38 +1,41 @@
-import { defineConfig, devices } from "@playwright/test"
+import { defineConfig } from "@playwright/test"
 
 /*
- * Test tier T1 (LOCAL-APP.md): the local origin without a window, driven by
- * headless Chromium. The web server builds the SPA (unless
- * SMITHERS_SKIP_SPA_BUILD=1) and boots `bun src/bun/serve.ts` on a fixed
- * port with the chat stub on. SMITHERS_CHAT_STUB=0 hits the real endpoint
- * and enables chat.real.spec.ts.
+ * T1 (docs/LOCAL-APP.md "Test tiers"): the SPA in headless chromium against
+ * the local server. Every spec keeps the server behind page.route /
+ * page.routeWebSocket so the same specs run against the foundation lane's
+ * `bun src/bun/serve.ts` once it replaces the webServer command below; until
+ * then the built SPA is served by vite preview on the contract's port.
+ *
+ * `--configLoader runner`: vite.config.ts reaches the smithers-shared
+ * workspace source (see the note at the top of that file).
  */
 const PORT = 47311
 const BASE_URL = `http://127.0.0.1:${PORT}`
-const CHAT_STUB = process.env.SMITHERS_CHAT_STUB === "0" ? "0" : "1"
 
 export default defineConfig({
   testDir: "e2e/playwright",
-  testIgnore: ["**/native/**"],
+  testMatch: /.*\.spec\.ts$/,
+  timeout: 45_000,
+  expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: process.env.CI ? "github" : "list",
-  timeout: 60_000,
+  reporter: "list",
+  outputDir: "reports/playwright",
   use: {
     baseURL: BASE_URL,
+    browserName: "chromium",
     headless: true,
     trace: "retain-on-failure"
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "bun e2e/playwright/webserver.ts",
-    url: `${BASE_URL}/api/health`,
+    // `--host 127.0.0.1`: vite preview binds [::1] alone by default, and the contract's origin is 127.0.0.1.
+    command: `vite build --configLoader runner && vite preview --host 127.0.0.1 --port ${PORT} --strictPort --configLoader runner`,
+    url: BASE_URL,
     reuseExistingServer: false,
     timeout: 240_000,
-    env: {
-      SMITHERS_LOCAL_PORT: String(PORT),
-      SMITHERS_CHAT_STUB: CHAT_STUB
-    }
+    stdout: "ignore",
+    stderr: "pipe"
   }
 })
