@@ -1584,6 +1584,15 @@ const visit = async (
     if (layer?.channel !== undefined && env["RUSTUP_TOOLCHAIN"] === undefined) {
       env["RUSTUP_TOOLCHAIN"] = layer.channel
     }
+    // `offline: true` says "resolve only from what the fetch delivered". The
+    // `--offline` flag says that to this cargo and to nothing else, and a
+    // cargo test that spawns a nested cargo — trybuild's compile-fail suites
+    // are the common case — would have that nested process reach for the
+    // registry and fail against the sandbox. `CARGO_NET_OFFLINE` is the same
+    // statement in the form a child process inherits.
+    if (attrMember(attrs, "offline") === true && env["CARGO_NET_OFFLINE"] === undefined) {
+      env["CARGO_NET_OFFLINE"] = "true"
+    }
   }
   if (cargoHome !== undefined && env["CARGO_HOME"] === undefined) {
     env["CARGO_HOME"] = cargoHome

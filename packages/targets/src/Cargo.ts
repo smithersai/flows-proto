@@ -362,6 +362,14 @@ const featureFields = {
 export const FetchAttrs = Schema.Struct({
   /** The workspace manifest cargo resolves from. */
   workspace: Schema.optional(Input.File),
+  /**
+   * A crate set to lock instead of one workspace manifest.
+   *
+   * A repository whose crates are excluded from the root workspace has one
+   * lockfile domain per crate, so one fetch over one manifest cannot deliver
+   * what those crates resolve against. Naming the set locks each of them.
+   */
+  crates: Schema.optional(CrateSet),
   /** Files this resource delivers, workspace-anchored. */
   outFiles: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   /** Directories this resource delivers; the first one becomes `CARGO_HOME`. */
