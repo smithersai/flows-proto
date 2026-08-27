@@ -36,13 +36,32 @@ const route = () =>
     apiKey: Redacted.make(apiKey ?? "")
   })
 
-const collect = (request: ModelRequest.ModelRequest): Promise<ReadonlyArray<ModelEvent.ModelEvent>> =>
+const collectOnce = (request: ModelRequest.ModelRequest): Promise<ReadonlyArray<ModelEvent.ModelEvent>> =>
   Effect.runPromise(
     Effect.gen(function*() {
       const model = yield* Route.toModel(yield* Effect.fromResult(route()))
       return yield* Stream.runCollect(model.stream(request))
     }).pipe(Effect.provide(executorLayer))
   )
+
+/**
+ * The free tier caps requests per minute, so two suite runs inside one window
+ * answer 429 on billing rather than on the protocol. One retry after the
+ * provider's suggested delay keeps that from failing a gate; a second quota
+ * answer is a real failure.
+ */
+const collect = async (request: ModelRequest.ModelRequest): Promise<ReadonlyArray<ModelEvent.ModelEvent>> => {
+  try {
+    return await collectOnce(request)
+  } catch (error) {
+    const message = String((error as { readonly message?: unknown } | null)?.message ?? error)
+    const suggested = message.match(/retry in (\d+(?:\.\d+)?)s/i)
+    if (!message.includes("exceeded your current quota") && suggested === null) throw error
+    const delaySeconds = Math.min(70, suggested === null ? 62 : Number(suggested[1]) + 2)
+    await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000))
+    return collectOnce(request)
+  }
+}
 
 describe.skipIf(apiKey === undefined || apiKey === "")("OpenAIChatCompletions over Gemini", () => {
   it("targets the compatible chat-completions path", () => {
@@ -67,7 +86,7 @@ describe.skipIf(apiKey === undefined || apiKey === "")("OpenAIChatCompletions ov
     expect(usage.inputTokens).toBeGreaterThan(0)
     expect(usage.outputTokens).toBeGreaterThan(0)
     expect(events.filter((event) => event.type === "settle")).toHaveLength(1)
-  })
+  }, 180_000)
 
   it("streams a tool call with reassembled arguments", async () => {
     const events = await collect(ModelRequest.ModelRequest.make({
@@ -95,5 +114,5 @@ describe.skipIf(apiKey === undefined || apiKey === "")("OpenAIChatCompletions ov
     const call = message.content.find((part) => part.type === "tool-call")
     expect(call?.name).toBe("get_weather")
     expect(JSON.parse(call?.arguments ?? "{}")).toMatchObject({ city: "Paris" })
-  })
+  }, 180_000)
 })
