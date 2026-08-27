@@ -419,11 +419,14 @@ type ToolOutcome = { readonly _tag: "resolved"; readonly tool: ResolvedTool } | 
 /**
  * Resolves the `.bin` entry name of one `S.NodeModule.Bin` reference.
  *
- * With no explicit `bin` argument the package's own manifest decides: a
- * string-form `bin` names the package basename; an object `bin` with one
- * entry names its sole key; more than one entry is ambiguous and requires
- * the explicit second argument. An unreadable manifest falls back to the
- * package basename, which the executable probe then refuses if absent.
+ * With no explicit `bin` argument the package's own manifest decides, the
+ * npm/npx way: a string-form `bin` names the package basename; an object
+ * `bin` selects the entry named after the package's unscoped name when the
+ * map has one (`knip`, `@biomejs/biome` → `biome`); an object with exactly
+ * one entry names its sole key whatever it is called; only a multi-entry
+ * map with no package-name entry is ambiguous and requires the explicit
+ * second argument. An unreadable manifest falls back to the package
+ * basename, which the executable probe then refuses if absent.
  */
 const binNameOf = async (
   root: string,
@@ -444,6 +447,7 @@ const binNameOf = async (
   if (typeof declared === "object" && declared !== null) {
     const names = Object.keys(declared)
     if (names.length === 1) return { name: names[0]! }
+    if (names.includes(basename)) return { name: basename }
     if (names.length > 1) {
       return {
         problem: `package ${JSON.stringify(packageName)} exposes ${names.length} binaries (${names.join(", ")}); ` +

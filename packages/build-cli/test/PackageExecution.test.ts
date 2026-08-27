@@ -493,6 +493,48 @@ export const Package = S.Package({ targets: { pw: S.Shell.Test({ bin: S.NodeModu
     expect(logs).not.toContain("node_modules/.bin/test")
   })
 
+  it("resolves a multi-entry bin map to the entry named after the package", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { deadCode: S.Shell.Test({ bin: S.NodeModule.Bin("knip") }) } })
+`
+    )
+    // knip ships { knip, knip-bun }: one argument selects the package-name entry.
+    await installFixturePackage(root, "knip", { "knip": "bin/knip.js", "knip-bun": "bin/knip-bun.js" }, [
+      "knip",
+      "knip-bun"
+    ])
+    commitAll(root)
+    const { exitCode, logs } = await serve(root, ["//:deadCode"])
+    expect(exitCode).toBe(0)
+    expect(logs).toContain("//:deadCode  ran")
+  })
+
+  it("resolves a scoped package's multi-entry bin map to its unscoped name", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { lint: S.Shell.Test({ bin: S.NodeModule.Bin("@biomejs/biome") }) } })
+`
+    )
+    // The unscoped basename decides: @biomejs/biome resolves the `biome` entry.
+    await installFixturePackage(root, "@biomejs/biome", { "biome": "bin/biome", "biome-check": "bin/check" }, [
+      "biome",
+      "biome-check"
+    ])
+    commitAll(root)
+    const { exitCode, logs } = await serve(root, ["//:lint"])
+    expect(exitCode).toBe(0)
+    expect(logs).toContain("//:lint  ran")
+  })
+
   it("refuses a multi-entry bin map without an explicit name and accepts the named one", async () => {
     const root = await temporaryWorkspace()
     await write(root, "WORKSPACE.ts", workspaceModule())
