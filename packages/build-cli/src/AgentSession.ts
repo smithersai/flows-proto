@@ -185,7 +185,8 @@ export interface AgentSession {
  */
 export interface SessionFactory {
   readonly open: (
-    ref: Reference.AgentRef | undefined
+    ref: Reference.AgentRef | undefined,
+    mcp?: ReadonlyArray<Reference.McpHttp>
   ) => Effect.Effect<AgentSession, AgentTarget.AgentSessionError>
 }
 
@@ -441,14 +442,30 @@ const extractCodexText = (stdout: string): string => {
 /** The argv and answer format of one agent CLI engine. */
 interface EngineAdapter {
   readonly executable: string
-  readonly args: (model: string) => ReadonlyArray<string>
+  readonly args: (model: string, mcp: ReadonlyArray<Reference.McpHttp>) => ReadonlyArray<string>
   readonly text: (stdout: string) => string
 }
+
+/**
+ * The `--mcp-config` document for the claude CLI: the lane's declared
+ * `S.Mcp.Http` servers as streamable-HTTP entries. The document always
+ * carries a `mcpServers` record, because the CLI rejects `{}` ("mcpServers:
+ * Invalid input: expected record, received undefined"); a lane with no
+ * servers gets an empty record, and `--strict-mcp-config` keeps the user's
+ * own servers out of the session.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const claudeMcpConfig = (mcp: ReadonlyArray<Reference.McpHttp>): string =>
+  JSON.stringify({
+    mcpServers: Object.fromEntries(mcp.map((server) => [server.name, { type: "http", url: server.url }]))
+  })
 
 const adapters: Record<"claude" | "codex", EngineAdapter> = {
   claude: {
     executable: "claude",
-    args: (model) => [
+    args: (model, mcp) => [
       "-p",
       "--output-format",
       "json",
@@ -461,7 +478,7 @@ const adapters: Record<"claude" | "codex", EngineAdapter> = {
       "--disable-slash-commands",
       "--strict-mcp-config",
       "--mcp-config",
-      "{}",
+      claudeMcpConfig(mcp),
       "--setting-sources",
       "",
       "--no-chrome"
@@ -514,7 +531,7 @@ export interface CliSessionOptions {
  * @since 0.1.0
  */
 export const makeCliSessionFactory = (options: CliSessionOptions): SessionFactory => ({
-  open: (ref) =>
+  open: (ref, mcp = []) =>
     Effect.try({
       try: () => resolveAgents(options.agents, ref),
       catch: (cause) => sessionError("resolve", cause)
@@ -530,7 +547,7 @@ export const makeCliSessionFactory = (options: CliSessionOptions): SessionFactor
               const outcome = yield* spawnText(
                 options.workspaceRoot,
                 executable,
-                adapter.args(agent.model),
+                adapter.args(agent.model, mcp),
                 {
                   stdin: request.prompt,
                   stdoutBytes: maximumSessionOutputBytes,
@@ -1329,7 +1346,7 @@ const runCandidateLoop = (
       return { vacuous: true, rounds: 0, diff: "", edits: [], gateReport: [] }
     }
     const promptText = yield* readPrompt(runtime.workspaceRoot, payload.promptPath, payload.packageDirectory)
-    const session = yield* runtime.sessions.open(payload.agent)
+    const session = yield* runtime.sessions.open(payload.agent, payload.mcp)
     const sortedValues = Object.fromEntries(Object.entries(values).sort(([a], [b]) => a < b ? -1 : 1))
     const key = verdictKey({
       kind,
