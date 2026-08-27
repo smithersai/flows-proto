@@ -26,6 +26,14 @@ export const RepoCardBody = ({ card }: { readonly card: Extract<Card, { kind: "r
       <p className="repo-card-detection" data-detected={repo.smithers.detected}>
         {repo.smithers.reason}
       </p>
+      {/* The plugin manifest problems the open reported; a clean open says nothing. */}
+      {repo.warnings.length > 0 ?
+        (
+          <ul className="targets-card-warnings" role="alert">
+            {repo.warnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}
+          </ul>
+        ) :
+        null}
     </div>
   )
 }

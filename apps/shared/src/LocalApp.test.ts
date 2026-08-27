@@ -107,6 +107,16 @@ describe("parseRepoPlugin", () => {
     expect("issues" in parsed && parsed.issues.length > 0).toBe(true)
     expect("issues" in parseRepoPlugin(undefined, workspaces)).toBe(true)
   })
+
+  test("a root-level issue reads as a sentence, not a bare colon", () => {
+    // The issues become Repo.warnings, which the repo card states verbatim.
+    const unknown = manifest()
+    unknown.entries[0].group = "missing"
+    const rejected = parseRepoPlugin(unknown, workspaces)
+    expect("issues" in rejected && rejected.issues[0]).toBe(
+      "entry version-parity names an undeclared group missing"
+    )
+  })
 })
 
 describe("multi-workspace repo wire model", () => {

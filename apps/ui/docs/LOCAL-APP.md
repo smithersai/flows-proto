@@ -214,6 +214,8 @@ a strict-shape failure, an undeclared group reference, a non-`//pkg:name`
 label, or an entry naming an undetected workspace — becomes entries in
 `Repo.warnings[]` with `plugin` undefined, never a 500. `POST
 /api/repo/open` and `GET /api/repos` carry `Repo.plugin` when it parsed.
+The `repo` card states `Repo.warnings[]` verbatim in a `role="alert"` list,
+so a refused manifest says why instead of silently growing no plugin card.
 
 ## Targets: load and run
 
@@ -228,8 +230,10 @@ label, or an entry naming an undetected workspace — becomes entries in
   `package` and `name`) tagged with its `workspace`. One workspace's loader
   error becomes a prefixed `warnings[]` entry and never blocks the others.
 - Run: `node <cli> '<label>'` with `cwd` = `join(repo, workspace)`, streamed
-  to the WS topic. `workspace` is validated against the detected set; an
-  undeclared one is a 400 `{ code: "invalid_workspace" }` naming it.
+  to the WS topic. `workspace` defaults to `"."` and is validated against the
+  detected set; an undeclared one is a 400 `{ code: "invalid_workspace" }`
+  naming it. A repository with nothing detected has no targets, so every
+  workspace — `"."` included — is refused there.
 - Node sidecar: `findNode()` returns the first Node >= 22.19.0 among
   `SMITHERS_NODE`, `PATH`, `~/.nvm/versions/node/*/bin/node` (highest version),
   `/opt/homebrew/bin/node`, `/usr/local/bin/node`, `~/.volta/bin/node`,
@@ -288,9 +292,10 @@ sections and entries with workspace / approval / agentic / kind badges
 (`@smthrs/ui` `StatusPill`; `EmptyState` for a group without entries); each
 entry's Run dispatches the existing `target.run` flow with
 `{ repoId, workspace, label }`, and the run lands as a `target-run` card
-like any other. `target.run` takes `<repoId> [workspace] <label>`; the
-html panel's bridge keeps sending only `<repoId> <label>` and runs at the
-root.
+like any other. `target.run` takes `<repoId> [workspace] <label>`. A label
+never holds whitespace, so the LAST token is the label and everything
+between it and the repo id is the workspace path; the html panel's bridge
+keeps sending only `<repoId> <label>` and runs at the root.
 
 Every card keeps the existing maximize affordance. Maximized cards gain
 "Open in tab" (user-triggered, EMBED LAW compliant), which creates a `card`

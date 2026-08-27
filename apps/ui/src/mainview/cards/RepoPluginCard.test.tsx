@@ -4,7 +4,7 @@ import { flushSync } from "react-dom"
 import { createRoot } from "react-dom/client"
 import type { Card } from "../state/AppState"
 import { RepoPluginCardBody } from "./RepoPluginCard"
-import { TargetsCardBody } from "./TargetCards"
+import { RepoCardBody, TargetsCardBody } from "./TargetCards"
 
 /*
  * The repo-plugin card and the multi-workspace targets card (LOCAL-APP.md
@@ -112,6 +112,20 @@ describe("the repo-plugin card", () => {
     expect(entry?.querySelector("[data-badge=\"agentic\"]")).not.toBeNull()
   })
 
+  test("approval and agentic are tinted, not four identical muted chips", () => {
+    // StatusPill buckets a STATUS string through the shared vocabulary, so a
+    // class name like "warn" falls through to muted and an approval-required
+    // entry would look exactly like one that needs none.
+    const host = render(<RepoPluginCardBody card={pluginCard()} onRunCommand={() => {}} />)
+    const flagged = host.querySelector("[data-plugin-entry=\"clippy-fix\"]")
+    const plain = host.querySelector("[data-plugin-entry=\"check\"]")
+    expect(flagged?.querySelector("[data-badge=\"approval\"]")?.className).toContain("sui-badge-warning")
+    expect(flagged?.querySelector("[data-badge=\"agentic\"]")?.className).toContain("sui-badge-default")
+    expect(plain?.querySelector("[data-badge=\"approval\"]")?.className).toContain("sui-badge-muted")
+    expect(plain?.querySelector("[data-badge=\"agentic\"]")?.className).toContain("sui-badge-muted")
+    expect(flagged?.querySelector("[data-badge=\"workspace\"]")?.className).toContain("sui-badge-muted")
+  })
+
   test("Run dispatches target.run with the repo id, workspace and label", () => {
     const ran: Array<string> = []
     const host = render(
@@ -136,5 +150,49 @@ describe("the targets card", () => {
     expect(button).not.toBeNull()
     button?.click()
     expect(ran).toEqual(["target.run r1 aomi-sdk //:clippyFix"])
+  })
+})
+
+describe("the repo card", () => {
+  /*
+   * A manifest the loader refused (bad JSON, a stray workspace, an extra key)
+   * leaves `plugin` undefined and the reason in `Repo.warnings`. Without a
+   * home on the repo card the repository simply grows no plugin card and the
+   * app never says why.
+   */
+  const repo = (warnings: ReadonlyArray<string>): Extract<Card, { kind: "repo" }> => ({
+    id: "repo-r1",
+    kind: "repo",
+    title: "aomi",
+    status: "acted",
+    createdAt: 0,
+    ordinal: 0,
+    payload: {
+      repo: {
+        id: "r1",
+        path: "/work/aomi",
+        name: "aomi",
+        git: null,
+        warnings: [...warnings],
+        smithers: {
+          detected: true,
+          workspaceFile: ".smithers/WORKSPACE.ts",
+          declarationFiles: [],
+          reason: "1 workspace detected",
+          workspaces: [{ path: ".", title: "aomi" }]
+        }
+      }
+    }
+  })
+
+  test("states the manifest problems the open reported", () => {
+    const host = render(<RepoCardBody card={repo([".smithers/UI.json is not valid JSON."])} />)
+    const alert = host.querySelector("[role=\"alert\"]")
+    expect(alert?.textContent).toContain(".smithers/UI.json is not valid JSON.")
+  })
+
+  test("a clean open shows no warning row at all", () => {
+    const host = render(<RepoCardBody card={repo([])} />)
+    expect(host.querySelector("[role=\"alert\"]")).toBeNull()
   })
 })
