@@ -43,7 +43,9 @@ export const GraphNodeSchema = z.object({
       argv: z.array(z.string()).optional(),
       sandbox: z.string().optional(),
       outDirs: z.array(z.string()).optional(),
-      outFiles: z.array(z.string()).optional()
+      outFiles: z.array(z.string()).optional(),
+      /** Input paths/globs when the CLI exposes them; used by affected analysis. */
+      inputs: z.array(z.string()).optional()
     })
     .optional(),
   /** Declaration site for "open in editor". */

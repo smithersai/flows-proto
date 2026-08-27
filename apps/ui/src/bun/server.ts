@@ -29,6 +29,8 @@ import type { NodeSidecar } from "./Node"
 import { binDirOf, createPtyManager } from "./Pty"
 import type { PtyManager } from "./Pty"
 import { json, jsonError, readJson, Router } from "./routes"
+import { registerRepoTargetRoutes } from "./routes/repoTargets"
+import { registerTargetGraphRoutes } from "./routes/targetGraph"
 import { registerHarnessRoutes } from "./routes/harnesses"
 import type { HarnessDetector } from "./routes/harnesses"
 import { registerPtyRoutes } from "./routes/pty"
@@ -66,6 +68,8 @@ export interface LocalServerOptions {
   readonly openExternal?: (url: string) => Promise<boolean>
   /** A pre-resolved Node sidecar; the default probes once at startup. */
   readonly node?: NodeSidecar | null
+  /** The smthrs build-cli entry for the targets lane; the default resolves it from the checkout (or SMITHERS_BUILD_CLI). */
+  readonly buildCli?: string
   /** The home directory `cwd: "~"` expands to and `/api/health` reports; default `os.homedir()`. */
   readonly home?: string
   /** The harness table behind `GET /api/harnesses` and harness tabs; default `detectHarnesses`. */
@@ -335,15 +339,6 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
     return json({ status: "accepted" }, 202)
   })
 
-  // Lane placeholders (L3 repo/targets). A lane replaces a placeholder by
-  // registering the same method and path.
-  router.add("GET", "/api/repos", () => json({ repos: [] }))
-  router.add("POST", "/api/repo/open", () => notImplemented("POST /api/repo/open"))
-  router.add("POST", "/api/repo/close", () => notImplemented("POST /api/repo/close"))
-  router.add("POST", "/api/targets/query", () => notImplemented("POST /api/targets/query"))
-  router.add("POST", "/api/targets/run", () => notImplemented("POST /api/targets/run"))
-  router.add("POST", "/api/targets/cancel", () => notImplemented("POST /api/targets/cancel"))
-
   const messageHandlers = new Map<string, Set<WsMessageHandler>>()
   const onMessage: LocalServer["onMessage"] = (type, handler) => {
     const set = messageHandlers.get(type) ?? new Set<WsMessageHandler>()
@@ -469,7 +464,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
   const pty = options.pty === undefined ? createPtyManager(ptyDeps) : options.pty(ptyDeps)
   registerPtyRoutes({ router, onMessage }, pty)
 
-  return {
+  const local: LocalServer = {
     origin,
     port,
     router,
@@ -485,6 +480,17 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
       // Every child dies with the server; nothing keeps a shell alive past the app.
       void pty.killAll()
       server.stop(true)
+    }
+  }
+  // Lane L3: /api/repo/*, /api/targets/* and the target-run topics.
+  const repoTargets = registerRepoTargetRoutes(local, { node: nodeProbe, log, ...(options.buildCli === undefined ? {} : { cli: options.buildCli }) })
+  const targetGraph = registerTargetGraphRoutes(local, { repos: repoTargets.repos, node: nodeProbe, ...(options.buildCli === undefined ? {} : { cli: options.buildCli }) })
+  return {
+    ...local,
+    stop: () => {
+      targetGraph.stop()
+      repoTargets.stop()
+      local.stop()
     }
   }
 }
