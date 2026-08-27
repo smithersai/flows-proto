@@ -32,6 +32,9 @@ beforeAll(async () => {
   repoDir = await realpath(await mkdtemp(join(tmpdir(), "smithers-l3-repo-")))
   await mkdir(join(repoDir, ".smithers"))
   await writeFile(join(repoDir, ".smithers", "WORKSPACE.ts"), "import { Smithers as S } from \"@smthrs/targets\"\n")
+  // A child workspace so the query route fans out and the run route validates.
+  await mkdir(join(repoDir, "aomi-sdk", ".smithers"), { recursive: true })
+  await writeFile(join(repoDir, "aomi-sdk", ".smithers", "WORKSPACE.ts"), "import { Smithers as S } from \"@smthrs/targets\"\n")
   plainDir = await realpath(await mkdtemp(join(tmpdir(), "smithers-l3-plain-")))
   cli = join(dist, "fake-cli.js")
   await writeFile(
@@ -39,10 +42,11 @@ beforeAll(async () => {
     [
       "const [verb] = process.argv.slice(2)",
       "if (verb === \"query\") {",
-      "  console.log(JSON.stringify({ query: \"//...\", targets: [{ label: \"//src:lint\", target: \"Shell.Test\", kinds: [\"lint\"] }] }))",
+      "  const name = process.cwd().endsWith(\"aomi-sdk\") ? \"sdkLint\" : \"lint\"",
+      "  console.log(JSON.stringify({ query: \"//...\", targets: [{ label: `//src:${name}`, target: \"Shell.Test\", kinds: [\"lint\"] }] }))",
       "  process.exit(0)",
       "}",
-      "console.log(`ran ${verb}`)",
+      "console.log(`ran ${verb} in ${process.cwd()}`)",
       "console.error(\"done\")",
       "process.exit(verb === \"//:fails\" ? 2 : 0)"
     ].join("\n")
@@ -97,14 +101,51 @@ describe("/api/repo/*", () => {
 })
 
 describe("/api/targets/*", () => {
-  test("query maps the loader's listing; an unknown repo is 404", async () => {
+  test("query fans out over the detected workspaces; an unknown repo is 404", async () => {
     const opened = (await (await post("/api/repo/open", { path: repoDir })).json()) as { repo: { id: string } }
     const response = await post("/api/targets/query", { repoId: opened.repo.id })
     expect(response.status).toBe(200)
     const body = TargetsQueryResponseSchema.parse(await response.json())
     expect(body.warnings).toEqual([])
-    expect(body.targets).toEqual([{ label: "//src:lint", target: "Shell.Test", kinds: ["lint"], package: "//src", name: "lint" }])
+    expect(body.targets).toEqual([
+      { label: "//src:lint", target: "Shell.Test", kinds: ["lint"], package: "//src", name: "lint", workspace: "." },
+      { label: "//src:sdkLint", target: "Shell.Test", kinds: ["lint"], package: "//src", name: "sdkLint", workspace: "aomi-sdk" }
+    ])
     expect((await post("/api/targets/query", { repoId: "nope" })).status).toBe(404)
+  })
+
+  test("run rejects an undeclared workspace with a typed 400 and accepts a detected one", async () => {
+    const opened = (await (await post("/api/repo/open", { path: repoDir })).json()) as { repo: { id: string } }
+    const rejected = await post("/api/targets/run", { repoId: opened.repo.id, workspace: "nope", label: "//src:lint" })
+    expect(rejected.status).toBe(400)
+    const body = (await rejected.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe("invalid_workspace")
+    expect(body.error.message).toContain("nope")
+
+    const started = await post("/api/targets/run", { repoId: opened.repo.id, workspace: "aomi-sdk", label: "//src:sdkLint" })
+    expect(started.status).toBe(200)
+    const { runId } = (await started.json()) as { runId: string }
+    const socket = new WebSocket(`${server.origin.replace("http", "ws")}/ws`)
+    const frames: Array<{ type: string; data?: string; code?: number | null }> = []
+    const finished = new Promise<void>((resolve) => {
+      socket.onmessage = (event) => {
+        const parsed = TargetRunMessageSchema.safeParse(JSON.parse(String(event.data)))
+        if (!parsed.success || parsed.data.runId !== runId) return
+        frames.push(parsed.data.frame)
+        if (parsed.data.frame.type === "exit") resolve()
+      }
+    })
+    await new Promise<void>((resolve) => {
+      socket.onopen = () => resolve()
+    })
+    socket.send(JSON.stringify({ type: "subscribe", topic: `target-run:${runId}` }))
+    socket.send(JSON.stringify({ type: "target-run.attach", runId }))
+    await finished
+    socket.close()
+    expect(frames.filter((frame) => frame.type === "stdout").map((frame) => frame.data).join("")).toBe(
+      `ran //src:sdkLint in ${join(repoDir, "aomi-sdk")}\n`
+    )
+    expect(frames[frames.length - 1]).toMatchObject({ type: "exit", code: 0 })
   })
 
   test("run streams stdout, stderr and exit on the topic once the client attaches; cancel answers", async () => {
@@ -130,7 +171,9 @@ describe("/api/targets/*", () => {
     socket.send(JSON.stringify({ type: "target-run.attach", runId }))
     await finished
     socket.close()
-    expect(frames.filter((frame) => frame.type === "stdout").map((frame) => frame.data).join("")).toBe("ran //:fails\n")
+    expect(frames.filter((frame) => frame.type === "stdout").map((frame) => frame.data).join("")).toBe(
+      `ran //:fails in ${repoDir}\n`
+    )
     expect(frames.filter((frame) => frame.type === "stderr").map((frame) => frame.data).join("")).toBe("done\n")
     /* The run-local seq the contract orders replay by reaches the client. */
     expect(frames.map((frame) => (frame as { seq?: number }).seq)).toEqual(frames.map((_frame, index) => index))
