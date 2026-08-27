@@ -203,16 +203,21 @@ export const commit = async (options: CommitOptions): Promise<CommitResult> => {
   } else if (typeof attrs.message === "string") {
     message = attrs.message
   } else {
+    const agentName = attrs.message._tag === "AgentRef"
+      ? attrs.message.name
+      : attrs.message._tag === "AgentPool"
+      ? attrs.message.agents.join(",")
+      : `inline:${attrs.message.model}`
     if (options.agentMessage === undefined) {
       throw new GitCommitError(
         "agent_message_unavailable",
-        `the declared message agent S.Agents.${attrs.message.name} has no bound AgentMessage implementation`
+        `the declared message agent ${agentName} has no bound AgentMessage implementation`
       )
     }
     const diff = await gitOk(options.root, ["diff", "--cached"])
     message = await options.agentMessage.compose({
       root: options.root,
-      agent: attrs.message.name,
+      agent: agentName,
       stagedDiff: diff.stdout.slice(0, stagedDiffLimit)
     })
   }

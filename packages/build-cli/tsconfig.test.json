@@ -9,5 +9,9 @@
     "resolveJsonModule": true
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["test/fixtures/force-spec/**/*", "test/fixtures/rsbuild-mini/**/*"]
+  "exclude": [
+    "test/fixtures/force-spec/**/*",
+    "test/fixtures/rsbuild-mini/**/*",
+    "test/fixtures/viem-node-spec/**/*"
+  ]
 }

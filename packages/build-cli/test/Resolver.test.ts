@@ -425,6 +425,20 @@ describe("edges and bounds", () => {
       .rejects.toThrow(/declared entry file does not exist: absent.ts/)
   })
 
+  it("keeps declaration modules out of source globs but admits explicit files", async () => {
+    await write("src.ts", "export const value = 1\n")
+    await write("PACKAGE.ts", "export const Package = {}\n")
+    await write("WORKSPACE.ts", "export const Workspace = {}\n")
+    const glob = { base: "", source: { _tag: "Glob", pattern: "**/*.ts", exclude: [] } as const }
+    await expect(expandAnchoredSources({ workspaceRoot: root, sources: [glob], requireFiles: true }))
+      .resolves.toEqual(["src.ts"])
+    await expect(expandAnchoredSources({
+      workspaceRoot: root,
+      sources: [{ base: "", source: { _tag: "File", path: "PACKAGE.ts" } as const }],
+      requireFiles: true
+    })).resolves.toEqual(["PACKAGE.ts"])
+  })
+
   it("maps an anchored base inside the workspace and refuses one outside", () => {
     expect(packageDirectoryOf(root, "")).toBe("")
     expect(packageDirectoryOf(root, root)).toBe("")

@@ -396,7 +396,7 @@ export type PrError = typeof PrError.Type
  * @since 0.1.0
  */
 export const LintPayload = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(Reference.AgentSelection),
   promptPath: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
   packageDirectory: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPathLength))),
   diffs: Schema.Array(Input.GitDiff),
@@ -452,7 +452,7 @@ export type LintReport = typeof LintReport.Type
  * @since 0.1.0
  */
 export const DiffPayload = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(Reference.AgentSelection),
   promptPath: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
   packageDirectory: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPathLength))),
   payloadSpec: Schema.Record(Schema.String, Reference.InputSpec),
@@ -651,7 +651,7 @@ export const targetIdentity = (target: Target.AnyTarget): string => {
  * @since 0.1.0
  */
 export const LintAttrs = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(Reference.AgentSelection),
   prompt: Input.File,
   data: Attr.Data,
   fixes: Schema.optional(Schema.Array(Schema.NonEmptyString))
@@ -703,7 +703,7 @@ export const Lint = (attrs: (typeof LintAttrs)["~type.make.in"]): Target.AnyTarg
  * @since 0.1.0
  */
 export const DiffAttrs = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(Reference.AgentSelection),
   prompt: Input.File,
   payload: Schema.optional(Schema.Record(Schema.String, Reference.InputSpec)),
   mcp: Schema.optional(Schema.Array(Reference.McpHttp)),
@@ -765,11 +765,13 @@ export const Diff = (attrs: (typeof DiffAttrs)["~type.make.in"]): Target.AnyTarg
  * @since 0.1.0
  */
 export const PrAttrs = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(Reference.AgentSelection),
   prompt: Input.File,
   data: Attr.Data,
   changes: Schema.Array(Schema.NonEmptyString),
   gates: Attr.Gates,
+  secrets: Schema.optional(Attr.Secrets),
+  sandbox: Schema.optional(Attr.Sandbox),
   approval: Schema.optional(Attr.Approval),
   maxRounds: Schema.optional(Schema.Number.check(
     Schema.isGreaterThanOrEqualTo(1),
@@ -912,8 +914,8 @@ export const ClaudeCode = (options: { readonly model: string }): ClaudeCodeAgent
  * @category constructors
  * @since 0.1.0
  */
-export const Codex = (options: { readonly model: string }): CodexAgent =>
-  Object.freeze(CodexAgent.make({ model: options.model }))
+export const Codex = (options: string | { readonly model: string }): CodexAgent =>
+  Object.freeze(CodexAgent.make({ model: typeof options === "string" ? options : options.model }))
 
 /**
  * Declares a pool over sibling agent names.

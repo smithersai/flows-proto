@@ -1003,7 +1003,12 @@ export const expandAnchoredSources = async (options: {
     const matches = await Input.expandGlob(options.workspaceRoot, packageDirectory, source, {
       cacheDirectory: options.cacheDirectory
     })
-    for (const match of matches) found.add(match)
+    for (const match of matches) {
+      const basename = NodePath.posix.basename(match)
+      // PACKAGE/WORKSPACE modules are build declarations, not members of a
+      // source glob. They remain available when named explicitly as S.file.
+      if (basename !== "PACKAGE.ts" && basename !== "WORKSPACE.ts") found.add(match)
+    }
   }
   return [...found].sort()
 }

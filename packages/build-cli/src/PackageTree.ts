@@ -729,6 +729,17 @@ export interface OutDirManifest {
   readonly entries: ReadonlyArray<ManifestEntry>
 }
 
+/** One captured file output stored in the same content-addressed blob set.
+ *
+ * @category artifacts
+ * @since 0.1.0
+ */
+export interface FileManifest {
+  readonly path: string
+  readonly digest: string
+  readonly executable: boolean
+}
+
 const casDirectory = (root: string, cacheDirectory: string): string =>
   NodePath.join(root, ...cacheDirectory.split("/"), "cas")
 
@@ -804,6 +815,80 @@ export const captureOutDir = async (
   }
   await walk(absolute, "")
   return { outDir, entries }
+}
+
+/** Captures one declared output file into the CAS.
+ *
+ * @category artifacts
+ * @since 0.1.0
+ */
+export const captureFile = async (
+  root: string,
+  cacheDirectory: string,
+  path: string
+): Promise<FileManifest> => {
+  if (!isConfinedRelative(path)) throw new Error(`declared output file leaves the workspace: ${path}`)
+  const absolute = NodePath.join(root, ...path.split("/"))
+  const stats = await Fs.lstat(absolute).catch(() => undefined)
+  if (stats === undefined || !stats.isFile()) throw new Error(`declared output file was not created: ${path}`)
+  const digest = await digestFileBytes(absolute)
+  const cas = casDirectory(root, cacheDirectory)
+  await Fs.mkdir(cas, { recursive: true })
+  const blob = NodePath.join(cas, digest)
+  if (!await Fs.access(blob).then(() => true, () => false)) await Fs.copyFile(absolute, blob)
+  return { path, digest, executable: (stats.mode & 0o111) !== 0 }
+}
+
+/** Decodes an untrusted file manifest.
+ *
+ * @category artifacts
+ * @since 0.1.0
+ */
+export const decodeFileManifest = (value: unknown): FileManifest | undefined => {
+  if (typeof value !== "object" || value === null) return undefined
+  const path = (value as { readonly path?: unknown }).path
+  const digest = (value as { readonly digest?: unknown }).digest
+  const executable = (value as { readonly executable?: unknown }).executable
+  if (typeof path !== "string" || !isConfinedRelative(path)) return undefined
+  if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest) || typeof executable !== "boolean") return undefined
+  return { path, digest, executable }
+}
+
+/** Verifies that one file manifest's CAS blob exists and matches its name.
+ *
+ * @category artifacts
+ * @since 0.1.0
+ */
+export const verifyFileManifest = async (
+  root: string,
+  cacheDirectory: string,
+  manifest: FileManifest
+): Promise<string | undefined> => {
+  const blob = NodePath.join(casDirectory(root, cacheDirectory), manifest.digest)
+  const digest = await digestFileBytes(blob).catch(() => undefined)
+  if (digest === undefined) return `cas blob missing for ${manifest.path}`
+  if (digest !== manifest.digest) return `cas blob tampered for ${manifest.path}`
+  return undefined
+}
+
+/** Atomically restores one captured file output from the CAS.
+ *
+ * @category artifacts
+ * @since 0.1.0
+ */
+export const materializeFile = async (
+  root: string,
+  cacheDirectory: string,
+  manifest: FileManifest
+): Promise<void> => {
+  if (!isConfinedRelative(manifest.path)) throw new Error(`materialize refused path: ${manifest.path}`)
+  const destination = NodePath.join(root, ...manifest.path.split("/"))
+  const blob = NodePath.join(casDirectory(root, cacheDirectory), manifest.digest)
+  await Fs.mkdir(NodePath.dirname(destination), { recursive: true })
+  const temporary = `${destination}.smthrs-${process.pid}-${Math.random().toString(16).slice(2)}`
+  await Fs.copyFile(blob, temporary)
+  await Fs.chmod(temporary, manifest.executable ? 0o755 : 0o644)
+  await Fs.rename(temporary, destination)
 }
 
 const safeManifestPath = /^(?!\.\.(\/|$))(?!\/)[^\0]+$/

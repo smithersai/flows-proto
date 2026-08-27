@@ -912,22 +912,26 @@ export const Package = S.Package({ targets: { gen } })
     expect(await Fs.readFile(NodePath.join(root, "out.gen.txt"), "utf8")).toBe("generated\n")
   })
 
-  it("keeps the stdout form a typed refusal", async () => {
+  it("captures the stdout form inside the same check and write bracket", async () => {
     const root = await temporaryWorkspace()
     await write(root, "WORKSPACE.ts", workspaceModule(`  host: S.Host({ bins: ["sh"] }),`))
     await write(
       root,
       "PACKAGE.ts",
       `import { Smithers as S } from "@smthrs/targets"
-const gen = S.Generate({ bin: S.Host.bin("sh"), args: ["-c", "echo generated"], stdout: "file", changes: ["out.gen.txt"] })
+const gen = S.Generate({ bin: S.Host.bin("sh"), args: ["-c", "echo generated"], stdout: "out.gen.txt" })
 export const Package = S.Package({ targets: { gen } })
 `
     )
+    await write(root, "out.gen.txt", "old\n")
     commitAll(root)
-    const { exitCode, logs } = await serve(root, ["//:gen"])
-    expect(exitCode).toBe(1)
-    expect(logs).toContain("NotImplemented")
-    expect(logs).toContain("stdout form")
+    const red = await serve(root, ["//:gen"])
+    expect(red.exitCode).toBe(1)
+    expect(red.logs).toContain("out.gen.txt")
+    expect(await Fs.readFile(NodePath.join(root, "out.gen.txt"), "utf8")).toBe("old\n")
+    expect((await serve(root, ["//:gen", "--write"])).exitCode).toBe(0)
+    expect(await Fs.readFile(NodePath.join(root, "out.gen.txt"), "utf8")).toBe("generated\n")
+    expect((await serve(root, ["//:gen"])).exitCode).toBe(0)
   })
 })
 

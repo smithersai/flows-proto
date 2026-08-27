@@ -80,6 +80,22 @@ export const FilesDifference = Schema.TaggedStruct("FilesDifference", {
  */
 export type FilesDifference = typeof FilesDifference.Type
 
+/** Schema for `S.Files.digest(target)`, a deterministic path→digest table.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const FilesDigest = Schema.TaggedStruct("FilesDigest", {
+  target: Target.Target
+})
+
+/** A declared digest projection of a file-producing target.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export type FilesDigest = typeof FilesDigest.Type
+
 const isFileSet = (value: unknown): value is FileSet =>
   Target.isTarget(value) ||
   (typeof value === "object" && value !== null &&
@@ -102,6 +118,10 @@ export const Files = Object.freeze({
       throw new TypeError("Files.difference operands must be targets or target .files references")
     }
     return Object.freeze({ _tag: "FilesDifference", left, right })
+  },
+  digest: (target: Target.AnyTarget): FilesDigest => {
+    if (!Target.isTarget(target)) throw new TypeError("Files.digest requires a target")
+    return Object.freeze({ _tag: "FilesDigest", target })
   }
 })
 
@@ -136,7 +156,10 @@ export const GenerateAttrs = Schema.Struct({
   script: Schema.optional(Input.File),
   bin: Schema.optional(Reference.Tool),
   args: Schema.optional(Attr.Args),
-  stdout: Schema.optional(Schema.Literal("file")),
+  env: Schema.optional(Attr.Env),
+  secrets: Schema.optional(Attr.Secrets),
+  sandbox: Schema.optional(Attr.Sandbox),
+  stdout: Schema.optional(Schema.NonEmptyString),
   data: Schema.optional(Attr.Data),
   changes: Schema.optional(Schema.Array(Schema.NonEmptyString))
 })
@@ -156,12 +179,18 @@ const generateDefinition = Target.make("Generate", {
       return Target.runTool({
         cwd: ".",
         argv: [Shell.toolToken(Reference.runtimeBin), Shell.scriptToken(attrs.script.path)],
-        env: {},
+        env: attrs.env ?? {},
+        secrets: attrs.secrets ?? [],
         timeoutMs: Shell.packageExecTimeoutMs
       })
     }
     if (attrs.bin !== undefined) {
-      return Target.runTool(Shell.execPayload({ bin: attrs.bin, args: attrs.args }))
+      return Target.runTool(Shell.execPayload({
+        bin: attrs.bin,
+        args: attrs.args,
+        env: attrs.env,
+        secrets: attrs.secrets
+      }))
     }
     return Target.notImplemented("Generate")
   }
@@ -441,8 +470,8 @@ export const isImportClosure = (value: unknown): value is Target.AnyTarget =>
 /** The entries union {@link ImportClosureAttrs} decodes to. */
 type ImportClosureEntries =
   | Target.AnyTarget
-  | Input.Glob
-  | ReadonlyArray<Input.Glob | Target.AnyTarget>
+  | Filegroup.Source
+  | ReadonlyArray<Filegroup.Source | Target.AnyTarget>
 
 /** Rewrites one declared source so its paths resolve from a workspace-relative cwd. */
 const sourceAgainstCwd = (cwd: string, source: Filegroup.Source): Filegroup.Source =>
@@ -501,7 +530,7 @@ export const closureEntrySources = (
   entries: ImportClosureEntries,
   context: Target.ImplementationContext
 ): ReadonlyArray<AnchoredSource> | string => {
-  const list = Array.isArray(entries) ? entries : [entries as Input.Glob | Target.AnyTarget]
+  const list = Array.isArray(entries) ? entries : [entries as Filegroup.Source | Target.AnyTarget]
   const anchored: Array<AnchoredSource> = []
   for (const entry of list) {
     if (Target.isTarget(entry)) {
@@ -555,8 +584,8 @@ export const checkOperand = (value: FileSet): FilesCheckOperand | string => {
  * @since 0.1.0
  */
 export const TestAttrs = Schema.Struct({
-  expect: FilesDifference,
-  toBe: Schema.Literal("empty")
+  expect: Schema.Union([FilesDifference, FilesDigest]),
+  toBe: Schema.Union([Schema.Literal("empty"), Input.File])
 })
 
 const testDefinition = Target.make("Test", {
@@ -574,6 +603,12 @@ const testDefinition = Target.make("Test", {
     unknown,
     Action.Requirement<"smithers-build/not-implemented"> | Action.Requirement<"smithers-build/files-difference">
   > => {
+    if (attrs.expect._tag === "FilesDigest") {
+      return Target.notImplemented("Test: Files.digest comparison is executed by package mode")
+    }
+    if (attrs.toBe !== "empty") {
+      return Target.notImplemented("Test: a file-set difference can only compare to empty")
+    }
     const left = checkOperand(attrs.expect.left)
     if (typeof left === "string") return Target.notImplemented(`Test: ${left}`)
     const right = checkOperand(attrs.expect.right)
@@ -631,7 +666,11 @@ export const Materialize = (target: Target.AnyTarget): Target.AnyTarget => {
  * @since 0.1.0
  */
 export const ImportClosureAttrs = Schema.Struct({
-  entries: Schema.Union([Target.Target, Input.Glob, Schema.Array(Schema.Union([Input.Glob, Target.Target]))])
+  entries: Schema.Union([
+    Target.Target,
+    Filegroup.Source,
+    Schema.Array(Schema.Union([Filegroup.Source, Target.Target]))
+  ])
 })
 
 const importClosureDefinition = Target.make(importClosureRuleId, {

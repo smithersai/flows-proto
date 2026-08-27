@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
 import type * as Exec from "./Exec.ts"
 import * as Reference from "./Reference.ts"
+import * as Runtime from "./Runtime.ts"
 import type * as Secret from "./Secret.ts"
 import * as Target from "./Target.ts"
 
@@ -30,7 +31,8 @@ const sharedFields = {
   env: Schema.optional(Attr.Env),
   data: Schema.optional(Attr.Data),
   secrets: Schema.optional(Attr.Secrets),
-  sandbox: Schema.optional(Attr.Sandbox)
+  sandbox: Schema.optional(Attr.Sandbox),
+  runtime: Schema.optional(Schema.Union([Runtime.Runtime, Runtime.NodeDeclaration, Runtime.BunDeclaration]))
 } as const
 
 /**
@@ -41,7 +43,8 @@ const sharedFields = {
  */
 export const BuildAttrs = Schema.Struct({
   ...sharedFields,
-  outDirs: Schema.Array(Schema.NonEmptyString)
+  outDirs: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+  outFiles: Schema.optional(Schema.Array(Schema.NonEmptyString))
 })
 
 /**
@@ -273,7 +276,12 @@ const withOneExecutable = <A>(id: string, attrs: unknown, construct: () => A): A
  * @since 0.1.0
  */
 export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTarget =>
-  withOneExecutable("Shell.Build", attrs, () => buildDefinition(attrs) as unknown as Target.AnyTarget)
+  withOneExecutable("Shell.Build", attrs, () => {
+    if ((attrs.outDirs?.length ?? 0) + (attrs.outFiles?.length ?? 0) === 0) {
+      throw new TypeError("Shell.Build requires at least one outDirs or outFiles entry")
+    }
+    return buildDefinition(attrs)
+  })
 
 /**
  * A tool run whose exit status is the test verdict.

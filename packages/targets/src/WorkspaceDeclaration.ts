@@ -205,7 +205,8 @@ export const Flags: typeof makeFlags & Record<string, Reference.FlagRef> = Refer
  * @since 0.1.0
  */
 export const NodeModulesDeclaration = Schema.TaggedStruct("NpmNodeModules", {
-  packageJson: Input.File
+  packageJson: Input.File,
+  workspaces: Schema.optional(Input.File)
 })
 
 /**
@@ -232,8 +233,14 @@ export const isNodeModulesDeclaration: (value: unknown) => value is NodeModulesD
  * @category constructors
  * @since 0.1.0
  */
-export const NodeModules = (options: { readonly packageJson: Input.File }): NodeModulesDeclaration =>
-  NodeModulesDeclaration.make({ packageJson: options.packageJson })
+export const NodeModules = (options: {
+  readonly packageJson: Input.File
+  readonly workspaces?: Input.File | undefined
+}): NodeModulesDeclaration =>
+  NodeModulesDeclaration.make({
+    packageJson: options.packageJson,
+    ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces })
+  })
 
 /**
  * Schema for one sandbox implementation declaration.
@@ -374,8 +381,10 @@ export interface WorkspaceDeclaration {
   readonly name: string
   readonly repository: string
   readonly cache: CacheDeclaration
-  readonly runtime: Runtime.Runtime | Runtime.NodeDeclaration | undefined
-  readonly packageManager: PackageManager.PackageManager | PackageManager.YarnDeclaration | undefined
+  readonly runtime: Runtime.Runtime | Runtime.NodeDeclaration | undefined | Runtime.BunDeclaration
+  readonly packageManager:
+    | PackageManager.PackageManager
+    | PackageManager.YarnDeclaration | undefined | PackageManager.PnpmDeclaration
   readonly nodeModules: NodeModulesDeclaration | undefined
   readonly toolchains: ReadonlyArray<unknown> | undefined
   readonly flags: FlagsDeclaration | undefined
@@ -412,8 +421,10 @@ export const isWorkspaceDeclaration = (value: unknown): value is WorkspaceDeclar
 export interface WorkspaceOptions {
   readonly repository: string
   readonly cache: CacheDeclaration
-  readonly runtime?: Runtime.Runtime | Runtime.NodeDeclaration | undefined
-  readonly packageManager?: PackageManager.PackageManager | PackageManager.YarnDeclaration | undefined
+  readonly runtime?: Runtime.Runtime | Runtime.NodeDeclaration | undefined | Runtime.BunDeclaration
+  readonly packageManager?:
+    | PackageManager.PackageManager
+    | PackageManager.YarnDeclaration | undefined | PackageManager.PnpmDeclaration
   readonly nodeModules?: NodeModulesDeclaration | undefined
   readonly toolchains?: ReadonlyArray<unknown> | undefined
   readonly flags?: FlagsDeclaration | undefined
@@ -492,14 +503,17 @@ export const Workspace = (name: string, options: WorkspaceOptions): WorkspaceDec
     throw new TypeError("Workspace requires either the Node runtime/packageManager/nodeModules set or toolchains")
   }
   if (
-    options.runtime !== undefined && !Runtime.isRuntime(options.runtime) && !Runtime.isNodeDeclaration(options.runtime)
+    options.runtime !== undefined && !Runtime.isRuntime(options.runtime) &&
+    !Runtime.isNodeDeclaration(options.runtime) &&
+    !Runtime.isBunDeclaration(options.runtime)
   ) {
     throw new TypeError("Workspace runtime must be an S.Runtime declaration")
   }
   if (
     options.packageManager !== undefined &&
     !PackageManager.isPackageManager(options.packageManager) &&
-    !PackageManager.isYarnDeclaration(options.packageManager)
+    !PackageManager.isYarnDeclaration(options.packageManager) &&
+    !PackageManager.isPnpmDeclaration(options.packageManager)
   ) {
     throw new TypeError("Workspace packageManager must be an S.PackageManager declaration")
   }

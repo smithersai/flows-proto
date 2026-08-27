@@ -36,8 +36,8 @@ export interface IndexedTarget {
 /**
  * One classified dependency edge between labeled targets.
  *
- * `kind` is `data`, `gates`, or `services` when the dependency arrived
- * through that attr, and `deps` for every other attr position.
+ * There are exactly three edge kinds. Targets reached outside explicit
+ * `gates` and `services` attrs are ordinary data dependencies.
  *
  * @category models
  * @since 0.1.0
@@ -45,7 +45,7 @@ export interface IndexedTarget {
 export interface Edge {
   readonly from: string
   readonly to: string
-  readonly kind: "data" | "gates" | "services" | "deps"
+  readonly kind: "data" | "gates" | "services"
 }
 
 /** Collects every target reachable inside one attr value, without user code. */
@@ -484,7 +484,7 @@ export class PackageIndex {
         emitted.add(line)
         found.push({ from: row.label, to, kind })
       }
-      for (const dependency of Target.metadata(row.target).dependencies) emit(dependency, "deps")
+      for (const dependency of Target.metadata(row.target).dependencies) emit(dependency, "data")
     }
     return found.sort((left, right) =>
       byCodeUnit(`${left.from}\0${left.to}\0${left.kind}`, `${right.from}\0${right.to}\0${right.kind}`)

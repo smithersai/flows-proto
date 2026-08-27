@@ -19,10 +19,11 @@
  *
  * @since 0.1.0
  */
+import * as CronTarget from "@smthrs/targets/CronTarget"
 import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as PackageManager from "@smthrs/targets/PackageManager"
-import type * as Runtime from "@smthrs/targets/Runtime"
-import type * as Target from "@smthrs/targets/Target"
+import * as Runtime from "@smthrs/targets/Runtime"
+import * as Target from "@smthrs/targets/Target"
 import type * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
 import * as NodeCrypto from "node:crypto"
 import * as Fs from "node:fs/promises"
@@ -85,6 +86,7 @@ export const isGithubRenderError = (value: unknown): value is GithubRenderError 
  */
 export interface LabelResolver {
   labelOf(target: Target.AnyTarget): string | undefined
+  targets?(): ReadonlyArray<{ readonly label: string; readonly target: Target.AnyTarget }>
 }
 
 /**
@@ -189,7 +191,10 @@ interface Toolchain {
   readonly exec: ReadonlyArray<string>
 }
 
-const runtimeFacts = (runtime: Runtime.Runtime | Runtime.NodeDeclaration): Toolchain["runtime"] => {
+const runtimeFacts = (
+  runtime: Runtime.Runtime | Runtime.NodeDeclaration | Runtime.BunDeclaration
+): Toolchain["runtime"] => {
+  if (Runtime.isBunDeclaration(runtime)) return { kind: "bun", version: runtime.version }
   if ("name" in runtime && runtime.name === "bun") return { kind: "bun", version: runtime.version }
   if ("name" in runtime && runtime.name === "node") return { kind: "node-version", version: runtime.version }
   // The WORKSPACE.ts NodeDeclaration: an exclusive version | manifest union.
@@ -199,11 +204,6 @@ const runtimeFacts = (runtime: Runtime.Runtime | Runtime.NodeDeclaration): Toolc
 }
 
 const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolchain => {
-  if (workspace.runtime === undefined || workspace.packageManager === undefined) {
-    throw new Error(
-      "Github rendering for toolchains-only workspaces is delegated to the language toolchain renderer"
-    )
-  }
   const runtime = runtimeFacts(workspace.runtime)
   const manager = workspace.packageManager
   if (PackageManager.isYarnDeclaration(manager)) {
@@ -218,11 +218,10 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
     }
   }
   if (PackageManager.isPnpmDeclaration(manager)) {
-    // Workspace-era pnpm: the runtime comes from the workspace like yarn's,
-    // and pnpm/action-setup reads the manifest's packageManager field when
-    // the declaration carries no version pin.
     return {
       runtime,
+      // The manifest's own packageManager field pins the version when the
+      // declaration does not restate it, so the action reads it from there.
       managerAction: {
         uses: "pnpm/action-setup@v4",
         ...(manager.version === undefined ? {} : { with: { version: manager.version } })
@@ -374,24 +373,6 @@ const renderWorkflow = (
   lines.push(`name: ${scalar(workflow.name)}`)
   lines.push("on:")
   if (workflow.on.pullRequest === true) lines.push("  pull_request:")
-  if (typeof workflow.on.pullRequest === "object") {
-    lines.push("  pull_request:")
-    if (workflow.on.pullRequest.branches !== undefined) {
-      lines.push("    branches:")
-      for (const branch of workflow.on.pullRequest.branches) lines.push(`      - ${scalar(branch)}`)
-    }
-    if (workflow.on.pullRequest.types !== undefined) {
-      lines.push("    types:")
-      for (const activity of workflow.on.pullRequest.types) lines.push(`      - ${scalar(activity)}`)
-    }
-  }
-  if (workflow.on.issues !== undefined) {
-    lines.push("  issues:")
-    if (workflow.on.issues.types !== undefined) {
-      lines.push("    types:")
-      for (const activity of workflow.on.issues.types) lines.push(`      - ${scalar(activity)}`)
-    }
-  }
   if (workflow.on.push !== undefined) {
     lines.push("  push:")
     lines.push("    branches:")
@@ -415,25 +396,6 @@ const renderWorkflow = (
     for (const activity of workflow.on.release) lines.push(`      - ${scalar(activity)}`)
   }
   if (workflow.on.workflowDispatch === true) lines.push("  workflow_dispatch:")
-  if (typeof workflow.on.workflowDispatch === "object") {
-    lines.push("  workflow_dispatch:")
-    const inputs = Object.entries(workflow.on.workflowDispatch.inputs)
-    if (inputs.length > 0) lines.push("    inputs:")
-    for (const [name, input] of inputs) {
-      lines.push(`      ${name}:`)
-      if (input.description !== undefined) lines.push(`        description: ${scalar(input.description)}`)
-      if (input.required !== undefined) lines.push(`        required: ${input.required ? "true" : "false"}`)
-      if (input.default !== undefined) {
-        const value = typeof input.default === "string" ? scalar(input.default) : String(input.default)
-        lines.push(`        default: ${value}`)
-      }
-      if (input.type !== undefined) lines.push(`        type: ${input.type}`)
-      if (input.options !== undefined) {
-        lines.push("        options:")
-        for (const option of input.options) lines.push(`          - ${scalar(option)}`)
-      }
-    }
-  }
   if (workflow.concurrency !== undefined) {
     lines.push("concurrency:")
     lines.push(`  group: ${scalar(workflow.concurrency.group)}`)
@@ -450,14 +412,6 @@ const renderWorkflow = (
       lines.push(`  cancel-in-progress: \${{ github.event_name == '${cancel}' }}`)
     }
   }
-  if (workflow.permissions !== undefined) {
-    lines.push("permissions:")
-    lines.push(...mapping(workflow.permissions, "  "))
-  }
-  if (workflow.env !== undefined) {
-    lines.push("env:")
-    lines.push(...mapping(workflow.env, "  "))
-  }
   lines.push("jobs:")
   const seen = new Set<string>()
   for (const runLabel of runLabels) {
@@ -470,10 +424,7 @@ const renderWorkflow = (
     }
     seen.add(jobId)
     lines.push(`  ${jobId}:`)
-    if (workflow.jobName !== undefined) lines.push(`    name: ${scalar(workflow.jobName)}`)
-    if (workflow.condition !== undefined) lines.push(`    if: ${scalar(workflow.condition)}`)
-    lines.push(`    runs-on: ${scalar(workflow.runsOn ?? "ubuntu-latest")}`)
-    if (workflow.environment !== undefined) lines.push(`    environment: ${scalar(workflow.environment)}`)
+    lines.push("    runs-on: ubuntu-latest")
     lines.push("    steps:")
     lines.push("      - uses: actions/checkout@v4")
     if (workflow.affected === true) {
@@ -491,41 +442,6 @@ const renderWorkflow = (
     const command = [...toolchain.exec, `'${runLabel}'`].join(" ") +
       (workflow.affected === true ? affectedSuffix : "")
     lines.push(`      - run: ${scalar(command)}`)
-  }
-  if (workflow.steps !== undefined) {
-    const jobId = jobIdOf(`//:${workflow.name}`)
-    if (seen.has(jobId)) {
-      throw new GithubRenderError(
-        "duplicate_job_id",
-        `custom steps for workflow ${workflow.name} collide with ${jobId}`
-      )
-    }
-    lines.push(`  ${jobId}:`)
-    if (workflow.jobName !== undefined) lines.push(`    name: ${scalar(workflow.jobName)}`)
-    if (workflow.condition !== undefined) lines.push(`    if: ${scalar(workflow.condition)}`)
-    lines.push(`    runs-on: ${scalar(workflow.runsOn ?? "ubuntu-latest")}`)
-    if (workflow.environment !== undefined) lines.push(`    environment: ${scalar(workflow.environment)}`)
-    lines.push("    steps:")
-    for (const step of workflow.steps) {
-      if (step.name !== undefined) lines.push(`      - name: ${scalar(step.name)}`)
-      else if ("uses" in step) lines.push(`      - uses: ${scalar(step.uses)}`)
-      else lines.push(`      - run: ${scalar(step.run)}`)
-      const propertyIndent = step.name === undefined ? "        " : "        "
-      if (step.name !== undefined) {
-        if ("uses" in step) lines.push(`${propertyIndent}uses: ${scalar(step.uses)}`)
-        else lines.push(`${propertyIndent}run: ${scalar(step.run)}`)
-      }
-      if (step.id !== undefined) lines.push(`${propertyIndent}id: ${scalar(step.id)}`)
-      if (step.if !== undefined) lines.push(`${propertyIndent}if: ${scalar(step.if)}`)
-      if ("shell" in step && step.shell !== undefined) lines.push(`${propertyIndent}shell: ${scalar(step.shell)}`)
-      if ("workingDirectory" in step && step.workingDirectory !== undefined) {
-        lines.push(`${propertyIndent}working-directory: ${scalar(step.workingDirectory)}`)
-      }
-      if ("with" in step && step.with !== undefined) {
-        lines.push(`${propertyIndent}with:`, ...mapping(step.with, `${propertyIndent}  `))
-      }
-      if (step.env !== undefined) lines.push(`${propertyIndent}env:`, ...mapping(step.env, `${propertyIndent}  `))
-    }
   }
   return `${lines.join("\n")}\n`
 }
@@ -564,6 +480,9 @@ export const render = (options: {
   }
   const attrs = GithubTarget.ciGenAttrsOf(options.ciGen)
   const toolchain = toolchainOf(options.workspace)
+  const workflowDirectory = (attrs.changes ?? [])
+    .map((change) => change.replace(/\/\*\*$/, ""))
+    .find((change) => change === "workflows" || change.endsWith("/workflows")) ?? "workflows"
   const files: Array<RenderedFile> = []
   const names = new Set<string>()
   let setupTarget: Target.AnyTarget | undefined
@@ -620,8 +539,43 @@ export const render = (options: {
       return runLabel
     })
     files.push({
-      path: `workflows/${workflow.name}.yml`,
+      path: `${workflowDirectory}/${workflow.name}.yml`,
       content: renderWorkflow(label, options.packageDir, workflow, runLabels, setup, toolchain)
+    })
+  }
+  // Cron is an inert package-level trigger declaration. A compact or expanded
+  // CI generator in the same graph projects every labeled Cron into a normal
+  // GitHub schedule workflow; no second scheduler or executor path exists.
+  for (const row of options.resolve.targets?.() ?? []) {
+    if (Target.metadata(row.target).target !== "Cron") continue
+    const cron = CronTarget.attrsOf(row.target)
+    const key = row.label.slice(row.label.lastIndexOf(":") + 1)
+    const name = `cron-${key}`
+    if (names.has(name)) {
+      throw new GithubRenderError("duplicate_workflow_name", `Cron ${row.label} collides with workflow ${name}`)
+    }
+    names.add(name)
+    const run = [...(cron.refresh ?? []), ...cron.run]
+    const runLabels = run.map((target) => {
+      const runLabel = options.resolve.labelOf(target)
+      if (runLabel === undefined) {
+        throw new GithubRenderError(
+          "unlabeled_run_target",
+          `a run entry of Cron ${row.label} has no label; list it in a Package map`
+        )
+      }
+      return runLabel
+    })
+    files.push({
+      path: `${workflowDirectory}/${name}.yml`,
+      content: renderWorkflow(
+        label,
+        options.packageDir,
+        GithubTarget.WorkflowAttrs.make({ name, on: { schedule: [cron.schedule] }, run }),
+        runLabels,
+        undefined,
+        toolchain
+      )
     })
   }
   if (setupTarget !== undefined) {

@@ -189,7 +189,7 @@ export interface AgentSession {
  */
 export interface SessionFactory {
   readonly open: (
-    ref: Reference.AgentRef | undefined,
+    ref: Reference.AgentSelection | undefined,
     mcp?: ReadonlyArray<Reference.McpHttp>
   ) => Effect.Effect<AgentSession, AgentTarget.AgentSessionError>
 }
@@ -219,12 +219,14 @@ export interface ConcreteAgent {
  */
 export const resolveAgents = (
   agents: AgentTarget.AgentsDeclaration | undefined,
-  ref: Reference.AgentRef | undefined
+  ref: Reference.AgentSelection | undefined
 ): ReadonlyArray<ConcreteAgent> => {
+  if (ref?._tag === "AgentClaudeCode") return [{ name: `inline:${ref.model}`, engine: "claude", model: ref.model }]
+  if (ref?._tag === "AgentCodex") return [{ name: `inline:${ref.model}`, engine: "codex", model: ref.model }]
   if (agents === undefined) {
     throw new Error("the workspace declares no S.Agents; agent targets cannot resolve a session")
   }
-  const name = ref?.name ?? "default"
+  const name = ref?._tag === "AgentRef" ? ref.name : "default"
   const output: Array<ConcreteAgent> = []
   const seen = new Set<string>()
   const visit = (member: string): void => {

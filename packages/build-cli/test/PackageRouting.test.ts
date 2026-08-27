@@ -536,7 +536,7 @@ export const Package = S.Package({ targets: { top, leaf } })
     const index = await openIndex(root)
     const edges = index.edges(index.resolve("//:top"))
     expect(edges).toContainEqual({ from: "//:top", to: "//:leaf", kind: "data" })
-    expect(edges.some((edge) => edge.to === "//:leaf" && edge.kind === "deps")).toBe(false)
+    expect(edges.filter((edge) => edge.to === "//:leaf").map((edge) => edge.kind)).not.toContain("deps")
   })
 })
 

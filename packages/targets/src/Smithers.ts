@@ -18,8 +18,11 @@
  * @since 0.1.0
  */
 import * as CargoModule from "./Cargo.ts"
+import * as ChangesetsTargetModule from "./ChangesetsTarget.ts"
 import * as CiToolchainModule from "./CiToolchain.ts"
 import { Mise as MiseSurface } from "./Mise.ts"
+import * as NodeArtifactModule from "./NodeArtifact.ts"
+import * as NpmTargetModule from "./NpmTarget.ts"
 import * as PackageManagerModule from "./PackageManager.ts"
 import * as RuntimeModule from "./Runtime.ts"
 import * as RustToolchainModule from "./RustToolchain.ts"
@@ -86,6 +89,10 @@ export { Package } from "./Package.ts"
 export { gitCommit, Mcp, NodeModule, symlink } from "./Reference.ts"
 /** @category targets @since 0.1.0 */
 export { Alias, Files, Generate, ImportClosure, Materialize, Suite, Test } from "./Compose.ts"
+/** @category targets @since 0.1.0 */
+export { Copy, Literal, Overlay } from "./NodeArtifact.ts"
+/** @category targets @since 0.1.0 */
+export { Cron } from "./CronTarget.ts"
 /** @category constructors @since 0.1.0 */
 export { Agents } from "./AgentTarget.ts"
 /** @category constructors @since 0.1.0 */
@@ -186,7 +193,7 @@ export * as GithubYaml from "./GithubYaml.ts"
 /** @category parsing @since 0.1.0 */
 export * as GithubWorkflow from "./GithubWorkflow.ts"
 /** @category targets @since 0.1.0 */
-export { Changesets } from "./Changesets.ts"
+export { Changesets as ChangesetsLegacy } from "./Changesets.ts"
 /** @category targets @since 0.1.0 */
 export { NpmPublish } from "./NpmPublish.ts"
 /** @category targets @since 0.1.0 */
@@ -439,5 +446,37 @@ export * as Bundler from "./BundlerTarget.ts"
  * @since 0.1.0
  */
 export const Npm = {
-  NodeModules: WorkspaceDeclarationModule.NodeModules
+  NodeModules: WorkspaceDeclarationModule.NodeModules,
+  Pack: NpmTargetModule.Pack,
+  Publish: NpmTargetModule.Publish,
+  Published: NpmTargetModule.Published,
+  Downstream: NpmTargetModule.Downstream
 } as const
+
+/** Changesets versioning and publishing targets.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Changesets = ChangesetsTargetModule
+
+/** Markdown-derived target constructors.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Markdown = Object.freeze({ CodeBlocks: NodeArtifactModule.CodeBlocks })
+
+/** API-surface checks.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Api = Object.freeze({ Compat: NodeArtifactModule.Compat })
+
+/** Artifact-size checks.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Size = Object.freeze({ Budgets: NodeArtifactModule.Budgets })

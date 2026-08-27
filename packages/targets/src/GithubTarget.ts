@@ -12,6 +12,8 @@
  */
 import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
+import * as Input from "./Input.ts"
+import * as Reference from "./Reference.ts"
 import * as Secret from "./Secret.ts"
 import * as Target from "./Target.ts"
 
@@ -264,6 +266,124 @@ const prDefinition = Target.make("Github.Pr", {
  * @since 0.1.0
  */
 export const Pr = (attrs: (typeof PrAttrs)["~type.make.in"]): Target.AnyTarget => prDefinition(attrs)
+
+/** Attrs for publishing a generated site through GitHub Pages.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const PagesAttrs = Schema.Struct({
+  site: Target.Target,
+  secrets: Schema.optional(Attr.Secrets),
+  sandbox: Schema.optional(Attr.Sandbox),
+  approval: Schema.optional(Attr.Approval)
+})
+
+const pagesDefinition = Target.make("Github.Pages", {
+  attrs: PagesAttrs,
+  kinds: ["run"],
+  implementation: () => Target.notImplemented("Github.Pages")
+})
+
+/** Publishes a declared site to GitHub Pages.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Pages = (attrs: (typeof PagesAttrs)["~type.make.in"]): Target.AnyTarget => pagesDefinition(attrs)
+
+/** Attrs for creating one GitHub release.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const ReleaseAttrs = Schema.Struct({
+  manifest: Input.File,
+  notes: Schema.Union([Schema.NonEmptyString, Reference.AgentSelection]),
+  data: Schema.optional(Attr.Data),
+  gates: Attr.Gates,
+  secrets: Schema.optional(Attr.Secrets),
+  sandbox: Schema.optional(Attr.Sandbox),
+  approval: Schema.optional(Attr.Approval)
+})
+
+const releaseDefinition = Target.make("Github.Release", {
+  attrs: ReleaseAttrs,
+  kinds: ["run"],
+  implementation: () => Target.notImplemented("Github.Release")
+})
+
+/** Creates a GitHub release for the version in a manifest.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Release = (attrs: (typeof ReleaseAttrs)["~type.make.in"]): Target.AnyTarget => releaseDefinition(attrs)
+
+/** Trigger syntax accepted by compact {@link Ci}.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const CompactOn = Schema.Struct({
+  pullRequest: Schema.optional(Schema.Boolean),
+  push: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+  dispatch: Schema.optional(Schema.Boolean)
+})
+
+/** One compact workflow entry.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const CompactWorkflow = Schema.Struct({
+  on: CompactOn,
+  run: Schema.Union([Target.Target, Schema.Array(Target.Target)])
+})
+
+/** Attrs for the compact CI sugar.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const CiAttrs = Schema.Struct({
+  workflows: Schema.Record(Schema.String, CompactWorkflow),
+  changes: Schema.optional(Schema.Array(Schema.NonEmptyString))
+})
+
+// This definition is validation-only. Ci returns the existing CiGen object so
+// rendering, checking, writing, caching, and refusal behavior have one path.
+const compactCiDefinition = Target.make("Github.Ci", {
+  attrs: CiAttrs,
+  kinds: ["run", "lint"],
+  implementation: () => Target.notImplemented("Github.Ci")
+})
+
+/**
+ * Compact map-form sugar for the existing Workflow + CiGen pair.
+ * The returned value is the CiGen target itself, never a wrapper copy.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Ci = (attrs: (typeof CiAttrs)["~type.make.in"]): Target.AnyTarget => {
+  const validated = Target.metadata(compactCiDefinition(attrs)).attrs as (typeof CiAttrs)["Type"]
+  const workflows = Object.entries(validated.workflows).map(([name, declaration]) =>
+    Workflow({
+      name,
+      on: {
+        ...(declaration.on.pullRequest === undefined ? {} : { pullRequest: declaration.on.pullRequest }),
+        ...(declaration.on.push === undefined ? {} : { push: { branches: [...declaration.on.push] } }),
+        ...(declaration.on.dispatch === undefined ? {} : { workflowDispatch: declaration.on.dispatch })
+      },
+      run: Target.isTarget(declaration.run) ? [declaration.run] : [...declaration.run]
+    })
+  )
+  return CiGen({
+    workflows,
+    ...(validated.changes === undefined ? {} : { changes: [...validated.changes] })
+  })
+}
 
 /** Reads validated attrs back out of one target of the named rule. */
 const attrsOf = <A>(target: Target.AnyTarget, rule: string): A => {

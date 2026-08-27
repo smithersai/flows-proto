@@ -221,6 +221,30 @@ export type NodeDeclaration = typeof NodeDeclaration.Type
  */
 export const isNodeDeclaration: (value: unknown) => value is NodeDeclaration = Schema.is(NodeDeclaration)
 
+/** A WORKSPACE/PACKAGE declaration for an exact Bun toolchain version.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const BunDeclaration = Schema.TaggedStruct("BunRuntimeDeclaration", {
+  version: Schema.NonEmptyString,
+  executable: Schema.NonEmptyString
+})
+
+/** One exact-version Bun declaration outside the BUILD-era enumeration.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export type BunDeclaration = typeof BunDeclaration.Type
+
+/** Checks whether a value is an exact-version Bun declaration.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const isBunDeclaration: (value: unknown) => value is BunDeclaration = Schema.is(BunDeclaration)
+
 /**
  * Declares Node as the workspace runtime.
  *
@@ -305,12 +329,18 @@ export const npx = Reference.runtimeNpx
  * @category constructors
  * @since 0.1.0
  */
-export const Bun = (options: Options<BunVersion>): BunRuntime =>
-  BunRuntime.make({
-    name: "bun",
-    version: options.version,
-    executable: executableFor("bun", options.executable)
-  })
+export const Bun = (options: Options<BunVersion>): BunRuntime => {
+  const version = usable(options.version, "runtime version")
+  const executable = executableFor("bun", options.executable)
+  if (version === ">=1.3.0") return BunRuntime.make({ name: "bun", version, executable })
+  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error(`unsupported Bun runtime requirement: ${version}`)
+  }
+  // PACKAGE.ts modules are transpiled rather than typechecked while loading.
+  // Preserve the reviewed BUILD.ts signature while admitting their exact
+  // runtime pins as inert declarations, just as Node does.
+  return BunDeclaration.make({ version, executable }) as never
+}
 
 /**
  * Checks whether a value is a declared runtime.

@@ -334,6 +334,30 @@ export const AgentRef = Schema.TaggedStruct("AgentRef", {
  */
 export type AgentRef = typeof AgentRef.Type
 
+/** Inline agent declarations accepted anywhere an agent selector is used.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const InlineAgent = Schema.Union([
+  Schema.TaggedStruct("AgentClaudeCode", { model: Schema.NonEmptyString }),
+  Schema.TaggedStruct("AgentCodex", { model: Schema.NonEmptyString }),
+  Schema.TaggedStruct("AgentPool", { agents: Schema.Array(Schema.NonEmptyString) })
+])
+
+/** A workspace agent reference or an inline declaration.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const AgentSelection = Schema.Union([AgentRef, InlineAgent])
+/** A workspace agent reference or an inline declaration.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export type AgentSelection = typeof AgentSelection.Type
+
 /**
  * Schema for a flag reference, `S.Flags.<name>`.
  *
