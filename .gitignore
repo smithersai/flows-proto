@@ -86,3 +86,6 @@ packages/*/.smithers/
 # trail under apps/reports/launch-checklist/.
 apps/reports/launch-checklist/*-dry-run/
 .money-scratch/
+
+# Per-run oneshot goal scratch files (ephemeral, never tracked)
+.smithers-*-goal.md
