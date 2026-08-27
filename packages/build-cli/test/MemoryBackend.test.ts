@@ -1,5 +1,6 @@
 import { Smithers as S } from "@smthrs/targets"
 import type * as Target from "@smthrs/targets/Target"
+import * as NodeChildProcess from "node:child_process"
 import * as Fs from "node:fs/promises"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
@@ -125,8 +126,11 @@ describe("pathLocator", () => {
   })
 })
 
+const sha = "1234567890abcdef1234567890abcdef12345678"
+const resolveSource = async (): Promise<string> => sha
+
 describe("resolved backend", () => {
-  it("shells out with the declared source, banks, and tags", async () => {
+  it("writes one memory set per declared bank, keyed from the resolved source ref", async () => {
     const index = await openIndex()
     const [row] = index.resolve("//:retainCommit")
     const workspaceMemory = index.workspace.memory
@@ -137,21 +141,66 @@ describe("resolved backend", () => {
       target: row!.target,
       memory: workspaceMemory,
       locator: { find: async () => "/opt/fake/smithers" },
-      cli
+      cli,
+      resolveSource
     })
+    const record = JSON.stringify({ source: "HEAD", commit: sha, tags: ["commit"] })
     expect(calls).toEqual([{
       binary: "/opt/fake/smithers",
-      args: ["memory", "retain", "--source", "HEAD", "--bank", "repo", "--tag", "commit"],
+      args: ["memory", "set", "repo", `commit:${sha}`, record],
       cwd: forceSpec
     }])
     expect(result).toEqual({
       binary: "/opt/fake/smithers",
-      args: ["memory", "retain", "--source", "HEAD", "--bank", "repo", "--tag", "commit"],
-      stdout: "retained\n"
+      facts: [{
+        namespace: "repo",
+        key: `commit:${sha}`,
+        args: ["memory", "set", "repo", `commit:${sha}`, record],
+        stdout: "retained\n"
+      }]
     })
   })
 
-  it("surfaces a nonzero backend exit as a typed command failure", async () => {
+  it("only ever invokes subcommands the installed CLI ships (captured help fixture)", async () => {
+    const help = await Fs.readFile(
+      NodePath.resolve(import.meta.dirname, "fixtures/smithers-memory-help.txt"),
+      "utf8"
+    )
+    const shipped = MemoryBackend.parseMemoryHelpCommands(help)
+    expect(shipped).toEqual(["get", "list", "rm", "set"])
+    // Every subcommand the backend believes in must be in the captured help.
+    for (const command of MemoryBackend.memoryCliCommands) {
+      expect(shipped).toContain(command)
+    }
+    // And the argv retain actually builds must name a shipped subcommand:
+    // this is the test that fails if retain reverts to `memory retain`.
+    const { calls, cli } = recordingCli()
+    await MemoryBackend.retain({
+      root: forceSpec,
+      target: retainTarget(),
+      memory,
+      locator: { find: async () => "/opt/fake/smithers" },
+      cli,
+      resolveSource
+    })
+    for (const call of calls) {
+      expect(call.args[0]).toBe("memory")
+      expect(shipped).toContain(call.args[1])
+    }
+  })
+
+  it("refuses a subcommand outside the CLI contract as a typed missing capability", () => {
+    expect(() => MemoryBackend.assertMemoryCliCommand("retain")).toThrow(MemoryBackend.MemoryCapabilityMissing)
+    try {
+      MemoryBackend.assertMemoryCliCommand("retain")
+    } catch (cause) {
+      expect(MemoryBackend.isMemoryCapabilityMissing(cause)).toBe(true)
+      expect((cause as Error).message).toContain("retain")
+      expect((cause as Error).message).toContain("get, list, rm, set")
+    }
+  })
+
+  it("surfaces a nonzero backend exit as a typed command failure naming the argv", async () => {
     const attempt = MemoryBackend.retain({
       root: forceSpec,
       target: retainTarget(),
@@ -159,7 +208,8 @@ describe("resolved backend", () => {
       locator: { find: async () => "/opt/fake/smithers" },
       cli: {
         run: async () => ({ exitCode: 3, stdout: "", stderr: "bank not found\n" })
-      }
+      },
+      resolveSource
     })
     await expect(attempt).rejects.toMatchObject({
       name: "MemoryCommandFailed",
@@ -168,22 +218,49 @@ describe("resolved backend", () => {
     })
     const error = await attempt.catch((cause) => cause)
     expect(MemoryBackend.isMemoryCommandFailed(error)).toBe(true)
+    expect((error as Error).message).toContain("memory set repo")
+    expect((error as Error).message).toContain("bank not found")
   })
 
-  it("spawns the resolved binary with no shell through the default runner", async () => {
+  it("includes the argv and stdout in the failure text when stderr is empty", async () => {
+    const attempt = MemoryBackend.retain({
+      root: forceSpec,
+      target: retainTarget(),
+      memory,
+      locator: { find: async () => "/opt/fake/smithers" },
+      cli: {
+        run: async () => ({ exitCode: 4, stdout: "Unknown command: retain\n", stderr: "" })
+      },
+      resolveSource
+    })
+    const error = await attempt.catch((cause) => cause)
+    expect(MemoryBackend.isMemoryCommandFailed(error)).toBe(true)
+    expect((error as Error).message).toContain("exited 4")
+    expect((error as Error).message).toContain(`smithers memory set repo commit:${sha}`)
+    expect((error as Error).message).toContain("Unknown command: retain")
+  })
+
+  it("succeeds against a fake CLI that mirrors the real subcommand names", async () => {
     const root = await temporaryRoot()
     const binary = NodePath.join(root, "smithers")
+    // The fake accepts exactly the shipped surface (get|list|rm|set) and
+    // answers anything else the way smithers 0.33 does: exit 4, no stderr.
     await Fs.writeFile(
       binary,
-      "#!/bin/sh\nif [ \"$1\" = \"memory\" ]; then printf 'ok %s' \"$4\"; exit 0; fi\necho 'bad argv' >&2\nexit 9\n",
+      `#!/bin/sh
+if [ "$1" != "memory" ]; then exit 4; fi
+case "$2" in
+  get|list|rm|set) printf 'ok %s %s' "$3" "$4"; exit 0 ;;
+  *) exit 4 ;;
+esac
+`,
       { encoding: "utf8", mode: 0o755 }
     )
     const cli = MemoryBackend.spawnCli()
-    const good = await cli.run(binary, ["memory", "retain", "--source", "HEAD"], root)
-    expect(good).toEqual({ exitCode: 0, stdout: "ok HEAD", stderr: "" })
-    const bad = await cli.run(binary, ["not-memory"], root)
-    expect(bad.exitCode).toBe(9)
-    expect(bad.stderr).toContain("bad argv")
+    const good = await cli.run(binary, ["memory", "set", "repo", "commit:abc", "{}"], root)
+    expect(good).toEqual({ exitCode: 0, stdout: "ok repo commit:abc", stderr: "" })
+    const absent = await cli.run(binary, ["memory", "retain", "--source", "HEAD"], root)
+    expect(absent).toEqual({ exitCode: 4, stdout: "", stderr: "" })
   })
 
   it("refuses a non-Memory.Retain target before resolving anything", async () => {
@@ -194,5 +271,42 @@ describe("resolved backend", () => {
       memory,
       locator: noCli
     })).rejects.toThrow("expected a Memory.Retain target")
+  })
+
+  it("resolves the declared ref through git in the workspace root by default", async () => {
+    const root = await temporaryRoot()
+    const write = async (relative: string, text: string): Promise<void> => {
+      await Fs.writeFile(NodePath.join(root, relative), text, "utf8")
+    }
+    await write("file.txt", "hello\n")
+    const git = (args: ReadonlyArray<string>): void => {
+      NodeChildProcess.execFileSync("git", ["-C", root, ...args])
+    }
+    git(["init", "-q"])
+    git(["add", "-A"])
+    git(["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-qm", "init"])
+    const head = NodeChildProcess.execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+    const { calls, cli } = recordingCli()
+    await MemoryBackend.retain({
+      root,
+      target: retainTarget(),
+      memory,
+      locator: { find: async () => "/opt/fake/smithers" },
+      cli
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.args[3]).toBe(`commit:${head}`)
+  })
+
+  it("fails readably when the declared ref does not resolve", async () => {
+    const root = await temporaryRoot()
+    // Not a git repository: the default resolver's git call fails.
+    await expect(MemoryBackend.retain({
+      root,
+      target: retainTarget(),
+      memory,
+      locator: { find: async () => "/opt/fake/smithers" },
+      cli: recordingCli().cli
+    })).rejects.toThrow(/cannot resolve HEAD/)
   })
 })

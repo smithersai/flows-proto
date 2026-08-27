@@ -53,7 +53,87 @@ export const isMemoryBackendUnavailable = (value: unknown): value is MemoryBacke
   value instanceof MemoryBackendUnavailable
 
 /**
+ * The subcommands `smithers memory` ships (`smithers memory --help`,
+ * captured in `test/fixtures/smithers-memory-help.txt`). Every argv this
+ * module builds names one of them; asking for anything else is a typed
+ * {@link MemoryCapabilityMissing} refusal, never a blind spawn that exits 4
+ * with no text.
+ *
+ * @category constants
+ * @since 0.1.0
+ */
+export const memoryCliCommands: ReadonlyArray<string> = ["get", "list", "rm", "set"]
+
+/**
+ * Parses the `Commands:` section of `smithers memory --help` into the
+ * subcommand names it lists. The captured-fixture test compares this
+ * against {@link memoryCliCommands}, so a CLI surface drift fails a test
+ * instead of a run.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const parseMemoryHelpCommands = (help: string): ReadonlyArray<string> => {
+  const commands: Array<string> = []
+  let inCommands = false
+  for (const line of help.split("\n")) {
+    if (/^Commands:/.test(line)) {
+      inCommands = true
+      continue
+    }
+    if (inCommands) {
+      const match = line.match(/^ {2}([a-z][a-z-]*)\s/)
+      if (match === null) break
+      commands.push(match[1]!)
+    }
+  }
+  return commands
+}
+
+/**
+ * A required memory operation has no counterpart in the installed CLI.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class MemoryCapabilityMissing extends Error {
+  override readonly name = "MemoryCapabilityMissing"
+  readonly capability: string
+
+  constructor(capability: string) {
+    super(
+      `the smithers CLI has no \`memory ${capability}\` subcommand ` +
+        `(it ships: ${memoryCliCommands.join(", ")}); this capability cannot run on this host`
+    )
+    this.capability = capability
+  }
+}
+
+/**
+ * Checks whether a value is the missing-capability refusal.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
+export const isMemoryCapabilityMissing = (value: unknown): value is MemoryCapabilityMissing =>
+  value instanceof MemoryCapabilityMissing
+
+/**
+ * Asserts one subcommand is in the shipped `smithers memory` surface.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const assertMemoryCliCommand = (subcommand: string): void => {
+  if (!memoryCliCommands.includes(subcommand)) throw new MemoryCapabilityMissing(subcommand)
+}
+
+/**
  * The resolved backend ran and refused the retain.
+ *
+ * The message always names the argv; the body is stderr when the backend
+ * wrote any, else stdout (smithers answers an unknown subcommand with exit
+ * 4 and nothing on stderr), else an explicit "(no output)".
  *
  * @category errors
  * @since 0.1.0
@@ -62,11 +142,24 @@ export class MemoryCommandFailed extends Error {
   override readonly name = "MemoryCommandFailed"
   readonly exitCode: number
   readonly stderr: string
+  readonly stdout: string
+  readonly args: ReadonlyArray<string>
 
-  constructor(exitCode: number, stderr: string) {
-    super(`smithers memory exited ${exitCode}: ${stderr.trim()}`)
+  constructor(exitCode: number, output: {
+    readonly args: ReadonlyArray<string>
+    readonly stdout: string
+    readonly stderr: string
+  }) {
+    const body = output.stderr.trim() !== ""
+      ? output.stderr.trim()
+      : output.stdout.trim() !== ""
+      ? output.stdout.trim()
+      : "(no output)"
+    super(`smithers ${output.args.join(" ")} exited ${exitCode}: ${body}`)
     this.exitCode = exitCode
-    this.stderr = stderr
+    this.stderr = output.stderr
+    this.stdout = output.stdout
+    this.args = output.args
   }
 }
 
@@ -192,26 +285,65 @@ export interface RetainOptions {
   readonly locator?: CliLocator | undefined
   /** @default {@link spawnCli} */
   readonly cli?: MemoryCli | undefined
+  /** Resolves the declared source ref to a commit sha. @default git rev-parse in `root` */
+  readonly resolveSource?: ((root: string, ref: string) => Promise<string>) | undefined
 }
 
 /**
- * The completed retain: the binary that ran and the argv it received.
+ * One written fact: its namespace, key, and the argv that wrote it.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface RetainedFact {
+  readonly namespace: string
+  readonly key: string
+  readonly args: ReadonlyArray<string>
+  readonly stdout: string
+}
+
+/**
+ * The completed retain: the binary that ran and the facts it wrote.
  *
  * @category models
  * @since 0.1.0
  */
 export interface RetainResult {
   readonly binary: string
-  readonly args: ReadonlyArray<string>
-  readonly stdout: string
+  readonly facts: ReadonlyArray<RetainedFact>
 }
 
+/** Resolves one git ref to its commit sha, readably failing otherwise. */
+const gitResolveSource = (root: string, ref: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    NodeChildProcess.execFile(
+      "git",
+      ["rev-parse", "--verify", `${ref}^{commit}`],
+      { cwd: root, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(new Error(`cannot resolve ${ref} to a commit in ${root}: ${stderr.trim() || error.message}`))
+          return
+        }
+        resolve(stdout.trim())
+      }
+    )
+  })
+
 /**
- * Retains the referenced commit in the declared Smithers Cloud bank.
+ * Retains the referenced commit in the declared Smithers Cloud banks.
  *
- * The documented backend surface is the `smithers memory` command family;
- * the exact argv spelling here (`memory retain --source <ref> --bank <bank>
- * --tag <tag>...`) is provisional and owned by this one function.
+ * The backend surface is the installed CLI's real command family
+ * (`smithers memory get|list|rm|set`): a retained fact is one
+ * `memory set <bank> commit:<sha> <record>` per declared bank, where the
+ * sha comes from resolving the declared source ref in the workspace root
+ * and the record is the structured JSON the declaration implies
+ * (`{ source, commit, tags }`). Reading it back is
+ * `smithers memory list <bank>`. The declaration's `init` and `autoInject`
+ * options configure the bank's initialization script and agent-context
+ * injection; neither gates a retain, so they are inert here. Any memory
+ * operation the shipped CLI lacks is a typed
+ * {@link MemoryCapabilityMissing} refusal naming the capability.
  *
  * @category execution
  * @since 0.1.0
@@ -224,6 +356,12 @@ export const retain = async (options: RetainOptions): Promise<RetainResult> => {
       "the WORKSPACE.ts declares no S.Memory.SmithersCloud backend"
     )
   }
+  if (options.memory.bank.length === 0) {
+    throw new MemoryBackendUnavailable(
+      "no_backend_declared",
+      "the S.Memory.SmithersCloud declaration names no bank to retain into"
+    )
+  }
   const locator = options.locator ?? pathLocator()
   const binary = await locator.find()
   if (binary === undefined) {
@@ -232,13 +370,20 @@ export const retain = async (options: RetainOptions): Promise<RetainResult> => {
       "the smithers CLI is not on PATH; install it or remove the memory declaration"
     )
   }
-  const args: Array<string> = ["memory", "retain", "--source", attrs.source.ref]
-  for (const bank of options.memory.bank) args.push("--bank", bank)
-  for (const tag of attrs.tags) args.push("--tag", tag)
+  const resolveSource = options.resolveSource ?? gitResolveSource
+  const sha = await resolveSource(options.root, attrs.source.ref)
+  const key = `commit:${sha}`
+  const record = JSON.stringify({ source: attrs.source.ref, commit: sha, tags: attrs.tags })
   const cli = options.cli ?? spawnCli()
-  const output = await cli.run(binary, args, options.root)
-  if (output.exitCode !== 0) {
-    throw new MemoryCommandFailed(output.exitCode, output.stderr)
+  assertMemoryCliCommand("set")
+  const facts: Array<RetainedFact> = []
+  for (const bank of options.memory.bank) {
+    const args: ReadonlyArray<string> = ["memory", "set", bank, key, record]
+    const output = await cli.run(binary, args, options.root)
+    if (output.exitCode !== 0) {
+      throw new MemoryCommandFailed(output.exitCode, { args, stdout: output.stdout, stderr: output.stderr })
+    }
+    facts.push({ namespace: bank, key, args, stdout: output.stdout })
   }
-  return { binary, args, stdout: output.stdout }
+  return { binary, facts }
 }

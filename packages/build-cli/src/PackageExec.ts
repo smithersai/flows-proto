@@ -3216,12 +3216,18 @@ export const execute = async (
               locator: MemoryBackend.pathLocator(environment),
               cli: MemoryBackend.spawnCli({ timeoutMs: memoryBackendTimeoutMs })
             })
-            log(`${node.label}  retained through ${result.binary} ${result.args.join(" ")}`)
+            for (const fact of result.facts) {
+              log(`${node.label}  retained ${fact.namespace}/${fact.key} through ${result.binary}`)
+            }
             return green("ran")
           } catch (cause) {
-            // Both are typed notices: the target is not green and the
+            // All three are typed notices: the target is not green and the
             // message says what to configure or what the backend answered.
-            if (MemoryBackend.isMemoryBackendUnavailable(cause) || MemoryBackend.isMemoryCommandFailed(cause)) {
+            if (
+              MemoryBackend.isMemoryBackendUnavailable(cause) ||
+              MemoryBackend.isMemoryCommandFailed(cause) ||
+              MemoryBackend.isMemoryCapabilityMissing(cause)
+            ) {
               return fail(cause.message)
             }
             throw cause
