@@ -1819,15 +1819,25 @@ const visit = async (
     case "Memory.Retain":
       lane = { kind: "memory-retain" }
       break
-  "Memory.Retain",
-  "Repo.Target",
-  "Cargo.Fetch",
-  "Cargo.Build",
-  "Cargo.Test",
-  "Cargo.Clippy",
-  "Cargo.Fmt",
-  "Cargo.Doc",
-  "Cargo.AppSet"
+    case "Repo.Target":
+      if (repositoryResolution !== undefined && repositoryState !== undefined) {
+        lane = { kind: "repo-target", resolution: repositoryResolution, git: repositoryState }
+      }
+      break
+    case "Cargo.Fetch":
+    case "Cargo.Build":
+    case "Cargo.Test":
+    case "Cargo.Clippy":
+    case "Cargo.Fmt":
+    case "Cargo.Doc":
+      lane = {
+        kind: "cargo",
+        commands: commands ?? [],
+        outFiles: cargoOutFiles,
+        crates: cargoCrates,
+        binaries: rule === "Cargo.Build" ? Cargo.binaries(attrs) : []
+      }
+      break
     default:
       lane = undefined
   }
