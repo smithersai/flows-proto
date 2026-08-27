@@ -45,7 +45,14 @@ export const TargetsCardBody = ({
   readonly card: Extract<Card, { kind: "targets" }>
   readonly onRunCommand: (name: string, args?: string) => void
 }) => {
-  const { repoId, status, targets, warnings, highlighted } = card.payload
+  const { repoId, repoName, status, targets, warnings, highlighted } = card.payload
+  const workspaces = groupTargetsByWorkspace(targets)
+  /*
+   * The workspace heading only distinguishes something when the repository
+   * has more than one, and the root's own name is the repository — "." is a
+   * path token, not user-facing copy (apps/DESIGN.md §9).
+   */
+  const named = workspaces.length > 1
   return (
     <div className="targets-card">
       {status === "pending" ? <p className="smithers-card-note">Loading targets…</p> : null}
@@ -56,9 +63,15 @@ export const TargetsCardBody = ({
           </ul>
         ) :
         null}
-      {groupTargetsByWorkspace(targets).map((workspace) => (
+      {workspaces.map((workspace) => (
         <section key={workspace.workspace} className="targets-card-workspace" data-workspace={workspace.workspace}>
-          <h3 className="targets-card-workspace-name">{workspace.workspace}</h3>
+          {named ?
+            (
+              <h3 className="targets-card-workspace-name">
+                {workspace.workspace === "." ? repoName : workspace.workspace}
+              </h3>
+            ) :
+            null}
           {workspace.packages.map((group) => (
             <section key={group.package} className="targets-card-package" data-package={group.package}>
               <h4 className="targets-card-package-name">{group.package}</h4>
