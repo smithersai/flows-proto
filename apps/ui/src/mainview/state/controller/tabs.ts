@@ -154,11 +154,13 @@ export const createTabsController = (ctx: ControllerContext): TabsController => 
   }
 
   const endSession = async (tab: TabRow): Promise<void> => {
-    if (!isProcessTab(tab) || tab.exitCode !== undefined) return
+    if (!isProcessTab(tab)) return
+    // An exited session is still listed on the server until deleted, so the
+    // DELETE goes out either way; a 404 for one the server already dropped is fine.
     try {
       await ctx.boundedFetch(`${baseUrl}/api/pty/${encodeURIComponent(tab.sessionId)}`, { method: "DELETE" })
     } catch {
-      // The tab closes either way; a session the server already lost needs no second kill.
+      // The tab closes either way.
     }
   }
 

@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { isAgentTurnFrame } from "smithers-shared/NativeAgent"
 import type { AgentTurnFrame } from "smithers-shared/NativeAgent"
 import { TARGETS_PANEL_MARKER } from "./ChatStub"
+import { createPtyManager } from "./Pty"
 import { defaultDistDir, startLocalServer } from "./server"
 import type { LocalServer } from "./server"
 
@@ -23,6 +24,28 @@ beforeAll(async () => {
     distDir: dist,
     chatStub: true,
     node: { path: "/fake/node", version: "v22.19.0" },
+    home: "/fake/home",
+    harnesses: async () => [
+      {
+        id: "claude",
+        displayName: "Claude Code",
+        binary: "/opt/homebrew/bin/claude",
+        version: "2.1.0",
+        status: "signed-in",
+        account: { email: "will@codeplane.app" },
+        launch: { argv: ["claude"] }
+      }
+    ],
+    pty: (deps) =>
+      createPtyManager({
+        ...deps,
+        // A plain shell with the sandbox off: the seatbelt profile is Sandbox.test.ts's subject.
+        shell: "/bin/sh",
+        home: tmpdir(),
+        sandboxHost: { platform: "linux", disabled: true, log: () => {} },
+        killGraceMs: 300,
+        log: () => {}
+      }),
     log: (line) => logs.push(line),
     openExternal: async (url) => {
       opened.push(url)
@@ -58,6 +81,7 @@ describe("the local origin", () => {
     expect(body.ok).toBe(true)
     expect(body.pid).toBe(process.pid)
     expect(body.node).toEqual({ path: "/fake/node", version: "v22.19.0" })
+    expect(body.home).toBe("/fake/home")
     expect(body.sandbox).toEqual({
       platform: process.platform,
       enforced: process.platform === "darwin" && Bun.env.SMITHERS_SANDBOX !== "off"
@@ -91,26 +115,87 @@ describe("the local origin", () => {
     expect(wrongMethod.status).toBe(405)
   })
 
-  test("lane placeholders: harnesses and repos are empty lists, the pty routes 501", async () => {
-    expect(await (await fetch(`${server.origin}/api/harnesses`)).json()).toEqual({ harnesses: [] })
+  test("GET /api/harnesses answers the detector's table", async () => {
+    const body = (await (await fetch(`${server.origin}/api/harnesses`)).json()) as { harnesses: Array<{ id: string; status: string }> }
+    expect(body.harnesses).toHaveLength(1)
+    expect(body.harnesses[0]).toMatchObject({ id: "claude", status: "signed-in", account: { email: "will@codeplane.app" } })
+  })
+
+  test("both lanes' real routes replaced every placeholder: repos answers its empty state", async () => {
     expect(await (await fetch(`${server.origin}/api/repos`)).json()).toEqual({ repos: [] })
-    for (const [method, path] of [
-      ["GET", "/api/pty"],
-      ["POST", "/api/pty"],
-      ["POST", "/api/pty/abc/resize"],
-      ["DELETE", "/api/pty/abc"]
-    ] as const) {
-      const response = await fetch(`${server.origin}${path}`, { method })
-      expect({ method, path, status: response.status }).toEqual({ method, path, status: 501 })
-      const body = (await response.json()) as { error: { code: string } }
-      expect(body.error.code).toBe("not_implemented")
-    }
   })
 
   test("a lane replaces a placeholder by registering the same route", async () => {
-    server.router.add("GET", "/api/harnesses", () => Response.json({ harnesses: [{ id: "claude" }] }))
-    expect(await (await fetch(`${server.origin}/api/harnesses`)).json()).toEqual({ harnesses: [{ id: "claude" }] })
-    server.router.add("GET", "/api/harnesses", () => Response.json({ harnesses: [] }))
+    server.router.add("GET", "/api/repos", () => Response.json({ repos: [{ id: "force" }] }))
+    expect(await (await fetch(`${server.origin}/api/repos`)).json()).toEqual({ repos: [{ id: "force" }] })
+    server.router.add("GET", "/api/repos", () => Response.json({ repos: [] }))
+  })
+
+  test("the PTY routes open, list, resize, echo over /ws, and delete a session", async () => {
+    const bad = await fetch(`${server.origin}/api/pty`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "terminal" }) })
+    expect(bad.status).toBe(400)
+    const missingHarness = await fetch(`${server.origin}/api/pty`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "harness", cwd: "~", cols: 80, rows: 24 })
+    })
+    expect(missingHarness.status).toBe(400)
+
+    const created = await fetch(`${server.origin}/api/pty`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "terminal", cwd: "~", cols: 80, rows: 24 })
+    })
+    expect(created.status).toBe(201)
+    const { sessionId } = (await created.json()) as { sessionId: string }
+    expect(sessionId).toMatch(/^pty-/)
+    const listed = (await (await fetch(`${server.origin}/api/pty`)).json()) as { sessions: Array<Record<string, unknown>> }
+    expect(listed.sessions.map((session) => session.sessionId)).toEqual([sessionId])
+    expect(listed.sessions[0]).toMatchObject({ kind: "terminal", alive: true, cwd: tmpdir() })
+
+    const socket = new WebSocket(`${server.origin.replace("http", "ws")}/ws`)
+    await new Promise<void>((resolve, reject) => {
+      socket.onopen = () => resolve()
+      socket.onerror = () => reject(new Error("ws failed"))
+    })
+    const output: Array<string> = []
+    let exit: unknown
+    socket.onmessage = (event) => {
+      const frame = JSON.parse(String(event.data)) as { type: string; data?: string }
+      if (frame.type === "pty.output") output.push(frame.data ?? "")
+      if (frame.type === "pty.exit") exit = frame
+    }
+    socket.send(JSON.stringify({ type: "subscribe", topic: `pty:${sessionId}` }))
+    socket.send(JSON.stringify({ type: "pty.input", sessionId, data: "echo hi-from-pty\n" }))
+    const deadline = Date.now() + 5000
+    while (!/hi-from-pty\r?\n/.test(output.join("").replace(/echo hi-from-pty/g, ""))) {
+      if (Date.now() > deadline) throw new Error(`no echo: ${JSON.stringify(output)}`)
+      await Bun.sleep(25)
+    }
+
+    const resized = await fetch(`${server.origin}/api/pty/${sessionId}/resize`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cols: 120, rows: 40 })
+    })
+    expect(await resized.json()).toEqual({ ok: true })
+    expect((await fetch(`${server.origin}/api/pty/nope/resize`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cols: 1, rows: 1 })
+    })).status).toBe(404)
+
+    const deleted = await fetch(`${server.origin}/api/pty/${sessionId}`, { method: "DELETE" })
+    expect(await deleted.json()).toEqual({ ok: true })
+    const exitDeadline = Date.now() + 5000
+    while (exit === undefined) {
+      if (Date.now() > exitDeadline) throw new Error("no exit frame")
+      await Bun.sleep(25)
+    }
+    expect(exit).toMatchObject({ type: "pty.exit", sessionId })
+    expect(((await (await fetch(`${server.origin}/api/pty`)).json()) as { sessions: Array<unknown> }).sessions).toEqual([])
+    expect((await fetch(`${server.origin}/api/pty/${sessionId}`, { method: "DELETE" })).status).toBe(404)
+    socket.close()
   })
 
   test("the stub identity seam answers signed-out and nothing else", async () => {
@@ -244,19 +329,27 @@ describe("/ws", () => {
 
   test("a registered message handler receives client frames by type", async () => {
     const received: Array<unknown> = []
-    const off = server.onMessage("pty.input", (message, socket) => {
+    const off = server.onMessage("probe.ping", (message, socket) => {
       received.push(message)
       socket.send(JSON.stringify({ type: "echo", data: message.data }))
     })
     const socket = await connect()
     const reply = nextMessage(socket)
-    socket.send(JSON.stringify({ type: "pty.input", sessionId: "abc", data: "ls\n" }))
+    socket.send(JSON.stringify({ type: "probe.ping", data: "ls\n" }))
     expect(await reply).toEqual({ type: "echo", data: "ls\n" })
-    expect(received).toEqual([{ type: "pty.input", sessionId: "abc", data: "ls\n" }])
+    expect(received).toEqual([{ type: "probe.ping", data: "ls\n" }])
     off()
     const error = nextMessage(socket)
-    socket.send(JSON.stringify({ type: "pty.input", sessionId: "abc", data: "x" }))
-    expect(await error).toEqual({ type: "error", message: "No handler for pty.input." })
+    socket.send(JSON.stringify({ type: "probe.ping", data: "x" }))
+    expect(await error).toEqual({ type: "error", message: "No handler for probe.ping." })
+    socket.close()
+  })
+
+  test("pty.input for an unknown session answers an error frame", async () => {
+    const socket = await connect()
+    const error = nextMessage(socket)
+    socket.send(JSON.stringify({ type: "pty.input", sessionId: "nope", data: "x" }))
+    expect(await error).toEqual({ type: "error", message: "No live PTY session nope." })
     socket.close()
   })
 })

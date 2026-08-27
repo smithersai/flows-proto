@@ -1852,6 +1852,7 @@ export const createAppStore = async (
          * delete-insert"), so a wholesale clear-then-insert threw on every
          * reload whose list overlapped the last one.
          */
+
         case "harnesses.loaded": {
           const next = new Set<string>(transition.harnesses.map((harness) => harness.id))
           const stale = [...collections.harnesses.keys()].filter((id) => !next.has(id))
