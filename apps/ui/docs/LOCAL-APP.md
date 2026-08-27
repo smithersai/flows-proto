@@ -65,7 +65,8 @@ Electrobun 2.0.1 (build.mainProcess: "bun", Bun 1.4.0)
   locally and the rest 501. Identity never gates the chat: the signed-out
   refusal in `turns.ts`, the signed-out opening message, the sign-in pill
   and the gated composer placeholder are gone; sign-in is the
-  `chrome-sign-in` button in the corner chrome.
+  `chrome-sign-in` button in the chrome bar (`tabs/ChromeBar.tsx`), rendered
+  only while the session is not signed in.
 - The chain runtime (`createChainRuntime`) is not bound in the local app;
   `createAgentSeat(createLocalAgent())` is the whole seat.
 - Electrobun 2.x: the SDK lives in `.hutch/devkit` (projected by
@@ -75,8 +76,8 @@ Electrobun 2.0.1 (build.mainProcess: "bun", Bun 1.4.0)
   ignored. `scripts/ensure-devkit.mjs` projects the devkit when it is missing
   or its version differs from the installed `electrobun`: it runs as
   `postinstall` (soft: warns without failing `pnpm install`) and ahead of
-  `typecheck`, `check`, `start`, `build`, `build:canary`, the T1 web server
-  and the T2 launcher, so `pnpm install && pnpm --filter smithers-ui typecheck`
+  `typecheck`, `check`, `start`, `build`, the T1 web server and the T2
+  launcher, so `pnpm install && pnpm --filter smithers-ui typecheck`
   works in a fresh clone. The first projection on a machine downloads Hutch
   and the Electrobun release into `~/.hutch` (network required); `pnpm run
   devkit` runs it by hand.
@@ -88,7 +89,7 @@ All bodies and responses are JSON unless noted. Errors:
 
 | Method | Path | Request | Response |
 | --- | --- | --- | --- |
-| GET | `/api/health` | | `{ ok, version, pid, node: { path, version } \| null, sandbox: { platform, enforced } }` |
+| GET | `/api/health` | | `{ ok, version, pid, home: string, node: { path, version } \| null, sandbox: { platform, enforced } }` |
 | POST | `/api/chat/turn` | `StartAgentTurnRequest` (`apps/shared/src/NativeAgent.ts`) | NDJSON stream of `AgentTurnFrame` |
 | POST | `/api/chat/cancel` | `{ runId }` | `{ ok }` |
 | GET | `/api/harnesses` | | `{ harnesses: Harness[] }` |
@@ -98,7 +99,7 @@ All bodies and responses are JSON unless noted. Errors:
 | POST | `/api/targets/query` | `{ repoId }` | `{ targets: Target[], warnings: string[], durationMs }` |
 | POST | `/api/targets/run` | `{ repoId, label }` | `{ runId }` then frames on WS topic `target-run:<runId>` |
 | POST | `/api/targets/cancel` | `{ runId }` | `{ ok }` |
-| POST | `/api/pty` | `{ kind: "terminal" \| "harness", cwd, cols, rows, harnessId? }` | `{ sessionId }` |
+| POST | `/api/pty` | `{ kind: "terminal" \| "harness", cwd, cols, rows, harnessId? }` (`cwd: "~"` means `$HOME`; the server expands it) | `{ sessionId }` |
 | POST | `/api/pty/:id/resize` | `{ cols, rows }` | `{ ok }` |
 | DELETE | `/api/pty/:id` | | `{ ok }` |
 | GET | `/api/pty` | | `{ sessions: PtySession[] }` |
@@ -231,15 +232,19 @@ type Tab =
 - `+` opens a menu: `Terminal`, then one row per harness with
   `status !== "unavailable"` showing `displayName` and `account.email` (or
   `label`), then disabled rows for unavailable harnesses with their status.
-- cwd for new terminal and harness tabs = the active repo path, else `$HOME`.
+- cwd for new terminal and harness tabs = the active repo path, else `"~"`,
+  which the server expands to `$HOME` (`/api/health` reports `home`).
 - Every tab body stays mounted; inactive tabs are `hidden` (no unmount) so
   terminal scrollback survives switching.
 - Closing a terminal or harness tab with a live process asks for
   confirmation, then `DELETE /api/pty/:id`. Closing a card tab keeps the card.
 - Keyboard: Cmd+T new terminal, Cmd+W close active non-main tab,
   Cmd+1..9 select tab by position.
-- Terminal component: `@xterm/xterm` + `@xterm/addon-fit`, attached to
-  `pty:<sessionId>` over `/ws`.
+- Terminal component: `@smthrs/ui/adapters/terminal` (the shipped xterm
+  adapter: `@xterm/xterm` + `@xterm/addon-fit`, which owns the mount and the
+  fit addon), not a hand-rolled mount. `tabs/TerminalView.tsx` hands it the
+  output stream, the keystrokes, and the geometry; it attaches to
+  `pty:<sessionId>` over `/ws` through `state/PtyClient.ts`.
 
 `data-testid` contract (Playwright depends on these):
 
@@ -346,3 +351,35 @@ Never append `--dangerously-skip-permissions` or `--yolo`.
 | L2 Tabs UI | `local-app/tabs-ui` | `tabs/` store and components, strip, `+` menu, terminal component over a mock WS, `card` tabs, keyboard, `data-testid` contract | `tabs.spec.ts` green against a mock `/api/harnesses` and mock `/ws` (Playwright route interception) |
 | L3 Repo -> Targets -> HTML | `local-app/repo-targets` | `/api/repo/*`, detection, `Targets.ts`, `targets`/`html`/`target-run`/`repo` cards, auto-load flow, run streaming | `repo-targets.spec.ts`: open force, >= 82 targets, html card visible, run `//:detectSecrets` shows output |
 | L4 Harness + Terminal | `local-app/harness-terminal` | `Harnesses.ts`, `/api/harnesses`, `Pty.ts`, `/api/pty*`, WS pty topics, wire L2's components to the real server | `terminal.spec.ts` (`echo hi` echoes), `harness.spec.ts` (menu lists Claude Code with the signed-in email; opening the tab shows the CLI prompt) |
+
+## Integration log
+
+Wave 1 (2026-08-26), on `local-app/base`:
+
+- `b601f14ba` merge of `local-app/targets`.
+- `1abcae998` merge of `local-app/foundation` (clean).
+- `24f337536` merge of `local-app/tabs-ui`. Conflicts: `apps/ui/package.json`
+  (foundation's scripts; `checklist` and `build:canary` dropped with the web
+  era, root `checklist` forwarder removed), `playwright.config.ts`
+  (foundation's, one `testDir` for `boot`, `chat`, `chat.real`, `tabs`),
+  `FlowStamp.ts` (`composeRefs` + `stampTestIds`), `App.tsx` (both test-id
+  hints; the corner Sign in button removed because the chrome bar renders
+  `chrome-sign-in`), `ControllerBoot.client.ts` (`loadRepos` kept, `bindChain`
+  stays out), `e2e/README.md` (replaced by a pointer to the Playwright tiers),
+  `.github/workflows/apps-deploy.yml` (UI gate is `test:e2e`). `pnpm-lock.yaml`
+  is foundation's; `pnpm install` changed nothing.
+
+Acceptance on `24f337536`:
+
+| Command | Result |
+| --- | --- |
+| `pnpm install --frozen-lockfile && git status --short` | `Already up to date`, clean tree |
+| `pnpm --filter smithers-ui typecheck` | exit 0 |
+| `bun test src` (apps/ui) | 815 pass, 0 fail, 92 files |
+| `pnpm --filter smithers-ui test:e2e` | 10 passed, 1 skipped (`chat.real.spec.ts`, stub on); `tabs.spec.ts` green under the real webServer |
+| `pnpm --filter smithers-ui test:e2e:native` | 1 passed (CEF window over CDP, origin `http://127.0.0.1:47313`) |
+| `smthrs query '//...' --format json` on `/Users/williamcory/artsy/force` | `targets: 82` |
+
+Open for wave 2: `/api/health.home` and the `cwd: "~"` expansion are contract
+only until `local-app/harness-terminal` lands `/api/pty`; `tabs.spec.ts`
+mocks both.
