@@ -12,6 +12,13 @@ export default defineConfig({
     { text: "Data structures", link: "/data-structures" },
     { text: "Package structure", link: "/package-structure" },
     {
+      text: "Examples",
+      items: [
+        { text: "Real-world workflows", link: "/examples/real-world" },
+        { text: "Runnable example catalog", link: "/examples" }
+      ]
+    },
+    {
       text: "Public API",
       items: [
         { text: "@smthrs/flows", link: "/api/flows" },
@@ -48,7 +55,6 @@ export default defineConfig({
     { text: "Disaster recovery", link: "/disaster-recovery" },
     { text: "SQLite operating envelope", link: "/sqlite-operating-envelope" },
     { text: "Telemetry", link: "/telemetry" },
-    { text: "Examples", link: "/examples" },
     { text: "Design decisions", link: "/design-decisions" },
     { text: "Comparisons", link: "/comparisons" },
     { text: "External", link: "/external" },
