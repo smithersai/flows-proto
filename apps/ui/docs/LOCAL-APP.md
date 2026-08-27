@@ -149,6 +149,7 @@ client -> server
   { type: "subscribe",   topic: string }          // "pty:<sessionId>" | "target-run:<runId>"
   { type: "unsubscribe", topic: string }
   { type: "pty.input",   sessionId, data: string } // UTF-8 text typed by the user
+  { type: "target-run.attach", runId }             // a subscriber is listening: the child starts now (else after 1s)
 server -> client
   { type: "pty.output",  sessionId, data: string } // UTF-8 chunk
   { type: "pty.exit",    sessionId, code: number | null }
@@ -199,13 +200,25 @@ and `{ smithers: "open", label }`. The card listens, dispatches
 `/api/targets/run`, and appends a `target-run` card. The iframe is
 `<iframe sandbox="allow-scripts" srcdoc=...>`, never same-origin.
 
+L3 implementation notes (2026-08-26): the prompt builder, its parser (the
+stub reads the target list back out of the instructions), the reply parser
+and `renderTargetsPanel` live in `apps/shared/src/TargetsPanel.ts`. The
+window `message` listener is installed by the controller
+(`state/controller/targets.ts`), matches `event.source` to the frame carrying
+`data-html-card="<cardId>"`, and runs the hidden user-only flows
+`target.run <repoId> <label>` / `target.open <repoId> <label>`; `open` sets
+`targets.payload.highlighted` and scrolls the `[data-target-row]` into view.
+The panel turn is a plain `POST /api/chat/turn` (no transcript turn, no
+deadline). `SMITHERS_BUILD_CLI` overrides the loader path for the server
+(`startLocalServer({ buildCli })` in tests).
+
 Ruling: this overrides `apps/DESIGN.md` section 14 ("no generative HTML in
 v1"); will asked for agent-authored HTML on 2026-08-26.
 
 ## Cards (`apps/shared/src/Cards.ts` additions)
 
 ```ts
-{ kind: "targets",    repoId, repoName, status: "pending" | "done" | "failed", targets: Target[], warnings: string[] }
+{ kind: "targets",    repoId, repoName, status: "pending" | "done" | "failed", targets: Target[], warnings: string[], highlighted?: string }
 { kind: "html",       title, html, source: "agent" | "template", repoId }
 { kind: "target-run", runId, repoId, label, status: "running" | "done" | "failed", exitCode: number | null, output: string }
 { kind: "repo",       repo: Repo }
