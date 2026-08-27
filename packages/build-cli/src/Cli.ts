@@ -18,6 +18,7 @@ import * as PackageIndex from "./PackageIndex.ts"
 import * as PackageLoader from "./PackageLoader.ts"
 import * as Planner from "./Planner.ts"
 import * as Query from "./Query.ts"
+import * as RepoResolution from "./RepoResolution.ts"
 import {
   ensureGitignored,
   resolveConfig,
@@ -164,25 +165,26 @@ const openPackageIndex = async (
   runtime.signal?.throwIfAborted()
   const root = await PackageDiscovery.findWorkspaceRoot(NodePath.resolve(flags.workspace))
   if (root === undefined) return undefined
-  // The flag wins; otherwise the WORKSPACE-declared cache directory must
-  // reach the prune set before the package walk, or a workspace with a
-  // non-default cache directory would index its own cache artifacts. The
-  // probe evaluates only WORKSPACE.ts and is forgiving — on failure the
-  // full load reports the real diagnostic under the default prune.
-  let cacheDirectory = flags.cacheDir === undefined ? undefined : Config.normalizeCacheDirectory(flags.cacheDir)
-  if (cacheDirectory === undefined) {
-    const workspaceFile = await PackageDiscovery.workspaceFileOf(root)
-    if (workspaceFile !== undefined) {
-      cacheDirectory = await PackageLoader.probeCacheDirectory(root, workspaceFile)
-    }
-  }
-  const discovery = await PackageDiscovery.discover(root, { cacheDirectory, signal: runtime.signal })
+  // Evaluate the one root declaration before walking: both its cache and its
+  // opaque child repositories are discovery boundaries. The full graph load
+  // imports the same module instance together with the admitted Packages.
+  const workspaceFile = await PackageDiscovery.workspaceFileOf(root)
+  if (workspaceFile === undefined) return undefined
+  const workspace = await PackageLoader.loadWorkspaceDeclaration(root, workspaceFile)
+  const cacheDirectory = flags.cacheDir === undefined
+    ? workspace.cache.directory
+    : Config.normalizeCacheDirectory(flags.cacheDir)
+  const discovery = await PackageDiscovery.discover(root, {
+    cacheDirectory,
+    repositories: workspace.repos,
+    signal: runtime.signal
+  })
   const loaded = await PackageLoader.load(discovery)
   return PackageIndex.PackageIndex.make(loaded, process.cwd())
 }
 
 /** Package-mode `query`: the same listing shape BUILD mode prints. */
-const packageQuery = (index: PackageIndex.PackageIndex, expression: string): unknown => {
+const packageQuery = async (index: PackageIndex.PackageIndex, expression: string): Promise<unknown> => {
   const dependencyMatch = expression.match(/^deps\((.+)\)$/)
   if (dependencyMatch?.[1] !== undefined) {
     const rows = index.resolve(dependencyMatch[1].trim())
@@ -206,32 +208,62 @@ const packageQuery = (index: PackageIndex.PackageIndex, expression: string): unk
       edges: index.edges(rows)
     }
   }
+  const cache: RepoResolution.ResolutionCache = new Map()
+  const rows = index.resolve(expression)
   return {
     query: expression,
-    targets: index.resolve(expression).map((row) => ({
-      label: row.label,
-      target: Target.metadata(row.target).target,
-      kinds: Target.metadata(row.target).kinds
+    targets: await Promise.all(rows.map(async (row) => {
+      const metadata = Target.metadata(row.target)
+      const resolution = metadata.target === "Repo.Target"
+        ? await RepoResolution.resolve(index, row.target, cache)
+        : undefined
+      return {
+        label: row.label,
+        target: metadata.target,
+        kinds: await RepoResolution.effectiveKinds(index, row.target, cache),
+        ...(resolution?.refusal === undefined ? {} : { refusal: resolution.refusal })
+      }
     }))
   }
 }
 
 /** Package-mode `graph`: labeled nodes plus classified edges. */
-const packageGraph = (index: PackageIndex.PackageIndex, pattern: string): unknown => {
+const packageGraph = async (index: PackageIndex.PackageIndex, pattern: string): Promise<unknown> => {
   const rows = index.resolve(pattern)
-  const edges = index.edges(rows)
+  const localEdges = index.edges(rows)
+  const cache: RepoResolution.ResolutionCache = new Map()
+  const resolutions = await Promise.all(rows.map(async (row) =>
+    Target.metadata(row.target).target === "Repo.Target"
+      ? { row, resolution: await RepoResolution.resolve(index, row.target, cache) }
+      : undefined
+  ))
+  const repositoryEdges = resolutions
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+    .map(({ resolution, row }) => ({ from: row.label, to: resolution.externalLabel, kind: "repo" as const }))
+  const edges = [...localEdges, ...repositoryEdges]
   const lines = rows.map((row) => {
     const own = edges.filter((edge) => edge.from === row.label)
+    const resolution = resolutions.find((entry) => entry?.row === row)?.resolution
     return own.length === 0
-      ? row.label
-      : `${row.label}\n${own.map((edge) => `  -${edge.kind}-> ${edge.to}`).join("\n")}`
+      ? `${row.label}${resolution?.refusal === undefined ? "" : `\n  refusal: ${resolution.refusal}`}`
+      : `${row.label}\n${own.map((edge) => `  -${edge.kind}-> ${edge.to}`).join("\n")}${
+        resolution?.refusal === undefined ? "" : `\n  refusal: ${resolution.refusal}`
+      }`
   })
   return {
     pattern,
     format: "text",
     graph: lines.join("\n"),
     roots: rows.map((row) => row.label),
-    targets: rows.map((row) => ({ label: row.label, target: Target.metadata(row.target).target })),
+    targets: await Promise.all(rows.map(async (row) => {
+      const resolution = resolutions.find((entry) => entry?.row === row)?.resolution
+      return {
+        label: row.label,
+        target: Target.metadata(row.target).target,
+        kinds: await RepoResolution.effectiveKinds(index, row.target, cache),
+        ...(resolution?.refusal === undefined ? {} : { refusal: resolution.refusal })
+      }
+    })),
     edges,
     warnings: []
   }
@@ -671,7 +703,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       async run(context) {
         try {
           const index = await openPackageIndex(context.options, config)
-          if (index !== undefined) return packageQuery(index, context.args.expr)
+          if (index !== undefined) return await packageQuery(index, context.args.expr)
           const { workspace } = await openWorkspace(context.options, config, false)
           return await Query.run(workspace, context.args.expr)
         } catch (cause) {
@@ -689,7 +721,7 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       async run(context) {
         try {
           const index = await openPackageIndex(context.options, config)
-          if (index !== undefined) return packageGraph(index, context.args.pattern)
+          if (index !== undefined) return await packageGraph(index, context.args.pattern)
           const { workspace } = await openWorkspace(context.options, config, false)
           const plan = await Planner.make(workspace, "graph", context.args.pattern)
           return {
