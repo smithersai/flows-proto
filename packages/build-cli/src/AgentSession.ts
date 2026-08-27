@@ -259,7 +259,13 @@ export const resolveAgents = (
   if (inlinePool === undefined) visit(name)
   else for (const member of inlinePool) visit(member)
   if (output.length === 0) {
-    throw new Error(`S.Agents.${name} resolves to no concrete agent`)
+    // An inline pool never resolved a workspace name, so naming one in the
+    // message would point at a declaration the lane does not have.
+    throw new Error(
+      inlinePool === undefined
+        ? `S.Agents.${name} resolves to no concrete agent`
+        : `the inline agent pool [${inlinePool.join(", ")}] resolves to no concrete agent`
+    )
   }
   return output
 }

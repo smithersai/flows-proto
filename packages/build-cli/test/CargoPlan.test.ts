@@ -49,8 +49,11 @@ const plugins = S.Shell.Build({
 export const Package = S.Package({ targets: { plugins } })
 `
 
+// The sources are globbed as `*.rs` rather than `**` so that an assertion
+// about one attr — which cargo home the fetch delivers to — is not also an
+// assertion about this file's own bytes landing in the source set.
 const sdkPackage = `import { Smithers as S } from "@smthrs/targets"
-const srcs = S.Filegroup({ srcs: S.glob(["**", "!target/**"]) })
+const srcs = S.Filegroup({ srcs: S.glob(["**/*.rs"]) })
 const fetch = S.Cargo.Fetch({
   workspace: S.file("//Cargo.toml"),
   outFiles: ["//Cargo.lock"],
@@ -99,12 +102,18 @@ const manifest = (name: string, skip: boolean): string =>
   `[package]\nname = ${JSON.stringify(name)}\nversion = "0.1.0"\n` +
   (skip ? `\n[package.metadata.aomi]\nskip = true\n` : "")
 
-const fixture = async (): Promise<string> => {
+const fixture = async (options: { readonly cargoHome?: string } = {}): Promise<string> => {
   const root = await Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-cargo-plan-")))
   temporaryDirectories.push(root)
   await write(root, "WORKSPACE.ts", workspaceModule)
   await write(root, "PACKAGE.ts", rootPackage)
-  await write(root, "sdk/PACKAGE.ts", sdkPackage)
+  await write(
+    root,
+    "sdk/PACKAGE.ts",
+    options.cargoHome === undefined
+      ? sdkPackage
+      : sdkPackage.replace("\"//.cargo-home\"", JSON.stringify(`//${options.cargoHome}`))
+  )
   await write(root, "apps/PACKAGE.ts", appsPackage)
   await write(root, "Cargo.toml", "[workspace]\nmembers = [\"sdk\"]\n")
   await write(root, "sdk/Cargo.toml", manifest("aomi-sdk", false))
@@ -217,6 +226,29 @@ describe.skipIf(!hasCargo)("cargo package-mode planning", () => {
     await write(root, "Cargo.lock", "version = 4\n\n[[package]]\nname = \"serde\"\n")
     const after = nodeOf(await planOf(root, "//sdk:clippy"), "//sdk:clippy").keyPreview
     expect(after).not.toBe(before)
+  })
+
+  it("re-keys the offline dependents when the fetch delivers to a different cargo home", async () => {
+    // The cargo home is what `--offline` reads. A fetch that moves it hands
+    // every dependent a different registry, so a key that ignored it would
+    // replay a verdict the new home never produced.
+    const before = nodeOf(await planOf(await fixture(), "//sdk:clippy"), "//sdk:clippy")
+    const after = nodeOf(await planOf(await fixture({ cargoHome: ".cargo-elsewhere" }), "//sdk:clippy"), "//sdk:clippy")
+    expect(after.env["CARGO_HOME"]).toBe(".cargo-elsewhere")
+    expect(before.env["CARGO_HOME"]).toBe(".cargo-home")
+    expect(after.keyPreview).not.toBe(before.keyPreview)
+  })
+
+  it("plans the bare fetch form for a declaration that names neither manifest nor crate set", async () => {
+    const root = await fixture()
+    await write(
+      root,
+      "sdk/PACKAGE.ts",
+      sdkPackage.replace("workspace: S.file(\"//Cargo.toml\"),\n  outFiles", "outFiles")
+    )
+    const fetch = nodeOf(await planOf(root, "//sdk:fetch"), "//sdk:fetch")
+    expect(fetch.refusal).toBeUndefined()
+    expect(commandsOf(fetch).map((command) => command.slice(1))).toEqual([["fetch"]])
   })
 
   it("takes a cargo build target as a shell tool edge and spawns the binary it declares", async () => {
