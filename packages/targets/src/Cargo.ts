@@ -813,6 +813,25 @@ export const manifestFacts = (
   return { name, metadata }
 }
 
+/**
+ * Refuses a declaration that names more than one crate selector.
+ *
+ * `Cargo.Fetch` is the one rule that may name none — `cargo fetch` with no
+ * `--manifest-path` resolves the manifest in the directory it runs from,
+ * which is the workspace root every target spawns from — so it asks for at
+ * most one rather than exactly one. Naming two would say two different things
+ * about which lockfile domains the resource locks.
+ */
+const requireAtMostOneSelector = (id: string, attrs: unknown, selectors: ReadonlyArray<string>): void => {
+  if (attrs === undefined) return
+  if (typeof attrs !== "object" || attrs === null) throw new TypeError(`${id} attrs must be an object`)
+  const values = attrs as Record<string, unknown>
+  const present = selectors.filter((selector) => values[selector] !== undefined)
+  if (present.length > 1) {
+    throw new Error(`${id} requires at most one of ${selectors.join(", ")}; received ${present.join(", ")}`)
+  }
+}
+
 const requireOneSelector = (id: string, attrs: unknown, selectors: ReadonlyArray<string>): void => {
   if (typeof attrs !== "object" || attrs === null) throw new TypeError(`${id} attrs must be an object`)
   const values = attrs as Record<string, unknown>
@@ -900,7 +919,10 @@ const appSetDefinition = Target.make("Cargo.AppSet", {
  * @category targets
  * @since 0.1.0
  */
-export const Fetch = (attrs: (typeof FetchAttrs)["~type.make.in"]): Target.AnyTarget => fetchDefinition(attrs)
+export const Fetch = (attrs: (typeof FetchAttrs)["~type.make.in"]): Target.AnyTarget => {
+  requireAtMostOneSelector("Cargo.Fetch", attrs, ["workspace", "crates"])
+  return fetchDefinition(attrs)
+}
 
 /**
  * A `cargo build` over a workspace, one package, or a crate set.
