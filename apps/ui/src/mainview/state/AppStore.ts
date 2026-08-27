@@ -1845,12 +1845,27 @@ export const createAppStore = async (
           break
         }
 
+        /*
+         * The harness and repo tables are replaced wholesale on every load.
+         * TanStack DB refuses a delete followed by an insert of the same key
+         * inside one mutation, so a key present on both sides is updated in
+         * place; only the keys that left are deleted and only the new ones
+         * inserted.
+         */
         case "harnesses.loaded": {
-          const stale = [...collections.harnesses.keys()]
+          const incoming = new Map<string, Harness>(transition.harnesses.map((harness) => [harness.id, { ...harness }]))
+          const stale = [...collections.harnesses.keys()].filter((key) => !incoming.has(key))
           if (stale.length > 0) collections.harnesses.delete(stale)
-          if (transition.harnesses.length > 0) {
-            collections.harnesses.insert(transition.harnesses.map((harness) => ({ ...harness })))
+          const fresh: Array<Harness> = []
+          for (const [id, harness] of incoming) {
+            if (collections.harnesses.get(id) === undefined) fresh.push(harness)
+            else {
+              collections.harnesses.update(id, (draft) => {
+                Object.assign(draft, harness)
+              })
+            }
           }
+          if (fresh.length > 0) collections.harnesses.insert(fresh)
           collections.sessions.update(SESSION_ID, (draft) => {
             draft.revision = revision
           })
@@ -1858,9 +1873,19 @@ export const createAppStore = async (
         }
 
         case "repos.loaded": {
-          const stale = [...collections.repos.keys()]
+          const incoming = new Map<string, Repo>(transition.repos.map((repo) => [repo.id, { ...repo }]))
+          const stale = [...collections.repos.keys()].filter((key) => !incoming.has(key))
           if (stale.length > 0) collections.repos.delete(stale)
-          if (transition.repos.length > 0) collections.repos.insert(transition.repos.map((repo) => ({ ...repo })))
+          const fresh: Array<Repo> = []
+          for (const [id, repo] of incoming) {
+            if (collections.repos.get(id) === undefined) fresh.push(repo)
+            else {
+              collections.repos.update(id, (draft) => {
+                Object.assign(draft, repo)
+              })
+            }
+          }
+          if (fresh.length > 0) collections.repos.insert(fresh)
           collections.sessions.update(SESSION_ID, (draft) => {
             draft.revision = revision
           })

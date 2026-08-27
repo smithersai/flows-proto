@@ -276,6 +276,24 @@ the network and their config dirs, so harness and terminal spawns confine
 file writes rather than the network. `wrapSandbox` reads only its arguments;
 policies are data so tests can assert the generated profile.
 
+Reality check (L4, 2026-08-26, macOS 15 arm64, `claude` 2.1.247, `codex`
+0.149.1, `/bin/zsh -il` with oh-my-zsh): all three start and reach their
+prompt under the policies above with the signed-in account (Claude Max via
+the Keychain, Codex via `~/.codex/auth.json`). Three rules had to be added
+because seatbelt refused writes the programs make on their normal path;
+everything else in `$HOME` stays read-only:
+
+| Rule | Policies | Why |
+| --- | --- | --- |
+| `(subpath "/private<tmpdir>")` next to `(subpath "<tmpdir>")` | all | `$TMPDIR` is `/var/folders/.../T`, a symlink into `/private/var`; seatbelt matches the resolved path, so the `/var` rule alone denied every temp file. `privateAliases` adds the twin for any dir under `/var`, `/tmp`, `/etc`. |
+| `(regex #"^<home>/\.claude\.json")` | harness, terminal | Claude Code saves `~/.claude.json` atomically through `~/.claude.json.tmp.<pid>.<random>` + rename; the literal rule for the file alone made the save fail. |
+| `(regex #"^<home>/\.zsh_history")`, `(regex #"^<home>/\.zcompdump")` | terminal | zsh writes `$HISTFILE`, its `.new` and `.LOCK` siblings, and one `.zcompdump-<host>-<version>` per shell version. Without them the shell runs but loses history and rebuilds completion every start. |
+
+The policy records these as `writablePrefixes`; `Sandbox.test.ts` pins every
+allow/deny clause of the three profiles. Verified with `sandbox-exec -p` on the
+rendered profile: `$TMPDIR`, `~/.claude.json.tmp.x`, `~/.zsh_history.new` and
+`~/.zcompdump-x` write; `~/.zshrc-x` and `~/Desktop/x` are denied.
+
 ## Harness detection (`src/bun/Harnesses.ts`)
 
 Port the DETECTORS table from `~/smithers/apps/cli/src/agent-detection.js`
@@ -295,6 +313,33 @@ only `PATH`: `~/.local/bin`, `~/.bun/bin`, `/opt/homebrew/bin`,
 
 `launch.argv` is the interactive command (`["claude"]`, `["codex"]`, ...).
 Never append `--dangerously-skip-permissions` or `--yolo`.
+
+Implementation notes (L4): `~/.opencode/bin` is a candidate dir too (the
+opencode installer's default). A binary that is absent is `unavailable`
+whatever the credentials say; with a binary, the sign-in signal decides
+`signed-in` > `api-key` > `binary-only`. Labels for the config-file
+harnesses are the file in tilde form (`~/.hermes/auth.json`). Versions come
+from `<bin> --version` probed in parallel with a 3s `Bun.spawn` timeout
+(`hermes --version` takes 6s on this machine and reports `null`) and are
+cached per binary path for the process lifetime; sign-in state is re-read on
+every call. The route answers in about 1.5s cold and in file-read time warm.
+
+PTY sessions (`src/bun/Pty.ts`): `Bun.spawn({ terminal: { cols, rows, name:
+"xterm-256color", data } })` (Bun 1.4). Terminal tabs run `[$SHELL, "-il"]`
+(default `/bin/zsh`); harness tabs run the detected absolute binary plus
+`launch.argv.slice(1)`. `cwd` expands `~` and `~/x` against the server's
+home and must be a directory (400 `bad_cwd`). The child environment is an
+allowlist (`ENV_ALLOWLIST`: HOME, USER, SHELL, TMPDIR, LANG/LC_*, TZ,
+SSH_AUTH_SOCK, XDG_*, EDITOR/VISUAL/PAGER, the harness config-dir
+overrides, the provider API keys) plus `TERM=xterm-256color`,
+`COLORTERM=truecolor`, `LANG` (default `en_US.UTF-8`), and a `PATH` that
+starts with the Node sidecar's dir and the harness candidate dirs ahead of
+the app's own PATH, so `codex` (a `#!/usr/bin/env node` script) resolves from
+a Finder launch. Output frames are UTF-8 chunks from a streaming decoder;
+`pty.exit` follows the last output (the PTY's EOF or a 300ms grace after the
+process exit). Exited sessions stay listed with `alive: false` until
+`DELETE`, so the SPA always deletes on tab close. `DELETE` sends SIGHUP, then
+SIGKILL after 2s, and drops the record; `stop()` kills every session.
 
 ## Test tiers
 
@@ -392,3 +437,20 @@ Acceptance on `24f337536`:
 Open for wave 2: `/api/health.home` and the `cwd: "~"` expansion are contract
 only until `local-app/harness-terminal` lands `/api/pty`; `tabs.spec.ts`
 mocks both.
+
+Lane L4 (`local-app/harness-terminal`, 2026-08-26):
+
+- `src/bun/Harnesses.ts` + `Harnesses.test.ts`, `src/bun/Pty.ts` +
+  `Pty.test.ts`, `src/bun/routes/harnesses.ts`, `src/bun/routes/pty.ts`;
+  `server.ts` registers both and reports `home` on `/api/health`;
+  `LocalServerOptions` gained `home`, `harnesses` and `pty` so tests inject a
+  fake table and a sandbox-off `/bin/sh` manager.
+- `Sandbox.ts` adds `writablePrefixes` and `privateAliases` (see "Sandbox");
+  `Sandbox.test.ts` pins the clauses.
+- SPA: `ControllerBoot.client.ts` loads the harness table at boot (the `+`
+  menu re-loads on open); `controller/tabs.ts` always `DELETE`s a closed
+  process tab's session. L2's frames matched the server's; no protocol
+  change.
+- `e2e/playwright/terminal.spec.ts` and `harness.spec.ts` run against the
+  real origin (T1). `harness.spec.ts` skips its signed-in assertions with a
+  reason when `~/.claude.json` has no `oauthAccount`.
