@@ -223,6 +223,28 @@ const layer = Layer.mergeAll(
 )
 ```
 
+### Watching it run
+
+A step answers with one decoded value, which it only knows at the end. Provide
+`EventSink` to also receive each agent event as it happens: token deltas, the
+cell that was produced, the calls it made. The step still buffers every event
+for the decode, so the answer, the correction budget, and the failures are the
+same with a sink as without one.
+
+```ts
+import { EventSink } from "@smthrs/agent"
+import * as Effect from "effect/Effect"
+
+const watched = Layer.merge(
+  layer,
+  EventSink.layer({ emit: (event) => Effect.sync(() => render(event)) })
+)
+```
+
+`emit` runs inside the frame that produced the event, and that frame holds the
+engine's write transaction. A sink pushes onto a queue, writes to a socket, or
+resolves a deferred. A sink that waits on a durable write stalls the run.
+
 ## The engine port
 
 `@smthrs/harness` owns the _port_ — `sealStep`, `call`, `splice`, `record`,
@@ -324,6 +346,7 @@ The root entry point exports these namespaces; each is also importable from `@sm
 | `WorkspaceSandbox`         | Every export of [`@smthrs/engine-store/WorkspaceSandbox`](../engine-store/README.md), including `Service`, `WorkspaceSandbox`, `make`, `layer`, `Host`, `makeHosted`, `makeMemory`, and `layerFileSystem`        | Re-exports the canonical workspace transaction contract, unchanged.                     |
 | `InMemoryWorkspaceSandbox` | `InitialFiles`, `HostFile`, `InMemoryWorkspaceSandbox`, `make`                                                                                                                                                   | Builds that contract's conformance sandbox over an in-memory host.                      |
 | `AgentAction`              | `Host`, `makeHost`, `layerHost`, `AgentFailure`, `PayloadSchemaOf`, `Options`, `AgentAction`, `make`                                                                                                             | Declares a model-backed step as an ordinary action and ships its implementation.        |
+| `EventSink`                | `Service`, `EventSink`, `make`, `makeNoop`, `layer`, `layerNoop`                                                                                                                                                 | Hands a host each agent event while the step runs, instead of only after it decodes.    |
 
 `@smthrs/agent/package.json` is also exported. `internal/*` and nested `*/index` subpaths are not public.
 

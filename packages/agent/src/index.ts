@@ -100,3 +100,9 @@ export * as InMemoryWorkspaceSandbox from "./InMemoryWorkspaceSandbox.ts"
  * @since 0.1.0
  */
 export * as AgentAction from "./AgentAction.ts"
+
+/**
+ * @category services
+ * @since 0.1.0
+ */
+export * as EventSink from "./EventSink.ts"
