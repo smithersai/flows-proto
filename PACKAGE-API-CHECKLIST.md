@@ -654,14 +654,14 @@ No file under `~/artsy` was edited. Execution used disposable clones under
 
 | Repository | Load / graph / plan sweep | Execute / typed-refusal proof | Result |
 | --- | --- | --- | --- |
-| force | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps force` | Fetch lane's real download/hit receipt | 82 labels, `warnings: []`, 0 NotImplemented |
-| whatsabi | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps whatsabi` | typed host/outward refusals; upstream README fence check remains honestly red | 47 labels, `warnings: []`, 0 NotImplemented |
-| viem | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps viem` | e2e `//src:srcs` ran; `//test:test --plan` says `node_modules binary not found ... vitest`; shard fan-out executes in the unit e2e | 76 labels, `warnings: []`, 0 NotImplemented |
-| tapes | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps tapes` | e2e `//:contractSeals` ran then hit with the fetched module-cache resource | 67 labels, `warnings: []`, 0 NotImplemented |
-| optimism | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps optimism`; `//rust:deny` and `//rust:konaPrestate` plans | e2e `//:checkOpGethVersion` ran 697ms then hit 18ms; exact Cargo refusals name absent driver / missing container contract | 79 labels, `warnings: []`, 0 NotImplemented |
-| aomi | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps aomi` | typed host, approval, and input refusals only | 121 labels, `warnings: []`, 0 NotImplemented |
-| aomi-sdk | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps aomi-sdk` | e2e `//sdk:format` ran 969ms then hit 3ms; `//:sdkVersionBump` honestly red because base/current are both 4.0.0 | 36 labels, `warnings: []`, 0 NotImplemented |
-| slop-computer | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps slop-computer` | typed host/outward refusals only | 35 labels, `warnings: []`, 0 NotImplemented |
+| force | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps force` | Fetch lane's real download/hit receipt | 82 labels, `warnings: []`, 0 NotImplemented, 12 typed refusals |
+| whatsabi | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps whatsabi` | typed host/outward refusals; upstream README fence check remains honestly red | 47 labels, `warnings: []`, 0 NotImplemented, 38 typed refusals |
+| viem | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps viem` | e2e `//src:srcs` ran; `//test:test --plan` says `node_modules binary not found ... vitest`; shard fan-out executes in the unit e2e | 76 labels, `warnings: []`, 0 NotImplemented, 56 typed refusals |
+| tapes | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps tapes` | e2e `//:contractSeals` ran then hit with the fetched module-cache resource | 67 labels, `warnings: []`, 0 NotImplemented, 13 typed refusals |
+| optimism | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps optimism`; `//rust:deny` and `//rust:konaPrestate` plans | e2e `//:checkOpGethVersion` ran 697ms then hit 18ms; exact Cargo refusals name absent driver / missing container contract | 79 labels, `warnings: []`, 0 NotImplemented, 40 typed refusals |
+| aomi | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps aomi` | typed host, approval, and input refusals only | 121 labels, `warnings: []`, 0 NotImplemented, 27 typed refusals |
+| aomi-sdk | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps aomi-sdk` | e2e `//sdk:format` ran 969ms then hit 3ms; `//:sdkVersionBump` honestly red because base/current are both 4.0.0 | 36 labels, `warnings: []`, 0 NotImplemented, 2 typed refusals |
+| slop-computer | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps slop-computer` | typed host/outward refusals only | 35 labels, `warnings: []`, 0 NotImplemented, 7 typed refusals |
 
 Final package proof:
 
