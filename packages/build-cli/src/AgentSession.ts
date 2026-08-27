@@ -189,7 +189,7 @@ export interface AgentSession {
  */
 export interface SessionFactory {
   readonly open: (
-    ref: Reference.AgentRef | undefined,
+    ref: AgentTarget.AgentSelector | undefined,
     mcp?: ReadonlyArray<Reference.McpHttp>
   ) => Effect.Effect<AgentSession, AgentTarget.AgentSessionError>
 }
@@ -207,24 +207,34 @@ export interface ConcreteAgent {
 }
 
 /**
- * Resolves an agent reference against the workspace `S.Agents` declaration
- * into the ordered concrete agents a session tries.
+ * Resolves an agent selector into the ordered concrete agents a session tries.
  *
- * An absent reference resolves the `default` agent. A pool expands to its
- * members in declared order, recursively and cycle-safe, deduplicated by
- * first appearance.
+ * An absent selector resolves the workspace's `default` agent. A reference
+ * resolves against the workspace `S.Agents` declaration. An agent declared
+ * inline on the lane resolves to itself and needs no workspace declaration at
+ * all, which is what lets a repository that declares no `S.Agents` still name
+ * the agent one lane runs on. A pool expands to its members in declared order,
+ * recursively and cycle-safe, deduplicated by first appearance; an inline pool
+ * still names siblings, so it resolves them against the workspace.
  *
  * @category resolution
  * @since 0.1.0
  */
 export const resolveAgents = (
   agents: AgentTarget.AgentsDeclaration | undefined,
-  ref: Reference.AgentRef | undefined
+  ref: AgentTarget.AgentSelector | undefined
 ): ReadonlyArray<ConcreteAgent> => {
+  if (ref !== undefined && ref._tag === "AgentClaudeCode") {
+    return [{ name: ref.model, engine: "claude", model: ref.model }]
+  }
+  if (ref !== undefined && ref._tag === "AgentCodex") {
+    return [{ name: ref.model, engine: "codex", model: ref.model }]
+  }
   if (agents === undefined) {
     throw new Error("the workspace declares no S.Agents; agent targets cannot resolve a session")
   }
-  const name = ref?.name ?? "default"
+  const inlinePool = ref !== undefined && ref._tag === "AgentPool" ? ref.agents : undefined
+  const name = ref === undefined || ref._tag !== "AgentRef" ? "default" : ref.name
   const output: Array<ConcreteAgent> = []
   const seen = new Set<string>()
   const visit = (member: string): void => {
@@ -246,7 +256,8 @@ export const resolveAgents = (
         return
     }
   }
-  visit(name)
+  if (inlinePool === undefined) visit(name)
+  else for (const member of inlinePool) visit(member)
   if (output.length === 0) {
     throw new Error(`S.Agents.${name} resolves to no concrete agent`)
   }

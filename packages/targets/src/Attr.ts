@@ -120,6 +120,28 @@ export const Secrets = Schema.Array(Secret.Declaration)
 export const Using = Schema.Record(Schema.String, Reference.Tool)
 
 /**
+ * Schema for everything a `bin` slot accepts: a tool reference, or a build
+ * target whose declared binary is the executable.
+ *
+ * A build target as a tool edge is how a workspace runs a program it builds
+ * itself — a generator, a compile driver, a linter it vendors. The edge is an
+ * ordinary dependency, so the generator is built before its consumer runs and
+ * the generator's identity is key material for everything it produced.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const Executable = Schema.Union([Reference.Tool, Target.Target])
+
+/**
+ * Everything a `bin` slot accepts.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Executable = typeof Executable.Type
+
+/**
  * Schema for plain argv entries plus flag references.
  *
  * @category schemas

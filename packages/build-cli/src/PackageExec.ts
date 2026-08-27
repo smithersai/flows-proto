@@ -21,13 +21,16 @@
  */
 import * as AgentTarget from "@smthrs/targets/AgentTarget"
 import * as BundlerTarget from "@smthrs/targets/BundlerTarget"
+import * as Cargo from "@smthrs/targets/Cargo"
 import * as Compose from "@smthrs/targets/Compose"
 import * as Exec from "@smthrs/targets/Exec"
 import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as Input from "@smthrs/targets/Input"
 import type * as Reference from "@smthrs/targets/Reference"
+import * as RustToolchain from "@smthrs/targets/RustToolchain"
 import * as Shell from "@smthrs/targets/Shell"
 import * as Target from "@smthrs/targets/Target"
+import * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
@@ -108,11 +111,18 @@ const implementedRules: ReadonlySet<string> = new Set([
   "Github.Workflow",
   "Github.CiGen",
   "Github.Pr",
-  "Memory.Retain"
+  "Memory.Retain",
+  "Cargo.Fetch",
+  "Cargo.Build",
+  "Cargo.Test",
+  "Cargo.Clippy",
+  "Cargo.Fmt",
+  "Cargo.Doc",
+  "Cargo.AppSet"
 ])
 
 /** Rules whose default mode is the non-mutating check. */
-const checkModeRules: ReadonlySet<string> = new Set(["Shell.Diff", "Generate", "Github.CiGen", "Agent.Lint"])
+const checkModeRules: ReadonlySet<string> = new Set(["Shell.Diff", "Generate", "Github.CiGen", "Agent.Lint", "Cargo.Fmt"])
 
 /**
  * Rules that act outward or run for their side effects. They never gate:
@@ -149,7 +159,7 @@ const memoryBackendTimeoutMs = 60_000
 const refusalFor = (rule: string): string =>
   `NotImplemented: ${rule} has no package-mode execution; ` +
   "the implemented set is Shell.*, Generate, Materialize, Clean, Suite, Alias, ImportClosure, Test, " +
-  "Bundler.Rspack.*, Agent.*, Git.Commit, Github.*, and Memory.Retain"
+  "Bundler.Rspack.*, Agent.*, Git.Commit, Github.*, Memory.Retain, and Cargo.*"
 
 /**
  * The placeholder a bundler build's key template carries where the graph
@@ -241,6 +251,17 @@ export type LaneData =
   | { readonly kind: "github-decl" }
   | { readonly kind: "github-pr" }
   | { readonly kind: "memory-retain" }
+  | {
+    readonly kind: "cargo"
+    /** One resolved cargo argv per selected crate; empty when the crate set is. */
+    readonly commands: ReadonlyArray<ReadonlyArray<string>>
+    /** Files this target delivers, workspace-relative; `Cargo.Fetch` only. */
+    readonly outFiles: ReadonlyArray<string>
+    /** The crate set this target expanded to, when it declared one. */
+    readonly crates: ReadonlyArray<CrateRow> | undefined
+    /** The workspace-relative binaries this build produces, for tool edges. */
+    readonly binaries: ReadonlyArray<string>
+  }
 
 /**
  * One planned package-mode node. Structurally a {@link Planner.PlannedTarget}
@@ -276,6 +297,13 @@ export interface PackageNode extends Planner.PlannedTarget {
    */
   readonly cwd: string
   readonly env: Readonly<Record<string, string>>
+  /**
+   * Environment names whose declared value is a workspace-relative path made
+   * absolute immediately before spawn. The relative form is what keys the
+   * node, so two checkouts of the same tree agree on the key while each child
+   * still receives a path it can use.
+   */
+  readonly absoluteEnv: ReadonlyArray<string>
   readonly bunTemplate:
     | { readonly template: string; readonly consts: Readonly<Record<string, string>>; readonly bunPath: string }
     | undefined
@@ -316,6 +344,8 @@ export interface PlanReport {
     readonly cacheable: boolean
     readonly dependencies: ReadonlyArray<string>
     readonly argv?: ReadonlyArray<string> | undefined
+    /** A cargo target's per-crate commands, when it renders more than one. */
+    readonly commands?: ReadonlyArray<ReadonlyArray<string>> | undefined
     readonly refusal?: string | undefined
   }>
 }
@@ -486,6 +516,8 @@ interface PlanContext {
   store: CacheStore | undefined
   storeWarned: boolean
   /** ImportClosure label → canonical result digest (plan-time, memoized). */
+  /** Expanded crate sets, memoized per `S.Cargo.AppSet` label. */
+  readonly crateSets: Map<string, ReadonlyArray<CrateRow>>
   readonly closureDigests: Map<string, string>
   /** ImportClosure label → computed closure result (plan-time, memoized). */
   readonly closureResults: Map<string, Compose.ClosureResult>
@@ -641,6 +673,177 @@ const moduleVersion = async (root: string, packageName: string): Promise<string 
   }
 }
 
+/**
+ * One crate of an expanded crate set: the manifest that declares it, the name
+ * it declares, and that manifest's content digest.
+ *
+ * The digest is key material: a crate set is a view over what the manifests
+ * say, so an edit to a manifest that changes membership — or that changes the
+ * metadata a filter reads — re-keys every target that ran over the set.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface CrateRow {
+  readonly manifest: string
+  readonly name: string | undefined
+  readonly digest: string
+}
+
+/** Expands one `S.Cargo.AppSet` declaration to its member crates. */
+const appSetCrates = async (
+  context: PlanContext,
+  target: Target.AnyTarget
+): Promise<ReadonlyArray<CrateRow>> => {
+  const label = labelOf(context, target)
+  const known = context.crateSets.get(label)
+  if (known !== undefined) return known
+  const attrs = Target.metadata(target).attrs as Record<string, unknown>
+  const packagePath = packagePathOf(context, target)
+  const declared = attrs["manifests"]
+  const globs = (Array.isArray(declared) ? declared : [declared]).filter(
+    (entry): entry is Input.Glob =>
+      typeof entry === "object" && entry !== null && (entry as { readonly _tag?: unknown })._tag === "Glob"
+  )
+  const paths = new Set<string>()
+  for (const glob of globs) {
+    for (
+      const match of await Input.expandGlob(context.root, packagePath, glob, {
+        cacheDirectory: context.cacheDirectory,
+        signal: context.signal
+      })
+    ) paths.add(match)
+  }
+  const filter = Cargo.appSetFilter(attrs)
+  const rows: Array<CrateRow> = []
+  for (const manifest of [...paths].sort()) {
+    let text: string
+    try {
+      text = await Fs.readFile(NodePath.join(context.root, ...manifest.split("/")), "utf8")
+    } catch {
+      continue
+    }
+    const facts = Cargo.manifestFacts(text)
+    if (filter !== undefined && !Cargo.metadataMatches(facts.metadata, filter)) continue
+    rows.push({ manifest, name: facts.name, digest: Input.digestText(text) })
+  }
+  context.crateSets.set(label, rows)
+  return rows
+}
+
+/** The target one file-algebra operand names. */
+const operandTarget = (value: unknown): Target.AnyTarget | undefined => {
+  if (Target.isTarget(value)) return value
+  if (
+    typeof value === "object" && value !== null &&
+    (value as { readonly _tag?: unknown })._tag === "TargetFiles" &&
+    Target.isTarget((value as { readonly target?: unknown }).target)
+  ) return (value as { readonly target: Target.AnyTarget }).target
+  return undefined
+}
+
+/**
+ * Reduces one declared `crates` selector to its member crates, or names the
+ * reason it cannot be reduced.
+ *
+ * `S.Files.difference` composes over crate sets the same way it composes over
+ * file sets: the right set is subtracted from the left by manifest path.
+ */
+const crateSetOf = async (
+  context: PlanContext,
+  value: unknown
+): Promise<ReadonlyArray<CrateRow> | string> => {
+  const target = operandTarget(value)
+  if (target !== undefined) {
+    if (!Cargo.isAppSet(target)) {
+      return `crates must name S.Cargo.AppSet targets; ${labelOf(context, target)} is ${
+        Target.metadata(target).target
+      }`
+    }
+    return appSetCrates(context, target)
+  }
+  if (typeof value === "object" && value !== null && (value as { readonly _tag?: unknown })._tag === "FilesDifference") {
+    const difference = value as { readonly left: unknown; readonly right: unknown }
+    const left = await crateSetOf(context, difference.left)
+    if (typeof left === "string") return left
+    const right = await crateSetOf(context, difference.right)
+    if (typeof right === "string") return right
+    const removed = new Set(right.map((row) => row.manifest))
+    return left.filter((row) => !removed.has(row.manifest))
+  }
+  return "crates must be an S.Cargo.AppSet target, or an S.Files.difference of two of them"
+}
+
+/**
+ * The `CARGO_HOME` one `S.Cargo.Fetch` declaration delivers, workspace
+ * relative.
+ *
+ * The fetch resource's first declared output directory is where it puts what
+ * it fetched, so pinning `CARGO_HOME` there is what makes `--offline` on every
+ * dependent mean "read what the fetch delivered" rather than "read whatever
+ * this host happens to have in ~/.cargo".
+ */
+const fetchCargoHome = (context: PlanContext, target: Target.AnyTarget): string | undefined => {
+  const declared = attrMember(Target.metadata(target).attrs, "outDirs")
+  if (!Array.isArray(declared)) return undefined
+  const first = declared.find((entry): entry is string => typeof entry === "string")
+  return first === undefined ? undefined : Input.resolvePath(packagePathOf(context, target), first)
+}
+
+/**
+ * The placeholder a planned argv carries where the absolute workspace root
+ * goes.
+ *
+ * A path built from the workspace root would otherwise be key material that
+ * differs between two checkouts of the same tree, so the plan keeps the
+ * workspace-relative form and the spawn substitutes the root.
+ *
+ * @category keys
+ * @since 0.1.0
+ */
+export const workspaceRootToken = "{smthrs:root}"
+
+/**
+ * The executable one target used as a tool edge produces, workspace relative,
+ * or the reason it produces none.
+ *
+ * Only a `Cargo.Build` that declares exactly one `bins` entry produces an
+ * addressable executable today: its path follows from the profile and the bin
+ * name. Every other target refuses by name rather than being guessed at.
+ */
+const targetExecutable = (
+  context: PlanContext,
+  target: Target.AnyTarget
+): { readonly path: string } | { readonly problem: string } => {
+  const metadata = Target.metadata(target)
+  const label = labelOf(context, target)
+  if (metadata.target !== "Cargo.Build") {
+    return {
+      problem: `bin names ${label}, a ${metadata.target}; a target used as a tool edge must be a ` +
+        "Cargo.Build declaring exactly one bins entry"
+    }
+  }
+  const paths = Cargo.binaries(metadata.attrs)
+  if (paths.length !== 1) {
+    return {
+      problem: `bin names ${label}, which declares ${paths.length} binaries; a tool edge needs exactly one`
+    }
+  }
+  // Cargo puts every member's binaries in the workspace target directory, so
+  // the path is workspace relative, not package relative.
+  return { path: paths[0]! }
+}
+
+/** The declared files one `S.Cargo.Fetch` delivers, workspace relative. */
+const fetchOutFiles = (context: PlanContext, target: Target.AnyTarget): ReadonlyArray<string> => {
+  const declared = attrMember(Target.metadata(target).attrs, "outFiles")
+  if (!Array.isArray(declared)) return []
+  const packagePath = packagePathOf(context, target)
+  return declared
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => Input.resolvePath(packagePath, entry))
+}
+
 const resolveTool = async (context: PlanContext, reference: Record<string, unknown>): Promise<ToolOutcome> => {
   const key = JSON.stringify(reference)
   const known = context.tools.get(key)
@@ -737,6 +940,59 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
     outcome = {
       _tag: "resolved",
       tool: { path: process.execPath, identity: { tag: "RuntimeBin", runtime: "node", version: process.version } }
+    }
+  } else if (tag === "CargoBin") {
+    // Cargo comes from the workspace toolchain layer, never from a guess: a
+    // workspace that declares no layer refuses every cargo target by name.
+    const layer = WorkspaceDeclaration.rustToolchain(context.index.workspace)
+    if (layer === undefined) {
+      outcome = {
+        _tag: "refused",
+        tool: {
+          refusal: "the workspace declares no Rust toolchain layer; " +
+            "add toolchains: [S.Rust.Toolchain({ ... })] to WORKSPACE.ts",
+          identity: { tag: "CargoBin", absent: true }
+        }
+      }
+    } else {
+      const name = layer.cargo
+      const path = NodePath.isAbsolute(name) ? name : PackageTree.findOnPath(name)
+      if (path === undefined) {
+        outcome = {
+          _tag: "refused",
+          tool: {
+            refusal: `the workspace toolchain's cargo executable ${JSON.stringify(name)} is not present on PATH`,
+            identity: { tag: "CargoBin", cargo: name, absent: true }
+          }
+        }
+      } else {
+        const probe = await probeOnce(context, path)
+        // The declared channel is key material and the resolved cargo is
+        // probed, so a channel bump or a compiler change re-keys every cargo
+        // target. Selecting the channel is the toolchain layer's own job and
+        // is not implemented here; a mismatch is reported, not enforced,
+        // because refusing would make every cargo target unrunnable on a host
+        // that has a working compiler.
+        if (layer.channel !== undefined && !probe.output.includes(layer.channel)) {
+          context.log(
+            `warning: the workspace pins Rust ${layer.channel} but ${path} reports ${
+              probe.output.trim() === "" ? "no version" : probe.output.trim()
+            }`
+          )
+        }
+        outcome = {
+          _tag: "resolved",
+          tool: {
+            path,
+            identity: {
+              tag: "CargoBin",
+              toolchain: RustToolchain.toolchainIdentity(layer),
+              path,
+              probe: { exitCode: probe.exitCode, output: probe.output }
+            }
+          }
+        }
+      }
     }
   } else if (tag === "RuntimeNpx") {
     const path = PackageTree.findOnPath("npx")
@@ -945,7 +1201,10 @@ const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox
   const capabilities = ["fs:read", "proc:spawn"]
   if (
     mode === "write" || rule === "Shell.Build" || rule === "Bundler.Rspack.build" || rule === "Materialize" ||
-    rule === "Clean" || rule === "Agent.Diff" || rule === "Agent.Pr" || rule === "Git.Commit"
+    rule === "Clean" || rule === "Agent.Diff" || rule === "Agent.Pr" || rule === "Git.Commit" ||
+    // Every cargo run writes `target/` and, when the workspace pins one, the
+    // cargo home the fetch resource delivers.
+    (rule.startsWith("Cargo.") && rule !== "Cargo.AppSet" && rule !== "Cargo.Fmt")
   ) {
     capabilities.push("fs:write")
   }
@@ -998,6 +1257,17 @@ const visit = async (
     // material carries a sentinel here; execution substitutes the digest, and
     // the plan-time preview substitutes it when the cache already holds one
     // (conservatively the resolve node's own key otherwise).
+    // A `Cargo.Fetch` dependency keys its consumers on the lockfile it
+    // delivered, not on the fetch declaration: relocking re-keys every offline
+    // dependent, and a fetch that produced the same lockfile does not. The
+    // vendored registry is deliberately not digested — it is the opaque half of
+    // the resource, and the lockfile is what fixes what it contains.
+    if (depRule === "Cargo.Fetch" && rule !== "Clean" && planned.refusal === undefined) {
+      const delivered = await Input.digestFiles(context.root, [...fetchOutFiles(context, dependency)], {
+        signal: context.signal
+      })
+      depKey = `cargo-fetch:${Input.digestText(JSON.stringify(delivered))}`
+    }
     if (rule === "Bundler.Rspack.build" && depRule === "Bundler.Rspack.resolve" && planned.refusal === undefined) {
       depKey = graphKeySentinel
       graphResolveNode = planned
@@ -1093,8 +1363,20 @@ const visit = async (
     return entry
   }
 
+  // The mode a target is planned under. A root's requested mode wins over the
+  // dependency mode an earlier visitor asked for, so a `--write` root that is
+  // also reached as a check-mode gate or dependency is planned once, in write
+  // mode, and applies. See `PlanContext.rootModes`. It is resolved before the
+  // per-rule extraction because a rule with both a checking and an applying
+  // form — `Cargo.Fmt` — renders a different argv for each.
+  const mode = context.rootModes.get(label) ?? options.mode
+
   // Per-rule extraction.
   let argv: Array<string> | undefined
+  let commands: ReadonlyArray<ReadonlyArray<string>> | undefined
+  let cargoCrates: ReadonlyArray<CrateRow> | undefined
+  let cargoOutFiles: ReadonlyArray<string> = []
+  const absoluteEnv: Array<string> = []
   let env: Record<string, string> = {}
   let bunTemplate: PackageNode["bunTemplate"]
   let emit: PackageNode["emit"]
@@ -1117,6 +1399,19 @@ const visit = async (
   if (Array.isArray(changes)) {
     for (const pattern of changes) {
       if (typeof pattern === "string") writeSet.push(Input.resolvePath(packagePath, pattern))
+    }
+  }
+
+  // The cargo home this node reads. A `Cargo.Fetch` owns the one it declares;
+  // every target with a `data` edge on that fetch reads the same one, which is
+  // what makes `--offline` mean the fetch resource's deliverables.
+  let cargoHome: string | undefined
+  if (rule === "Cargo.Fetch") cargoHome = fetchCargoHome(context, target)
+  else {
+    for (const dependency of metadata.dependencies) {
+      if (Target.metadata(dependency).target !== "Cargo.Fetch") continue
+      cargoHome = fetchCargoHome(context, dependency)
+      if (cargoHome !== undefined) break
     }
   }
 
@@ -1163,6 +1458,18 @@ const visit = async (
         appended.add(prefix === "" ? "." : prefix)
       }
       for (const path of [...appended].sort()) resolved.push(path)
+    }
+    // A build target as the tool edge: the token stands for the one executable
+    // the referenced target declares it produces.
+    if (resolved.includes(Shell.targetBinToken) && Target.isTarget(shellAttrs.bin)) {
+      const executable = targetExecutable(context, shellAttrs.bin)
+      if ("problem" in executable) noteRefusal(executable.problem)
+      else {
+        toolchain.push({ tag: "TargetBin", label: labelOf(context, shellAttrs.bin), path: executable.path })
+        for (const [index, entry] of resolved.entries()) {
+          if (entry === Shell.targetBinToken) resolved[index] = `${workspaceRootToken}/${executable.path}`
+        }
+      }
     }
     argv = resolved
     if (rule === "Shell.Build") {
@@ -1220,9 +1527,65 @@ const visit = async (
         env = { ...(payload.env as Record<string, string>) }
         const resolved: Array<string> = []
         for (const entry of payload.argv as ReadonlyArray<string>) resolved.push(await resolveToken(entry))
+        if (resolved.includes(Shell.targetBinToken) && Target.isTarget(bin)) {
+          const executable = targetExecutable(context, bin)
+          if ("problem" in executable) noteRefusal(executable.problem)
+          else {
+            toolchain.push({ tag: "TargetBin", label: labelOf(context, bin), path: executable.path })
+            for (const [index, entry] of resolved.entries()) {
+              if (entry === Shell.targetBinToken) resolved[index] = `${workspaceRootToken}/${executable.path}`
+            }
+          }
+        }
         argv = resolved
       }
     }
+  }
+
+  // Cargo rules: resolve the toolchain layer, expand the crate set, and render
+  // one cargo command per selected crate. `Cargo.AppSet` is a value, not a
+  // run: it plans no process at all.
+  if (rule.startsWith("Cargo.") && rule !== "Cargo.AppSet" && refusal === undefined) {
+    const cargoPath = await resolveToken(Shell.toolToken({ _tag: "CargoBin" } as never))
+    let selections: ReadonlyArray<Cargo.CrateSelection> | undefined
+    const declared = Cargo.selectionOf(attrs)
+    if (declared !== undefined) {
+      selections = [
+        declared._tag === "Manifest"
+          ? { _tag: "Manifest", path: Input.resolvePath(packagePath, declared.path) }
+          : declared
+      ]
+    } else {
+      const crates = await crateSetOf(context, attrMember(attrs, "crates"))
+      if (typeof crates === "string") noteRefusal(`${rule}: ${crates}`)
+      else {
+        cargoCrates = crates
+        // The expanded set is key material: which crates ran, which manifests
+        // said so, and what those manifests contained.
+        toolchain.push({
+          tag: "CrateSet",
+          crates: crates.map((row) => ({ manifest: row.manifest, name: row.name ?? null, digest: row.digest }))
+        })
+        selections = crates.map((row) => ({ _tag: "Manifest", path: row.manifest }))
+      }
+    }
+    if (selections !== undefined && refusal === undefined) {
+      commands = selections.map((selection) => [cargoPath, ...Cargo.packageArgs(rule, attrs, selection, mode)])
+      if (commands.length === 1) argv = [...commands[0]!]
+    }
+    const declaredOut = attrMember(attrs, "outDirs")
+    if (Array.isArray(declaredOut)) {
+      for (const dir of declaredOut) {
+        if (typeof dir === "string") outDirs.push(Input.resolvePath(packagePath, dir))
+      }
+    }
+    if (rule === "Cargo.Fetch") cargoOutFiles = fetchOutFiles(context, target)
+    const declaredEnv = attrMember(attrs, "env")
+    env = typeof declaredEnv === "object" && declaredEnv !== null ? { ...declaredEnv as Record<string, string> } : {}
+  }
+  if (cargoHome !== undefined && env["CARGO_HOME"] === undefined) {
+    env["CARGO_HOME"] = cargoHome
+    absoluteEnv.push("CARGO_HOME")
   }
 
   if (rule === "Suite") {
@@ -1386,6 +1749,20 @@ const visit = async (
     case "Memory.Retain":
       lane = { kind: "memory-retain" }
       break
+    case "Cargo.Fetch":
+    case "Cargo.Build":
+    case "Cargo.Test":
+    case "Cargo.Clippy":
+    case "Cargo.Fmt":
+    case "Cargo.Doc":
+      lane = {
+        kind: "cargo",
+        commands: commands ?? [],
+        outFiles: cargoOutFiles,
+        crates: cargoCrates,
+        binaries: rule === "Cargo.Build" ? Cargo.binaries(attrs) : []
+      }
+      break
     default:
       lane = undefined
   }
@@ -1459,11 +1836,6 @@ const visit = async (
     }
   }
 
-  // The mode a target is planned under. A root's requested mode wins over the
-  // dependency mode an earlier visitor asked for, so a `--write` root that is
-  // also reached as a check-mode gate or dependency is planned once, in write
-  // mode, and applies. See `PlanContext.rootModes`.
-  const mode = context.rootModes.get(label) ?? options.mode
   const declaredGates = attrTargets(attrs, "gates").map((gate) => depLabels.get(gate) ?? labelOf(context, gate))
   // An Agent.Diff or Agent.Pr runs its gates inside the candidate/gate loop,
   // against each candidate, so they are not pre-act gates of the node: a gate
@@ -1502,6 +1874,15 @@ const visit = async (
   }
 
   const cacheable = refusal === undefined && (
+    // A cargo check replays: its key carries the crate set, the sources, the
+    // lockfile slice, and the toolchain, and its product is a verdict.
+    // `Cargo.Build` and `Cargo.Doc` do not: their product is a `target/` tree
+    // this lane does not capture into the store, so replaying the verdict
+    // would report a build that the working tree may no longer hold. Cargo's
+    // own incremental compilation is what makes the repeat run cheap.
+    // `Cargo.Fetch` is the dynamic resource every other cargo target is keyed
+    // against and is never replayed.
+    ((rule === "Cargo.Test" || rule === "Cargo.Clippy" || rule === "Cargo.Fmt") && mode !== "write") ||
     (rule === "Shell.Test" && mode === "execute") ||
     rule === "Shell.Build" ||
     (rule === "Generate" && mode === "check") ||
@@ -1585,6 +1966,7 @@ const visit = async (
     argv,
     cwd,
     env,
+    absoluteEnv,
     bunTemplate,
     writeSet,
     outDirs,
@@ -1660,7 +2042,13 @@ const rootMode = (rule: string, options: RunOptions): Mode => {
 }
 
 const managerBinaryOf = (workspace: PackageIndexModule.PackageIndex["workspace"]): string => {
-  const manager = workspace.packageManager as { readonly _tag?: unknown; readonly name?: unknown }
+  const manager = workspace.packageManager as
+    | { readonly _tag?: unknown; readonly name?: unknown }
+    | undefined
+  // A toolchain-only workspace declares no package manager. Nothing in it can
+  // reference one either, so the name is only ever reported in the refusal a
+  // `S.PackageManager.bin` reference would produce.
+  if (manager === undefined) return "pnpm"
   if (manager._tag === "YarnPackageManager") return "yarn"
   if (typeof manager.name === "string") return manager.name
   return "pnpm"
@@ -1711,7 +2099,8 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     rootModes.set(row.label, rootMode(Target.metadata(row.target).target, options))
   }
   const workspace = index.workspace
-  const lockfilePath = (workspace.packageManager as { readonly lockfile?: { readonly path?: unknown } }).lockfile?.path
+  const lockfilePath =
+    (workspace.packageManager as { readonly lockfile?: { readonly path?: unknown } } | undefined)?.lockfile?.path
   const lockfileDigest = typeof lockfilePath === "string"
     ? await Input.digestFile(NodePath.join(index.root, Input.resolvePath("", lockfilePath)), {
       workspaceRoot: index.root,
@@ -1743,6 +2132,7 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     },
     store: undefined,
     storeWarned: false,
+    crateSets: new Map(),
     closureDigests: new Map(),
     closureResults: new Map(),
     graphDigests: new Map()
@@ -1925,11 +2315,13 @@ export const execute = async (
    * the process its declaration plans.
    */
   const resolveSpawn = async (
-    node: PackageNode
+    node: PackageNode,
+    override?: ReadonlyArray<string>
   ): Promise<
     { readonly argv: [string, ...Array<string>]; readonly env: Record<string, string> } | { readonly error: string }
   > => {
-    if (node.argv === undefined) return { error: `${node.rule} planned no executable` }
+    const planned = override ?? node.argv
+    if (planned === undefined) return { error: `${node.rule} planned no executable` }
     const secretEnv: Record<string, string> = {}
     for (const name of node.secrets) {
       const value = process.env[name]
@@ -1942,7 +2334,15 @@ export const execute = async (
       }
       secretEnv[name] = value
     }
-    let argv = [...node.argv]
+    // The plan keeps workspace-relative paths so two checkouts key alike; the
+    // spawn is where they become paths a child process can use.
+    let argv = planned.map((entry) =>
+      entry.includes(workspaceRootToken) ? entry.split(workspaceRootToken).join(root) : entry
+    )
+    for (const name of node.absoluteEnv) {
+      const value = node.env[name]
+      if (value !== undefined) secretEnv[name] = NodePath.join(root, ...value.split("/"))
+    }
     if (node.bunTemplate !== undefined) {
       const directory = NodePath.join(root, ...cacheDirectory.split("/"), "tmp")
       await Fs.mkdir(directory, { recursive: true })
@@ -1962,9 +2362,10 @@ export const execute = async (
   const spawnNode = async (
     node: PackageNode,
     workspaceRoot: string,
-    signal: AbortSignal | undefined = options.signal
+    signal: AbortSignal | undefined = options.signal,
+    override?: ReadonlyArray<string>
   ): Promise<ExecOutcome> => {
-    const resolved = await resolveSpawn(node)
+    const resolved = await resolveSpawn(node, override)
     if ("error" in resolved) return { ok: false, error: resolved.error }
     const wrapped = wrapSandbox(resolved.argv, node.sandbox, node.label, log, node.serviceDeps.length > 0)
     const payload: Exec.Payload = {
@@ -2584,10 +2985,20 @@ export const execute = async (
         const spawned = await spawnNode(gateNode, treeRoot, signal)
         return spawned.ok ? { gate: label, status: "green" } : red(spawned.error ?? "tool run failed")
       }
+      case "Cargo.Test":
+      case "Cargo.Clippy":
+      case "Cargo.Fmt": {
+        if (gateNode.lane?.kind !== "cargo") return red("cargo gate planned no commands")
+        for (const command of gateNode.lane.commands) {
+          const spawned = await spawnNode(gateNode, treeRoot, signal, command)
+          if (!spawned.ok) return red(spawned.error ?? "cargo run failed")
+        }
+        return { gate: label, status: "green" }
+      }
       default:
         return red(
           `${gateNode.rule} cannot be executed against a candidate tree in this build ` +
-            "(candidate gates: Shell.Test, Shell.Build, Suite, Alias, Filegroup)"
+            "(candidate gates: Shell.Test, Shell.Build, Cargo.Test, Cargo.Clippy, Cargo.Fmt, Suite, Alias, Filegroup)"
         )
     }
   }
@@ -2842,7 +3253,46 @@ export const execute = async (
     try {
       switch (node.rule) {
         case "Filegroup":
+        // A crate set is a value, not a run: it names manifests and produces
+        // no process. The set itself was expanded at plan time and is key
+        // material on every target that took it as a selector.
+        case "Cargo.AppSet":
           return green("ran")
+        case "Cargo.Fetch":
+        case "Cargo.Build":
+        case "Cargo.Doc":
+        case "Cargo.Test":
+        case "Cargo.Clippy":
+        case "Cargo.Fmt": {
+          if (node.lane?.kind !== "cargo") return fail("cargo target planned no commands")
+          const cached = await cacheGet(node)
+          if (cached !== undefined) return green("hit")
+          if (node.lane.commands.length === 0) {
+            log(`${node.label}  crate set is empty; nothing to run`)
+            return green("ran")
+          }
+          for (const command of node.lane.commands) {
+            const spawned = node.mode === "write"
+              ? await enforceWriteSet(node.writeSet, node.label, () => spawnNode(node, root, signal, command))
+              : await spawnNode(node, root, signal, command)
+            if (!spawned.ok) return fail(spawned.error ?? "cargo run failed")
+          }
+          // A fetch resource that did not deliver what it declared is a
+          // failure, not a green run: every offline dependent reads exactly
+          // these files.
+          for (const file of node.lane.outFiles) {
+            try {
+              await Fs.stat(NodePath.join(root, ...file.split("/")))
+            } catch {
+              return fail(`the fetch did not deliver its declared file: ${file}`)
+            }
+          }
+          if (node.lane.commands.length > 1) {
+            log(`${node.label}  ran cargo over ${node.lane.commands.length} crate(s)`)
+          }
+          await cachePut(node, { kind: "cargo" })
+          return green("ran")
+        }
         case "Suite": {
           const line = node.members
             .map((member) => `${member}=${reports.get(member)?.status ?? "unscheduled"}`)
@@ -3329,6 +3779,7 @@ export const run = async (options: RunOptions): Promise<Executor.Summary | PlanR
         cacheable: node.cacheable,
         dependencies: node.dependencies,
         ...(node.argv === undefined ? {} : { argv: node.argv }),
+        ...(node.lane?.kind === "cargo" && node.argv === undefined ? { commands: node.lane.commands } : {}),
         ...(node.refusal === undefined ? {} : { refusal: node.refusal })
       }))
     }
