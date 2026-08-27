@@ -106,14 +106,17 @@ const clippy = S.Cargo.Clippy({
 
 `Cargo.Fetch` is the one network-enabled cargo target: the lockfile and the
 vendored registry are its declared deliverables, its first `outDirs` entry
-becomes the `CARGO_HOME` every dependent reads, and a dependent keys on the
-lockfile content it delivered rather than on the fetch declaration. That is the
+becomes the `CARGO_HOME` every dependent reads, and a dependent keys on that
+cargo home plus the lockfile content it delivered rather than on the fetch
+declaration. That is the
 `node_modules` rule applied to Cargo: a dynamic install and static dependents
 that run `--locked --offline` against what it produced. A fetch may name a
 crate set instead of one manifest (`S.Cargo.Fetch({ crates })`), which is what
 a repository whose crates are excluded from the root workspace needs: each of
 those crates is its own lockfile domain, and one workspace manifest cannot
-deliver what they resolve against.
+deliver what they resolve against. It may also name neither, which is the bare
+`cargo fetch` over the workspace it runs from; naming both is a declaration
+error, because they say two different things about what is locked.
 
 `offline: true` reaches the child processes a cargo run spawns, not only the
 run itself: the `--offline` flag speaks for one cargo, and a test that shells
@@ -121,6 +124,13 @@ out to a nested cargo — trybuild's compile-fail suites are the common case —
 would otherwise reach for the registry and fail against the sandbox. The
 planner sets `CARGO_NET_OFFLINE` alongside the flag so the declaration's
 statement holds all the way down.
+
+A crate that builds C — anything with a `-sys` dependency — spawns the host
+`cc` from inside the sandbox. The exec boundary inherits `SDKROOT` and
+`DEVELOPER_DIR` alongside `PATH` for exactly that reason: on macOS a toolchain
+clang reached through `PATH` takes its sysroot from `SDKROOT` and looks nowhere
+else, so withholding it would fail the build on a missing `stdlib.h` rather
+than on anything the declaration said.
 
 `Cargo.Fmt` checks by default and applies under `--write`/`--fix`, confined to
 its declared `changes` write set. It is the one cargo rule with no
@@ -152,6 +162,9 @@ A build target may be a tool edge. `S.Shell.Build({ bin: sdk.buildCli })` and
 `S.Generate({ bin: sdk.buildCli })` spawn the one binary that build declares
 (`bins: ["aomi-build"]` under the default profile is `target/debug/aomi-build`),
 and the build becomes an ordinary dependency, so the generator is built before
-its consumer runs and the generator's identity keys everything it produced.
+its consumer runs and the generator's identity keys everything it produced. It
+takes no `runtimeArgs`: those are flags for the JavaScript runtime a built
+binary is not, and a declaration that passes them is refused rather than run
+with a different argv.
 
 See `../API-REVIEW.md` for the review order and current API questions.

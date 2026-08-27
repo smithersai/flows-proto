@@ -413,3 +413,41 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   before it. On the new revision, with `agents: S.Agents({ default, luna, sol })` added
   to a read-only `git archive` copy and nothing else changed, `query '//...'` lists 48
   labels and `test '//:ci' --plan` reports zero refusals.
+- 2026-08-27 (Rust/Cargo review pass, same design partner): the surface above re-verified
+  against `aomi-labs/aomi-sdk` d135b86 and four defects fixed. (1) A macOS `cc` reached
+  through `PATH` — the Xcode toolchain clang, not the `/usr/bin/cc` shim — takes its
+  sysroot from `SDKROOT` and looks nowhere else, and `Exec.inheritedEnvironmentNames`
+  withheld it, so every cargo target with a `-sys` dependency died on
+  `fatal error: 'stdlib.h' file not found` three processes down. `SDKROOT` and
+  `DEVELOPER_DIR` now inherit like `PATH` does. It went unseen in the first pass because
+  that pass measured against the design partner's warm `target/`, where `aws-lc-sys` was
+  already built; a clean tree fails every time. (2) A `Cargo.Fetch` dependency substituted
+  the digest of its delivered files for its own key, which dropped the `CARGO_HOME` it
+  delivers to: two workspaces differing only in the fetch's `outDirs` keyed their offline
+  dependents identically, and a fetch declaring no `outFiles` contributed a constant. The
+  substitute key now carries the resolved cargo home. (3) `S.Shell.Build({ bin: <target>,
+  runtimeArgs })` dropped the runtime flags silently; a built binary is not a JavaScript
+  runtime, so the declaration is refused instead of running a different argv. (4)
+  `S.Cargo.Fetch` accepted `workspace` and `crates` together and silently locked only the
+  first, and the planner refused a fetch that named neither even though the rendering
+  handles it; naming both is now a declaration error and naming neither plans the bare
+  `cargo fetch`. Proof, from a read-only `git archive` copy of d135b86 with the missing
+  `agents` map added (see below): `query '//...'` lists 48 labels across 6 packages with
+  zero refusals; `graph '//:ci'` renders the Suite and its 11 edges; `lint '//sdk:format'`
+  runs `cargo fmt --all -- --check` green in 720ms and hits the cache on the repeat;
+  `build '//sdk:fetch'` delivers an 89KB `Cargo.lock` and a 655M `.cargo-home` in 14.4s;
+  `lint '//sdk:clippy'` then runs
+  `cargo clippy --workspace --lib --locked --offline -- -D warnings` green under the
+  sandbox against that fetch. The JavaScript regression was re-measured directly rather
+  than recalled: the same `query '//...'` over `/Users/williamcory/aomi/aomi` at the branch
+  base and at HEAD returns the identical 151-label set with zero refusals (the earlier
+  "121 labels" line above predates the design partner's own growth and is superseded by
+  this measurement, not by a behavior change). The live d135b86 revision still refuses at
+  index time with `unknown_agent: S.Agents.luna names no declared workspace agent`: five
+  agent lanes in `PACKAGE.ts` and `apps/PACKAGE.ts` name `S.Agents.luna`/`S.Agents.sol`
+  while `WORKSPACE.ts` declares no `agents` map. That is the partner's declaration to fix
+  — a reference to an undeclared agent has no correct resolution — and the one-line fix is
+  `agents: S.Agents({ default, luna, sol })` in `WORKSPACE.ts`, or the inline
+  `S.Agent.Codex("luna")` form on each lane. `//apps:*` was not exercised in this pass:
+  the 35 excluded app crates are each their own lockfile domain and `//apps:fetch` was
+  outside the time budget.
