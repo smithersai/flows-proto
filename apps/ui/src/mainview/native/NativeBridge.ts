@@ -1,33 +1,44 @@
 import { Electroview } from "electrobun/view"
+import { OPEN_EXTERNAL_PATH } from "smithers-shared/AgentApiRoutes"
 import type { AgentTurnFrame, StartAgentTurnRequest, StartAgentTurnResult } from "smithers-shared/NativeAgent"
 import type { PickLocalRepositoryResult, RepositoryAccess } from "smithers-shared/NativeRepository"
 import type { SmithersNativeRPC } from "smithers-shared/NativeRPC"
 
-const agentFrameListeners = new Set<(frame: AgentTurnFrame) => void>()
-
 const rpc = (() => {
-  if (window.__electrobun === undefined) return undefined
+  if (typeof window === "undefined" || window.__electrobun === undefined) return undefined
   const nativeRpc = Electroview.defineRPC<SmithersNativeRPC>({
     handlers: {
       requests: {},
-      messages: {
-        agentFrame: (frame) => {
-          for (const listener of agentFrameListeners) listener(frame)
-        }
-      }
+      messages: {}
     }
   })
   new Electroview({ rpc: nativeRpc })
   return nativeRpc
 })()
 
+/** The HTTP fallback for the native door: the local origin opens the system browser. */
+const httpOpenExternal = async (url: string): Promise<boolean> => {
+  try {
+    const response = await fetch(OPEN_EXTERNAL_PATH, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url })
+    })
+    if (!response.ok) return false
+    const body = (await response.json().catch(() => undefined)) as { ok?: unknown } | undefined
+    return body?.ok === true
+  } catch {
+    return false
+  }
+}
+
 /**
- * Open a URL in the system browser through the native shell; undefined in
- * pure web (a browser page opens tabs itself). The sign-in handoff keys off
- * this: present means OAuth can run outside the webview.
+ * Open a URL in the system browser: through the native shell when the page
+ * runs inside it, else through the local origin's /api/open-external.
+ * Either way the sign-in handoff can run OAuth outside the webview.
  */
-export const nativeOpenExternal: ((url: string) => Promise<boolean>) | undefined = rpc === undefined
-  ? undefined
+export const nativeOpenExternal: (url: string) => Promise<boolean> = rpc === undefined
+  ? httpOpenExternal
   : async (url) => (await rpc.proxy.request.openExternal({ url })).opened
 
 export interface NativeRepositories {
@@ -56,15 +67,13 @@ export interface NativeAgent {
   /**
    * Mid-turn input (DESIGN.md §14): admit a message into the running turn's
    * steering queue, drained at the next link boundary. Absent on backends
-   * without steering (the proxy) — callers treat undefined as "not steerable"
-   * and answers false when the run is not live.
+   * without steering; callers treat undefined as "not steerable".
    */
   readonly steer?: (runId: string, text: string) => Promise<boolean>
   /**
    * Resolve a chain approval park (DESIGN.md §14): record the human's
    * decision against the pending ask so a fresh startTurn on the same
-   * lineage converges under it. `ask` reconstructs the record after a
-   * reload from the persisted card. Absent on backends without the seam.
+   * lineage converges under it. Absent on backends without the seam.
    */
   readonly resolveApproval?: (
     runId: string,
@@ -75,24 +84,3 @@ export interface NativeAgent {
   readonly revokeGrants?: () => Promise<void>
   readonly subscribe: (listener: (frame: AgentTurnFrame) => void) => () => void
 }
-
-const electrobunAgent: NativeAgent | undefined = rpc === undefined
-  ? undefined
-  : {
-    available: true,
-    startTurn: (request) => rpc.proxy.request.startAgentTurn(request),
-    cancelTurn: async (runId) => {
-      await rpc.proxy.request.cancelAgentTurn({ runId })
-    },
-    subscribe: (listener) => {
-      agentFrameListeners.add(listener)
-      return () => agentFrameListeners.delete(listener)
-    }
-  }
-
-/**
- * The native shell's agent, over the Electrobun RPC bridge. Undefined in pure
- * web, where the agent loop runs in the page itself (the Agent Chain) and the
- * only thing the browser asks a server for is one metered model call.
- */
-export const nativeAgent: NativeAgent | undefined = electrobunAgent

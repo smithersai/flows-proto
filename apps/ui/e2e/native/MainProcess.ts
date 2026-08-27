@@ -1,64 +1,45 @@
 /*
  * The native main process, run for real, with no window.
  *
- * apps/ui/src/bun/index.ts is a top-level-await module: importing it resolves
- * the main-view URL, registers the RPC surface and constructs the window as a
+ * apps/ui/src/bun/index.ts is a top-level-await module: importing it starts
+ * the local origin, registers the RPC surface and constructs the window as a
  * side effect, once per process. So it cannot be re-imported for a second
- * scenario, and `electrobun/bun` cannot be imported inside `bun test` at all —
+ * scenario, and `electrobun/main` cannot be imported inside `bun test` at all:
  * it dlopens a native wrapper and installs a quit handler that keeps the
  * process alive.
  *
- * This driver is the way around both. It replaces `electrobun/bun` wholesale
+ * This driver is the way around both. It replaces `electrobun/main` wholesale
  * with a recording fake, imports the REAL entrypoint, exercises the handlers
- * the entrypoint registered, and prints one JSON report on stdout.
- * src/bun/Main.test.ts spawns it once per scenario, which is how every
- * main-view URL branch is asserted against the shipped module rather than
- * against a copy of its logic.
+ * the entrypoint registered, probes the origin it started, and prints one
+ * JSON report on stdout. src/bun/Main.test.ts spawns it once per scenario.
  *
- * Nothing here fakes the product. The fake stands in for the HOST — the
- * window, the file dialog, the updater, the system browser — exactly the
- * parts a headless machine does not have.
+ * Nothing here fakes the product. The fake stands in for the HOST: the
+ * window, the file dialog and the system browser, exactly the parts a
+ * headless machine does not have. The local server is the real one.
  */
 import { mock } from "bun:test"
 import { PROBE_MARKER } from "./Probe.ts"
-import type { NativeProbeReport, ProbeScenario, RecordedChatRequest, RecordedWindow } from "./Probe.ts"
+import type { NativeProbeReport, ProbeScenario, RecordedWindow } from "./Probe.ts"
 
 const scenario: ProbeScenario = JSON.parse(process.env.SMITHERS_NATIVE_PROBE ?? "{}") as ProbeScenario
-const channel = scenario.channel ?? "dev"
-const devServer = scenario.devServer ?? "down"
 const dialogPaths = scenario.dialogPaths ?? []
 const openExternalAnswer = scenario.openExternalAnswer ?? true
-const agentStream = scenario.agentStream ?? null
 
 const logs: Array<string> = []
 const windows: Array<RecordedWindow> = []
-const webviewEvents: Array<string> = []
 const dialogOptions: Array<unknown> = []
 const openedExternally: Array<string> = []
-const chatRequests: Array<RecordedChatRequest> = []
-const frames: Array<unknown> = []
 const results: Record<string, unknown> = {}
 let requestNames: ReadonlyArray<string> = []
 let messageNames: ReadonlyArray<string> = []
 let handlers: Record<string, unknown> = {}
-let channelCalls = 0
-let devProbeCalls = 0
 
 const originalLog = console.log
 console.log = (...parts: ReadonlyArray<unknown>): void => {
   logs.push(parts.map((part) => String(part)).join(" "))
 }
 
-const fakeRpc = {
-  proxy: {
-    request: {},
-    send: {
-      agentFrame: (frame: unknown): void => {
-        frames.push(frame)
-      }
-    }
-  }
-}
+const fakeRpc = { proxy: { request: {}, send: {} } }
 
 interface RpcConfig {
   readonly handlers: {
@@ -67,7 +48,7 @@ interface RpcConfig {
   }
 }
 
-mock.module("electrobun/bun", () => ({
+const fakeSdk = {
   BrowserView: {
     defineRPC: (config: RpcConfig) => {
       requestNames = Object.keys(config.handlers.requests)
@@ -77,11 +58,6 @@ mock.module("electrobun/bun", () => ({
     }
   },
   BrowserWindow: class FakeBrowserWindow {
-    readonly webview = {
-      on: (name: string): void => {
-        webviewEvents.push(name)
-      }
-    }
     constructor(options: { title: unknown; url: unknown; frame: unknown; rpc: unknown }) {
       windows.push({
         title: options.title,
@@ -89,14 +65,6 @@ mock.module("electrobun/bun", () => ({
         frame: options.frame,
         rpcBound: options.rpc === fakeRpc
       })
-    }
-  },
-  Updater: {
-    localInfo: {
-      channel: async (): Promise<string> => {
-        channelCalls += 1
-        return channel
-      }
     }
   },
   Utils: {
@@ -109,38 +77,9 @@ mock.module("electrobun/bun", () => ({
       return openExternalAnswer
     }
   }
-}))
-
-const ndjson = (lines: ReadonlyArray<unknown>): Response =>
-  new Response(
-    new ReadableStream<Uint8Array>({
-      start(controller) {
-        const encoder = new TextEncoder()
-        for (const line of lines) controller.enqueue(encoder.encode(`${JSON.stringify(line)}\n`))
-        controller.close()
-      }
-    }),
-    { status: 200 }
-  )
-
-/*
- * The two network calls the entrypoint makes are the dev-server probe and the
- * chat turn. Both are host facts, not product logic, so both are answered
- * here; anything else is a fault the report must surface rather than hide.
- */
-const realFetch = globalThis.fetch
-globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-  const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
-  if (url.startsWith("http://localhost:5173")) {
-    devProbeCalls += 1
-    if (devServer === "up") return new Response(null, { status: 200 })
-    throw new Error("connect ECONNREFUSED 127.0.0.1:5173")
-  }
-  const headers = new Headers(init?.headers)
-  chatRequests.push({ url, runId: headers.get("x-smithers-run-id") })
-  if (agentStream === null) throw new Error(`unexpected fetch: ${url}`)
-  return ndjson(agentStream)
-}) as typeof fetch
+}
+mock.module("electrobun/main", () => fakeSdk)
+mock.module("electrobun/bun", () => fakeSdk)
 
 await import("../../src/bun/index.ts")
 
@@ -153,11 +92,10 @@ for (const exercise of scenario.exercises ?? []) {
   results[exercise.label] = await (handler as (params: unknown) => unknown)(exercise.params)
 }
 
-if (scenario.settleMs !== undefined && scenario.settleMs > 0) {
-  await new Promise((resolve) => setTimeout(resolve, scenario.settleMs))
-}
+const originLine = logs.find((line) => line.startsWith("SMITHERS_LOCAL_ORIGIN="))
+const origin = originLine === undefined ? null : originLine.slice("SMITHERS_LOCAL_ORIGIN=".length)
+const health = origin === null ? null : await fetch(`${origin}/api/health`).then((response) => response.json()).catch(() => null)
 
-globalThis.fetch = realFetch
 console.log = originalLog
 
 const report: NativeProbeReport = {
@@ -165,13 +103,10 @@ const report: NativeProbeReport = {
   windows,
   requestNames,
   messageNames,
-  webviewEvents,
-  channelCalls,
-  devProbeCalls,
   dialogOptions,
   openedExternally,
-  chatRequests,
-  frames,
+  origin,
+  health,
   results
 }
 await Bun.write(Bun.stdout, `${PROBE_MARKER}${JSON.stringify(report)}\n`)
