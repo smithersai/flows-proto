@@ -180,6 +180,33 @@ describe("the tabs collection", () => {
       ]
     })
     expect([...store.collections.harnesses.keys()]).toEqual(["claude"])
+    // A re-load (the `+` menu opening after boot) carries the same ids again: replaced in place, never duplicated or dropped.
+    await persisted(store, {
+      type: "harnesses.loaded",
+      actor: "system",
+      harnesses: [
+        {
+          id: "claude",
+          displayName: "Claude Code",
+          binary: "/usr/local/bin/claude",
+          version: "2.1.0",
+          status: "signed-in",
+          account: { email: "will@codeplane.app" },
+          launch: { argv: ["claude"] }
+        },
+        {
+          id: "codex",
+          displayName: "Codex",
+          binary: null,
+          version: null,
+          status: "unavailable",
+          account: null,
+          launch: { argv: ["codex"] }
+        }
+      ]
+    })
+    expect([...store.collections.harnesses.keys()].sort()).toEqual(["claude", "codex"])
+    expect(store.collections.harnesses.get("claude")).toMatchObject({ version: "2.1.0" })
     await persisted(store, { type: "harnesses.loaded", actor: "system", harnesses: [] })
     expect(store.collections.harnesses.size).toBe(0)
     await persisted(store, {

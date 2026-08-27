@@ -1845,11 +1845,25 @@ export const createAppStore = async (
           break
         }
 
+        /*
+         * A reload replaces the list: rows the server still names update in
+         * place, new rows insert, the rest delete. One transaction cannot
+         * delete and re-insert the same key ("Unhandled mutation combination:
+         * delete-insert"), so a wholesale clear-then-insert threw on every
+         * reload whose list overlapped the last one.
+         */
+
         case "harnesses.loaded": {
-          const stale = [...collections.harnesses.keys()]
+          const next = new Set<string>(transition.harnesses.map((harness) => harness.id))
+          const stale = [...collections.harnesses.keys()].filter((id) => !next.has(id))
           if (stale.length > 0) collections.harnesses.delete(stale)
-          if (transition.harnesses.length > 0) {
-            collections.harnesses.insert(transition.harnesses.map((harness) => ({ ...harness })))
+          for (const harness of transition.harnesses) {
+            if (collections.harnesses.get(harness.id) === undefined) collections.harnesses.insert({ ...harness })
+            else {
+              collections.harnesses.update(harness.id, (draft) => {
+                Object.assign(draft, harness)
+              })
+            }
           }
           collections.sessions.update(SESSION_ID, (draft) => {
             draft.revision = revision
@@ -1858,9 +1872,17 @@ export const createAppStore = async (
         }
 
         case "repos.loaded": {
-          const stale = [...collections.repos.keys()]
+          const next = new Set(transition.repos.map((repo) => repo.id))
+          const stale = [...collections.repos.keys()].filter((id) => !next.has(id))
           if (stale.length > 0) collections.repos.delete(stale)
-          if (transition.repos.length > 0) collections.repos.insert(transition.repos.map((repo) => ({ ...repo })))
+          for (const repo of transition.repos) {
+            if (collections.repos.get(repo.id) === undefined) collections.repos.insert({ ...repo })
+            else {
+              collections.repos.update(repo.id, (draft) => {
+                Object.assign(draft, repo)
+              })
+            }
+          }
           collections.sessions.update(SESSION_ID, (draft) => {
             draft.revision = revision
           })

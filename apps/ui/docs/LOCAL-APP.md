@@ -149,6 +149,7 @@ client -> server
   { type: "subscribe",   topic: string }          // "pty:<sessionId>" | "target-run:<runId>"
   { type: "unsubscribe", topic: string }
   { type: "pty.input",   sessionId, data: string } // UTF-8 text typed by the user
+  { type: "target-run.attach", runId }             // a subscriber is listening: the child starts now (else after 1s)
 server -> client
   { type: "pty.output",  sessionId, data: string } // UTF-8 chunk
   { type: "pty.exit",    sessionId, code: number | null }
@@ -199,13 +200,25 @@ and `{ smithers: "open", label }`. The card listens, dispatches
 `/api/targets/run`, and appends a `target-run` card. The iframe is
 `<iframe sandbox="allow-scripts" srcdoc=...>`, never same-origin.
 
+L3 implementation notes (2026-08-26): the prompt builder, its parser (the
+stub reads the target list back out of the instructions), the reply parser
+and `renderTargetsPanel` live in `apps/shared/src/TargetsPanel.ts`. The
+window `message` listener is installed by the controller
+(`state/controller/targets.ts`), matches `event.source` to the frame carrying
+`data-html-card="<cardId>"`, and runs the hidden user-only flows
+`target.run <repoId> <label>` / `target.open <repoId> <label>`; `open` sets
+`targets.payload.highlighted` and scrolls the `[data-target-row]` into view.
+The panel turn is a plain `POST /api/chat/turn` (no transcript turn, no
+deadline). `SMITHERS_BUILD_CLI` overrides the loader path for the server
+(`startLocalServer({ buildCli })` in tests).
+
 Ruling: this overrides `apps/DESIGN.md` section 14 ("no generative HTML in
 v1"); will asked for agent-authored HTML on 2026-08-26.
 
 ## Cards (`apps/shared/src/Cards.ts` additions)
 
 ```ts
-{ kind: "targets",    repoId, repoName, status: "pending" | "done" | "failed", targets: Target[], warnings: string[] }
+{ kind: "targets",    repoId, repoName, status: "pending" | "done" | "failed", targets: Target[], warnings: string[], highlighted?: string }
 { kind: "html",       title, html, source: "agent" | "template", repoId }
 { kind: "target-run", runId, repoId, label, status: "running" | "done" | "failed", exitCode: number | null, output: string }
 { kind: "repo",       repo: Repo }
@@ -270,11 +283,46 @@ wrapping everywhere (logged). Profiles are seatbelt `(version 1)` text.
 | Loader (`smthrs query`) | `loader` | deny | `<repo>/.flows`, `$TMPDIR`, `/private/tmp` |
 | Harness tab | `harness` | allow | `<repo>`, `~/.claude`, `~/.claude.json`, `~/.codex`, `~/.gemini`, `~/.kimi`, `~/.config`, `~/.cache`, `~/.local`, `$TMPDIR`, `/private/tmp` |
 | Terminal tab | `terminal` | allow | `<repo>`, `$HOME` dotfiles above, `$TMPDIR`, `/private/tmp` |
+| Read-only probes (`git -C` repo facts, `<bin> --version`) | `probe` | deny | `$TMPDIR` (realpathed) + its `/private` twin, `/private/tmp` |
 
 Rationale: seatbelt cannot filter egress by hostname, and claude/codex need
 the network and their config dirs, so harness and terminal spawns confine
 file writes rather than the network. `wrapSandbox` reads only its arguments;
 policies are data so tests can assert the generated profile.
+
+Probe ruling (wave-2 integration, 2026-08-26): the two read-only spawns the
+verifiers flagged — the `git -C` branch/remote probe in `src/bun/Repos.ts`
+and the `<bin> --version` probes in `src/bun/Harnesses.ts` — run under
+`probePolicy` (network deny, file writes confined to the realpathed
+`$TMPDIR`, its `/private` twin and `/private/tmp`). Verified on this
+machine: git facts populate for `artsy/force` and claude/codex versions
+still resolve under the profile.
+
+Documented exception: `amp --version` fails under the probe profile (its
+CLI writes under `~/.cache` — beyond `~/.cache/amp` — on every invocation
+and aborts with "Unexpected error inside Amp CLI." when the profile's
+`(deny file-write*)` blocks it; re-allowing `(subpath "~/.cache/amp")`
+alone is not enough, only `(subpath "~/.cache")` is). The amp probe runs
+unwrapped (`PROBE_SANDBOX_EXCEPTIONS` in `Harnesses.ts`) rather than
+letting the probe policy write into `$HOME`.
+
+Reality check (L4, 2026-08-26, macOS 15 arm64, `claude` 2.1.247, `codex`
+0.149.1, `/bin/zsh -il` with oh-my-zsh): all three start and reach their
+prompt under the policies above with the signed-in account (Claude Max via
+the Keychain, Codex via `~/.codex/auth.json`). Three rules had to be added
+because seatbelt refused writes the programs make on their normal path;
+everything else in `$HOME` stays read-only:
+
+| Rule | Policies | Why |
+| --- | --- | --- |
+| `(subpath "/private<tmpdir>")` next to `(subpath "<tmpdir>")` | all | `$TMPDIR` is `/var/folders/.../T`, a symlink into `/private/var`; seatbelt matches the resolved path, so the `/var` rule alone denied every temp file. `privateAliases` adds the twin for any dir under `/var`, `/tmp`, `/etc`. |
+| `(regex #"^<home>/\.claude\.json")` | harness, terminal | Claude Code saves `~/.claude.json` atomically through `~/.claude.json.tmp.<pid>.<random>` + rename; the literal rule for the file alone made the save fail. |
+| `(regex #"^<home>/\.zsh_history")`, `(regex #"^<home>/\.zcompdump")` | terminal | zsh writes `$HISTFILE`, its `.new` and `.LOCK` siblings, and one `.zcompdump-<host>-<version>` per shell version. Without them the shell runs but loses history and rebuilds completion every start. |
+
+The policy records these as `writablePrefixes`; `Sandbox.test.ts` pins every
+allow/deny clause of the three profiles. Verified with `sandbox-exec -p` on the
+rendered profile: `$TMPDIR`, `~/.claude.json.tmp.x`, `~/.zsh_history.new` and
+`~/.zcompdump-x` write; `~/.zshrc-x` and `~/Desktop/x` are denied.
 
 ## Harness detection (`src/bun/Harnesses.ts`)
 
@@ -295,6 +343,33 @@ only `PATH`: `~/.local/bin`, `~/.bun/bin`, `/opt/homebrew/bin`,
 
 `launch.argv` is the interactive command (`["claude"]`, `["codex"]`, ...).
 Never append `--dangerously-skip-permissions` or `--yolo`.
+
+Implementation notes (L4): `~/.opencode/bin` is a candidate dir too (the
+opencode installer's default). A binary that is absent is `unavailable`
+whatever the credentials say; with a binary, the sign-in signal decides
+`signed-in` > `api-key` > `binary-only`. Labels for the config-file
+harnesses are the file in tilde form (`~/.hermes/auth.json`). Versions come
+from `<bin> --version` probed in parallel with a 3s `Bun.spawn` timeout
+(`hermes --version` takes 6s on this machine and reports `null`) and are
+cached per binary path for the process lifetime; sign-in state is re-read on
+every call. The route answers in about 1.5s cold and in file-read time warm.
+
+PTY sessions (`src/bun/Pty.ts`): `Bun.spawn({ terminal: { cols, rows, name:
+"xterm-256color", data } })` (Bun 1.4). Terminal tabs run `[$SHELL, "-il"]`
+(default `/bin/zsh`); harness tabs run the detected absolute binary plus
+`launch.argv.slice(1)`. `cwd` expands `~` and `~/x` against the server's
+home and must be a directory (400 `bad_cwd`). The child environment is an
+allowlist (`ENV_ALLOWLIST`: HOME, USER, SHELL, TMPDIR, LANG/LC_*, TZ,
+SSH_AUTH_SOCK, XDG_*, EDITOR/VISUAL/PAGER, the harness config-dir
+overrides, the provider API keys) plus `TERM=xterm-256color`,
+`COLORTERM=truecolor`, `LANG` (default `en_US.UTF-8`), and a `PATH` that
+starts with the Node sidecar's dir and the harness candidate dirs ahead of
+the app's own PATH, so `codex` (a `#!/usr/bin/env node` script) resolves from
+a Finder launch. Output frames are UTF-8 chunks from a streaming decoder;
+`pty.exit` follows the last output (the PTY's EOF or a 300ms grace after the
+process exit). Exited sessions stay listed with `alive: false` until
+`DELETE`, so the SPA always deletes on tab close. `DELETE` sends SIGHUP, then
+SIGKILL after 2s, and drops the record; `stop()` kills every session.
 
 ## Test tiers
 
@@ -392,3 +467,72 @@ Acceptance on `24f337536`:
 Open for wave 2: `/api/health.home` and the `cwd: "~"` expansion are contract
 only until `local-app/harness-terminal` lands `/api/pty`; `tabs.spec.ts`
 mocks both.
+
+Lane L4 (`local-app/harness-terminal`, 2026-08-26):
+
+- `src/bun/Harnesses.ts` + `Harnesses.test.ts`, `src/bun/Pty.ts` +
+  `Pty.test.ts`, `src/bun/routes/harnesses.ts`, `src/bun/routes/pty.ts`;
+  `server.ts` registers both and reports `home` on `/api/health`;
+  `LocalServerOptions` gained `home`, `harnesses` and `pty` so tests inject a
+  fake table and a sandbox-off `/bin/sh` manager.
+- `Sandbox.ts` adds `writablePrefixes` and `privateAliases` (see "Sandbox");
+  `Sandbox.test.ts` pins the clauses.
+- SPA: `ControllerBoot.client.ts` loads the harness table at boot (the `+`
+  menu re-loads on open); `controller/tabs.ts` always `DELETE`s a closed
+  process tab's session. L2's frames matched the server's; no protocol
+  change.
+- `e2e/playwright/terminal.spec.ts` and `harness.spec.ts` run against the
+  real origin (T1). `harness.spec.ts` skips its signed-in assertions with a
+  reason when `~/.claude.json` has no `oauthAccount`.
+- Real window (the dev `.app` launched with `ELECTROBUN_CEF_REMOTE_DEBUGGING_PORT`,
+  driven over CDP, 2026-08-26): the `+` menu's Terminal row opens a zsh tab,
+  a click in the emulator takes keyboard focus and `echo hi-from-cef` renders
+  its output; Cmd+T opens a second terminal tab and activates it; the first
+  fit posts the real geometry (`145x49` at 1180x800) to `/api/pty/:id/resize`;
+  the Claude Code row reads `Claude Code will@codeplane.app`, its tab shows
+  the banner under the harness sandbox and typed text lands in Claude Code's
+  composer; Cmd+W asks, confirms, and `GET /api/pty` empties. A native window
+  resize could not be driven from the harness (CDP's `Browser.getWindowForTarget`
+  answers "Browser window not found" for the embedded CEF view, and
+  `osascript` lacks Accessibility access), so the ResizeObserver refit is
+  proven by the mount-time fit only; the adapter posts every changed
+  geometry from the same path.
+
+Wave 2 (2026-08-26), on `local-app/base`:
+
+- `3e6af1806` merge of `local-app/repo-targets` (clean).
+- `2265ab8f2` merge of `local-app/harness-terminal`. Conflicts: `server.ts`
+  (both lanes' `LocalServerOptions` kept — `buildCli` next to `home`,
+  `harnesses`, `pty`; every lane placeholder dropped because both lanes
+  register real routes), `server.test.ts` (the placeholder test became an
+  empty-state check for `GET /api/repos`), `AppStore.ts` (both lanes fixed
+  the `harnesses.loaded`/`repos.loaded` reducers the same way for TanStack
+  DB's delete-insert refusal; L3's update-in-place implementation kept, both
+  lanes' tests green). `LOCAL-APP.md` lane notes unioned by the auto-merge.
+  `pnpm-lock.yaml` untouched by either lane.
+- `8ce440d9e` fallout: the unused `notImplemented` import dropped from
+  `server.ts`.
+- `14bcbc36d` probe ruling (see "Sandbox"): the `git -C` branch/remote probe
+  (`Repos.ts`) and the `<bin> --version` probes (`Harnesses.ts`) run under
+  the new `probePolicy` (network deny, writes confined to scratch); `amp`
+  is the one documented exception and stays unwrapped.
+
+Acceptance on `14bcbc36d`:
+
+| Command | Result |
+| --- | --- |
+| `pnpm install --frozen-lockfile && git status --short` | `Already up to date`, clean tree |
+| `pnpm --filter smithers-ui typecheck`, `pnpm --filter smithers-shared typecheck` | exit 0 |
+| `bun test src` (apps/ui) | 865 pass, 0 fail, 98 files |
+| `bun test src` (apps/shared) | 44 pass, 0 fail, 4 files |
+| `pnpm --filter smithers-ui test:e2e` | 17 passed, 1 skipped (`chat.real.spec.ts`, stub on): boot, chat, tabs, repo-targets, terminal, harness |
+| `pnpm --filter smithers-ui test:e2e:native` | 1 passed |
+| `smthrs query '//...' --format json` on `/Users/williamcory/artsy/force` | `targets: 82` |
+
+Cross-lane smoke (headless server on `47396`, chat stub on): `/api/health`
+reports `home`, `node` and `sandbox.enforced: true`; `/api/harnesses` lists
+`claude` 2.1.247 signed-in with its account email; `POST /api/repo/open` on
+`artsy/force` answers `detected: true` with the origin remote (branch null:
+the checkout sits on a detached HEAD); `POST /api/targets/query` answers 82
+targets with no warnings; `POST /api/pty` (`terminal`, `cwd: "~"`) opens a
+session listed `alive: true` at `$HOME` and `DELETE` empties the list.

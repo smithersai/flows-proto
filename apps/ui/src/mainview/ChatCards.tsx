@@ -28,6 +28,7 @@ import { KeysCardBody } from "./cards/KeysCard"
 import { LandingCardBody, LandingListCardBody } from "./cards/LandingCards"
 import { NotificationsCardBody } from "./cards/NotificationsCard"
 import { RepoImportCardBody } from "./cards/RepoImportCard"
+import { HtmlCardBody, RepoCardBody, TargetRunCardBody, TargetsCardBody } from "./cards/TargetCards"
 import { ThemePickerCardBody } from "./cards/ThemePickerCard"
 import type { Card, WorldDocument } from "./state/AppState"
 import { WORLD_DISPLAY_NAME } from "./state/AppState"
@@ -115,6 +116,10 @@ const pillStatus = (card: Card): string => {
     // card.status "error" already answered "failed" at the top.
     return "done"
   }
+  /* Lane L3 (docs/LOCAL-APP.md "Cards"): the payload's own status leads. */
+  if (card.kind === "targets") return card.payload.status
+  if (card.kind === "target-run") return card.payload.status
+  if (card.kind === "html" || card.kind === "repo") return "done"
   if (card.status === "acted") return "done"
   if (card.kind !== "status") return "pending"
   const progress = card.payload.progress
@@ -1107,6 +1112,10 @@ export function CardView({
           {card.kind === "file-list" ? <FileListCardBody card={card} onRunCommand={onRunCommand} /> : null}
           {card.kind === "file" ? <FileCardBody card={card} onRunCommand={onRunCommand} /> : null}
           {card.kind === "theme-picker" ? <ThemePickerCardBody card={card} onRunCommand={onRunCommand} /> : null}
+          {card.kind === "repo" ? <RepoCardBody card={card} /> : null}
+          {card.kind === "targets" ? <TargetsCardBody card={card} /> : null}
+          {card.kind === "html" ? <HtmlCardBody card={card} /> : null}
+          {card.kind === "target-run" ? <TargetRunCardBody card={card} /> : null}
         </div>
       </section>
     </>

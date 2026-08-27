@@ -86,6 +86,8 @@ export interface ControllerContext {
   stopWorkflowPumps: () => void
   contextMessages: () => ReadonlyArray<AgentChatMessage>
   openRepoChooser: (preselect?: string) => Promise<string | void>
+  /** Open a repository by path on the local origin (controller/targets.ts binds it). */
+  openRepo: (path: string) => Promise<string | void>
   workflowRpc: (repo: string, method: string, params: unknown) => Promise<WorkflowRpcResult>
   commands: CommandRegistry
   withToast: <T>(
@@ -160,6 +162,7 @@ export const createControllerContext = (
     stopWorkflowPumps: () => {},
     contextMessages: () => [],
     openRepoChooser: async () => {},
+    openRepo: async () => "Opening a repository is not wired.",
     workflowRpc: async () => ({ status: "error", message: "Workflow RPC is not wired." }),
     commands: undefined as unknown as CommandRegistry,
     withToast: undefined as unknown as ControllerContext["withToast"],
