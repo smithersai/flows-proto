@@ -270,6 +270,35 @@ describe("payload and environment boundary", () => {
     }
   })
 
+  it("inherits the native toolchain's SDK location, which a C compiler cannot find without it", async () => {
+    // A cargo target that compiles a `-sys` crate spawns the host `cc`. On
+    // macOS a toolchain clang reached through PATH resolves its sysroot from
+    // `SDKROOT`/`DEVELOPER_DIR` and from nothing else, so withholding them
+    // fails the build with `'stdlib.h' file not found` — a host-configuration
+    // error reported as a compile error three processes down.
+    const previousSdk = process.env["SDKROOT"]
+    const previousDeveloper = process.env["DEVELOPER_DIR"]
+    process.env["SDKROOT"] = "/smthrs/test/MacOSX.sdk"
+    process.env["DEVELOPER_DIR"] = "/smthrs/test/Developer"
+    try {
+      const result = await succeeded(payload(
+        "process.stdout.write(JSON.stringify({" +
+          "sdk: process.env.SDKROOT," +
+          "developer: process.env.DEVELOPER_DIR" +
+          "}))"
+      ))
+      expect(JSON.parse(result.stdout)).toEqual({
+        sdk: "/smthrs/test/MacOSX.sdk",
+        developer: "/smthrs/test/Developer"
+      })
+    } finally {
+      if (previousSdk === undefined) delete process.env["SDKROOT"]
+      else process.env["SDKROOT"] = previousSdk
+      if (previousDeveloper === undefined) delete process.env["DEVELOPER_DIR"]
+      else process.env["DEVELOPER_DIR"] = previousDeveloper
+    }
+  })
+
   it("removes a sensitive value even when the payload tries to add it back", async () => {
     const value = payload(
       "process.stdout.write(String(process.env.SMITHERS_PRIVATE_VALUE))",
