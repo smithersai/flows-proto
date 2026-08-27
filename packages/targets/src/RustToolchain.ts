@@ -276,9 +276,12 @@ export const Toolchain = (options: ToolchainOptions = {}): ToolchainDeclaration 
       throw new TypeError(`Rust.Toolchain received unknown option ${JSON.stringify(key)}`)
     }
   }
-  const named = [options.channel === undefined ? undefined : "channel", options.toolchain === undefined
-    ? undefined
-    : "toolchain"].filter((entry) => entry !== undefined)
+  const named = [
+    options.channel === undefined ? undefined : "channel",
+    options.toolchain === undefined
+      ? undefined
+      : "toolchain"
+  ].filter((entry) => entry !== undefined)
   if (named.length !== 1) {
     throw new Error(
       `Rust.Toolchain requires exactly one of channel, toolchain; received ${

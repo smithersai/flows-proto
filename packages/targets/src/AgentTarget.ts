@@ -134,7 +134,6 @@ export const AgentSelector = Schema.Union([Reference.AgentRef, AgentDeclaration]
  */
 export type AgentSelector = typeof AgentSelector.Type
 
-
 /**
  * Maximum findings accepted from one agent response.
  *
@@ -921,7 +920,6 @@ const prDefinition = Target.make("Agent.Pr", {
  * @since 0.1.0
  */
 export const Pr = (attrs: (typeof PrAttrs)["~type.make.in"]): Target.AnyTarget => prDefinition(attrs)
-
 
 /**
  * The model name one agent declaration names.

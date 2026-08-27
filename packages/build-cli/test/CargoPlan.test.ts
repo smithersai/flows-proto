@@ -160,6 +160,9 @@ describe.skipIf(!hasCargo)("cargo package-mode planning", () => {
     // The fetch resource owns CARGO_HOME: the registry it downloads is its
     // declared output directory, and every offline dependent reads it there.
     expect(fetch.env["CARGO_HOME"]).toBe(".cargo-home")
+    // The declared channel is selected, not hoped for: a host without it fails
+    // at the start of the run naming the channel, not mid-compile.
+    expect(fetch.env["RUSTUP_TOOLCHAIN"]).toBe("1.91")
     const clippy = nodeOf(planned, "//sdk:clippy")
     expect(commandsOf(clippy)[0]!.slice(1))
       .toEqual(["clippy", "--workspace", "--lib", "--locked", "--offline", "--", "-D", "warnings"])

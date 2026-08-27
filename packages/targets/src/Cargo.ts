@@ -892,8 +892,7 @@ const appSetDefinition = Target.make("Cargo.AppSet", {
  * @category targets
  * @since 0.1.0
  */
-export const Fetch = (attrs: (typeof FetchAttrs)["~type.make.in"]): Target.AnyTarget =>
-  fetchDefinition(attrs) as unknown as Target.AnyTarget
+export const Fetch = (attrs: (typeof FetchAttrs)["~type.make.in"]): Target.AnyTarget => fetchDefinition(attrs)
 
 /**
  * A `cargo build` over a workspace, one package, or a crate set.
@@ -903,7 +902,7 @@ export const Fetch = (attrs: (typeof FetchAttrs)["~type.make.in"]): Target.AnyTa
  */
 export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTarget => {
   requireOneSelector("Cargo.Build", attrs, crateSelectors)
-  return buildDefinition(attrs) as unknown as Target.AnyTarget
+  return buildDefinition(attrs)
 }
 
 /**
@@ -914,7 +913,7 @@ export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTa
  */
 export const Doc = (attrs: (typeof DocAttrs)["~type.make.in"]): Target.AnyTarget => {
   requireOneSelector("Cargo.Doc", attrs, crateSelectors)
-  return docDefinition(attrs) as unknown as Target.AnyTarget
+  return docDefinition(attrs)
 }
 
 /**
@@ -935,8 +934,7 @@ export const Doc = (attrs: (typeof DocAttrs)["~type.make.in"]): Target.AnyTarget
  * @category targets
  * @since 0.1.0
  */
-export const AppSet = (attrs: (typeof AppSetAttrs)["~type.make.in"]): Target.AnyTarget =>
-  appSetDefinition(attrs) as unknown as Target.AnyTarget
+export const AppSet = (attrs: (typeof AppSetAttrs)["~type.make.in"]): Target.AnyTarget => appSetDefinition(attrs)
 
 /**
  * Checks whether a value is a declared crate set.
@@ -985,7 +983,7 @@ export function Fmt(attrs: (typeof FmtAttrs)["~type.make.in"]): Target.AnyTarget
 export function Fmt(attrs?: (typeof FmtAttrs)["~type.make.in"]): FmtCheck | Target.AnyTarget {
   if (attrs === undefined) return fmtCheck()
   requireOneSelector("Cargo.Fmt", attrs, ["workspace", "crates"])
-  return packageFmtDefinition(attrs) as unknown as Target.AnyTarget
+  return packageFmtDefinition(attrs)
 }
 
 /**
@@ -1013,7 +1011,7 @@ export function Clippy(attrs?: unknown): ClippyCheck | Target.AnyTarget {
   requireOneSelector("Cargo.Clippy", attrs, crateSelectors)
   return packageClippyDefinition(
     attrs as (typeof PackageClippyAttrs)["~type.make.in"]
-  ) as unknown as Target.AnyTarget
+  )
 }
 
 /**
@@ -1035,7 +1033,7 @@ export function Test(attrs: (typeof PackageTestAttrs)["~type.make.in"]): Target.
 export function Test(attrs?: unknown): TestCheck | Target.AnyTarget {
   if (!namesCrates(attrs)) return testCheck(attrs as Parameters<typeof testCheck>[0])
   requireOneSelector("Cargo.Test", attrs, crateSelectors)
-  return packageTestDefinition(attrs as (typeof PackageTestAttrs)["~type.make.in"]) as unknown as Target.AnyTarget
+  return packageTestDefinition(attrs as (typeof PackageTestAttrs)["~type.make.in"])
 }
 
 /**
