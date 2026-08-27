@@ -168,6 +168,9 @@ describe("opaque local repositories", () => {
     const graph = await serveCli(root, ["graph", "//:childTest", "--format", "json"])
     expect(graph.exitCode).toBe(0)
     expect(graph.stdout).toContain("-repo-> @child//:test")
+    const plan = await serveCli(root, ["//:childTest", "--plan"])
+    expect(plan.exitCode).toBe(0)
+    expect(`${plan.stdout}\n${plan.stderr}`).toContain("pattern: \"//:test\"")
   }, 30_000)
 
   it("executes a parent suite through the child and hits cache on the second clean run", async () => {
@@ -208,5 +211,8 @@ describe("opaque local repositories", () => {
     expect(decoded.targets.some((target) => target.label === "//:childTest")).toBe(true)
     const broken = decoded.targets.find((target) => target.label === "//:broken")
     expect(broken?.refusal).toContain("deliberate child workspace refusal")
+    const execution = await serveCli(root, ["//:broken"])
+    expect(execution.exitCode).toBe(1)
+    expect(`${execution.stdout}\n${execution.stderr}`).toContain("deliberate child workspace refusal")
   }, 30_000)
 })
