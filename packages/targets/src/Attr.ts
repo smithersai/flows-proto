@@ -136,7 +136,8 @@ export const Args = Schema.Array(Schema.Union([Schema.String, Reference.FlagRef]
  */
 export const Readiness = Schema.Union([
   Schema.Struct({ port: Schema.Number }),
-  Schema.Struct({ http: Schema.NonEmptyString, timeout: Schema.NonEmptyString })
+  Schema.Struct({ http: Schema.NonEmptyString, timeout: Schema.NonEmptyString }),
+  Schema.Struct({ exec: Schema.NonEmptyArray(Schema.NonEmptyString), timeout: Schema.NonEmptyString })
 ])
 
 /**

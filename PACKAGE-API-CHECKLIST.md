@@ -109,20 +109,16 @@ Lane C (bundler): S.Bundler.Rspack({config}), .resolve({entries,universe}), .bui
 - [ ] `//src:buildClientDev` real rspack build keyed on graph digest — not run on force (production-scale rspack build; deferred as heavy). The keying is proven through the CLI on the rsbuild-mini fixture (`test/LaneExecution.test.ts`): build keys on `bundler-graph:<digest>` at execution (key template + sentinel), warm run hits, a universe-only edit re-resolves the graph but replays the build, an in-graph edit re-runs it; outputs captured through the CAS path and restored on hit.
 
 Lane D (agents): S.Agents registry, Agent.Lint (vacuous green, fixes write-set, --fix), Agent.Diff (payload/S.Input.*, S.Mcp.Http, gates loop, maxRounds), Agent.Pr shape, agent caching
-- [x] clean-diff `//src:ssrLint` vacuously green with zero spawns — proof: e2e clone 2026-08-27, `smthrs '//src:ssrLint'` → `ran 15ms`, exit 0, no agent process spawned (lane dispatch landed in af840f0a4; scripted-fake proofs in `test/AgentLaneExecution.test.ts`, 7cab74f67)
-- [ ] staged bad-SSR edit in the e2e clone triggers a real luna run and the cached verdict replays — real sessions proven on artsy/slop-computer `//:harden` (86410b987, 97fdc3fd9), not yet on force
-- [p] `//workflows/fix-sentry-issue:fixSentryIssue` headless refusal; MCP unreachable = early fail — proof: plan sweep 2026-08-27 refuses typed at plan time (`approval required … package mode has no durable approval store`) before payload/MCP; payload-missing and MCP-unreachable refusals proven with the scripted fake in `AgentLaneExecution.test.ts`
+- [ ] proof: clean-diff `//src:ssrLint` vacuously green with zero spawns; staged bad-SSR edit in e2e clone triggers real luna run (or scripted fake with --agent-fake); cached verdict replays
+- [ ] `//workflows/fix-sentry-issue:fixSentryIssue` headless missing-payload refusal; MCP unreachable = early fail
 
 Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write install, S.Github.Setup/Workflow/CiGen (+preserve, affected), S.Github.Pr, S.Memory.Retain / S.Memory.SmithersCloud
 - [x] `Github.Workflow` `on.schedule` (five-field cron strings, rendered as `schedule: [{ cron }]`, `invalid_schedule` refusal otherwise) and `on.release` (GitHub's seven activity types, rendered as `release: { types }`) — 2026-08-26, GithubRender.test.ts; the nightly.yaml/release.yaml shapes tapes and aomi preserved by hand.
-- [b] `//:commit` in the e2e clone — refuses typed before staging: gate `//:detectSecrets` needs host bin `detect-secrets-hook` (absent); declared/-m/agent message paths proven with the fake (7cab74f67)
-- [p] `//.github:github` check reports drift correctly (2026-08-27: 4 generated files missing, `run-claude-review.yml`/`run-danger-yarn.yml` `unexpected` — correct, the spec preserves only the 3 files it names); `--write` render+preserve proven in `AgentLaneExecution.test.ts`
-- [p] `//.github:pr` plans; refuses without token+approval at execution (fake-proven)
-- [ ] Memory targets: `//:retainCommit` fails `smithers memory exited 4:` — `MemoryBackend` calls `smithers memory retain`, which smithers 0.34.0 lacks (only get/list/rm/set); fix in flight on lane api/defects (2026-08-27)
+- [ ] proof: `//:commit` in e2e clone produces gated conventional commit; `.github --write` renders 3 ymls + preserves 3 hand-written; `//github:pr` refuses without token+approval; Memory targets no-op gracefully without smithers cloud, real when configured
 
 ## Phase W4 — full sweep
 
-- [x] Every force label plans — proof: 2026-08-27 `--plan` sweep over all 81 e2e-clone labels: zero NotImplemented; every refusal typed (host bins hokusai/detect-secrets/yalc, approval-required ×3, missing `--input name`). Regression found: `S.NodeModule.Bin("knip"|"storybook"|"danger")` refuses on multi-bin packages (since 43b11003d) — fix in flight on lane api/defects
+- [ ] Every force label plans (`smthrs graph '//...'` zero NotImplemented at plan time)
 - [ ] Executes-green set: lint, typeCheck, test (jest), routesGen, relayArtifacts+relay, format, suites, claudeMd, beep, syncSchema, importGraph, buildClientDev, server/app closure tests
 - [ ] Correct-refusal set ([b]): syncEnv/publishAssets/danger (creds), deleteReviewApp (approval+sandbox none), hokusai/detect-secrets/yalc (host bins), fixSentryIssue (payload)
 - [ ] Adversarial review pass + fixes; identity/cache-key/write-set invariant tests green
@@ -369,57 +365,120 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   S.Docker.*, S.Nix.*, S.Stamp, build target as tool edge, readiness exec probe) are listed with estimates
   in artsy/FLOWS-GO-READINESS.md.
 
-### Lane api/defects 2026-08-27
+### Lane api/chain 2026-08-27
 
-Three defects fixed test-first on branch `api/defects` (worktree
-`/Users/williamcory/flows-api/defects`); commits `726a608f3` (D1),
-`af8a368f8` (D2), `d70c3778f` + `ba81c3446` (D3). CLI for every proof:
-`node /Users/williamcory/flows-api/defects/packages/build-cli/src/main.js`,
-run from the artsy repo named in the row.
+Scope ruling: the 2026-08-27 02:35 brief delegates every `S.Rust.*` and
+`S.Cargo.*` surface, including Nextest/Deny and build-target-as-tool planning,
+to `aomi/cargo-targets`. This lane did not modify those APIs. The partner
+worktree now has its Rust-specific `toolchains` hunk; this lane's deliberately
+generic, additive hunk is called out below for merge reconciliation.
 
-#### Symbols
+#### Owned symbol proof
 
-| Symbol | Status | Proof command | Output tail |
+| Symbol | Status | Exact proof command | Output tail |
 | --- | --- | --- | --- |
-| `S.NodeModule.Bin(pkg)` one-arg bin-map resolution | [x] | `'//src:deadCode' --plan`, `'//.storybook:storybook' --plan`, `'//.github:danger' --plan` in `~/artsy-e2e/force`, then `'//src:deadCode'` | plans: 0 `refusal` lines each (was `package "knip" exposes 2 binaries…`, `"storybook" … 3 binaries`, `"danger" … 9 binaries`); execute: `"//src:deadCode",Shell.Test,ran,3382.6ms` … `ok: true` (knip's own verdict, green) |
-| `S.NodeModule.Bin(pkg)` still-ambiguous refusal | [p] | `pnpm -C packages/build-cli exec vitest run test/PackageExecution.test.ts -t "bin map"` | 5 passed: unscoped multi-map → package-name entry; scoped `@biomejs/biome` → `biome`; sole differently-named entry wins; multi-map without the package-name entry keeps `name one explicitly: S.NodeModule.Bin(package, bin)`; explicit second arg honored |
-| `S.PackageManager.Pnpm({manifest,lockfile,version?,audit?,workspaces?})` | [x] | `pnpm -C packages/targets exec vitest run test/PackageApi.test.ts` + `pnpm -C packages/build-cli exec vitest run test/PackageExecution.test.ts -t "pnpm manifest"` | targets 21/21 (workspace form validates, BUILD-era `{version,runtime}` keeps working and keeps its runtime TypeError, Workspace accepts the declaration); fixture pnpm workspace loads, `--plan` has no refusal, `//:check  ran` |
-| pnpm CI render / manager binary / lockfile digest | [x] | `pnpm -C packages/build-cli exec vitest run test/GithubRender.test.ts -t "workspace-era pnpm"` | 2 passed: `pnpm/action-setup@v4` with `version: "8"` when pinned (omitted otherwise — the manifest's `packageManager` field pins), `node-version: "26"` / `node-version-file: package.json` from the workspace runtime, `pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}` from the declared lockfile, `pnpm install --frozen-lockfile`; `managerBinaryOf` returns `pnpm` for the tagged declaration and the plan digests the declared lockfile |
-| `S.Memory.Retain` | [x] | `'//:retainCommit'` in `~/artsy-e2e/force` (after `smithers init` seeded the store), then `smithers memory list repo` | `"//:retainCommit",Memory.Retain,ran,1777.8ms`; list shows `commit:3c6f3063d14929cceb99fb61a9663c0014f81790 = {"source":"HEAD","commit":"3c6f3063…","tags":["commit"]}` in namespace `repo`. Without the store the same run is the readable typed failure `smithers memory set repo commit:3c6f3063… {…} exited 4: Error: No workflow found to resolve this workspace's store. Run smithers init…` (argv + stdout now in the text; stderr was empty) |
-| `MemoryCapabilityMissing` typed refusal + help-fixture contract | [x] | `pnpm -C packages/build-cli exec vitest run test/MemoryBackend.test.ts` | 15/15: captured `smithers memory --help` fixture parses to `get, list, rm, set`; a test fails if retain's argv names an unshipped subcommand; `assertMemoryCliCommand("retain")` throws naming `retain` and the shipped set; nonzero exit message carries argv and falls back to stdout when stderr is empty |
+| `S.Mise` | `[p]` | `node packages/build-cli/src/main.js '//:foundryBuild' --plan --workspace packages/build-cli/test/fixtures/chain-exec` | `Foundry.Build`; real Foundry argv; config and `mise.toml` digests/version pin are key material; no refusal |
+| `S.Mise.bin` | `[b]` | `node packages/build-cli/src/main.js '//:miseTool' --plan --workspace packages/build-cli/test/fixtures/chain-exec` | `host binary "mise" is not present on PATH; S.Mise.bin("mockery") is pinned to 2.53.6 but cannot execute on this host` |
+| `S.Foundry` | `[p]` | same `//:foundryBuild --plan` command | `rule: Foundry.Build`, `cacheable: true`, `argv: /Users/williamcory/.foundry/bin/forge,build,--config-path,foundry.toml` |
+| `S.Foundry.Toolchain` | `[p]` | `pnpm -C packages/targets exec vitest run test/ChainTargets.test.ts --coverage=false` | `8 passed`; workspace layer carries `foundry.toml` and the `S.Mise` authority |
+| `S.Foundry.Build` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/ChainExecution.test.ts --coverage=false` | real forge build plus nested-package relative config; OCI-independent CAS restore: `8 passed`; cold `ran`, second run `hit` and restored `out/` |
+| `S.Foundry.Test` | `[x]` | same `ChainExecution.test.ts` command | real `forge test`: cold `ran`, second run `hit` |
+| `S.Foundry.Fmt` | `[x]` | same `ChainExecution.test.ts` command | formatted tree green; deliberately malformed Solidity returns exit 1 with `Diff in src/Counter.sol` |
+| `S.Anvil.Fork` | `[x]` | same `ChainExecution.test.ts` command | real local Anvil fork acquired, RPC readiness passed, consumer green, fork released; `latest` consumer plan says `cacheable: false` |
+| `S.Docker` | `[p]` | fixture plan sweep command below | Build/Bake/Serve/Service/Push all plan with zero `NotImplemented` |
+| `S.Docker.Serve` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/ChainExecution.test.ts --coverage=false` | Alpine service: `service //:dockerService: ready`; exec probe and post-readiness init pass; container absent after release |
+| `S.Docker.Service` | `[x]` | same `ChainExecution.test.ts` command | alias-shaped service: `service //:dockerServiceAlias: ready`; container absent after release |
+| `S.Docker.Build` | `[x]` | same `ChainExecution.test.ts` command | real buildx OCI exporter writes `docker-image/image.tar`; cold `ran`, deleted output restored on `hit` |
+| `S.Docker.Bake` | `[x]` | same `ChainExecution.test.ts` command | declared bake file/target writes `docker-image-fixture/image.tar`; second run `hit` |
+| `S.Docker.Push` | `[b]` | `node packages/build-cli/src/main.js '//:dockerPush' --workspace packages/build-cli/test/fixtures/chain-exec` | exit 1: `approval required ... refuses before any effect`; uncached and image dependency is not run before approval |
 
-#### Repos
+Constructor validation is covered by `ChainTargets.test.ts`: every constructor
+constructs its observed attrs, rejects excess keys, rejects empty exec probes,
+and preserves `Secret(..., { fallback })` without reading the environment.
+`ServiceSupervisor.test.ts` covers direct exec readiness, sequential init, and
+the init failure path.
 
-| Repo | Load | Proof | Output tail |
+#### Repository proof
+
+| Repo | Load / graph / plan sweep | Execute set | Refusal set |
 | --- | --- | --- | --- |
-| `~/artsy-e2e/force` | loads, targeted plans/executes above | D1/D3 rows | `//.github:github` unchanged (verified-correct): `run-claude-review.yml=unexpected, run-danger-yarn.yml=unexpected` still reported; clone reset clean after (`git status` empty; smithers-init artifacts and the retained fact removed) |
-| `~/artsy/whatsabi` | still blocked, but not by pnpm | `query '//...'` | the `pnpm requires a declared runtime` failure is gone; new first error verbatim: `module_import_failed: evaluating the workspace's declaration modules failed: Generate declaration at /Users/williamcory/artsy/whatsabi/src/PACKAGE.ts:22:21 is invalid: Expected "file" \| undefined\n  at ["stdout"]` |
-| `~/artsy/viem` | still blocked, but not by pnpm | `query '//...'` | new first error verbatim: `module_import_failed: evaluating the workspace's declaration modules failed: S.Git.Submodules is not a function` (another lane's namespace) |
+| `~/artsy/viem` | `[b]` `cd ~/artsy/viem && node <lane>/packages/build-cli/src/main.js query '//...' --format json` stops before package discovery: `pnpm requires a declared runtime, for example Runtime.Node({ version: ">=22.19.0" })`. This is the api/node/defects boundary; `WORKSPACE.ts:9,15-19` does declare the runtime and pnpm. | `[x]` the fixture runs viem's owned shapes: package-relative `S.file("foundry.toml")` through real forge, and local Anvil fork/readiness/release. | `[b]` `AnvilExec.serviceSpec` with no environment value/fallback: `missing secret: environment variable CHAIN_TEST_RPC_ABSENT is not set for Anvil.Fork //:fork`. |
+| `~/artsy/optimism` | `[b]` same query command stops at `WORKSPACE.ts:17`: `Cannot read properties of undefined (reading 'Toolchain')` for delegated `S.Go.Toolchain`; the exported-namespace tail includes `Docker`, `Foundry`, and `Mise`. | `[x]` fixture real forge build/test/fmt and real Docker bake cover this lane's declarations; plan binds Foundry to the declared mise/config authorities. | `[b]` `S.Mise.bin` correctly refuses because mise is absent while reporting the config pin. |
+| `~/artsy/tapes` | `[b]` same query command stops at `.smithers/module.ts:21`: `Cannot read properties of undefined (reading 'ModDownload')`; delegated to api/go before any full-repo graph/sweep can exist. Fixture sweep: `query=11 targets`; `graph=11 nodes, 6 edges, 0 warnings`; all 11 plans have zero `NotImplemented`, one approval refusal, and one typed host refusal. | `[x]` real Docker Build and scoped Serve/Service execute on fixtures. The exact Postgres declaration at `pkg/storage/postgres/PACKAGE.ts:24-30` constructs in unit coverage; its image pull was attempted with `docker pull public.ecr.aws/g4e5l3z3/papercomputeco/postgres:17.7-pgduckdb-1.1.1`. | `[b]` ECR returned `toomanyrequests: Rate exceeded`, so the exact pgduckdb Postgres process could not reach `pg_isready` on this host/run. Push refuses before credentials/effects via its required approval. |
+| `~/artsy/aomi-sdk` | Delegated: query still stops at `sdk/PACKAGE.ts:7`, `S.Cargo.Fetch is not a function`. Per the scope change, no Cargo load/graph/sweep work was performed here. | Delegated to `aomi/cargo-targets`: Fetch/Build/Test/Clippy/Fmt/Doc/AppSet and the requested clone execution/cache proof. | Delegated: Nextest/Deny and Cargo host-subcommand refusals. |
 
-#### Suites
+Fixture sweep command:
 
-- targets: `vitest run --coverage.enabled=false` 645/645; `tsc --noEmit` clean; `dprint check` clean.
-- build-cli: `vitest run --coverage.enabled=false` 660 passed, 1 skipped (solo run; a run concurrent with the targets suite flaked 8 timing-sensitive service/agent tests that pass solo); `tsc --noEmit` clean; `dprint check` reports 2 pre-existing unformatted files (`test/SweepHarness.test.ts`, `test/fixtures/sweep-expectations.json`, committed in `43b11003d`, untouched here) — recorded, not new.
+`node packages/build-cli/src/main.js query '//...' --workspace packages/build-cli/test/fixtures/chain-exec --format json`, then the same CLI `graph '//...'`, then each returned label with `--plan`.
 
-#### Spec conflicts found (recorded, not silently narrowed)
+Suite tails after implementation:
 
-- `~/artsy/whatsabi/src/PACKAGE.ts:22` writes `stdout: "_generated-interfaces.ts"` (a filename), but `packages/targets/src/Compose.ts:139` types Generate's `stdout` as the literal `"file"` — PLAN §15.1's `{bin, args, data, stdout: "file"}` notation read as a literal. This is whatsabi's current first load error; fixing Generate's stdout attr is outside this lane's three defects.
-- The defect brief cites smithers 0.34.0; the installed binary (`~/.nvm/versions/node/v24.18.0/bin/smithers`) is 0.33.0 with the identical `memory get|list|rm|set` surface.
-- `smithers memory list` has no `--namespace` flag; the namespace is positional (`smithers memory list repo`), used as the brief's "or the equivalent".
-- `S.Memory.SmithersCloud`'s `init`/`autoInject` have no CLI counterpart in 0.33.0 and do not gate a retain (init is the bank's initialization script, autoInject is agent-context injection); Retain treats them as inert declaration config, documented in `MemoryBackend.retain`'s docs. A memory operation that genuinely needs an unshipped subcommand refuses typed via `assertMemoryCliCommand`.
-- This worktree has no root `CLAUDE.md`/`AGENTS.md` and no `reference/` dir; the corpus lives at `/Users/williamcory/flows/reference`. No new subsystem was designed: D1 extends the existing `binNameOf` manifest reader with npm/npx's own convention, D2 copies the sibling `YarnDeclaration` shape in the same module, D3 reuses `MemoryBackend`'s existing locator/cli seams plus `GitCommit.ts`'s git `execFile` helper for ref resolution.
+- `pnpm -C packages/targets exec vitest run --coverage=false`: `34 passed`, `650 passed`.
+- `pnpm -C packages/build-cli exec vitest run --coverage=false`: `38 passed`, `659 passed`, `1 skipped`.
+- `pnpm -C packages/build-cli exec vitest run test/ChainExecution.test.ts --coverage=false`: `1 passed`, `8 passed` after the package-relative config regression was added.
+- `pnpm -C packages/build-cli exec vitest run test/ChainExecution.test.ts test/ServiceSupervisor.test.ts --coverage=false`: `2 passed`, `27 passed`.
+- Both packages' production and test `tsc --noEmit` configs pass. A targeted dprint check over every changed/new source and fixture passes. The full build-cli dprint scan still reports only the untouched baseline files `test/SweepHarness.test.ts` and `test/fixtures/sweep-expectations.json`; they were not reformatted in this lane.
 
-#### Shared-file hunks (for the merge)
+#### Host and spec conflicts
 
-- `packages/build-cli/src/PackageExec.ts`: `binNameOf` (basename selection in a multi-entry map + doc), `managerBinaryOf` (explicit `PnpmPackageManager` tag branch), Memory.Retain dispatch (per-fact log line; catches `MemoryCapabilityMissing`).
-- `packages/build-cli/src/GithubRender.ts`: `toolchainOf` (new `isPnpmDeclaration` branch).
-- `packages/targets/src/WorkspaceDeclaration.ts`: `packageManager` union type ×2 + validator accept `PnpmDeclaration`.
-- `packages/targets/src/PackageManager.ts`: `PnpmWorkspaceOptions`, overloaded `Pnpm`, `PnpmDeclaration`/`isPnpmDeclaration` (new exports; BUILD-era surface unchanged).
-- `packages/build-cli/src/MemoryBackend.ts`: retain rewritten onto `memory set`; new exports `memoryCliCommands`, `parseMemoryHelpCommands`, `MemoryCapabilityMissing`, `assertMemoryCliCommand`, `RetainedFact`; `MemoryCommandFailed` signature now `(exitCode, {args, stdout, stderr})`; `RetainOptions.resolveSource` injection.
-- Tests: `PackageExecution.test.ts` (+2 bin-map, +1 pnpm workspace), `GithubRender.test.ts` (+2), `PackageApi.test.ts` (+3), `MemoryBackend.test.ts` (resolved-backend describe rewritten to the real CLI, +help-fixture/capability/argv-text tests), `AgentLaneExecution.test.ts` (dispatch argv contract), new fixture `test/fixtures/smithers-memory-help.txt`.
+- `mise` is absent. `.mise.toml` / `mise.toml` `[tools]` entries and the
+  declared config digest remain the version authority, and execution refuses
+  rather than falling back to an unpinned binary.
+- PATH's first `forge` is `/Users/williamcory/.local/bin/forge` (`forge
+  1.31.2`), not Foundry. The planner probes every PATH candidate and selects
+  `/Users/williamcory/.foundry/bin/forge` only after its output starts with
+  `forge Version:` (1.5.1-stable). Anvil is 1.5.1-stable.
+- Docker CLI and daemon both answer at 29.4.0. The default Docker driver does
+  not support the OCI exporter; the planner therefore selects the available
+  running `docker-container` builder (`smithers-e2e-builder`). Docker daemon
+  access on macOS uses the existing explicit `sandbox: "none"` escape because
+  `sandbox-exec` cannot reach the daemon Unix socket.
+- `viem/test/PACKAGE.ts:23-55` requires an RPC secret fallback. `Secret`'s
+  prior implementation ignored the observed second argument, so the
+  constructor was extended strictly with a public `fallback`; resolution is
+  deferred until service spawn and secret values do not enter keys or logs.
+- `tapes/pkg/storage/postgres/PACKAGE.ts:28` introduced the new
+  `readiness: { exec, timeout }` union member. It runs through
+  `ServiceSupervisor`, as do init and cleanup; no constructor spawns.
+- There is no `reference/` directory in this worktree, so no reference-corpus
+  implementation could be read. The closest shipped prior art followed was
+  `Shell.ts`/`execPayload`, `Target.make`, `Reference.ts`,
+  `WorkspaceDeclaration.ts`, `PackageExec.ts`/`PackageTree.ts` CAS capture,
+  and `ServiceSupervisor.ts` scoped acquisition/refcount/finalization.
 
-#### Not done / out of scope
+#### Shared-file hunks for merge
 
-- whatsabi and viem still do not fully load; both blockers are recorded verbatim above and belong to the Generate-stdout ruling and the Git namespace lane.
-- `smthrs install` in package mode keeps its typed NotImplemented refusal (the W2 surface rule); the "install names pnpm with the workspace runtime" proof lands through the CI render and the manager-binary/lockfile key path.
-- The two pre-existing unformatted build-cli test files and the known eslint baseline (`@slop` tags, `main.js` resolution) are untouched.
+- `packages/targets/src/WorkspaceDeclaration.ts` (`WorkspaceDeclaration`,
+  `WorkspaceOptions`, `knownOptions`, `Workspace`): made the Node triple
+  optional but all-or-none; added `toolchains?: non-empty readonly array`;
+  requires either the Node triple or toolchains; freezes the stored list. The
+  sibling Cargo worktree now types this list specifically to Rust layers, so
+  the merged definition must use the union of all lane toolchain declarations
+  (Mise, Foundry, Go, Rust) rather than either lane's temporary local type.
+- `packages/targets/src/Smithers.ts`: four additive exports (`Mise`,
+  `Foundry`, `Anvil`, `Docker`).
+- `packages/targets/src/Reference.ts`: additive `MiseBin` schema/constructor
+  and `Tool` union member. `Attr.ts`: additive exec-readiness union member.
+  `Secret.ts`: strict optional public fallback.
+- `packages/build-cli/src/PackageExec.ts`: additive resolution/planning,
+  cache/output, service, and execution dispatch; Node manager/lockfile reads
+  tolerate toolchains-only workspaces. `PackageIndex.ts` adds service/push to
+  the illegal-data rule set. `GithubRender.ts` gives toolchains-only
+  workspaces an explicit delegated renderer refusal instead of a type crash.
+- `packages/build-cli/src/PackageTree.ts`: all-PATH lookup and bounded generic
+  command probe. `ServiceSupervisor.ts`: exec readiness, post-readiness init,
+  and best-effort final cleanup.
+
+#### Aomi Rust notes answers and remaining work
+
+For `SMITHERS-RUST-NOTES.md:274-290`: (1) yes, Workspace grows a real
+`toolchains` list; no fake JS runtime. (2) Cargo Fetch/vendor semantics are
+delegated to `aomi/cargo-targets`. (3) build targets as tool edges are
+delegated there. (4) Cargo AppSet algebra is delegated there. (5) Cargo
+feature/profile convergence is delegated there. (6) Agent.Pr secrets/sandbox
+is outside api/chain and was not changed.
+
+Not done here: full viem/optimism/tapes loads and sweeps remain blocked by the
+exact cross-lane errors above; aomi-sdk and every Rust/Cargo symbol/proof are
+explicitly delegated; the tapes pgduckdb image could not be executed after
+the upstream registry rate-limited the pull. No `~/artsy` file was edited.

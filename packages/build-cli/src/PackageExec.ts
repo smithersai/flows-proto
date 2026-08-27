@@ -20,9 +20,12 @@
  * @since 0.1.0
  */
 import * as AgentTarget from "@smthrs/targets/AgentTarget"
+import * as Anvil from "@smthrs/targets/Anvil"
 import * as BundlerTarget from "@smthrs/targets/BundlerTarget"
 import * as Compose from "@smthrs/targets/Compose"
+import * as Docker from "@smthrs/targets/Docker"
 import * as Exec from "@smthrs/targets/Exec"
+import * as Foundry from "@smthrs/targets/Foundry"
 import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as Input from "@smthrs/targets/Input"
 import type * as Reference from "@smthrs/targets/Reference"
@@ -40,9 +43,12 @@ import * as NodePath from "node:path"
 import { performance } from "node:perf_hooks"
 import * as AgentFake from "./AgentFake.ts"
 import * as AgentSession from "./AgentSession.ts"
+import * as AnvilExec from "./AnvilExec.ts"
 import { type CacheStore, openCache } from "./Cache.ts"
 import * as Diagnostic from "./Diagnostic.ts"
+import * as DockerExec from "./DockerExec.ts"
 import * as Executor from "./Executor.ts"
+import * as FoundryExec from "./FoundryExec.ts"
 import * as GitCommit from "./GitCommit.ts"
 import * as GithubRender from "./GithubRender.ts"
 import * as MemoryBackend from "./MemoryBackend.ts"
@@ -108,11 +114,26 @@ const implementedRules: ReadonlySet<string> = new Set([
   "Github.Workflow",
   "Github.CiGen",
   "Github.Pr",
-  "Memory.Retain"
+  "Memory.Retain",
+  "Foundry.Build",
+  "Foundry.Test",
+  "Foundry.Fmt",
+  "Anvil.Fork",
+  "Docker.Serve",
+  "Docker.Service",
+  "Docker.Build",
+  "Docker.Push",
+  "Docker.Bake"
 ])
 
 /** Rules whose default mode is the non-mutating check. */
-const checkModeRules: ReadonlySet<string> = new Set(["Shell.Diff", "Generate", "Github.CiGen", "Agent.Lint"])
+const checkModeRules: ReadonlySet<string> = new Set([
+  "Shell.Diff",
+  "Generate",
+  "Github.CiGen",
+  "Agent.Lint",
+  "Foundry.Fmt"
+])
 
 /**
  * Rules that act outward or run for their side effects. They never gate:
@@ -128,7 +149,11 @@ const outwardRules: ReadonlySet<string> = new Set([
   "Github.Pr",
   "Memory.Retain",
   "Agent.Diff",
-  "Agent.Pr"
+  "Agent.Pr",
+  "Anvil.Fork",
+  "Docker.Serve",
+  "Docker.Service",
+  "Docker.Push"
 ])
 
 /**
@@ -150,6 +175,13 @@ const refusalFor = (rule: string): string =>
   `NotImplemented: ${rule} has no package-mode execution; ` +
   "the implemented set is Shell.*, Generate, Materialize, Clean, Suite, Alias, ImportClosure, Test, " +
   "Bundler.Rspack.*, Agent.*, Git.Commit, Github.*, and Memory.Retain"
+
+const serviceRules: ReadonlySet<string> = new Set([
+  "Shell.Serve",
+  "Anvil.Fork",
+  "Docker.Serve",
+  "Docker.Service"
+])
 
 /**
  * The placeholder a bundler build's key template carries where the graph
@@ -223,6 +255,8 @@ export type LaneData =
     readonly health?: ServiceSupervisor.Health | undefined
     readonly stop?: ServiceSupervisor.Stop | undefined
   }
+  | { readonly kind: "docker-service"; readonly attrs: (typeof Docker.ServeAttrs)["Type"] }
+  | { readonly kind: "anvil-fork"; readonly attrs: (typeof Anvil.ForkAttrs)["Type"] }
   | { readonly kind: "closure"; readonly entries: ReadonlyArray<Compose.AnchoredSource> }
   | { readonly kind: "files-test"; readonly left: TestOperandPlan; readonly right: TestOperandPlan }
   | { readonly kind: "bundler-resolve"; readonly payload: BundlerTarget.ResolvePayload }
@@ -465,7 +499,7 @@ interface PlanContext {
   readonly signal: AbortSignal | undefined
   readonly log: (line: string) => void
   readonly flags: Readonly<Record<string, string>>
-  readonly managerBinary: string
+  readonly managerBinary: string | undefined
   readonly tools: Map<string, ToolOutcome>
   readonly probes: Map<string, PackageTree.Probe>
   readonly nodes: Map<string, PackageNode>
@@ -713,6 +747,17 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
     }
   } else if (tag === "PackageManagerBin") {
     const name = context.managerBinary
+    if (name === undefined) {
+      outcome = {
+        _tag: "refused",
+        tool: {
+          refusal: "workspace declares no Node package manager; S.PackageManager.bin is unavailable",
+          identity: { tag: "PackageManagerBin", absent: true }
+        }
+      }
+      context.tools.set(key, outcome)
+      return outcome
+    }
     const path = PackageTree.findOnPath(name)
     if (path === undefined) {
       outcome = {
@@ -767,6 +812,11 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
         }
       }
     }
+  } else if (tag === "MiseBin") {
+    const resolved = await FoundryExec.resolveMiseBin(context.root, context.index.workspace, String(reference["name"]))
+    outcome = resolved.ok
+      ? { _tag: "resolved", tool: { path: resolved.path, identity: resolved.identity } }
+      : { _tag: "refused", tool: { refusal: resolved.refusal, identity: resolved.identity } }
   } else {
     outcome = {
       _tag: "refused",
@@ -948,7 +998,8 @@ const staticPrefixOf = (pattern: string): string => {
 const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox"]): ReadonlyArray<string> => {
   const capabilities = ["fs:read", "proc:spawn"]
   if (
-    mode === "write" || rule === "Shell.Build" || rule === "Bundler.Rspack.build" || rule === "Materialize" ||
+    mode === "write" || rule === "Shell.Build" || rule === "Foundry.Build" || rule === "Docker.Build" ||
+    rule === "Docker.Bake" || rule === "Bundler.Rspack.build" || rule === "Materialize" ||
     rule === "Clean" || rule === "Agent.Diff" || rule === "Agent.Pr" || rule === "Git.Commit"
   ) {
     capabilities.push("fs:write")
@@ -976,6 +1027,7 @@ const visit = async (
   const rule = metadata.target
   const packagePath = packagePathOf(context, target)
   const attrs = metadata.attrs
+  const plannedMode = context.rootModes.get(label) ?? options.mode
 
   // Dependencies: always visited for key material; the execution edges are a
   // per-rule subset decided below.
@@ -1036,8 +1088,8 @@ const visit = async (
   const serviceDeps: Array<string> = []
   const hoistedDeps: Array<string> = []
   for (const service of services) {
-    if (Target.metadata(service).target !== "Shell.Serve") {
-      noteRefusal(`services entries must be Shell.Serve targets; ${depLabels.get(service) ?? "a member"} is not`)
+    if (!serviceRules.has(Target.metadata(service).target)) {
+      noteRefusal(`services entries must be service targets; ${depLabels.get(service) ?? "a member"} is not`)
       continue
     }
     const serviceLabel = depLabels.get(service) ?? labelOf(context, service)
@@ -1115,7 +1167,7 @@ const visit = async (
   for (const record of secretRecords) {
     if (typeof record["env"] === "string") secrets.push(record["env"])
   }
-  const sandbox = attrMember(attrs, "sandbox") as PackageNode["sandbox"]
+  let sandbox = attrMember(attrs, "sandbox") as PackageNode["sandbox"]
 
   const changes = attrMember(attrs, "changes")
   if (Array.isArray(changes)) {
@@ -1129,7 +1181,7 @@ const visit = async (
   // shell text naming workspace paths), and tools that resolve their config
   // by walking upward behave identically. Package scoping happens through
   // declared inputs and write sets, not the process cwd.
-  const cwd = "."
+  let cwd = "."
   const isShellExec = rule === "Shell.Build" || rule === "Shell.Test" || rule === "Shell.Run" ||
     rule === "Shell.Serve" || rule === "Shell.Diff"
   if (isShellExec && refusal === undefined) {
@@ -1229,6 +1281,46 @@ const visit = async (
     }
   }
 
+  if (rule === "Foundry.Build" || rule === "Foundry.Test" || rule === "Foundry.Fmt") {
+    const planned = await FoundryExec.plan({
+      root: context.root,
+      packagePath,
+      workspace: context.index.workspace,
+      rule,
+      mode: plannedMode,
+      attrs: attrs as never
+    })
+    toolchain.push(planned.toolchain)
+    cwd = planned.cwd
+    env = { ...planned.env }
+    outDirs.push(...planned.outDirs)
+    argv = planned.argv === undefined ? undefined : [...planned.argv]
+    if (planned.refusal !== undefined) noteRefusal(planned.refusal)
+  }
+
+  if (rule === "Docker.Build" || rule === "Docker.Bake" || rule === "Docker.Push") {
+    const planned = await DockerExec.plan({ rule, packagePath, attrs: attrs as never })
+    toolchain.push(planned.toolchain)
+    outDirs.push(...planned.outDirs)
+    argv = planned.argv === undefined ? undefined : [...planned.argv]
+    if (sandbox === undefined) sandbox = "none"
+    if (planned.refusal !== undefined) noteRefusal(planned.refusal)
+  }
+
+  if (rule === "Anvil.Fork") {
+    const resolved = await AnvilExec.resolveAnvil()
+    toolchain.push(resolved.identity)
+    sandbox = { network: true }
+    if (!resolved.ok) noteRefusal(resolved.refusal)
+  }
+
+  if (rule === "Docker.Serve" || rule === "Docker.Service") {
+    const resolved = await DockerExec.resolveDocker()
+    toolchain.push(resolved.identity)
+    sandbox = "none"
+    if (!resolved.ok) noteRefusal(resolved.refusal)
+  }
+
   if (rule === "Suite") {
     for (const member of attrTargets(attrs, "tests")) members.push(depLabels.get(member) ?? labelOf(context, member))
   }
@@ -1290,6 +1382,13 @@ const visit = async (
       lane = { kind: "serve", readiness: serveAttrs.readiness, health: serveAttrs.health, stop: serveAttrs.stop }
       break
     }
+    case "Docker.Serve":
+    case "Docker.Service":
+      lane = { kind: "docker-service", attrs: attrs as (typeof Docker.ServeAttrs)["Type"] }
+      break
+    case "Anvil.Fork":
+      lane = { kind: "anvil-fork", attrs: attrs as (typeof Anvil.ForkAttrs)["Type"] }
+      break
     case "ImportClosure": {
       const closureAttrs = attrs as (typeof Compose.ImportClosureAttrs)["Type"]
       const entries = Compose.closureEntrySources(closureAttrs.entries, implementationContext)
@@ -1467,7 +1566,7 @@ const visit = async (
   // dependency mode an earlier visitor asked for, so a `--write` root that is
   // also reached as a check-mode gate or dependency is planned once, in write
   // mode, and applies. See `PlanContext.rootModes`.
-  const mode = context.rootModes.get(label) ?? options.mode
+  const mode = plannedMode
   const declaredGates = attrTargets(attrs, "gates").map((gate) => depLabels.get(gate) ?? labelOf(context, gate))
   // An Agent.Diff or Agent.Pr runs its gates inside the candidate/gate loop,
   // against each candidate, so they are not pre-act gates of the node: a gate
@@ -1505,13 +1604,23 @@ const visit = async (
     ]
   }
 
-  const cacheable = refusal === undefined && (
+  const movingService = services.some((service) => {
+    const serviceMetadata = Target.metadata(service)
+    return serviceMetadata.target === "Anvil.Fork" &&
+      attrMember(serviceMetadata.attrs, "forkBlockNumber") === "latest"
+  })
+  const cacheable = refusal === undefined && !movingService && (
     (rule === "Shell.Test" && mode === "execute") ||
     rule === "Shell.Build" ||
     (rule === "Generate" && mode === "check") ||
     rule === "Test" ||
     rule === "Bundler.Rspack.resolve" ||
-    rule === "Bundler.Rspack.build"
+    rule === "Bundler.Rspack.build" ||
+    rule === "Foundry.Build" ||
+    (rule === "Foundry.Test" && mode === "execute") ||
+    (rule === "Foundry.Fmt" && mode === "check") ||
+    rule === "Docker.Build" ||
+    rule === "Docker.Bake"
   )
 
   const keyMaterial: Planner.KeyMaterial = {
@@ -1663,8 +1772,9 @@ const rootMode = (rule: string, options: RunOptions): Mode => {
   return "check"
 }
 
-const managerBinaryOf = (workspace: PackageIndexModule.PackageIndex["workspace"]): string => {
+const managerBinaryOf = (workspace: PackageIndexModule.PackageIndex["workspace"]): string | undefined => {
   const manager = workspace.packageManager as { readonly _tag?: unknown; readonly name?: unknown }
+  if (manager === undefined) return undefined
   if (manager._tag === "YarnPackageManager") return "yarn"
   if (manager._tag === "PnpmPackageManager") return "pnpm"
   if (typeof manager.name === "string") return manager.name
@@ -1716,7 +1826,9 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     rootModes.set(row.label, rootMode(Target.metadata(row.target).target, options))
   }
   const workspace = index.workspace
-  const lockfilePath = (workspace.packageManager as { readonly lockfile?: { readonly path?: unknown } }).lockfile?.path
+  const lockfilePath = (workspace.packageManager as
+    | { readonly lockfile?: { readonly path?: unknown } }
+    | undefined)?.lockfile?.path
   const lockfileDigest = typeof lockfilePath === "string"
     ? await Input.digestFile(NodePath.join(index.root, Input.resolvePath("", lockfilePath)), {
       workspaceRoot: index.root,
@@ -2094,7 +2206,24 @@ export const execute = async (
     const serveNode = planned.nodes.get(label)
     if (serveNode === undefined) return { error: `service ${label} was not planned` }
     if (serveNode.refusal !== undefined) return { error: `service ${label}: ${serveNode.refusal}` }
-    if (serveNode.lane?.kind !== "serve") return { error: `service ${label} is not a Shell.Serve target` }
+    if (serveNode.lane?.kind === "docker-service") {
+      const key = treeRoot === root ? label : `${label} @ ${treeRoot}`
+      return DockerExec.serviceSpec({
+        label: key,
+        cwd: Exec.resolveWorkspacePath(treeRoot, serveNode.cwd),
+        attrs: serveNode.lane.attrs
+      })
+    }
+    if (serveNode.lane?.kind === "anvil-fork") {
+      const key = treeRoot === root ? label : `${label} @ ${treeRoot}`
+      return AnvilExec.serviceSpec({
+        label: key,
+        cwd: Exec.resolveWorkspacePath(treeRoot, serveNode.cwd),
+        attrs: serveNode.lane.attrs,
+        environment
+      })
+    }
+    if (serveNode.lane?.kind !== "serve") return { error: `service ${label} is not a service target` }
     const resolved = await resolveSpawn(serveNode)
     if ("error" in resolved) return { error: `service ${label}: ${resolved.error}` }
     if (serveNode.sandbox !== "none") {
@@ -2918,7 +3047,8 @@ export const execute = async (
           }
           return green("ran")
         }
-        case "Shell.Build": {
+        case "Shell.Build":
+        case "Foundry.Build": {
           const cached = await cacheGet(node)
           if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
           const spawned = await spawnNode(node, root, signal)
@@ -2926,7 +3056,8 @@ export const execute = async (
           await captureBuild(node, node.keyPreview)
           return green("ran")
         }
-        case "Shell.Test": {
+        case "Shell.Test":
+        case "Foundry.Test": {
           const cached = await cacheGet(node)
           if (cached !== undefined) return green("hit")
           const spawned = await spawnNode(node, root, signal)
@@ -2939,7 +3070,10 @@ export const execute = async (
           if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
           return green("ran")
         }
-        case "Shell.Serve": {
+        case "Shell.Serve":
+        case "Anvil.Fork":
+        case "Docker.Serve":
+        case "Docker.Service": {
           // Direct invocation: start, await readiness, hold the foreground
           // until the invocation is interrupted (or the service dies), then
           // let the scope's release apply the declared stop contract.
@@ -2964,6 +3098,32 @@ export const execute = async (
             : await runCheckViaScratch(node, signal)
           if (!outcome.ok) return fail(outcome.error ?? "diff run failed")
           return green("ran")
+        }
+        case "Foundry.Fmt": {
+          if (node.mode === "check") {
+            const cached = await cacheGet(node)
+            if (cached !== undefined) return green("hit")
+            const spawned = await spawnNode(node, root, signal)
+            if (!spawned.ok) return fail(spawned.error ?? "forge fmt --check failed")
+            await cachePut(node, { kind: "foundry-fmt" })
+            return green("ran")
+          }
+          const outcome = await runWriteEnforced(node, signal)
+          return outcome.ok ? green("ran") : fail(outcome.error ?? "forge fmt failed")
+        }
+        case "Docker.Build":
+        case "Docker.Bake": {
+          const cached = await cacheGet(node)
+          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          await DockerExec.prepareOutputs(root, node.outDirs)
+          const spawned = await spawnNode(node, root, signal)
+          if (!spawned.ok) return fail(spawned.error ?? "docker build failed")
+          await captureBuild(node, node.keyPreview)
+          return green("ran")
+        }
+        case "Docker.Push": {
+          const spawned = await spawnNode(node, root, signal)
+          return spawned.ok ? green("ran") : fail(spawned.error ?? "docker push failed")
         }
         case "ImportClosure": {
           if (node.lane?.kind !== "closure") return fail("import closure planned no entries")

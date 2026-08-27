@@ -19,6 +19,7 @@
  */
 import * as CargoModule from "./Cargo.ts"
 import * as CiToolchainModule from "./CiToolchain.ts"
+import { Mise as MiseSurface } from "./Mise.ts"
 import * as PackageManagerModule from "./PackageManager.ts"
 import * as RuntimeModule from "./Runtime.ts"
 import * as RustToolchainModule from "./RustToolchain.ts"
@@ -354,6 +355,18 @@ export * as SecretProxy from "./SecretProxy.ts"
  * @since 0.1.0
  */
 export * as Shell from "./Shell.ts"
+
+/** mise version authority and pinned binary references. */
+export const Mise = MiseSurface
+
+/** Foundry toolchain plus forge build/test/fmt targets. */
+export * as Foundry from "./Foundry.ts"
+
+/** Anvil fork services. */
+export * as Anvil from "./Anvil.ts"
+
+/** Docker services, OCI builds, bake targets, and pushes. */
+export * as Docker from "./Docker.ts"
 
 /**
  * PACKAGE.ts agent target flavors and the workspace agent declarations:

@@ -94,7 +94,14 @@ const collectReferences = (
 }
 
 /** Rules that may never be reachable through a `data` edge. */
-const illegalDataRules: ReadonlySet<string> = new Set(["Shell.Run", "Shell.Serve"])
+const illegalDataRules: ReadonlySet<string> = new Set([
+  "Shell.Run",
+  "Shell.Serve",
+  "Anvil.Fork",
+  "Docker.Serve",
+  "Docker.Service",
+  "Docker.Push"
+])
 
 /**
  * Enforces the data-edge law: `data` means materialize producer files, so a

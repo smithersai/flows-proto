@@ -56,7 +56,9 @@ export const maximumNameLength = 256
  */
 export const Declaration = Schema.TaggedStruct("Secret", {
   /** The environment variable the value is read from at execution time. */
-  env: Schema.NonEmptyString
+  env: Schema.NonEmptyString,
+  /** Public fallback used only when the environment variable is absent. */
+  fallback: Schema.optional(Schema.NonEmptyString)
 })
 
 /**
@@ -82,7 +84,7 @@ const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/
  * @category constructors
  * @since 0.1.0
  */
-export const Secret = (env: string): Secret => {
+export const Secret = (env: string, options: { readonly fallback?: string | undefined } = {}): Secret => {
   if (typeof env !== "string") throw new TypeError("Secret name must be a string")
   if (env.length > maximumNameLength || !env.isWellFormed()) {
     throw new Error("Secret name must be bounded well-formed text")
@@ -91,7 +93,14 @@ export const Secret = (env: string): Secret => {
   if (!environmentName.test(trimmed)) {
     throw new Error(`Secret name must be an environment variable name: ${JSON.stringify(env)}`)
   }
-  return Declaration.make({ env: trimmed })
+  if (typeof options !== "object" || options === null) throw new TypeError("Secret options must be an object")
+  for (const key of Object.getOwnPropertyNames(options)) {
+    if (key !== "fallback") throw new TypeError(`Secret received unknown option ${JSON.stringify(key)}`)
+  }
+  if (options.fallback !== undefined && options.fallback === "") {
+    throw new TypeError("Secret fallback must be non-empty text")
+  }
+  return Declaration.make({ env: trimmed, ...(options.fallback === undefined ? {} : { fallback: options.fallback }) })
 }
 
 /**
@@ -102,8 +111,9 @@ export const Secret = (env: string): Secret => {
  */
 export const isSecret = (value: unknown): value is Secret => {
   if (typeof value !== "object" || value === null) return false
-  const candidate = value as { readonly _tag?: unknown; readonly env?: unknown }
-  return candidate._tag === "Secret" && typeof candidate.env === "string"
+  const candidate = value as { readonly _tag?: unknown; readonly env?: unknown; readonly fallback?: unknown }
+  return candidate._tag === "Secret" && typeof candidate.env === "string" &&
+    (candidate.fallback === undefined || typeof candidate.fallback === "string")
 }
 
 /**

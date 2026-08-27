@@ -57,18 +57,24 @@ export const digestFileBytes = async (path: string): Promise<string> => {
  * @since 0.1.0
  */
 export const findOnPath = (name: string): string | undefined => {
+  return findAllOnPath(name)[0]
+}
+
+/** Searches every PATH entry for an executable, preserving PATH order. */
+export const findAllOnPath = (name: string): ReadonlyArray<string> => {
+  const found: Array<string> = []
   const environmentPath = process.env["PATH"] ?? ""
   for (const entry of environmentPath.split(NodePath.delimiter)) {
     if (entry === "") continue
     const candidate = NodePath.join(entry, name)
     try {
       NodeFs.accessSync(candidate, NodeFs.constants.X_OK)
-      if (NodeFs.statSync(candidate).isFile()) return candidate
+      if (NodeFs.statSync(candidate).isFile() && !found.includes(candidate)) found.push(candidate)
     } catch {
       continue
     }
   }
-  return undefined
+  return found
 }
 
 /**
@@ -94,11 +100,14 @@ const probeOutputLimit = 2 * 1024
  * @category tools
  * @since 0.1.0
  */
-export const probeVersion = (path: string): Promise<Probe> =>
+export const probeVersion = (path: string): Promise<Probe> => probeCommand(path, ["--version"])
+
+/** Runs one bounded tool identity/readiness command. */
+export const probeCommand = (path: string, args: ReadonlyArray<string>): Promise<Probe> =>
   new Promise((resolve) => {
     NodeChildProcess.execFile(
       path,
-      ["--version"],
+      [...args],
       { timeout: 10_000, maxBuffer: 1 << 20 },
       (error, stdout, stderr) => {
         const exitCode = error === null

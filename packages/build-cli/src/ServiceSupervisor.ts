@@ -46,6 +46,7 @@ import * as NodePath from "node:path"
 export type Readiness =
   | { readonly port: number }
   | { readonly http: string; readonly timeout: string }
+  | { readonly exec: ReadonlyArray<string>; readonly timeout: string }
 
 /**
  * The health contract of a Serve target: the readiness probe repeated on an
@@ -90,10 +91,16 @@ export interface ServiceSpec {
   readonly key: string
   readonly cwd: string
   readonly argv: readonly [string, ...Array<string>]
+  /** Redacted argv used for in-process identity comparison when spawn argv contains secrets. */
+  readonly canonicalArgv?: readonly [string, ...Array<string>] | undefined
   readonly env?: Readonly<Record<string, string>> | undefined
   readonly readiness?: Readiness | undefined
   readonly health?: Health | undefined
   readonly stop?: Stop | undefined
+  /** Commands run after readiness and before the service is handed to consumers. */
+  readonly init?: ReadonlyArray<readonly [string, ...Array<string>]> | undefined
+  /** Best-effort commands run during finalization after the process stop contract. */
+  readonly cleanup?: ReadonlyArray<readonly [string, ...Array<string>]> | undefined
 }
 
 /**
@@ -113,6 +120,7 @@ export class ServiceError extends Data.TaggedError("smithers-build/ServiceError"
     | "spawn-failed"
     | "exited"
     | "readiness-timeout"
+    | "init-failed"
     | "unhealthy"
   readonly message: string
   readonly outputTail: string
@@ -258,7 +266,7 @@ interface ParsedSpec {
 
 const canonicalize = (spec: ServiceSpec): string =>
   JSON.stringify({
-    argv: spec.argv,
+    argv: spec.canonicalArgv ?? spec.argv,
     cwd: spec.cwd,
     env: Object.fromEntries(Object.entries(spec.env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
     health: spec.health === undefined
@@ -268,7 +276,11 @@ const canonicalize = (spec: ServiceSpec): string =>
       ? null
       : "port" in spec.readiness
       ? { port: spec.readiness.port }
-      : { http: spec.readiness.http, timeout: spec.readiness.timeout },
+      : "http" in spec.readiness
+      ? { http: spec.readiness.http, timeout: spec.readiness.timeout }
+      : { exec: spec.readiness.exec, timeout: spec.readiness.timeout },
+    init: spec.init ?? [],
+    cleanup: spec.cleanup ?? [],
     stop: spec.stop === undefined ? null : { grace: spec.stop.grace, signal: spec.stop.signal }
   })
 
@@ -281,22 +293,36 @@ const parseSpec = (spec: ServiceSpec): ParsedSpec => {
     throw new Error(`service ${spec.key} requires a non-empty argv of strings`)
   }
   if (spec.argv[0] === "") throw new Error(`service ${spec.key} argv[0] must name an executable`)
+  if (
+    spec.canonicalArgv !== undefined &&
+    (!Array.isArray(spec.canonicalArgv) || spec.canonicalArgv.length !== spec.argv.length ||
+      spec.canonicalArgv.some((entry) => typeof entry !== "string"))
+  ) {
+    throw new Error(`service ${spec.key} canonicalArgv must be a same-length argv of strings`)
+  }
   if (typeof spec.cwd !== "string" || !NodePath.isAbsolute(spec.cwd)) {
     throw new Error(`service ${spec.key} requires an absolute cwd; received ${JSON.stringify(spec.cwd)}`)
   }
   let readinessTimeoutMs = defaultReadinessTimeoutMs
-  if (spec.readiness !== undefined && "http" in spec.readiness) {
+  if (spec.readiness !== undefined && !("port" in spec.readiness)) {
     readinessTimeoutMs = parseDurationMs(spec.readiness.timeout, `service ${spec.key} readiness.timeout`)
-    let parsed: URL
-    try {
-      parsed = new URL(spec.readiness.http)
-    } catch {
-      throw new Error(`service ${spec.key} readiness.http is not a URL: ${JSON.stringify(spec.readiness.http)}`)
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error(
-        `service ${spec.key} readiness.http must be an http(s) URL: ${JSON.stringify(spec.readiness.http)}`
-      )
+    if ("http" in spec.readiness) {
+      let parsed: URL
+      try {
+        parsed = new URL(spec.readiness.http)
+      } catch {
+        throw new Error(`service ${spec.key} readiness.http is not a URL: ${JSON.stringify(spec.readiness.http)}`)
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(
+          `service ${spec.key} readiness.http must be an http(s) URL: ${JSON.stringify(spec.readiness.http)}`
+        )
+      }
+    } else if (
+      !Array.isArray(spec.readiness.exec) || spec.readiness.exec.length === 0 ||
+      spec.readiness.exec.some((entry) => typeof entry !== "string" || entry === "")
+    ) {
+      throw new Error(`service ${spec.key} readiness.exec must be a non-empty argv of strings`)
     }
   }
   if (
@@ -329,6 +355,18 @@ const parseSpec = (spec: ServiceSpec): ParsedSpec => {
     }
     stopSignal = spec.stop.signal as NodeJS.Signals
     stopGraceMs = parseDurationMs(spec.stop.grace, `service ${spec.key} stop.grace`)
+  }
+  for (const [name, commands] of [["init", spec.init], ["cleanup", spec.cleanup]] as const) {
+    if (commands !== undefined) {
+      if (
+        !Array.isArray(commands) ||
+        commands.some((argv) =>
+          !Array.isArray(argv) || argv.length === 0 || argv.some((entry) => typeof entry !== "string" || entry === "")
+        )
+      ) {
+        throw new Error(`service ${spec.key} ${name} must be an array of non-empty argv arrays`)
+      }
+    }
   }
   return {
     spec,
@@ -482,7 +520,7 @@ const probeOnce = (readiness: Readiness, attemptTimeoutMs: number): Effect.Effec
       }
       socket.on("connect", () => settle({ ok: true }))
       socket.on("error", (error: NodeJS.ErrnoException) => settle(miss(`connect failed: ${error.message}`)))
-    } else {
+    } else if ("http" in readiness) {
       const url = new URL(readiness.http)
       const get = url.protocol === "https:" ? NodeHttps.get : NodeHttp.get
       const request = get(url, (response) => {
@@ -498,6 +536,23 @@ const probeOnce = (readiness: Readiness, attemptTimeoutMs: number): Effect.Effec
         "error",
         (error: NodeJS.ErrnoException) => settle(miss(`GET ${readiness.http} failed: ${error.message}`))
       )
+    } else {
+      const child = NodeChildProcess.execFile(
+        readiness.exec[0]!,
+        readiness.exec.slice(1),
+        { env: serviceEnvironment(undefined), timeout: Math.max(attemptTimeoutMs, 1), maxBuffer: 1 << 20 },
+        (error, stdout, stderr) => {
+          settle(
+            error === null
+              ? { ok: true }
+              : miss(`exec failed: ${`${stdout}${stderr}`.trim() || error.message}`)
+          )
+        }
+      )
+      cleanup = () => {
+        clearTimeout(timer)
+        child.kill("SIGKILL")
+      }
     }
     return Effect.sync(() => {
       settled = true
@@ -653,6 +708,64 @@ const healthLoop = (
   return step(0)
 }
 
+/** Runs service init commands sequentially after readiness. */
+const runInit = (parsed: ParsedSpec, tail: () => string): Effect.Effect<void, ServiceError> =>
+  Effect.gen(function*() {
+    for (const argv of parsed.spec.init ?? []) {
+      const result = yield* Effect.callback<{ readonly ok: boolean; readonly detail: string }>((resume) => {
+        const child = NodeChildProcess.execFile(
+          argv[0],
+          argv.slice(1),
+          {
+            cwd: parsed.spec.cwd,
+            env: serviceEnvironment(parsed.spec.env),
+            timeout: parsed.readinessTimeoutMs,
+            maxBuffer: 1 << 20
+          },
+          (error, stdout, stderr) =>
+            resume(Effect.succeed({
+              ok: error === null,
+              detail: `${stdout}${stderr}`.trim() || (error === null ? "" : error.message)
+            }))
+        )
+        return Effect.sync(() => child.kill("SIGKILL"))
+      })
+      if (!result.ok) {
+        return yield* Effect.fail(
+          new ServiceError({
+            key: parsed.spec.key,
+            reason: "init-failed",
+            message: `service ${parsed.spec.key} init command failed: ${argv.join(" ")}${
+              result.detail === "" ? "" : `: ${result.detail}`
+            }`,
+            outputTail: tail()
+          })
+        )
+      }
+    }
+    return yield* Effect.void
+  })
+
+/** Runs best-effort cleanup commands during scope finalization. */
+const runCleanup = (parsed: ParsedSpec): Effect.Effect<void> =>
+  Effect.gen(function*() {
+    for (const argv of parsed.spec.cleanup ?? []) {
+      yield* Effect.callback<void>((resume) => {
+        const child = NodeChildProcess.execFile(
+          argv[0],
+          argv.slice(1),
+          {
+            cwd: parsed.spec.cwd,
+            env: serviceEnvironment(parsed.spec.env),
+            timeout: parsed.stopGraceMs + stopSettleMs
+          },
+          () => resume(Effect.void)
+        )
+        return Effect.sync(() => child.kill("SIGKILL"))
+      })
+    }
+  }).pipe(Effect.asVoid)
+
 /**
  * Spawns one service in its own process group, awaits readiness, and starts
  * the health loop, all inside the scope the `RcMap` provides for its key.
@@ -710,7 +823,7 @@ const startService = (parsed: ParsedSpec): Effect.Effect<RunningService, Service
     if (child.pid !== undefined) registerGroup(child.pid)
     // The finalizer is registered before readiness so a failed or interrupted
     // acquisition still stops the child through the declared stop contract.
-    yield* Effect.addFinalizer(() => stopService(child, parsed, state, exited))
+    yield* Effect.addFinalizer(() => stopService(child, parsed, state, exited).pipe(Effect.andThen(runCleanup(parsed))))
     if (parsed.spec.readiness !== undefined) {
       yield* Effect.raceFirst(
         awaitReadiness(parsed, parsed.spec.readiness, tail.read),
@@ -722,6 +835,7 @@ const startService = (parsed: ParsedSpec): Effect.Effect<RunningService, Service
       // error instead of a ready handle.
       yield* Effect.raceFirst(Effect.sleep(50), Deferred.await(unhealthy))
     }
+    yield* runInit(parsed, tail.read)
     if (parsed.healthIntervalMs !== undefined && parsed.spec.readiness !== undefined) {
       yield* Effect.forkScoped(
         healthLoop(parsed, parsed.spec.readiness, parsed.healthIntervalMs, state, unhealthy, tail.read)

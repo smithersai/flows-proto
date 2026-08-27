@@ -16,7 +16,9 @@
  */
 import * as Effect from "effect/Effect"
 import { execFile, spawn } from "node:child_process"
+import * as Fs from "node:fs/promises"
 import * as NodeNet from "node:net"
+import * as Os from "node:os"
 import * as NodePath from "node:path"
 import { describe, expect, it } from "vitest"
 import * as ServiceSupervisor from "../src/ServiceSupervisor.ts"
@@ -163,6 +165,34 @@ describe("spec validation", () => {
 })
 
 describe("readiness", () => {
+  it("supports exec readiness and runs init only after readiness", async () => {
+    const port = await freePort()
+    const directory = await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-service-init-"))
+    const marker = NodePath.join(directory, "ready")
+    try {
+      await run(Effect.scoped(Effect.gen(function*() {
+        const supervisor = yield* ServiceSupervisor.make
+        const handle = yield* supervisor.acquire({
+          ...serverSpec("//x:exec-ready", port, ["--delay-listen", "300"], {}),
+          readiness: {
+            exec: [
+              process.execPath,
+              "-e",
+              `fetch('http://127.0.0.1:${port}/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`
+            ],
+            timeout: "10s"
+          },
+          init: [[process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'ok')`]]
+        })
+        expect(alive(handle.pid)).toBe(true)
+        const contents = yield* Effect.promise(() => Fs.readFile(marker, "utf8"))
+        expect(contents).toBe("ok")
+      })))
+    } finally {
+      await Fs.rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it("http readiness gates a consumer behind a delayed listen", async () => {
     const port = await freePort()
     const started = Date.now()

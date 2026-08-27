@@ -199,6 +199,11 @@ const runtimeFacts = (runtime: Runtime.Runtime | Runtime.NodeDeclaration): Toolc
 }
 
 const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolchain => {
+  if (workspace.runtime === undefined || workspace.packageManager === undefined) {
+    throw new Error(
+      "Github rendering for toolchains-only workspaces is delegated to the language toolchain renderer"
+    )
+  }
   const runtime = runtimeFacts(workspace.runtime)
   const manager = workspace.packageManager
   if (PackageManager.isYarnDeclaration(manager)) {

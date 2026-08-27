@@ -120,6 +120,14 @@ export const RuntimeNpx = Schema.TaggedStruct("RuntimeNpx", {
  */
 export type RuntimeNpx = typeof RuntimeNpx.Type
 
+/** Schema for a tool whose version authority is the workspace's mise config. */
+export const MiseBin = Schema.TaggedStruct("MiseBin", {
+  name: Schema.NonEmptyString
+})
+
+/** A tool whose version authority is the workspace's mise config. */
+export type MiseBin = typeof MiseBin.Type
+
 /**
  * Schema for every executable tool reference an attrs `bin` or `using` slot
  * accepts.
@@ -127,7 +135,7 @@ export type RuntimeNpx = typeof RuntimeNpx.Type
  * @category schemas
  * @since 0.1.0
  */
-export const Tool = Schema.Union([NodeModuleBin, HostBin, PackageManagerBin, RuntimeBin, RuntimeNpx])
+export const Tool = Schema.Union([NodeModuleBin, HostBin, PackageManagerBin, RuntimeBin, RuntimeNpx, MiseBin])
 
 /**
  * Every executable tool reference.
@@ -200,6 +208,10 @@ export const runtimeBin: RuntimeBin = Object.freeze(RuntimeBin.make({}))
  */
 export const runtimeNpx = (spec: string): RuntimeNpx =>
   Object.freeze(RuntimeNpx.make({ spec: boundedName(spec, "Runtime.npx spec") }))
+
+/** References one binary pinned by the workspace's `S.Mise` config. */
+export const miseBin = (name: string): MiseBin =>
+  Object.freeze(MiseBin.make({ name: boundedName(name, "Mise.bin name") }))
 
 /**
  * Schema for a declared symlink emit value, `S.symlink(path)`.
