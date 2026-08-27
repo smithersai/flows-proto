@@ -1325,14 +1325,35 @@ const visit = async (
     toolchain.push(go.identity)
     if (!go.ok) noteRefusal(go.refusal)
     else {
+      // `go generate` runs the directives' commands off PATH, so a declared
+      // generator has to be resolved here or the attr is decorative: its
+      // version would never key and an absent one would surface as a
+      // directive failure rather than as the missing tool.
+      const generatorTools = rule === "Go.Generate" ? attrMember(attrs, "tools") : undefined
+      const generatorPath: Array<string> = []
+      if (Array.isArray(generatorTools)) {
+        for (const reference of generatorTools) {
+          const outcome = await resolveTool(context, reference as Record<string, unknown>)
+          toolchain.push({ slot: "tool", identity: outcome.tool.identity })
+          if (outcome._tag === "refused") noteRefusal(outcome.tool.refusal)
+          else generatorPath.push(NodePath.dirname(outcome.tool.path))
+        }
+      }
       try {
         const plannedGo = await GoExec.planRule(rule, attrs as Record<string, unknown>, {
           root: context.root,
           packagePath,
           workspace: context.index.workspace
         }, go.path)
+        if (plannedGo.refusal !== undefined) noteRefusal(plannedGo.refusal)
         argv = plannedGo.argv === undefined ? undefined : [...plannedGo.argv]
         env = { ...plannedGo.env }
+        if (generatorPath.length > 0) {
+          // The directories join PATH for the spawn only. Their identities
+          // already key above; a host path in `env` would key nothing extra
+          // and would split the cache per machine.
+          env["PATH"] = [...generatorPath, process.env["PATH"] ?? ""].filter(Boolean).join(NodePath.delimiter)
+        }
         outDirs.push(...plannedGo.outDirs)
         writeSet.push(...plannedGo.writeSet)
         if (plannedGo.closureIdentity !== undefined) {

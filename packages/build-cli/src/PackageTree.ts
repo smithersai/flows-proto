@@ -57,29 +57,18 @@ export const digestFileBytes = async (path: string): Promise<string> => {
  * @since 0.1.0
  */
 export const findOnPath = (name: string): string | undefined => {
-  return findAllOnPath(name)[0]
-}
-
-/**
- * Searches every PATH entry for an executable, preserving PATH order.
- *
- * @category tools
- * @since 0.1.0
- */
-export const findAllOnPath = (name: string): ReadonlyArray<string> => {
-  const found: Array<string> = []
   const environmentPath = process.env["PATH"] ?? ""
   for (const entry of environmentPath.split(NodePath.delimiter)) {
     if (entry === "") continue
     const candidate = NodePath.join(entry, name)
     try {
       NodeFs.accessSync(candidate, NodeFs.constants.X_OK)
-      if (NodeFs.statSync(candidate).isFile() && !found.includes(candidate)) found.push(candidate)
+      if (NodeFs.statSync(candidate).isFile()) return candidate
     } catch {
       continue
     }
   }
-  return found
+  return undefined
 }
 
 /**
@@ -102,23 +91,23 @@ const probeOutputLimit = 2 * 1024
  * they print plus their exit code is the identity. The probe result is key
  * material, so callers memoize it per command.
  *
- * @category tools
- * @since 0.1.0
- */
-export const probeVersion = (path: string, cwd?: string): Promise<Probe> => probeCommand(path, ["--version"])
-
-/**
- * Runs one bounded tool identity/readiness command.
+ * `args` overrides the probe argv for a tool whose version lives behind a
+ * subcommand rather than a flag (`go version`), and `cwd` runs the probe
+ * inside a directory whose configuration selects the version (a Go module
+ * whose `go.mod` makes `GOTOOLCHAIN` switch toolchains).
  *
  * @category tools
  * @since 0.1.0
  */
-export const probeCommand = (path: string, args: ReadonlyArray<string>): Promise<Probe> =>
+export const probeVersion = (
+  path: string,
+  options?: { readonly cwd?: string | undefined; readonly args?: ReadonlyArray<string> | undefined }
+): Promise<Probe> =>
   new Promise((resolve) => {
     NodeChildProcess.execFile(
       path,
-      [...args],
-      { timeout: 10_000, maxBuffer: 1 << 20, ...(cwd === undefined ? {} : { cwd }) },
+      [...(options?.args ?? ["--version"])],
+      { timeout: 10_000, maxBuffer: 1 << 20, ...(options?.cwd === undefined ? {} : { cwd: options.cwd }) },
       (error, stdout, stderr) => {
         const exitCode = error === null
           ? 0
@@ -729,17 +718,6 @@ export interface OutDirManifest {
   readonly entries: ReadonlyArray<ManifestEntry>
 }
 
-/** One captured file output stored in the same content-addressed blob set.
- *
- * @category artifacts
- * @since 0.1.0
- */
-export interface FileManifest {
-  readonly path: string
-  readonly digest: string
-  readonly executable: boolean
-}
-
 const casDirectory = (root: string, cacheDirectory: string): string =>
   NodePath.join(root, ...cacheDirectory.split("/"), "cas")
 
@@ -815,80 +793,6 @@ export const captureOutDir = async (
   }
   await walk(absolute, "")
   return { outDir, entries }
-}
-
-/** Captures one declared output file into the CAS.
- *
- * @category artifacts
- * @since 0.1.0
- */
-export const captureFile = async (
-  root: string,
-  cacheDirectory: string,
-  path: string
-): Promise<FileManifest> => {
-  if (!isConfinedRelative(path)) throw new Error(`declared output file leaves the workspace: ${path}`)
-  const absolute = NodePath.join(root, ...path.split("/"))
-  const stats = await Fs.lstat(absolute).catch(() => undefined)
-  if (stats === undefined || !stats.isFile()) throw new Error(`declared output file was not created: ${path}`)
-  const digest = await digestFileBytes(absolute)
-  const cas = casDirectory(root, cacheDirectory)
-  await Fs.mkdir(cas, { recursive: true })
-  const blob = NodePath.join(cas, digest)
-  if (!await Fs.access(blob).then(() => true, () => false)) await Fs.copyFile(absolute, blob)
-  return { path, digest, executable: (stats.mode & 0o111) !== 0 }
-}
-
-/** Decodes an untrusted file manifest.
- *
- * @category artifacts
- * @since 0.1.0
- */
-export const decodeFileManifest = (value: unknown): FileManifest | undefined => {
-  if (typeof value !== "object" || value === null) return undefined
-  const path = (value as { readonly path?: unknown }).path
-  const digest = (value as { readonly digest?: unknown }).digest
-  const executable = (value as { readonly executable?: unknown }).executable
-  if (typeof path !== "string" || !isConfinedRelative(path)) return undefined
-  if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest) || typeof executable !== "boolean") return undefined
-  return { path, digest, executable }
-}
-
-/** Verifies that one file manifest's CAS blob exists and matches its name.
- *
- * @category artifacts
- * @since 0.1.0
- */
-export const verifyFileManifest = async (
-  root: string,
-  cacheDirectory: string,
-  manifest: FileManifest
-): Promise<string | undefined> => {
-  const blob = NodePath.join(casDirectory(root, cacheDirectory), manifest.digest)
-  const digest = await digestFileBytes(blob).catch(() => undefined)
-  if (digest === undefined) return `cas blob missing for ${manifest.path}`
-  if (digest !== manifest.digest) return `cas blob tampered for ${manifest.path}`
-  return undefined
-}
-
-/** Atomically restores one captured file output from the CAS.
- *
- * @category artifacts
- * @since 0.1.0
- */
-export const materializeFile = async (
-  root: string,
-  cacheDirectory: string,
-  manifest: FileManifest
-): Promise<void> => {
-  if (!isConfinedRelative(manifest.path)) throw new Error(`materialize refused path: ${manifest.path}`)
-  const destination = NodePath.join(root, ...manifest.path.split("/"))
-  const blob = NodePath.join(casDirectory(root, cacheDirectory), manifest.digest)
-  await Fs.mkdir(NodePath.dirname(destination), { recursive: true })
-  const temporary = `${destination}.smthrs-${process.pid}-${Math.random().toString(16).slice(2)}`
-  await Fs.copyFile(blob, temporary)
-  await Fs.chmod(temporary, manifest.executable ? 0o755 : 0o644)
-  await Fs.rename(temporary, destination)
 }
 
 const safeManifestPath = /^(?!\.\.(\/|$))(?!\/)[^\0]+$/

@@ -24,6 +24,7 @@ export interface Context {
 
 /** */
 export interface Planned {
+  readonly refusal?: string
   readonly argv?: ReadonlyArray<string>
   readonly env: Readonly<Record<string, string>>
   readonly outDirs: ReadonlyArray<string>
@@ -41,12 +42,22 @@ const moduleDirectory = (context: Context): string => {
   return NodePath.join(context.root, NodePath.dirname(mod))
 }
 
-const execFile = (file: string, args: ReadonlyArray<string>, cwd: string): Promise<string> =>
+const execFile = (
+  file: string,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  env?: Readonly<Record<string, string>>
+): Promise<string> =>
   new Promise((resolve, reject) => {
-    NodeChildProcess.execFile(file, [...args], { cwd, maxBuffer: 256 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error !== null) reject(new Error(`${file} ${args.join(" ")} failed: ${stderr || error.message}`))
-      else resolve(stdout)
-    })
+    NodeChildProcess.execFile(
+      file,
+      [...args],
+      { cwd, maxBuffer: 256 * 1024 * 1024, ...(env === undefined ? {} : { env: { ...process.env, ...env } }) },
+      (error, stdout, stderr) => {
+        if (error !== null) reject(new Error(`${file} ${args.join(" ")} failed: ${stderr || error.message}`))
+        else resolve(stdout)
+      }
+    )
   })
 
 /** */
@@ -59,7 +70,10 @@ export const resolveGo = async (context: Context): Promise<
     return { ok: false, refusal: "host binary \"go\" is not present on PATH", identity: { tag: "GoBin", absent: true } }
   }
   const cwd = moduleDirectory(context)
-  const probe = await PackageTree.probeVersion(path, cwd)
+  // `go --version` is a usage error; `go version` is the subcommand that
+  // reports the toolchain GOTOOLCHAIN actually switched to for this module,
+  // which is the resolved version the key must record.
+  const probe = await PackageTree.probeVersion(path, { cwd, args: ["version"] })
   const declaration = toolchain(context.workspace)
   const authorities: Array<unknown> = []
   if (declaration !== undefined) {
@@ -192,35 +206,42 @@ const listed = async (
   goPath: string,
   cwd: string,
   patterns: ReadonlyArray<string>,
-  deps: boolean
+  deps: boolean,
+  env: Readonly<Record<string, string>>
 ): Promise<ReadonlyArray<GoListRow>> =>
-  jsonRows(await execFile(goPath, ["list", ...(deps ? ["-deps"] : []), "-json", ...patterns], cwd))
+  jsonRows(await execFile(goPath, ["list", ...(deps ? ["-deps"] : []), "-json", ...patterns], cwd, env))
 
 const selectedPackages = async (
   selection: unknown,
   context: Context,
-  goPath: string
+  goPath: string,
+  env: Readonly<Record<string, string>>
 ): Promise<ReadonlyArray<string>> => {
   if (
     typeof selection === "object" && selection !== null &&
     (selection as { readonly _tag?: unknown })._tag === "FilesDifference"
   ) {
     const difference = selection as { readonly left: unknown; readonly right: unknown }
-    const left = await listed(goPath, moduleDirectory(context), patternsOf(difference.left, context), false)
+    const left = await listed(goPath, moduleDirectory(context), patternsOf(difference.left, context), false, env)
     const right = new Set(
-      (await listed(goPath, moduleDirectory(context), patternsOf(difference.right, context), false)).map((row) =>
+      (await listed(goPath, moduleDirectory(context), patternsOf(difference.right, context), false, env)).map((row) =>
         row.ImportPath
       )
     )
     return left.flatMap((row) => row.ImportPath !== undefined && !right.has(row.ImportPath) ? [row.ImportPath] : [])
   }
   const patterns = patternsOf(selection, context)
-  const rows = await listed(goPath, moduleDirectory(context), patterns, false)
+  const rows = await listed(goPath, moduleDirectory(context), patterns, false, env)
   return rows.flatMap((row) => row.ImportPath === undefined ? [] : [row.ImportPath])
 }
 
-const closure = async (packages: ReadonlyArray<string>, context: Context, goPath: string): Promise<unknown> => {
-  const rows = await listed(goPath, moduleDirectory(context), packages, true)
+const closure = async (
+  packages: ReadonlyArray<string>,
+  context: Context,
+  goPath: string,
+  env: Readonly<Record<string, string>>
+): Promise<unknown> => {
+  const rows = await listed(goPath, moduleDirectory(context), packages, true, env)
   const files = new Set<string>()
   for (const row of rows) {
     if (row.Dir === undefined) continue
@@ -248,7 +269,18 @@ const closure = async (packages: ReadonlyArray<string>, context: Context, goPath
   return { packages: [...packages].sort(), files: digests }
 }
 
-const environment = (context: Context, attrs: Record<string, unknown>): Record<string, string> => {
+/**
+ * The environment facts that shape which files a package contains: the
+ * toolchain layer's cgo and experiment settings, the target triple, and the
+ * target's own declared env.
+ *
+ * `go list` resolves build constraints, so it needs exactly these to report
+ * the same package graph the build will compile. tapes turns `jsonv2` on
+ * module-wide, and without `GOEXPERIMENT` every `go list` over a package that
+ * imports `encoding/json/v2` fails with "build constraints exclude all Go
+ * files"; a cross-compiled binary likewise resolves a different file set.
+ */
+const graphEnvironment = (context: Context, attrs: Record<string, unknown>): Record<string, string> => {
   const declaration = toolchain(context.workspace)
   const env = { ...((attrs["env"] as Record<string, string> | undefined) ?? {}) }
   const cgo = attrs["cgo"] ?? declaration?.cgo
@@ -256,9 +288,45 @@ const environment = (context: Context, attrs: Record<string, unknown>): Record<s
   if ((declaration?.experiments.length ?? 0) > 0) env["GOEXPERIMENT"] = declaration!.experiments.join(",")
   if (attrs["goos"] !== undefined) env["GOOS"] = String(attrs["goos"])
   if (attrs["goarch"] !== undefined) env["GOARCH"] = String(attrs["goarch"])
+  return env
+}
+
+/**
+ * The module cache directory a `Go.ModDownload` on this target's `data` edge
+ * fills, if it declares one.
+ *
+ * `offline` is only honest if it points the run at the cache the declared
+ * fetch resource produced. Without this, `GOPROXY=off` runs against the
+ * host's ambient `GOMODCACHE`: green on a developer's warm machine and
+ * broken on a clean one, with the fetch edge doing nothing.
+ */
+const fetchedModuleCache = (context: Context, attrs: Record<string, unknown>): string | undefined => {
+  const data = attrs["data"]
+  if (!Array.isArray(data)) return undefined
+  for (const entry of data) {
+    const target = targetOf(entry)
+    if (target === undefined || Target.metadata(target).target !== "Go.ModDownload") continue
+    const outDirs = (Target.metadata(target).attrs as { readonly outDirs?: ReadonlyArray<string> }).outDirs
+    const first = outDirs?.[0]
+    if (first !== undefined) return NodePath.join(context.root, Input.resolvePath("", first))
+  }
+  return undefined
+}
+
+/**
+ * The graph environment plus the fetch-shaping knobs `offline` declares.
+ *
+ * These stay off the plan-time `go list`: they decide where modules may come
+ * from, not which files a package has, and the module cache the fetch
+ * resource fills is materialized for the spawn, not for planning.
+ */
+const environment = (context: Context, attrs: Record<string, unknown>): Record<string, string> => {
+  const env = graphEnvironment(context, attrs)
   if (attrs["offline"] === true) {
     env["GOPROXY"] = "off"
     env["GOFLAGS"] = "-mod=readonly"
+    const cache = fetchedModuleCache(context, attrs)
+    if (cache !== undefined) env["GOMODCACHE"] = cache
   }
   return env
 }
@@ -274,9 +342,10 @@ export const planRule = async (
   goPath: string
 ): Promise<Planned> => {
   const env = environment(context, attrs)
+  const listEnv = graphEnvironment(context, attrs)
   if (rule === "Go.Packages") {
-    const packages = await selectedPackages(attrs["pkgs"], context, goPath)
-    return { env, outDirs: [], writeSet: [], closureIdentity: await closure(packages, context, goPath) }
+    const packages = await selectedPackages(attrs["pkgs"], context, goPath, listEnv)
+    return { env, outDirs: [], writeSet: [], closureIdentity: await closure(packages, context, goPath, listEnv) }
   }
   if (rule === "Go.ModDownload") {
     const outDirs = (attrs["outDirs"] as ReadonlyArray<string>).map((path) =>
@@ -297,24 +366,41 @@ export const planRule = async (
       flags.push("-X", `${name}=${StampExec.token(name, value)}`)
     }
     const argv = [goPath, "build", "-o", out, ...(flags.length === 0 ? [] : ["-ldflags", flags.join(" ")]), pkg]
-    const packages = await selectedPackages([pkg], { ...context, packagePath: "" }, goPath)
+    const packages = await selectedPackages([pkg], { ...context, packagePath: "" }, goPath, listEnv)
     return {
       argv,
       env,
       outDirs: [NodePath.dirname(out)],
       writeSet: [],
-      closureIdentity: await closure(packages, context, goPath)
+      closureIdentity: await closure(packages, context, goPath, listEnv)
     }
   }
   if (rule === "Go.Test") {
-    const packages = await selectedPackages(attrs["pkgs"], context, goPath)
-    const runner = attrs["runner"] === "gotestsum" && PackageTree.findOnPath("gotestsum") !== undefined
-      ? PackageTree.findOnPath("gotestsum")!
-      : goPath
-    const argv = runner === goPath
-      ? [goPath, "test", ...(attrs["timeout"] === undefined ? [] : ["-timeout", String(attrs["timeout"])]), ...packages]
-      : [runner, "--", ...(attrs["timeout"] === undefined ? [] : ["-timeout", String(attrs["timeout"])]), ...packages]
-    return { argv, env, outDirs: [], writeSet: [], closureIdentity: await closure(packages, context, goPath) }
+    const packages = await selectedPackages(attrs["pkgs"], context, goPath, listEnv)
+    // A declared runner is part of what the target asked for. Falling back to
+    // plain `go test` would report green for a run the declaration did not
+    // describe, so an absent runner refuses by name instead.
+    const gotestsum = attrs["runner"] === "gotestsum" ? PackageTree.findOnPath("gotestsum") : undefined
+    if (attrs["runner"] === "gotestsum" && gotestsum === undefined) {
+      return {
+        refusal: "host binary \"gotestsum\" is not present on PATH (required by S.Go.Test({ runner: \"gotestsum\" }))",
+        env,
+        outDirs: [],
+        writeSet: []
+      }
+    }
+    const testFlags = [
+      ...(attrs["timeout"] === undefined ? [] : ["-timeout", String(attrs["timeout"])]),
+      // Go's own default for -parallel is GOMAXPROCS, so "cpus" is the
+      // default and stays off the argv: spelling the host's core count would
+      // put host state into the key and split the cache per machine.
+      ...(typeof attrs["parallel"] === "number" ? [`-parallel=${String(attrs["parallel"])}`] : []),
+      ...packages
+    ]
+    const argv = gotestsum === undefined
+      ? [goPath, "test", ...testFlags]
+      : [gotestsum, "--", ...testFlags]
+    return { argv, env, outDirs: [], writeSet: [], closureIdentity: await closure(packages, context, goPath, listEnv) }
   }
   if (rule === "Go.Lint") {
     const pkgs = (attrs["pkgs"] as ReadonlyArray<string>).map((entry) => anchor(entry, context.packagePath))
@@ -339,7 +425,7 @@ export const planRule = async (
     }
   }
   if (rule === "Go.Generate") {
-    const packages = await selectedPackages(attrs["pkgs"], context, goPath)
+    const packages = await selectedPackages(attrs["pkgs"], context, goPath, listEnv)
     return {
       argv: [goPath, "generate", ...packages],
       env,
@@ -347,12 +433,12 @@ export const planRule = async (
       writeSet: ((attrs["changes"] as ReadonlyArray<string>) ?? []).map((entry) =>
         Input.resolvePath(context.packagePath, entry)
       ),
-      closureIdentity: await closure(packages, context, goPath)
+      closureIdentity: await closure(packages, context, goPath, listEnv)
     }
   }
   if (rule === "Go.Fuzz") {
     const pkg = anchor(String(attrs["pkg"]), context.packagePath)
-    const packages = await selectedPackages([pkg], { ...context, packagePath: "" }, goPath)
+    const packages = await selectedPackages([pkg], { ...context, packagePath: "" }, goPath, listEnv)
     return {
       argv: [
         goPath,
@@ -366,7 +452,7 @@ export const planRule = async (
       env,
       outDirs: [],
       writeSet: [],
-      closureIdentity: await closure(packages, context, goPath)
+      closureIdentity: await closure(packages, context, goPath, listEnv)
     }
   }
   return { env, outDirs: [], writeSet: [] }

@@ -4,6 +4,7 @@ import * as Os from "node:os"
 import * as NodePath from "node:path"
 import { afterAll, describe, expect, it } from "vitest"
 import { makeCli, normalizeArgv } from "../src/Cli.ts"
+import * as PackageTree from "../src/PackageTree.ts"
 
 const temporaryDirectories: Array<string> = []
 afterAll(async () =>
@@ -64,7 +65,7 @@ const fixture = async (): Promise<string> => {
     `import { Smithers as S } from "@smthrs/targets"
 const nix = S.Nix.DevShell({ flake: S.file("//flake.nix"), lock: S.file("//flake.lock") })
 const go = S.Go.Toolchain({ mod: S.file("//go.mod"), sum: S.file("//go.sum"), versions: nix, cgo: false })
-export const Workspace = S.Workspace("fixture", { repository: "git+https://example.test/fixture.git", cache: S.Cache({ directory: ".flows" }), toolchains: [nix, go] })
+export const Workspace = S.Workspace("fixture", { repository: "git+https://example.test/fixture.git", cache: S.Cache({ directory: ".flows" }), toolchains: [nix, go], host: S.Host({ bins: ["smthrs-absent-generator"] }) })
 `
   )
   await write(
@@ -77,8 +78,9 @@ const binary = S.Go.Binary({ pkg: "./cmd/app", out: "//build/app", stamp: { "mai
 const smoke = S.Shell.Test({ bin: binary })
 const generate = S.Go.Generate({ pkgs: ["./gen"], changes: ["gen/generated.go"] })
 const fuzz = S.Go.Fuzz({ pkg: "./lib", fuzz: "FuzzValue", time: "1x", parallel: 1 })
+const generateMissingTool = S.Go.Generate({ pkgs: ["./gen"], tools: [S.Host.bin("smthrs-absent-generator")], changes: ["gen/generated.go"] })
 const nixRefusal = S.Shell.Test({ bin: S.Nix.bin("hurl"), args: ["--version"] })
-export const Package = S.Package({ targets: { all, binary, fuzz, generate, nixRefusal, smoke, test } })
+export const Package = S.Package({ targets: { all, binary, fuzz, generate, generateMissingTool, nixRefusal, smoke, test } })
 `
   )
   NodeChildProcess.execFileSync("git", ["-C", root, "init", "-q"])
@@ -128,6 +130,13 @@ describe("Go package execution", () => {
     expect(nix.output).toContain("host binary \\\"nix\\\" is not present on PATH")
   }, 120_000)
 
+  it("resolves a Go.Generate generator tool, so an absent one refuses by name", async () => {
+    const root = await fixture()
+    const plan = await serve(root, ["//:generateMissingTool", "--plan"])
+    expect(plan.output).toContain("smthrs-absent-generator")
+    expect(plan.output).toContain("refusal")
+  }, 120_000)
+
   it("keys on the Go import closure only", async () => {
     const root = await fixture()
     expect((await serve(root, ["//:test"])).exitCode).toBe(0)
@@ -141,4 +150,80 @@ describe("Go package execution", () => {
     const changed = await serve(root, ["//:test"])
     expect(changed.logs).toContain("//:test  ran")
   }, 120_000)
+})
+
+// A module whose sources only compile when the toolchain layer's
+// GOEXPERIMENT is on, which is tapes' `experiments: ["jsonv2"]` reduced to
+// one package. `go list` resolves build constraints, so planning fails
+// unless the toolchain environment reaches it.
+const experimentFixture = async (): Promise<string> => {
+  const root = await Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-go-exp-")))
+  temporaryDirectories.push(root)
+  await write(root, "go.mod", "module example.test/experiment\n\ngo 1.26.0\n")
+  await write(root, "go.sum", "")
+  await write(
+    root,
+    "jsonpkg/jsonpkg.go",
+    "package jsonpkg\n\nimport \"encoding/json/v2\"\n\nfunc Marshal(value any) ([]byte, error) { return json.Marshal(value) }\n"
+  )
+  await write(
+    root,
+    "jsonpkg/jsonpkg_test.go",
+    "package jsonpkg\n\nimport \"testing\"\n\nfunc TestMarshal(t *testing.T) {\n\tif _, err := Marshal(map[string]int{\"a\": 1}); err != nil { t.Fatal(err) }\n}\n"
+  )
+  await write(
+    root,
+    "WORKSPACE.ts",
+    `import { Smithers as S } from "@smthrs/targets"
+const go = S.Go.Toolchain({ mod: S.file("//go.mod"), sum: S.file("//go.sum"), versions: S.Nix.DevShell({ flake: S.file("//go.mod"), lock: S.file("//go.sum") }), experiments: ["jsonv2"] })
+export const Workspace = S.Workspace("experiment", { repository: "git+https://example.test/experiment.git", cache: S.Cache({ directory: ".flows" }), toolchains: [go] })
+`
+  )
+  await write(
+    root,
+    "PACKAGE.ts",
+    `import { Smithers as S } from "@smthrs/targets"
+const test = S.Go.Test({ pkgs: ["./jsonpkg"] })
+const capped = S.Go.Test({ pkgs: ["./jsonpkg"], parallel: 2 })
+const perCpu = S.Go.Test({ pkgs: ["./jsonpkg"], parallel: "cpus" })
+const viaGotestsum = S.Go.Test({ pkgs: ["./jsonpkg"], runner: "gotestsum" })
+export const Package = S.Package({ targets: { capped, perCpu, test, viaGotestsum } })
+`
+  )
+  return root
+}
+
+describe("Go toolchain environment", () => {
+  it("gives the toolchain's GOEXPERIMENT to plan-time go list, so a jsonv2 module plans and runs", async () => {
+    const root = await experimentFixture()
+    const plan = await serve(root, ["//:test", "--plan"])
+    expect(plan.output + plan.logs).not.toContain("build constraints exclude all Go files")
+    expect(plan.output).not.toContain("refusal")
+    expect(plan.exitCode).toBe(0)
+    const ran = await serve(root, ["//:test"])
+    expect(ran.exitCode).toBe(0)
+  }, 180_000)
+
+  it("passes a numeric parallel through and leaves \"cpus\" to go's own default", async () => {
+    const root = await experimentFixture()
+    expect((await serve(root, ["//:capped", "--plan"])).output).toContain("-parallel=2")
+    expect((await serve(root, ["//:perCpu", "--plan"])).output).not.toContain("-parallel")
+  }, 180_000)
+
+  it("refuses by name when the declared runner is absent instead of running plain go test", async () => {
+    const root = await experimentFixture()
+    const plan = await serve(root, ["//:viaGotestsum", "--plan"])
+    expect(plan.output).toContain("host binary \\\"gotestsum\\\" is not present on PATH")
+    expect(plan.output).not.toContain("go,test")
+  }, 180_000)
+
+  it("probes the toolchain with `go version`, so GOTOOLCHAIN's resolved version is identity", async () => {
+    const goPath = PackageTree.findOnPath("go")!
+    const probe = await PackageTree.probeVersion(goPath, { args: ["version"] })
+    expect(probe.exitCode).toBe(0)
+    expect(probe.output).toContain("go version go")
+    // The bare --version probe is a usage error and reports no version at all.
+    const flag = await PackageTree.probeVersion(goPath)
+    expect(flag.output).not.toContain("go version go")
+  })
 })

@@ -128,11 +128,15 @@ export const BinaryAttrs = Schema.Struct({
   ldflags: Schema.optional(Schema.Array(Schema.String)),
   stamp: Schema.optional(StampMap)
 })
+// No `outputs` declaration: `DeclaredOutputs.cwd` is workspace-relative, and
+// `out` may be package-relative (optimism's `out: "bin/cannon"` in //cannon),
+// so a constructor that cannot see its own package directory cannot state the
+// path. The planner does know it, and `GoExec.planRule` resolves `out` against
+// the package to produce the target's real output directory.
 const binaryDefinition = Target.make("Go.Binary", {
   attrs: BinaryAttrs,
   kinds: ["build"],
-  implementation: () => Target.notImplemented("Go.Binary"),
-  outputs: (attrs) => ({ cwd: ".", paths: [attrs.out.startsWith("//") ? attrs.out.slice(2) : attrs.out] })
+  implementation: () => Target.notImplemented("Go.Binary")
 })
 /** */
 export const Binary = (attrs: (typeof BinaryAttrs)["~type.make.in"]): Target.AnyTarget => binaryDefinition(attrs)
@@ -200,18 +204,29 @@ const fuzzDefinition = Target.make("Go.Fuzz", {
 /** */
 export const Fuzz = (attrs: (typeof FuzzAttrs)["~type.make.in"]): Target.AnyTarget => fuzzDefinition(attrs)
 
-/** */
+/**
+ * Renders the same linker flags `Go.Binary` links, as the one string a
+ * Dockerfile's `LDFLAGS` build arg takes (`go build -ldflags="${LDFLAGS}"`).
+ *
+ * Each stamped variable becomes a `-X name=value` pair, which is the only
+ * spelling the Go linker accepts. The value is a `Stamp.token`, not a
+ * resolved stamp: the string is declaration data, so it must key without
+ * reading git or the environment, and the executor substitutes the real
+ * value immediately before spawn.
+ */
 export const ldflags = (
   options: { readonly strip?: boolean; readonly stamp?: Readonly<Record<string, Stamp.Value | string | Secret.Secret>> }
-): ReadonlyArray<string | Stamp.Value | Secret.Secret> => {
+): string => {
   if (typeof options !== "object" || options === null) throw new TypeError("Go.ldflags options must be an object")
   for (const key of Object.getOwnPropertyNames(options)) {
     if (key !== "strip" && key !== "stamp") {
       throw new TypeError(`Go.ldflags received unknown option ${JSON.stringify(key)}`)
     }
   }
-  return Object.freeze([
+  return [
     ...(options.strip === true ? ["-s", "-w"] : []),
-    ...Object.entries(options.stamp ?? {}).flatMap(([name, value]) => ["-X", name, value])
-  ])
+    ...Object.entries(options.stamp ?? {}).flatMap((
+      [name, value]
+    ) => ["-X", `${name}=${Stamp.token(name, value)}`])
+  ].join(" ")
 }

@@ -65,13 +65,13 @@ describe("S.Go", () => {
     ).toThrow(/declared together/)
   })
 
-  it("renders shared ldflags without resolving stamps", () => {
-    expect(S.Go.ldflags({ strip: true, stamp: { "main.Version": S.Stamp.version } })).toEqual([
-      "-s",
-      "-w",
-      "-X",
-      "main.Version",
-      S.Stamp.version
-    ])
+  it("renders shared ldflags as -X pairs whose stamps stay unresolved", () => {
+    const rendered = S.Go.ldflags({ strip: true, stamp: { "main.Version": S.Stamp.version } })
+    expect(rendered).toBe(`-s -w -X main.Version=${S.Stamp.token("main.Version", S.Stamp.version)}`)
+    // The token spells the stamp's name only, so the flag string keys.
+    expect(rendered).not.toContain("Stamp")
+    expect(S.Go.ldflags({ stamp: { "a.Key": S.Secret("POSTHOG_API_KEY") } })).toBe(
+      `-X a.Key=${S.Stamp.token("a.Key", S.Secret("POSTHOG_API_KEY"))}`
+    )
   })
 })

@@ -4,11 +4,11 @@
  * @since 0.1.0
  */
 /* eslint-disable jsdoc/require-description, jsdoc/no-restricted-syntax */
+import * as Stamp from "@smthrs/targets/Stamp"
 import * as PackageTree from "./PackageTree.ts"
 
 /** */
-export const token = (name: string, value: unknown): string =>
-  `{smthrs:stamp:${Buffer.from(JSON.stringify({ name, value })).toString("base64url")}}`
+export const token = Stamp.token
 
 const stampValue = async (
   root: string,

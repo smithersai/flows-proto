@@ -414,3 +414,75 @@ Coordination: before editing shared declarations, `git -C /Users/williamcory/flo
 Shared-file hunks for merge: `WorkspaceDeclaration.ts` (`WorkspaceDeclaration`, `WorkspaceOptions`, `knownOptions`, `Workspace` validation/storage); `Reference.ts` (`GoBin`, `GoRun`, `NixBin`, target-tool member of `Tool`); `Smithers.ts` (`Go`, `Stamp`, `Nix` exports); `PackageExec.ts` (rule/tool dispatch only); `PackageTree.ts` (`probeVersion` optional cwd); `GithubRender.ts` (typed Go-only toolchain projection/setup).
 
 Not done: full tapes `//:check`, release binaries, and a zero-NotImplemented tapes plan sweep cannot be selected until lane `api/chain` supplies the Docker constructors used during module evaluation. Optimism cannot pass its first `S.Mise` declaration until that owner lands. The committed fixture is semantic rather than a verbatim transformed copy of tapes, because construct-only Docker substitutes are explicitly forbidden. `Go.ModDownload`, pinned `Go.Lint`, and a production `Go.run(sqlc)` are planned but do not have a real tapes execution receipt under that load blocker.
+
+### Lane api/go review 2026-08-27 — verbatim-tapes proof and six defect fixes
+
+The lane above proved its Go surface on a hand-written semantic fixture. The
+proof bar asked for a fixture that copies the tapes files **verbatim** minus
+the Docker-dependent packages. Building that fixture (`/tmp/tapes-fixture`,
+a clone of `~/artsy/tapes` with `e2e/`, `pkg/storage/postgres/` and the
+`S.Docker.*`/`S.Agent.Codex`/`S.Git.Commit` declarations removed; `~/artsy`
+untouched) surfaced six defects the semantic fixture could not: it declares
+no `experiments`, no cross-compilation, no `runner`, no `parallel`, no
+`tools`, and no package-relative `out`.
+
+Foreign-lane blockers found while trimming, in the order the loader hits them
+(each is the exact first error for its owner, and none is a Go symbol):
+
+1. `S.Docker.Build` — `Cannot read properties of undefined (reading 'Build')`
+   (`cli/PACKAGE.ts:109`), lane `api/chain`.
+2. `S.Agent.Codex("luna")` — `Schema validation failed` at
+   `AgentTarget.ts:916` from `PACKAGE.ts:162`, the agent lane.
+3. `S.Git.Commit` — `Missing key at ["message"]` (`PACKAGE.ts:193`), the git
+   lane; tapes declares `message: S.Agent.Codex("luna")`, which (2) rejects.
+
+| Defect | Where | Effect | Fix |
+| --- | --- | --- | --- |
+| Plan-time `go list` ran with the ambient environment | `GoExec.ts` `listed`/`selectedPackages`/`closure` | Every Go target on tapes refused: `build constraints exclude all Go files in .../encoding/json/jsontext`, because the toolchain's `experiments: ["jsonv2"]` never reached `go list`. A cross-compiled `S.Go.Binary` also computed the host triple's file set, so `goos`/`goarch` keyed a closure the build never compiles | `graphEnvironment` (cgo, experiments, GOOS/GOARCH, declared env) is threaded into every `go list`; the fetch-shaping knobs stay on the spawn |
+| `go` was probed with `--version` | `PackageTree.probeVersion`, `GoExec.resolveGo` | `go --version` is a usage error that prints the help text, so the resolved toolchain never entered the key: a `go.mod` toolchain bump would replay a stale cache entry, defeating key material item 6 of `SMITHERS-GO-NOTES.md` | `probeVersion(path, { cwd, args })`; the Go probe is `go version` inside the module directory |
+| `S.Go.ldflags` returned `["-X", name, StampValue]` | `Go.ts` | The spec's only consumer is `buildArgs: { LDFLAGS: … }` against `go build -ldflags="${LDFLAGS}"` — a string. The array embedded a live `Stamp` object and never spelled the `-X name=value` pair the Go linker requires | Returns the flag string with `-X name=<Stamp.token>`; the token encoder moved to `Stamp.token` so `StampExec` and the renderer share one spelling |
+| `offline: true` never used the fetch resource's cache | `GoExec.environment` | `GOPROXY=off` ran against the host's ambient `GOMODCACHE`: green on a warm machine, and on a cold one `//cli:tapes` failed with `verifying module: golang.org/toolchain@…: dial tcp: lookup sum.golang.org`. The declared `data: [fetch]` edge did nothing | When `offline` is set, `GOMODCACHE` points at the `Go.ModDownload` on the target's own `data` edge |
+| `runner: "gotestsum"` silently fell back to `go test` | `GoExec.planRule` | gotestsum is absent on this host, so optimism's `//:testGo`, `//op-e2e:test` and `//op-e2e:faultProofs` would have reported green for a run their declaration did not describe | Typed refusal naming the binary and the attr; `Planned.refusal` carries it to `PackageExec` |
+| `parallel` and `Go.Generate`'s `tools` were accepted and dropped | `GoExec.planRule`, `PackageExec` Go branch | optimism declares `parallel: 1` to stop workers starving on fuzztime, and `tools: [S.Mise.bin("mockery")]` so a mockery bump re-checks every mock. Neither reached the run; the generator's version keyed nothing | A numeric `parallel` becomes `-parallel=N` (`"cpus"` stays off argv — it is Go's own default, and spelling the host core count would split the cache per machine); `tools` resolve through `resolveTool`, key in `toolchain`, and join PATH for the spawn only |
+
+Also removed: `Go.Binary`'s `outputs` declaration. `DeclaredOutputs.cwd` is
+workspace-relative (`ToolBuild.verifyOutputs` → `measureOutput`), but `out`
+may be package-relative — optimism's `out: "bin/cannon"` in `//cannon` would
+have declared root-level `bin/cannon`. It is inert in package mode today
+(`PackageExec` sets `declaredOutputs: undefined`), so a wrong path was worse
+than none; `GoExec.planRule` resolves `out` against the package and is what
+actually drives capture.
+
+Proofs after the fixes, all against the verbatim tapes fixture:
+
+| Proof | Command | Result |
+| --- | --- | --- |
+| Load | `node …/main.js query '//...'` | 45 labels, zero warnings |
+| Plan sweep | `--plan` over all 45 labels | zero `NotImplemented`; the only refusals are the six correct `approval required` ones on `S.Docker.Push`/`S.Shell.Run` outward actions and `//.github:pr` |
+| Real build with stamps | `'//cli:tapes'` | `ran`; `go version -m build/tapes` shows `-ldflags="-s -w -X …utils.Version=nightly-2-g8d6219e-dirty -X …utils.Sha=8d6219e… -X …utils.Buildtime=2026-08-27T10:29:28.837Z"` and `./build/tapes version` prints them. `go version -m` also reports `go1.26.1-X:jsonv2`, so the experiment reached the compile |
+| Stamps stay out of the key | `'//cli:tapes' --plan` | argv carries `{smthrs:stamp:…}` tokens, never a resolved value |
+| Offline is real | `HOME=/tmp/emptyhome …/main.js '//cli:tapes'` | `ran` with no ambient module cache — the build used the fetch resource's `.gomodcache` |
+| Cache | `'//:parity'` twice | `ran 5.4s` then `hit 1ms` |
+| Closure keying | edit outside the Go closure, then inside | `hit 2ms`, then `ran 437ms` |
+
+optimism still stops at `S.Mise is not a function` in its `WORKSPACE.ts`, so
+its load cannot be advanced from this lane. Every optimism Go/Stamp
+declaration shape was constructed directly instead (`cannon64Impl` with
+`cgo: true` and a package-relative `out`, `cannon:fuzz`, `op-e2e:test` with
+`runner`/`timeout`/`parallel: "cpus"`, `op-node:binary` with `versionMeta`,
+`//:testGo` over `S.Files.difference`, `linter:opGolangciLint`, and
+`S.Shell.Test({ bin: <Go binary> })`): all nine construct.
+
+Still open, reported rather than fixed:
+
+- `//:fetch` never caches: `could not store //:fetch in the cache: cached
+  JSON has too many members`. A module cache is too large for the CAS
+  manifest, so `S.Go.ModDownload` re-runs every invocation (13–34 s). It is
+  honest, not fake, but `Go.ModDownload` needs a capture strategy that is not
+  a per-file manifest. That is shared cache work, not a Go-lane hunk.
+- `SMITHERS-GO-NOTES.md:159` says `offline` sets `GOFLAGS=-mod=mod`;
+  `FLOWS-GO-READINESS.md:36` says `-mod=readonly`. The readiness sequencing
+  wins per the lane brief, and `-mod=readonly` is what a committed `go.sum`
+  wants. Unchanged, restated here so the merge sees the conflict.
+- Two build-cli files fail `dprint check` on this branch; neither is touched
+  by this lane. Pre-existing baseline.
