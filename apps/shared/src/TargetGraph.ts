@@ -161,6 +161,10 @@ export const AffectedResponseSchema = z.object({
       reason: z.string()
     })
   ),
+  /** Signals used by this conservative local approximation. */
+  signal: z.string().optional(),
+  /** Known blind spots in the available CLI/declaration information. */
+  limits: z.array(z.string()).optional(),
   durationMs: z.number()
 })
 export type AffectedResponse = z.infer<typeof AffectedResponseSchema>

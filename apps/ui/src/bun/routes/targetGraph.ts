@@ -4,6 +4,7 @@ import { json, jsonError, readJson } from "../routes"
 import type { LocalServer } from "../server"
 import { queryTargetGraph } from "../TargetGraph"
 import type { TargetRunHistory } from "../TargetRunHistory"
+import { changedFiles, computeAffected, declarationInputs } from "../Affected"
 
 export interface TargetGraphRoutesOptions {
   readonly repos: RepoStore
@@ -63,6 +64,24 @@ export const registerTargetGraphRoutes = (
     if (runId === undefined) return jsonError(400, "invalid_request", "Body must be { runId }.")
     const replay = await options.history.replay(runId, options.repos.list().map((repo) => ({ id: repo.id, path: repo.path })))
     return replay === undefined ? jsonError(404, "run_not_found", `No target run with id ${runId}.`) : json(replay)
+  })
+
+  server.router.add("POST", "/api/targets/affected", async ({ request }) => {
+    const started = Date.now()
+    const parsed = await readJson(request)
+    if ("error" in parsed) return parsed.error
+    const repoId = stringField(parsed.body, "repoId")
+    if (repoId === undefined) return jsonError(400, "invalid_request", "Body must be { repoId }.")
+    const repo = options.repos.get(repoId)
+    if (repo === undefined) return jsonError(404, "repo_not_found", `No open repository with id ${repoId}.`)
+    const [graph, changes] = await Promise.all([
+      queryTargetGraph({ repoId, repo: repo.path, node: await options.node, ...(options.cli === undefined ? {} : { cli: options.cli }) }),
+      changedFiles(repo.path)
+    ])
+    return json(computeAffected({
+      repoId, base: changes.base, changedFiles: changes.files, nodes: graph.nodes, edges: graph.edges,
+      declarations: declarationInputs(repo.path, repo.smithers.declarationFiles), durationMs: Date.now() - started
+    }))
   })
 
   return { stop: () => {} }
