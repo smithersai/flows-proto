@@ -436,11 +436,11 @@ describe("the probe reads what the build writes", () => {
   )
 
   test("the vite plugin emits the asset this probe fetches", () => {
-    expect(viteConfig).toContain(`const BUILD_STAMP_ASSET = "${BUILD_STAMP_PATH.slice(1)}";`)
+    expect(viteConfig).toContain(`const BUILD_STAMP_ASSET = "${BUILD_STAMP_PATH.slice(1)}"`)
   })
 
   test("the vite plugin injects the meta tag this probe reads", () => {
-    expect(viteConfig).toContain(`const BUILD_STAMP_META = "${BUILD_STAMP_META}";`)
+    expect(viteConfig).toContain(`const BUILD_STAMP_META = "${BUILD_STAMP_META}"`)
   })
 
   test("the plugin is wired into the build", () => {

@@ -373,7 +373,10 @@ Wave 1 (2026-08-26), on `local-app/base`:
   removal (`checklist` gone, `dev` forwards to `start`), so the root `test`
   fan-out is green again; `apps/server` drops its `dev` and `serve:local`
   forwarders to the removed `smithers-ui` `web` script; `apps/README.md`
-  describes `pnpm dev` as the Electrobun launch.
+  describes `pnpm dev` as the Electrobun launch. The `apps/server`
+  BuildStamp source-text pin (red since the `1544cc39b` reformat dropped
+  semicolons from `vite.config.ts`, before the wave-1 base) matches the
+  no-semicolon constants, so `bun test src scripts` in `apps/server` is green.
 
 Acceptance on `24f337536`:
 
