@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test"
-import type { Page } from "@playwright/test"
-import { cpSync, existsSync, mkdtempSync } from "node:fs"
+import type { APIRequestContext, Page } from "@playwright/test"
+import { cpSync, existsSync, mkdtempSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -30,6 +30,26 @@ const openRepo = async (page: Page, path: string): Promise<void> => {
   await page.getByTestId("chrome-open-repo").click()
 }
 
+/*
+ * The web server is shared by the whole suite and the chrome's repo chip
+ * names the FIRST open repository, so every repo this spec opens is closed
+ * again on the way out — a leaked temp copy would steal the chip from the
+ * repo-targets suite that runs after this one.
+ */
+const opened: Array<string> = []
+
+const closeOpened = async (request: APIRequestContext): Promise<void> => {
+  const listed = await request.get("/api/repos")
+  if (!listed.ok()) return
+  const { repos } = (await listed.json()) as { repos: Array<{ id: string; path: string }> }
+  for (const repo of repos) {
+    if (opened.includes(repo.path)) {
+      await request.post("/api/repo/close", { data: { repoId: repo.id } })
+    }
+  }
+  opened.length = 0
+}
+
 test.beforeEach(async ({ page }) => {
   // Cards persist per browser profile; every test starts from an empty transcript.
   await page.addInitScript(() => {
@@ -41,12 +61,18 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
+test.afterEach(async ({ request }) => {
+  await closeOpened(request)
+})
+
 test("a repo with .smithers/UI.json opens with the plugin card, no panel, and Run streams from the workspace", async ({ page }) => {
   const copy = mkdtempSync(join(tmpdir(), "smithers-repo-plugin-"))
   cpSync(FIXTURE, copy, { recursive: true })
 
   await page.goto("/")
   await openRepo(page, copy)
+  // The server stores the realpath (/var/... is a symlink into /private/var on macOS).
+  opened.push(realpathSync(copy))
 
   // The plugin card leads: manifest summary, group sections, entries, badges.
   const plugin = pluginCard(page)
@@ -86,6 +112,7 @@ test("the aomi checkout opens with its declared plugin groups when present", asy
   test.skip(!existsSync(join(AOMI, ".smithers", "UI.json")), `${AOMI} with a plugin manifest is not on this machine`)
   await page.goto("/")
   await openRepo(page, AOMI)
+  opened.push(realpathSync(AOMI))
 
   const plugin = pluginCard(page)
   await expect(plugin).toBeVisible({ timeout: 30_000 })

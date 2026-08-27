@@ -46,7 +46,14 @@ const FORCE_REPO = {
   path: "/Users/williamcory/artsy/force",
   name: "artsy/force",
   git: { branch: "main", remote: "git@github.com:artsy/force.git" },
-  smithers: { detected: true, workspaceFile: "WORKSPACE.ts", declarationFiles: ["WORKSPACE.ts"], reason: "ok" }
+  warnings: [],
+  smithers: {
+    detected: true,
+    workspaceFile: "WORKSPACE.ts",
+    declarationFiles: ["WORKSPACE.ts"],
+    reason: "ok",
+    workspaces: [{ path: ".", title: "artsy/force" }]
+  }
 }
 
 const SESSION_ID = "pty-1"
