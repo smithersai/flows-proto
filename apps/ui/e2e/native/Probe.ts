@@ -16,19 +16,11 @@ export interface ProbeExercise {
 }
 
 export interface ProbeScenario {
-  /** What Updater.localInfo.channel() answers. "" is a bundle with no readable version.json. */
-  readonly channel?: string
-  /** Whether a HEAD at the vite dev server resolves or rejects. */
-  readonly devServer?: "up" | "down"
   /** What the host directory dialog returns. [] and [""] are both a cancel. */
   readonly dialogPaths?: ReadonlyArray<string>
   /** What the host says when asked to open a URL in the system browser. */
   readonly openExternalAnswer?: boolean
-  /** NDJSON lines the chat upstream streams back, or null to refuse the call. */
-  readonly agentStream?: ReadonlyArray<unknown> | null
   readonly exercises?: ReadonlyArray<ProbeExercise>
-  /** Milliseconds to let the agent stream drain before reporting. */
-  readonly settleMs?: number
 }
 
 export interface RecordedWindow {
@@ -39,22 +31,15 @@ export interface RecordedWindow {
   readonly rpcBound: boolean
 }
 
-export interface RecordedChatRequest {
-  readonly url: string
-  readonly runId: string | null
-}
-
 export interface NativeProbeReport {
   readonly logs: ReadonlyArray<string>
   readonly windows: ReadonlyArray<RecordedWindow>
   readonly requestNames: ReadonlyArray<string>
   readonly messageNames: ReadonlyArray<string>
-  readonly webviewEvents: ReadonlyArray<string>
-  readonly channelCalls: number
-  readonly devProbeCalls: number
   readonly dialogOptions: ReadonlyArray<unknown>
   readonly openedExternally: ReadonlyArray<string>
-  readonly chatRequests: ReadonlyArray<RecordedChatRequest>
-  readonly frames: ReadonlyArray<unknown>
+  /** The origin the entrypoint printed, and what its /api/health answered. */
+  readonly origin: string | null
+  readonly health: unknown
   readonly results: Readonly<Record<string, unknown>>
 }

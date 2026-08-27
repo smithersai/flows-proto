@@ -67,3 +67,13 @@ export const ADMIN_REQUESTS_PATH = "/api/admin/requests"
 export const ADMIN_HEALTH_PATH = "/api/admin/health"
 /** The bounded client-error log: what actually broke in an alpha user's browser. */
 export const ADMIN_ERRORS_PATH = "/api/admin/errors"
+
+/*
+ * The local app's own chat boundary (apps/ui/docs/LOCAL-APP.md): the Bun
+ * main process serves these on http://127.0.0.1:<port> and the SPA streams
+ * the same NDJSON AgentTurnFrames the native bridge used to carry.
+ */
+export const CHAT_TURN_PATH = "/api/chat/turn"
+export const CHAT_CANCEL_PATH = "/api/chat/cancel"
+export const OPEN_EXTERNAL_PATH = "/api/open-external"
+export const HEALTH_PATH = "/api/health"

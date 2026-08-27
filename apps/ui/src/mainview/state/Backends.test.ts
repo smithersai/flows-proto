@@ -205,7 +205,7 @@ describe("identity session record", () => {
     expect(identity?.login).toBeNull()
   })
 
-  test("a signed-out send attempt resolves to a calm sign-in reply — no backend call, draft kept", async () => {
+  test("a signed-out send reaches the backend: identity is not a gate on the chat", async () => {
     const store = await webStore()
     let turns = 0
     const countingAgent: NativeAgent = {
@@ -222,21 +222,17 @@ describe("identity session record", () => {
       })
     })
     await controller.loadSession()
-    controller.changeDraft("my half-written question")
     controller.send("can you help me?")
     await settled()
 
-    expect(turns).toBe(0)
-    expect(store.session().phase).toBe("idle")
+    expect(turns).toBe(1)
     const reply = [...store.collections.messages.values()].find((message) =>
       message.text.includes("Sign in with GitHub first")
     )
-    expect(reply?.role).toBe("smithers")
-    expect(reply?.status).toBe("complete")
-    expect(reply?.action).toEqual({ flow: "auth.sign-in", label: "Sign in with GitHub" })
+    expect(reply).toBeUndefined()
   })
 
-  test("a non-allowlisted send attempt resolves to a calm request-access reply", async () => {
+  test("a non-allowlisted send reaches the backend too", async () => {
     const store = await webStore()
     let turns = 0
     const countingAgent: NativeAgent = {
@@ -255,29 +251,11 @@ describe("identity session record", () => {
     controller.send("can you help me?")
     await settled()
 
-    expect(turns).toBe(0)
+    expect(turns).toBe(1)
     const reply = [...store.collections.messages.values()].find((message) =>
       message.text.includes("design partners only")
     )
-    expect(reply?.action).toEqual({ flow: "auth.request-access", label: "Request access" })
-  })
-
-  test("a non-allowlisted send after the request states the honest waiting state", async () => {
-    const store = await webStore()
-    const controller = createAppController(store, unavailableRepositories, silentAgent(), {
-      ...backend({
-        "/api/auth/session": json(200, { login: "newcomer", allowlisted: false, admin: false }),
-        "/api/identity/request-access": json(200, { status: "requested" })
-      })
-    })
-    await controller.loadSession()
-    await controller.requestAccess()
-    controller.send("hello?")
-    await settled()
-    const reply = [...store.collections.messages.values()].find((message) =>
-      message.text.includes("Your request is already in")
-    )
-    expect(reply?.action).toBeUndefined()
+    expect(reply).toBeUndefined()
   })
 
   test("returning from a failed OAuth redirect is a chat message with a retry action, never a bare page", async () => {
