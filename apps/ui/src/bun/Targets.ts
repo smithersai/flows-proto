@@ -145,7 +145,8 @@ export const queryTargets = async (options: TargetsQueryOptions): Promise<Target
   const started = Date.now()
   const cli = options.cli ?? resolveBuildCli()
   const warnings: Array<string> = []
-  if (options.node === null) {
+  const node = options.node
+  if (node === null) {
     warnings.push("No Node.js >= 22.19 was found for the smthrs loader (SMITHERS_NODE, PATH, nvm, homebrew).")
     return { targets: [], warnings, durationMs: Date.now() - started }
   }
@@ -159,7 +160,7 @@ export const queryTargets = async (options: TargetsQueryOptions): Promise<Target
   // A lone root query keeps the historical, unprefixed warning text.
   const lone = workspaces.length === 1 && workspaces[0] === "."
   const settled = await Promise.all(
-    workspaces.map(async (workspace) => ({ workspace, ...(await queryWorkspace({ ...options, node: options.node, cli }, workspace)) }))
+    workspaces.map(async (workspace) => ({ workspace, ...(await queryWorkspace({ ...options, node, cli }, workspace)) }))
   )
   const targets: Array<Target> = []
   for (const result of settled) {

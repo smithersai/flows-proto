@@ -26,7 +26,9 @@ const manifest = () => ({
       workspace: ".",
       label: "//:versionParity",
       title: "Version parity",
-      summary: "The pins must agree."
+      summary: "The pins must agree.",
+      approval: false,
+      agentic: false
     },
     {
       id: "clippy-fix",
@@ -41,11 +43,20 @@ const manifest = () => ({
   ]
 })
 
+/** The manifest as a hand-written file: the flags omitted so the defaults show. */
+const fileManifest = () => {
+  const value = manifest()
+  const [first, ...rest] = value.entries
+  const { approval: _approval, agentic: _agentic, ...stripped } = first ?? {}
+  return { ...value, entries: [stripped, ...rest] }
+}
+
 describe("RepoPluginSchema", () => {
-  test("a valid manifest parses and the flags default to false", () => {
-    const parsed = RepoPluginSchema.parse(manifest())
-    expect(parsed.entries[0]).toMatchObject({ approval: false, agentic: false })
-    expect(parsed.entries[1]).toMatchObject({ approval: true, agentic: true })
+  test("the wire schema wants explicit flags; the file parse defaults them to false", () => {
+    expect(RepoPluginSchema.parse(manifest()).entries[0]).toMatchObject({ approval: false, agentic: false })
+    const parsed = parseRepoPlugin(fileManifest(), [".", "aomi-sdk"])
+    expect("plugin" in parsed && parsed.plugin.entries[0]).toMatchObject({ approval: false, agentic: false })
+    expect("plugin" in parsed && parsed.plugin.entries[1]).toMatchObject({ approval: true, agentic: true })
   })
 
   test("additional keys are rejected at the root, on groups and on entries", () => {

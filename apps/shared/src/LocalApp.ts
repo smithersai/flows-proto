@@ -51,19 +51,41 @@ export const RepoPluginGroupSchema = z
   .strict()
 export type RepoPluginGroup = z.infer<typeof RepoPluginGroupSchema>
 
+const entryShape = {
+  id: z.string(),
+  group: z.string(),
+  workspace: z.string(),
+  label: z.string().regex(TARGET_LABEL, "a label is `//pkg:name`"),
+  title: z.string(),
+  summary: z.string()
+}
+
+/*
+ * The wire entry: approval and agentic are required so the schema's input
+ * and output types agree (TanStack DB's persisted collections demand it).
+ * The manifest FILE may omit them — parseRepoPlugin applies the defaults.
+ */
 export const RepoPluginEntrySchema = z
-  .object({
-    id: z.string(),
-    group: z.string(),
-    workspace: z.string(),
-    label: z.string().regex(TARGET_LABEL, "a label is `//pkg:name`"),
-    title: z.string(),
-    summary: z.string(),
-    approval: z.boolean().default(false),
-    agentic: z.boolean().default(false)
-  })
+  .object({ ...entryShape, approval: z.boolean(), agentic: z.boolean() })
   .strict()
 export type RepoPluginEntry = z.infer<typeof RepoPluginEntrySchema>
+
+/* The manifest file's entry: approval/agentic optional, defaulting to false. */
+const RepoPluginEntryFileSchema = z
+  .object({ ...entryShape, approval: z.boolean().optional(), agentic: z.boolean().optional() })
+  .strict()
+
+const groupRefs = (
+  manifest: { readonly groups: ReadonlyArray<{ readonly id: string }>; readonly entries: ReadonlyArray<{ readonly id: string; readonly group: string }> },
+  ctx: z.RefinementCtx
+): void => {
+  const groups = new Set(manifest.groups.map((group) => group.id))
+  for (const entry of manifest.entries) {
+    if (!groups.has(entry.group)) {
+      ctx.addIssue({ code: "custom", message: `entry ${entry.id} names an undeclared group ${entry.group}` })
+    }
+  }
+}
 
 export const RepoPluginSchema = z
   .object({
@@ -75,26 +97,40 @@ export const RepoPluginSchema = z
     entries: z.array(RepoPluginEntrySchema)
   })
   .strict()
-  .superRefine((manifest, ctx) => {
-    const groups = new Set(manifest.groups.map((group) => group.id))
-    for (const entry of manifest.entries) {
-      if (!groups.has(entry.group)) {
-        ctx.addIssue({ code: "custom", message: `entry ${entry.id} names an undeclared group ${entry.group}` })
-      }
-    }
-  })
+  .superRefine(groupRefs)
 export type RepoPlugin = z.infer<typeof RepoPluginSchema>
+
+const RepoPluginFileSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    name: z.string(),
+    title: z.string(),
+    summary: z.string(),
+    groups: z.array(RepoPluginGroupSchema),
+    entries: z.array(RepoPluginEntryFileSchema)
+  })
+  .strict()
+  .superRefine(groupRefs)
 
 /**
  * The manifest validated against the repository's detected workspaces: every
- * entry's workspace must be one of them. Shape failures and stray workspaces
- * come back as issues — the caller turns them into repo warnings, never a 500.
+ * entry's workspace must be one of them. Omitted approval/agentic flags
+ * default to false. Shape failures and stray workspaces come back as issues
+ * — the caller turns them into repo warnings, never a 500.
  */
 export const parseRepoPlugin = (
   value: unknown,
   workspaces: ReadonlyArray<string>
 ): { readonly plugin: RepoPlugin } | { readonly issues: ReadonlyArray<string> } => {
-  const parsed = RepoPluginSchema.safeParse(value)
+  const file = RepoPluginFileSchema.safeParse(value)
+  if (!file.success) {
+    return { issues: file.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`) }
+  }
+  const normalized = {
+    ...file.data,
+    entries: file.data.entries.map((entry) => ({ ...entry, approval: entry.approval ?? false, agentic: entry.agentic ?? false }))
+  }
+  const parsed = RepoPluginSchema.safeParse(normalized)
   if (!parsed.success) {
     return { issues: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`) }
   }

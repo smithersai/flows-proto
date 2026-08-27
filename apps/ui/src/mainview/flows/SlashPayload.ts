@@ -60,12 +60,20 @@ const tokensOf = (args: string | undefined): Array<string> =>
     .split(/\s+/)
     .filter((token) => token !== "")
 
-/** A repository id followed by a target label (`//pkg:name`). */
+/**
+ * A repository id followed by an optional workspace and a target label
+ * (`//pkg:name`). Three or more tokens carry the workspace between them (the
+ * plugin and targets cards dispatch `repoId workspace label`); the html
+ * panel's bridge sends only `repoId label` and runs at the root.
+ */
 const targetRef = (name: string, args: string | undefined): Parsed => {
   const [repoId, ...rest] = tokensOf(args)
-  const label = rest.join(" ")
-  if (repoId === undefined || repoId === "" || label === "") return no(`${name} needs a repository id and a target label`)
-  return ok({ repoId, label })
+  if (repoId === undefined || repoId === "" || rest.length === 0) {
+    return no(`${name} needs a repository id and a target label`)
+  }
+  if (rest.length === 1) return ok({ repoId, label: rest[0] ?? "" })
+  const [workspace, ...label] = rest
+  return ok({ repoId, workspace, label: label.join(" ") })
 }
 
 /*
