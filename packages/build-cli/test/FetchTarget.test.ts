@@ -1,17 +1,23 @@
 /**
  * `S.Fetch` through the package-mode CLI: a PACKAGE.ts that declares a
  * digest-pinned remote file (mirroring force's `//data:schemaPinned`) loads,
- * queries, plans as a typed NotImplemented refusal, and never writes the
- * declared output. The WORKSPACE.ts carries the split read/write remote
- * cache declaration force's `.smithers/WORKSPACE.ts` uses.
+ * plans, downloads through a local HTTP fixture, verifies its sha256, and
+ * restores its declared output from CAS. The WORKSPACE.ts carries the split
+ * read/write remote cache declaration force's `.smithers/WORKSPACE.ts` uses.
  */
+import * as FetchTarget from "@smthrs/targets/Fetch"
 import * as Target from "@smthrs/targets/Target"
+import { createHash } from "node:crypto"
 import * as Fs from "node:fs/promises"
+import { createServer } from "node:http"
+import type { AddressInfo } from "node:net"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
 import { afterAll, describe, expect, it } from "vitest"
 import { makeCli, normalizeArgv } from "../src/Cli.ts"
+import * as FetchExec from "../src/FetchExec.ts"
 import * as PackageDiscovery from "../src/PackageDiscovery.ts"
+import * as PackageExec from "../src/PackageExec.ts"
 import { PackageIndex } from "../src/PackageIndex.ts"
 import * as PackageLoader from "../src/PackageLoader.ts"
 
@@ -24,7 +30,24 @@ const tracked = async (directory: Promise<string>): Promise<string> => {
 }
 afterAll(async () => {
   await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error === undefined ? resolve() : reject(error))
+  })
 })
+
+const schemaBytes = Buffer.from("type Query { artwork: String }\n")
+const schemaSha256 = createHash("sha256").update(schemaBytes).digest("hex")
+let requests = 0
+const server = createServer((_request, response) => {
+  requests += 1
+  response.writeHead(200, { "content-type": "application/octet-stream", "content-length": schemaBytes.byteLength })
+  response.end(schemaBytes)
+})
+await new Promise<void>((resolve, reject) => {
+  server.once("error", reject)
+  server.listen(0, "127.0.0.1", resolve)
+})
+const serverUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/schema.graphql`
 
 const write = async (root: string, relative: string, text: string): Promise<void> => {
   const path = NodePath.join(root, relative)
@@ -43,18 +66,28 @@ const temporaryWorkspace = async (): Promise<string> =>
 const serve = async (
   root: string,
   args: ReadonlyArray<string>
-): Promise<{ readonly exitCode: number; readonly output: string }> => {
+): Promise<{ readonly exitCode: number; readonly output: string; readonly logs: string }> => {
   let exitCode = 0
   let output = ""
-  await makeCli({}).serve([...normalizeArgv([...args, "--workspace", root])], {
-    exit: (code) => {
-      exitCode = code
-    },
-    stdout: (text) => {
-      output += text
-    }
-  })
-  return { exitCode, output }
+  let logs = ""
+  const writeError = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    logs += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")
+    return true
+  }) as typeof process.stderr.write
+  try {
+    await makeCli({}).serve([...normalizeArgv([...args, "--workspace", root])], {
+      exit: (code) => {
+        exitCode = code
+      },
+      stdout: (text) => {
+        output += text
+      }
+    })
+  } finally {
+    process.stderr.write = writeError
+  }
+  return { exitCode, output, logs }
 }
 
 const workspaceModule = `import { Smithers as S } from "@smthrs/targets"
@@ -79,12 +112,13 @@ export const Workspace = S.Workspace("fixture", {
  * Mirrors force's data/PACKAGE.ts: a declared schema file, the pinned
  * upstream fetch, and a consumer that names the fetch in `data`.
  */
-const dataModule = `import { Smithers as S } from "@smthrs/targets"
+const dataModule = (url = serverUrl, sha256 = schemaSha256, out = "schema.upstream.graphql") =>
+  `import { Smithers as S } from "@smthrs/targets"
 const schema = S.file("schema.graphql")
 const schemaPinned = S.Fetch({
-  url: "https://raw.githubusercontent.com/artsy/metaphysics/e97558687736902fef8e037ffabc98dba33a3e0f/_schemaV2.graphql",
-  sha256: "7f60276646f651505e048961954fa97c7ad8501b284ac3db362c04f1d23c72e0",
-  out: "schema.upstream.graphql",
+  url: ${JSON.stringify(url)},
+  sha256: ${JSON.stringify(sha256)},
+  out: ${JSON.stringify(out)},
 })
 const schemaDrift = S.Shell.Test({
   command: "diff -q schema.graphql schema.upstream.graphql",
@@ -93,10 +127,14 @@ const schemaDrift = S.Shell.Test({
 export const Package = S.Package({ targets: { schema, schemaPinned, schemaDrift } })
 `
 
-const fixtureWorkspace = async (): Promise<string> => {
+const fixtureWorkspace = async (options?: {
+  readonly url?: string | undefined
+  readonly sha256?: string | undefined
+  readonly out?: string | undefined
+}): Promise<string> => {
   const root = await temporaryWorkspace()
   await write(root, "WORKSPACE.ts", workspaceModule)
-  await write(root, "data/PACKAGE.ts", dataModule)
+  await write(root, "data/PACKAGE.ts", dataModule(options?.url, options?.sha256, options?.out))
   await write(root, "data/schema.graphql", "type Query { ok: Boolean }\n")
   return root
 }
@@ -157,22 +195,125 @@ describe("S.Fetch in a PACKAGE.ts workspace", () => {
     expect(parsed.targets).toHaveLength(3)
   })
 
-  it("plans the fetch as a typed NotImplemented refusal and never writes its output", async () => {
+  it("plans a cacheable package-relative file with intrinsic network access and complete attr keying", async () => {
     const root = await fixtureWorkspace()
-    const planned = await serve(root, ["//data:schemaPinned", "--plan", "--format", "json"])
-    expect(planned.exitCode).toBe(0)
-    const plan = JSON.parse(planned.output) as {
-      readonly targets: ReadonlyArray<{ readonly label: string; readonly rule: string; readonly refusal?: string }>
-    }
-    expect(plan.targets).toHaveLength(1)
-    expect(plan.targets[0]!.rule).toBe("Fetch")
-    expect(plan.targets[0]!.refusal).toMatch(/^NotImplemented: Fetch/)
+    const loaded = await PackageLoader.load(await PackageDiscovery.discover(root))
+    const index = PackageIndex.make(loaded)
+    const plan = await PackageExec.plan({
+      index,
+      cacheDirectory: ".flows",
+      verb: "auto",
+      pattern: "//data:schemaPinned"
+    })
+    const node = plan.nodes.get("//data:schemaPinned")!
+    expect(node.refusal).toBeUndefined()
+    expect(node.cacheable).toBe(true)
+    expect(node.outFiles).toEqual(["data/schema.upstream.graphql"])
+    expect(node.sandbox).toEqual({ network: true })
+    expect(node.keyMaterial.capabilities).toContain("net:open")
+    expect(node.keyMaterial.capabilities).toContain("fs:write")
 
-    // Executing the refused node is a red exit (the refusal text itself goes
-    // to the log stream), and the declared output never appears on disk.
+    const rendered = await serve(root, ["//data:schemaPinned", "--plan", "--format", "json"])
+    expect(rendered.exitCode).toBe(0)
+    const report = JSON.parse(rendered.output) as {
+      readonly targets: ReadonlyArray<{
+        readonly label: string
+        readonly rule: string
+        readonly key: string
+        readonly cacheable: boolean
+        readonly sandbox?: unknown
+        readonly refusal?: string
+      }>
+    }
+    expect(report.targets).toEqual([
+      expect.objectContaining({
+        label: "//data:schemaPinned",
+        rule: "Fetch",
+        cacheable: true,
+        sandbox: { network: true }
+      })
+    ])
+    expect(report.targets[0]!.refusal).toBeUndefined()
+
+    const variants = await Promise.all([
+      fixtureWorkspace({ url: `${serverUrl}?variant=1` }),
+      fixtureWorkspace({ sha256: "0".repeat(64) }),
+      fixtureWorkspace({ out: "nested/schema.graphql" })
+    ])
+    const keys = await Promise.all(variants.map(async (variant) => {
+      const variantPlan = await serve(variant, ["//data:schemaPinned", "--plan", "--format", "json"])
+      return (JSON.parse(variantPlan.output) as { readonly targets: ReadonlyArray<{ readonly key: string }> })
+        .targets[0]!.key
+    }))
+    expect(new Set([report.targets[0]!.key, ...keys]).size).toBe(4)
+  })
+
+  it("refuses outputs that escape package-relative planning", () => {
+    expect(
+      FetchExec.planAttrs({
+        packagePath: "data",
+        attrs: { url: serverUrl, sha256: schemaSha256, out: "//outside.graphql" }
+      }).refusal
+    ).toContain(
+      "must be package-relative"
+    )
+    expect(
+      FetchExec.planAttrs({
+        packagePath: "data",
+        attrs: { url: serverUrl, sha256: schemaSha256, out: "../outside.graphql" }
+      }).refusal
+    ).toMatch(/leaves/)
+    const ordinary = FetchTarget.Fetch({ url: serverUrl, sha256: schemaSha256, out: "schema.graphql" })
+    expect(FetchExec.plan({ packagePath: "../outside", target: ordinary }).refusal).toMatch(/leaves|invalid/)
+  })
+
+  it("downloads matching bytes, hits, and restores a deleted output byte-for-byte", async () => {
+    const root = await fixtureWorkspace()
+    const destination = NodePath.join(root, "data/schema.upstream.graphql")
+    const requestsBefore = requests
+    const first = await serve(root, ["//data:schemaPinned"])
+    expect(first.exitCode).toBe(0)
+    expect(first.logs).toContain(`fetched ${schemaBytes.byteLength} byte(s)`)
+    expect(await Fs.readFile(destination)).toEqual(schemaBytes)
+    expect(requests).toBe(requestsBefore + 1)
+
+    const second = await serve(root, ["//data:schemaPinned"])
+    expect(second.exitCode).toBe(0)
+    expect(second.logs).toContain("//data:schemaPinned  hit")
+    expect(requests).toBe(requestsBefore + 1)
+
+    await Fs.rm(destination)
+    const restored = await serve(root, ["//data:schemaPinned"])
+    expect(restored.exitCode).toBe(0)
+    expect(restored.logs).toContain("//data:schemaPinned  hit")
+    expect(await Fs.readFile(destination)).toEqual(schemaBytes)
+    expect(requests).toBe(requestsBefore + 1)
+  })
+
+  it("reports a typed digest mismatch with expected and actual hashes and writes no file", async () => {
+    const expected = "0".repeat(64)
+    const root = await fixtureWorkspace({ sha256: expected })
+    const destination = NodePath.join(root, "data/schema.upstream.graphql")
     const executed = await serve(root, ["//data:schemaPinned"])
     expect(executed.exitCode).toBe(1)
     expect(executed.output).toContain("targets_failed")
-    await expect(Fs.access(NodePath.join(root, "data/schema.upstream.graphql"))).rejects.toThrow()
+    expect(executed.logs).toContain("Fetch sha256 mismatch")
+    expect(executed.logs).toContain(`expected ${expected}`)
+    expect(executed.logs).toContain(`actual ${schemaSha256}`)
+    await expect(Fs.access(destination)).rejects.toThrow()
+
+    await write(root, "data/direct.graphql", "unchanged\n")
+    const direct = await FetchExec.execute({
+      root,
+      target: FetchTarget.Fetch({ url: serverUrl, sha256: expected, out: "direct.graphql" }),
+      outFile: "data/direct.graphql"
+    }).then(() => undefined, (cause: unknown) => cause)
+    expect(direct).toBeInstanceOf(FetchExec.FetchError)
+    expect(direct).toMatchObject({
+      code: "digest_mismatch",
+      expectedSha256: expected,
+      actualSha256: schemaSha256
+    })
+    expect(await Fs.readFile(NodePath.join(root, "data/direct.graphql"), "utf8")).toBe("unchanged\n")
   })
 })

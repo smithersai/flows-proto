@@ -8,11 +8,11 @@
  * target is a `build` producer: another target names it in `data` and the
  * file materializes before that consumer dispatches.
  *
- * Construct-only: the constructor validates attrs by schema, declares `out`
- * as the target's output tree, and installs a {@link Target.notImplemented}
- * implementation. Download, digest verification, and the write are a later
- * lane; until then execution refuses with the typed error, never a green
- * no-op.
+ * The constructor validates attrs by schema and declares `out` as the
+ * target's output tree. PACKAGE.ts execution is supplied by build-cli's
+ * package executor; the legacy Flow implementation stays a typed
+ * {@link Target.notImplemented} refusal rather than duplicating host access
+ * in a declaration constructor.
  *
  * @since 0.1.0
  */

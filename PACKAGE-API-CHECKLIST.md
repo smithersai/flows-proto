@@ -26,7 +26,7 @@ creds/host bin — proof is the correct refusal).
 - [x] PackageIndex: path+key labels only, duplicate/two-label/cycle/case fatal, omission privacy, `no_default_target` — proof: fixture error suite (case_collision, target_multiple_labels, package_import_cycle with chain, legacy_target_export, module_not_regular symlink, no_default_target, unknown_agent, one-way WORKSPACE import) + force golden label list (2026-08-25)
 - [c] Full S namespace constructs (every symbol below at least `[c]`) — proof: `smthrs graph '//...'` renders the complete force graph, 81 nodes / 94 classified edges (data/gates/services/deps); every implementation is `Target.notImplemented` and execution verbs refuse package mode loudly (2026-08-25)
 - [x] CLI package-mode: `smthrs query|graph` auto-detect via WORKSPACE.ts — proof: runs from force cwd (and subdirectories, `:lint` relative form) with no flags; BUILD.ts mode unchanged (348/348 build-cli tests) (2026-08-25)
-- [p] S.Fetch({url, sha256, out}) — constructs a `build`-kind target, `out` is its declared output (shared output-path law), data-legal for consumers; execution is the typed NotImplemented refusal — proof: live force `query '//...'` lists 82 labels including `//data:schemaPinned` (rule Fetch, kinds [build]); `smthrs '//data:schemaPinned' --plan` shows `refusal: "NotImplemented: Fetch …"`; `packages/targets/test/Fetch.test.ts`, `packages/build-cli/test/FetchTarget.test.ts` (2026-08-26)
+- [x] S.Fetch({url, sha256, out}) — constructs a data-legal `build` target; package mode resolves `out` against the declaring package, implies `sandbox: {network:true}`, downloads through Effect's Node HttpClient, verifies sha256 before an atomic file publish, and captures/restores the file through CAS — proof: live force `//data:schemaPinned --plan` has no refusal and declares the network sandbox; e2e force downloaded 866527 bytes, warm rerun hit, output digest `7f6027…72e0`; local HTTP fixture proves mismatch expected/actual with no write plus warm hit/deleted-file byte restore (`FetchTarget.test.ts`, 2026-08-27)
 - [c] S.RemoteCache.make({endpoint, read, write}) — split read/write secrets alongside the BUILD-era `token` form (`token` and `read` are the same slot, exclusive); `write` is carried on the declaration — proof: live force WORKSPACE loads; `RemoteCache.test.ts` split-form cases (2026-08-26)
 - [c] S.Cache({directory, remote}) — optional `remote` must be an `S.RemoteCache.make` declaration; inert data on the workspace, package-mode remote replication is not wired — proof: live force WORKSPACE loads; `FetchTarget.test.ts` reads `workspace.cache.remote` back (2026-08-26)
 
@@ -486,3 +486,47 @@ Still open, reported rather than fixed:
   wants. Unchanged, restated here so the merge sees the conflict.
 - Two build-cli files fail `dprint check` on this branch; neither is touched
   by this lane. Pre-existing baseline.
+### Lane api/fetch 2026-08-27
+
+`S.Fetch` now executes honestly in PACKAGE.ts mode. The fetch itself implies
+`sandbox: { network: true }`: network is intrinsic to the rule and is printed
+in `--plan`; authors cannot accidentally select the default no-network profile
+because the observed declaration surface has no `sandbox` attr. No secret
+values are involved in the observed contract. Downloading uses Effect's
+Undici-backed Node `HttpClient` host seam (with bounded redirects), not a
+constructor or ad-hoc global `fetch`. Sha256 verification completes before the
+workspace is touched; the verified bytes land through a synced sibling temp
+file and atomic rename, then the existing single-file CAS path captures them.
+
+| Owned symbol | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| `S.Fetch({url, sha256, out})` plan | [x] | `cd ~/artsy/force && node /Users/williamcory/flows-api/fetch/packages/build-cli/src/main.js '//data:schemaPinned' --plan --format json` | `rule: Fetch`; `cacheable: true`; `sandbox.network: true`; no `refusal` |
+| `S.Fetch` execute/cache | [x] | `cd ~/artsy-e2e/force && node /Users/williamcory/flows-api/fetch/packages/build-cli/src/main.js '//data:schemaPinned'` twice | first: `fetched 866527 byte(s)`, `ran`; second: `hit 13ms`; `shasum -a 256` = `7f60276646f651505e048961954fa97c7ad8501b284ac3db362c04f1d23c72e0` |
+| `S.Fetch` local HTTP contract | [x] | `pnpm -C packages/build-cli exec vitest run test/FetchTarget.test.ts --coverage.enabled=false` | `7 passed`; key varies with url/sha256/out; package output law; typed mismatch expected/actual with absent destination and unchanged pre-existing file; warm hit; deleted output restored byte-for-byte |
+
+| Repository | Load / graph / plan proof | Execute / refusal proof | Result |
+| --- | --- | --- | --- |
+| force | `cd ~/artsy/force && node /Users/williamcory/flows-api/fetch/packages/build-cli/src/main.js '//...' --plan --format json` (condensed parser) | `//data:schemaPinned` in the e2e clone, twice; clone restored clean afterwards | 82 public roots / 89 planned nodes / 10 typed host-or-approval refusals / **0 NotImplemented**; Fetch real download then hit |
+| package suites | `pnpm -C packages/targets exec vitest run --coverage.enabled=false`; `pnpm -C packages/build-cli exec vitest run --coverage.enabled=false` | both requested package `tsc --noEmit -p tsconfig.json`; package dprint checks; eslint on every touched source | targets 686/686; build-cli 691 passed + 1 skipped; tsc, dprint, touched-source eslint clean |
+
+Contract audit and conflicts: `rg 'S\\.Fetch\\(' ~/artsy` found exactly one
+declaration, `~/artsy/force/data/PACKAGE.ts:6`, with only `url`, required
+`sha256`, and package-relative `out`. The named tapes, aomi, aomi-sdk, viem,
+optimism, and whatsabi trees declare no other `S.Fetch`, so headers, secrets,
+optional digests, and archive extraction were not invented. There is no spec
+conflict. The requested `reference/` prior-art shelf is absent in this
+worktree; the implementation followed `packages/std/src/Fetch.ts` for the
+Effect HttpClient seam and `PackageExec`/`PackageTree` single-file
+capture/verified restore for CAS behavior.
+
+Shared-file hunk: `packages/build-cli/src/PackageExec.ts` only registers and
+dispatches `FetchExec`, projects its output/sandbox into the generic node,
+admits Fetch to the existing computational cache, and prints the implied
+sandbox in its plan report. `packages/targets/src/Fetch.ts` has documentation
+only; its legacy non-package Flow implementation deliberately remains a typed
+NotImplemented refusal so host access is not duplicated in the declaration
+constructor.
+
+Not done: no unobserved headers, secrets, optional-sha, extraction, or BUILD.ts
+execution surface was added. Those are not present in the design-partner
+corpus and would widen the contract without a declaration to prove.
