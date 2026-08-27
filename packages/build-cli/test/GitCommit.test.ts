@@ -4,8 +4,19 @@ import * as NodeChildProcess from "node:child_process"
 import * as Fs from "node:fs/promises"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import * as GitCommit from "../src/GitCommit.ts"
+
+/** Temp directories this file created; removed after the suite so a run leaves nothing in the OS temp dir. */
+const temporaryDirectories: Array<string> = []
+const tracked = async (directory: Promise<string>): Promise<string> => {
+  const resolved = await directory
+  temporaryDirectories.push(resolved)
+  return resolved
+}
+afterAll(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+})
 
 const git = (root: string, args: ReadonlyArray<string>): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -17,7 +28,7 @@ const git = (root: string, args: ReadonlyArray<string>): Promise<string> =>
 
 /** A throwaway git repository with one initial commit. */
 const temporaryRepo = async (): Promise<string> => {
-  const root = await Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-git-commit-")))
+  const root = await tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-git-commit-"))))
   await git(root, ["init", "--quiet", "--initial-branch=main"])
   await git(root, ["config", "user.name", "smthrs test"])
   await git(root, ["config", "user.email", "test@example.invalid"])
@@ -180,7 +191,7 @@ describe("agent-written messages", () => {
 
 describe("refusals before staging", () => {
   it("refuses a root outside any git work tree", async () => {
-    const root = await Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-not-a-repo-")))
+    const root = await tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-not-a-repo-"))))
     const error = await failure(GitCommit.commit({
       root,
       target: fixedCommit(),

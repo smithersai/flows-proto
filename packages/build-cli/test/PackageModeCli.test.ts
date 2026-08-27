@@ -1,8 +1,19 @@
 import * as Fs from "node:fs/promises"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import { makeCli } from "../src/Cli.ts"
+
+/** Temp directories this file created; removed after the suite so a run leaves nothing in the OS temp dir. */
+const temporaryDirectories: Array<string> = []
+const tracked = async (directory: Promise<string>): Promise<string> => {
+  const resolved = await directory
+  temporaryDirectories.push(resolved)
+  return resolved
+}
+afterAll(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+})
 
 const write = async (root: string, relative: string, text: string): Promise<void> => {
   const path = NodePath.join(root, relative)
@@ -27,7 +38,7 @@ export const Package = S.Package({ targets: { run: S.Shell.Run({ command: "echo 
 `
 
 const temporaryWorkspace = async (): Promise<string> =>
-  Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-package-cli-")))
+  tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-package-cli-"))))
 
 /** Serves one command against a workspace, capturing exit code and output. */
 const serve = async (

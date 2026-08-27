@@ -9,11 +9,22 @@ import * as Target from "@smthrs/targets/Target"
 import * as Fs from "node:fs/promises"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import { makeCli, normalizeArgv } from "../src/Cli.ts"
 import * as PackageDiscovery from "../src/PackageDiscovery.ts"
 import { PackageIndex } from "../src/PackageIndex.ts"
 import * as PackageLoader from "../src/PackageLoader.ts"
+
+/** Temp directories this file created; removed after the suite so a run leaves nothing in the OS temp dir. */
+const temporaryDirectories: Array<string> = []
+const tracked = async (directory: Promise<string>): Promise<string> => {
+  const resolved = await directory
+  temporaryDirectories.push(resolved)
+  return resolved
+}
+afterAll(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+})
 
 const write = async (root: string, relative: string, text: string): Promise<void> => {
   const path = NodePath.join(root, relative)
@@ -22,7 +33,7 @@ const write = async (root: string, relative: string, text: string): Promise<void
 }
 
 const temporaryWorkspace = async (): Promise<string> =>
-  Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-fetch-target-")))
+  tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-fetch-target-"))))
 
 /**
  * Serves one command against a workspace, capturing exit code and output.
@@ -91,6 +102,22 @@ const fixtureWorkspace = async (): Promise<string> => {
 }
 
 describe("S.Fetch in a PACKAGE.ts workspace", () => {
+  it("loads without leaving its entry module directory in the OS temp dir", async () => {
+    const root = await fixtureWorkspace()
+    const loaded = await PackageLoader.load(await PackageDiscovery.discover(root))
+    expect(loaded.packages.length).toBeGreaterThan(0)
+    // Other workers create and remove their own entry directories
+    // concurrently, so the proof is that no leftover entry module names
+    // this fixture's workspace, not a global count.
+    const leftovers: Array<string> = []
+    for (const name of await Fs.readdir(Os.tmpdir())) {
+      if (!name.startsWith("smthrs-package-entry-")) continue
+      const entry = await Fs.readFile(NodePath.join(Os.tmpdir(), name, "entry.mjs"), "utf8").catch(() => "")
+      if (entry.includes(root)) leftovers.push(name)
+    }
+    expect(leftovers).toEqual([])
+  })
+
   it("loads, labels the fetch, classifies the consumer's data edge, and keeps the split remote cache", async () => {
     const root = await fixtureWorkspace()
     const discovery = await PackageDiscovery.discover(root)

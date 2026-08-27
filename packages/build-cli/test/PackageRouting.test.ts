@@ -2,11 +2,22 @@ import * as Target from "@smthrs/targets/Target"
 import * as Fs from "node:fs/promises"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import * as PackageDiscovery from "../src/PackageDiscovery.ts"
 import { isPackageError, PackageError } from "../src/PackageError.ts"
 import { PackageIndex } from "../src/PackageIndex.ts"
 import * as PackageLoader from "../src/PackageLoader.ts"
+
+/** Temp directories this file created; removed after the suite so a run leaves nothing in the OS temp dir. */
+const temporaryDirectories: Array<string> = []
+const tracked = async (directory: Promise<string>): Promise<string> => {
+  const resolved = await directory
+  temporaryDirectories.push(resolved)
+  return resolved
+}
+afterAll(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+})
 
 const forceSpec = NodePath.resolve(import.meta.dirname, "fixtures/force-spec")
 
@@ -140,7 +151,7 @@ export const Workspace = S.Workspace("fixture", {
 `
 
 const temporaryWorkspace = async (): Promise<string> =>
-  Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-package-routing-")))
+  tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-package-routing-"))))
 
 describe("force-spec routing", () => {
   it("indexes the complete golden label list and nothing else", async () => {
@@ -493,6 +504,7 @@ describe("helper modules and the load cache", () => {
       "PACKAGE.ts",
       `import { Smithers as S } from "@smthrs/targets"
 import { commandText } from "./util.js"
+
 export const Package = S.Package({ targets: { run: S.Shell.Run({ command: commandText }) } })
 `
     )

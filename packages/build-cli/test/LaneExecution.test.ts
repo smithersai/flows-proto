@@ -20,9 +20,20 @@ import * as Fs from "node:fs/promises"
 import * as NodeNet from "node:net"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import { makeCli, normalizeArgv } from "../src/Cli.ts"
 import { graphKeySentinel, keyMaterialWithGraph } from "../src/PackageExec.ts"
+
+/** Temp directories this file created; removed after the suite so a run leaves nothing in the OS temp dir. */
+const temporaryDirectories: Array<string> = []
+const tracked = async (directory: Promise<string>): Promise<string> => {
+  const resolved = await directory
+  temporaryDirectories.push(resolved)
+  return resolved
+}
+afterAll(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+})
 
 const fixtureServer = NodePath.resolve(import.meta.dirname, "fixtures/service-supervisor/server.mjs")
 const rsbuildFixture = NodePath.resolve(import.meta.dirname, "fixtures/rsbuild-mini")
@@ -55,7 +66,7 @@ const commitAll = (root: string): void => {
 }
 
 const temporaryWorkspace = async (): Promise<string> =>
-  Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-lane-exec-")))
+  tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-lane-exec-"))))
 
 /** Serves one command against a workspace, capturing exit code and output. */
 const serve = async (
