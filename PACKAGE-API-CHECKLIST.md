@@ -364,3 +364,34 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   namespaces exist instead of a bare TypeError). The remaining Go gaps (toolchains workspace key, S.Go.*,
   S.Docker.*, S.Nix.*, S.Stamp, build target as tool edge, readiness exec probe) are listed with estimates
   in artsy/FLOWS-GO-READINESS.md.
+- 2026-08-27 (Rust/Cargo readiness pass, from aomi-labs/aomi-sdk): the full-fidelity
+  design-partner files load and execute. (1) `S.Workspace` takes a `toolchains` layer
+  list; the runtime/packageManager/nodeModules trio is required only for a workspace
+  that declares no layer, and the JavaScript path is unchanged. (2) `S.Rust.Toolchain`
+  in both forms (`{ workspace, channel }` and `{ toolchain, lockfile }`); the declared
+  channel reaches every cargo run as `RUSTUP_TOOLCHAIN`, so a host without the pin
+  fails at the start of the run naming the channel. (3) `S.Cargo.Fetch/Build/Test/
+  Clippy/Fmt/Doc` and the `S.Cargo.AppSet` crate set, keyed on the expanded set's
+  manifests and their contents; `S.Files.difference` composes over crate sets.
+  `Cargo.Fmt/Clippy/Test` keep their BUILD-era check constructors under the same names,
+  told apart by the crate selector. (4) A build target as a tool edge
+  (`S.Shell.Build({ bin: sdk.buildCli })`, `S.Generate({ bin })`), resolving to the one
+  binary that build declares. (5) `S.Agent.Codex("luna")` (bare model name) and an
+  agent declaration written inline on a lane's `agent` attr, for a repository with no
+  `S.Agents` map. Proof, from `/Users/williamcory/aomi/aomi-sdk`: `query '//...'` lists
+  40 labels with zero refusals; `graph '//:ci'` renders the Suite and its 11 edges;
+  `lint '//sdk:format'` really runs `cargo fmt --all -- --check` green and hits the
+  cache on the repeat; `build '//sdk:fetch'` delivers `Cargo.lock` and a 655M
+  `.cargo-home` in 21.7s, after which `lint '//sdk:clippy'` runs
+  `cargo clippy --workspace --lib --locked --offline -- -D warnings` green under the
+  sandbox in 27.6s and hits on the repeat. `//apps:compile` plans 35 per-crate commands
+  from the AppSet difference. The aomi (JavaScript) regression is unchanged at 121
+  labels. Deferred, with reasons, in the same pass: `Cargo.Build`/`Cargo.Doc` are not
+  cacheable (their product is a `target/` tree this lane does not capture into the
+  store, so replaying the verdict would report a build the working tree may no longer
+  hold; cargo's own incremental compilation is what makes the repeat cheap), the
+  toolchain layer does not install a missing channel (it renders the argv and the CI
+  setup step; a local host installs it with `rustup toolchain install <channel>`), and
+  a crate-set target is one node running N cargo commands rather than N keyed nodes
+  (per-crate node fan-out needs planner-level synthesis of labels that no Package map
+  declares).
