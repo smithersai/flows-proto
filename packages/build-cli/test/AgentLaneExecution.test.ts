@@ -411,6 +411,67 @@ export const Package = S.Package({ targets: { srcs, gate, fix, never, escape, un
   )
 })
 
+describe("Agent.Diff service gates", () => {
+  const node = process.execPath
+  // A server that serves out/generated.txt from its own cwd, 404 otherwise:
+  // green only when the candidate tree it was started from holds the file.
+  const server = "const fs=require(\"fs\"),http=require(\"http\");" +
+    "http.createServer((q,r)=>{if(fs.existsSync(\"out/generated.txt\")){r.end(fs.readFileSync(\"out/generated.txt\"))}" +
+    "else{r.statusCode=404;r.end()}}).listen(Number(process.argv[1]),\"127.0.0.1\")"
+  const probe = "require(\"http\").get(\"http://127.0.0.1:\"+process.argv[1]+\"/\",r=>{let s=\"\";" +
+    "r.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(r.statusCode===200&&s.includes(\"generated\")?0:1))})" +
+    ".on(\"error\",()=>process.exit(1))"
+  const servedPackage = (port: number): string =>
+    `import { Smithers as S } from "@smthrs/targets"
+const srcs = S.Filegroup({ srcs: S.glob(["src/**"]) })
+const svc = S.Shell.Serve({
+  command: ${JSON.stringify(`${node} -e '${server}' ${port}`)},
+  readiness: { port: ${port} },
+})
+const smoke = S.Shell.Test({ command: ${JSON.stringify(`${node} -e '${probe}' ${port}`)}, services: [svc] })
+const served = S.Agent.Diff({
+  prompt: S.file("//prompt.md"),
+  data: [srcs],
+  changes: ["out/**"],
+  gates: [smoke],
+  maxRounds: 2,
+})
+export const Package = S.Package({ targets: { srcs, svc, smoke, served } })
+`
+
+  it(
+    "starts a gate's services from the candidate tree, so the served smoke test judges the candidate",
+    async () => {
+      const root = await temporaryWorkspace()
+      const port = await closedPort()
+      await write(root, "WORKSPACE.ts", workspaceModule())
+      await write(root, "prompt.md", "Generate the file.\n")
+      await write(root, "src/a.ts", "export const a = 1\n")
+      await write(root, "PACKAGE.ts", servedPackage(port))
+      initRepo(root)
+      commitAll(root)
+
+      // Round 1 proposes nothing: the server started from that candidate
+      // 404s and the gate is red. Round 2 proposes the file: the server
+      // started from the round-2 scratch copy serves it, the gate is green,
+      // and only then does the real tree receive the candidate.
+      const logPath = await script(root, [
+        { purpose: "diff", edits: [] },
+        { purpose: "diff", edits: [{ path: "out/generated.txt", contents: "generated\n" }] }
+      ])
+      const converged = await serve(root, ["//:served"])
+      expect(converged.exitCode).toBe(0)
+      expect(converged.logs).toContain("//:smoke  service //:svc: starting")
+      expect(converged.logs).toContain("//:served  round 1: gate //:smoke red")
+      expect(converged.logs).toContain("//:served  round 2: gate //:smoke green")
+      expect(converged.logs).toContain("//:served  candidate accepted after 2 round(s); applied 1 file(s)")
+      expect(await Fs.readFile(NodePath.join(root, "out/generated.txt"), "utf8")).toBe("generated\n")
+      expect(await spawns(logPath)).toBe(2)
+    },
+    120_000
+  )
+})
+
 describe("Github.CiGen dispatch and gitHooks", () => {
   const rootPackage = `import { Smithers as S } from "@smthrs/targets"
 const check = S.Shell.Test({ command: "touch check-ran.txt" })

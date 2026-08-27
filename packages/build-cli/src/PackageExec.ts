@@ -2083,7 +2083,8 @@ export const execute = async (
 
   /** Resolves one Serve node to the spec the supervisor spawns and probes. */
   const serviceSpecOf = async (
-    label: string
+    label: string,
+    treeRoot: string = root
   ): Promise<ServiceSupervisor.ServiceSpec | { readonly error: string }> => {
     const serveNode = planned.nodes.get(label)
     if (serveNode === undefined) return { error: `service ${label} was not planned` }
@@ -2098,8 +2099,10 @@ export const execute = async (
       log(`${label}  sandbox: services spawn unconfined`)
     }
     return {
-      key: label,
-      cwd: Exec.resolveWorkspacePath(root, serveNode.cwd),
+      // A candidate tree gets its own instance: the key carries the root so
+      // a scratch copy never shares the real tree's running service.
+      key: treeRoot === root ? label : `${label} @ ${treeRoot}`,
+      cwd: Exec.resolveWorkspacePath(treeRoot, serveNode.cwd),
       argv: resolved.argv,
       env: resolved.env,
       readiness: serveNode.lane.readiness,
@@ -2115,45 +2118,63 @@ export const execute = async (
   const fail = (error: string): Outcome => ({ status: "failed", error })
   const green = (status: "hit" | "ran"): Outcome => ({ status })
 
-  const outcomeOfExit = (exit: Exit.Exit<Outcome, unknown>, what: string): Outcome => {
-    if (Exit.isSuccess(exit)) return exit.value
-    if (Cause.hasInterruptsOnly(exit.cause)) return fail(`${what} interrupted`)
-    const value: unknown = Cause.squash(exit.cause)
-    if (typeof value === "string") return fail(value)
-    if (isServiceError(value)) return fail(serviceErrorText(value))
-    return fail(Diagnostic.message(value, `${what} failed`))
+  /** The failure text of one failed cause: interruption, a plain string, a service error, or its diagnostic. */
+  const causeText = (cause: Cause.Cause<unknown>, what: string): string => {
+    if (Cause.hasInterruptsOnly(cause)) return `${what} interrupted`
+    const value: unknown = Cause.squash(cause)
+    if (typeof value === "string") return value
+    if (isServiceError(value)) return serviceErrorText(value)
+    return Diagnostic.message(value, `${what} failed`)
   }
 
+  const outcomeOfExit = (exit: Exit.Exit<Outcome, unknown>, what: string): Outcome =>
+    Exit.isSuccess(exit) ? exit.value : fail(causeText(exit.cause, what))
+
   /**
-   * Runs a consumer under its declared services: every service is acquired
-   * (readiness-gated) inside the consumer's scope, the consumer runs raced
-   * against their health, and the scope closes in every outcome so the last
-   * consumer's release applies each service's stop contract.
+   * Runs `body` under the named services rooted at `treeRoot`: every service
+   * is acquired (readiness-gated) inside the body's scope, the body runs
+   * raced against their health, and the scope closes in every outcome so
+   * the last consumer's release applies each service's stop contract. A
+   * candidate tree gets its own service instances (see `serviceSpecOf`).
    */
-  const underServices = (
-    node: PackageNode,
-    body: (signal: AbortSignal | undefined) => Promise<Outcome>
-  ): Promise<Outcome> => {
+  const withServices = <A>(
+    what: string,
+    serviceDeps: ReadonlyArray<string>,
+    treeRoot: string,
+    body: (signal: AbortSignal | undefined) => Promise<A>
+  ): Promise<{ readonly ok: true; readonly value: A } | { readonly ok: false; readonly error: string }> => {
     const program = Effect.scoped(Effect.gen(function*() {
       const supervisor = supervisorOf()
       const handles: Array<ServiceSupervisor.ServiceHandle> = []
-      for (const serviceLabel of node.serviceDeps) {
-        const spec = yield* Effect.promise(() => serviceSpecOf(serviceLabel))
+      for (const serviceLabel of serviceDeps) {
+        const spec = yield* Effect.promise(() => serviceSpecOf(serviceLabel, treeRoot))
         if ("error" in spec) return yield* Effect.fail(spec.error)
-        log(`${node.label}  service ${serviceLabel}: starting`)
+        log(`${what}  service ${serviceLabel}: starting`)
         const handle = yield* supervisor.acquire(spec)
-        log(`${node.label}  service ${serviceLabel}: ready (pid ${handle.pid})`)
+        log(`${what}  service ${serviceLabel}: ready (pid ${handle.pid})`)
         handles.push(handle)
       }
       const consumer = Effect.promise((signal) => body(joinSignals(options.signal, signal)))
-      return yield* handles.reduce<Effect.Effect<Outcome, ServiceSupervisor.ServiceError>>(
+      return yield* handles.reduce<Effect.Effect<A, ServiceSupervisor.ServiceError>>(
         (effect, handle) => handle.whileHealthy(effect),
         consumer
       )
     }))
-    return Effect.runPromiseExit(program, { signal: options.signal })
-      .then((exit) => outcomeOfExit(exit, `${node.label} under services`))
+    return Effect.runPromiseExit(program, { signal: options.signal }).then((exit) =>
+      Exit.isSuccess(exit)
+        ? { ok: true, value: exit.value }
+        : { ok: false, error: causeText(exit.cause, `${what} under services`) }
+    )
   }
+
+  /** Runs a consumer node under its declared services, rooted at the real tree. */
+  const underServices = (
+    node: PackageNode,
+    body: (signal: AbortSignal | undefined) => Promise<Outcome>
+  ): Promise<Outcome> =>
+    withServices(node.label, node.serviceDeps, root, body).then((result) =>
+      result.ok ? result.value : fail(result.error)
+    )
 
   /** Reduces one `S.Test` operand to its workspace-relative path set. */
   const testOperandPaths = async (operand: TestOperandPlan, side: "left" | "right"): Promise<ReadonlyArray<string>> => {
@@ -2517,8 +2538,31 @@ export const execute = async (
       return red(`${gateNode.rule} is an outward/Run target and cannot gate a candidate`)
     }
     if (gateNode.serviceDeps.length > 0) {
-      return red("a gate that declares services cannot run against a candidate tree in this build")
+      // The gate's services start from the candidate tree itself, so a
+      // served smoke test judges the candidate, not the real tree.
+      const judged = await withServices(
+        label,
+        gateNode.serviceDeps,
+        treeRoot,
+        (inner) => judgeAgainstTree(gateNode, label, treeRoot, inner)
+      )
+      return judged.ok ? judged.value : red(judged.error)
     }
+    return judgeAgainstTree(gateNode, label, treeRoot, signal)
+  }
+
+  /** Judges one planned gate against a tree; services, if any, are already up. */
+  const judgeAgainstTree = async (
+    gateNode: PackageNode,
+    label: string,
+    treeRoot: string,
+    signal: AbortSignal | undefined
+  ): Promise<AgentTarget.GateReportEntry> => {
+    const red = (detail: string): AgentTarget.GateReportEntry => ({
+      gate: label,
+      status: "red",
+      detail: boundedDetail(detail)
+    })
     switch (gateNode.rule) {
       case "Filegroup":
       case "ImportClosure":
