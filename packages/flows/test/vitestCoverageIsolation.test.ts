@@ -339,12 +339,11 @@ describe("vitest coverage isolation conformance", () => {
     // app's deploy rehearsal. It is not a gate CI fans out, so it neither adds
     // nor removes enforcement — it is pinned only so the roster stays exact.
     //
-    // `checklist` similarly enters the UI workspace's launch checklist. It is
-    // an operator-facing release check, not a package test fan-out.
-    //
     // `dev` is a developer entry point, not a gate: it forwards to the UI
-    // workspace's vite server so the `--configLoader runner` flag lives in one
-    // place. It runs nothing in CI and fans nothing out.
+    // workspace's `start` (devkit projection, `vite build --configLoader
+    // runner`, `electrobun dev`) so the Electrobun launch lives in one place.
+    // The web-era `checklist` forwarder left with the web scripts it entered
+    // (local-app wave 1). `dev` runs nothing in CI and fans nothing out.
     //
     // `test:jsdoc` is the root-level contract for the repository's custom
     // JSDoc rule harness; pinning it here keeps that non-workspace gate from
@@ -355,10 +354,9 @@ describe("vitest coverage isolation conformance", () => {
     expect(root.scripts).toEqual({
       browser: "node scripts/browser-check.mjs",
       check: "pnpm --recursive --if-present run check",
-      checklist: "pnpm --filter smithers-ui run checklist",
       circular: "pnpm --recursive --if-present run circular",
       "deploy:dry": "pnpm --filter smithers-server run deploy:dry",
-      dev: "pnpm --filter smithers-ui run web",
+      dev: "pnpm --filter smithers-ui run start",
       lint: "pnpm --recursive --if-present run lint",
       test: "pnpm --recursive --if-present run test",
       "test:examples": "pnpm --filter @smthrs/examples run test",

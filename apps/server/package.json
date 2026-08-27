@@ -5,8 +5,6 @@
   "type": "module",
   "description": "Smithers closed-alpha Cloudflare Worker: same-origin agent API, gateway relay, and host for the smithers-ui build",
   "scripts": {
-    "dev": "pnpm --dir ../ui run web",
-    "serve:local": "pnpm --dir ../ui run web",
     "deploy:dry-run": "bun scripts/deploy.ts --dry-run",
     "deploy": "bun scripts/deploy.ts",
     "deploy:dry": "bun scripts/deploy.ts --dry-run",
