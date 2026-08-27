@@ -93,6 +93,8 @@ export { Workspace } from "./WorkspaceDeclaration.ts"
 /** @category constructors @since 0.1.0 */
 export { Cache, Flags, Host, Sandbox, Sandboxes } from "./WorkspaceDeclaration.ts"
 /** @category constructors @since 0.1.0 */
+export { make as LocalRepository } from "./LocalRepository.ts"
+/** @category constructors @since 0.1.0 */
 export { Package } from "./Package.ts"
 /** @category constructors @since 0.1.0 */
 export { gitCommit, Mcp, NodeModule, symlink } from "./Reference.ts"
@@ -438,6 +440,14 @@ export * as Anvil from "./Anvil.ts"
  * @since 0.1.0
  */
 export * as Docker from "./Docker.ts"
+
+/**
+ * Cross-repository target edges into opaque local workspaces.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export * as Repo from "./RepoTarget.ts"
 
 /**
  * PACKAGE.ts agent target flavors and the workspace agent declarations:
