@@ -10,10 +10,7 @@ import { Node } from "@smthrs/plan"
 import * as Registry from "@smthrs/registry/Registry"
 import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Schema, Scope, Stream } from "effect"
 import type * as Crypto from "effect/Crypto"
-import { appendFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-;(globalThis as any).__dbg = (message: string) => appendFileSync("/tmp/wake-dbg.log", message + "\n")
-setInterval(() => appendFileSync("/tmp/wake-dbg.log", "heartbeat\n"), 2000).unref()
 import * as Agent from "../src/Agent.ts"
 import type * as FlowEngineLike from "../src/FlowEngineLike.ts"
 import * as Seat from "../src/Seat.ts"
@@ -36,7 +33,7 @@ const recorded = (cells: ReadonlyArray<string>): Model.Model => {
   return Model.make({
     stream: () =>
       Stream.suspend(() => {
-        const source = cells[index++] ?? cells.at(-1) ?? "return { intent: \"complete\", output: \"done\" }"
+        const source = cells[index++] ?? cells.at(-1) ?? "ctx.done(\"done\")"
         return Stream.fromIterable([
           ModelEvent.ModelEvent.TextStart({ type: "text-start", id: `cell-${index}` }),
           ModelEvent.ModelEvent.TextDelta({
@@ -85,11 +82,6 @@ const drive = <A, E>(
     return yield* Deferred.await(settled)
   }).pipe(Effect.provide(Layer.merge(FlowEngine.layerMemory, NodeCrypto.layer)), Effect.scoped, Effect.runPromise)
 
-const collect = (options: {
-  readonly cells: ReadonlyArray<string>
-  readonly flows: ReadonlyArray<Parameters<typeof Agent.Agent.prototype extends never ? never : never>> | undefined
-}) => options
-
 describe("wake repro", () => {
   it("resumes a cell that waited on a durable clock", async () => {
     const outcome = await drive(
@@ -117,7 +109,7 @@ describe("wake repro", () => {
             id: "anthropic:test-model",
             model: recorded([
               `const waited = await ctx.call("wait", { seconds: 61 })
-return { intent: "complete", output: String(waited.waitedSeconds) }`
+ctx.done(String(waited.waitedSeconds))`
             ]),
             route,
             contextWindowTokens: 0
@@ -138,10 +130,15 @@ return { intent: "complete", output: String(waited.waitedSeconds) }`
         return collected
       }).pipe(Effect.provide(Agent.layer))
     )
-    // eslint-disable-next-line no-console
-    console.log("OUTCOME", outcome._tag, outcome._tag === "failed" ? outcome.error : "")
     expect(outcome._tag).toBe("completed")
+    // The wake is proved by the answer, not by the run merely ending: the cell
+    // resumed after the durable clock settled and finished on the value the
+    // call returned.
+    const events = outcome._tag === "completed" ? outcome.value as ReadonlyArray<AgentEvent.AgentEvent> : []
+    const completions = events.flatMap((event) =>
+      event._tag === "transition-applied" && event.transition._tag === "complete" ? [event.transition] : []
+    )
+    expect(completions).toHaveLength(1)
+    expect(completions[0]?.output).toBe("61")
   }, 30_000)
 })
-
-void collect
