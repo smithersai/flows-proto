@@ -13,8 +13,8 @@ jobs:
   deploy:
     name: build + wrangler deploy
     runs-on: ubuntu-latest
-    # The e2e suites below boot wrangler dev and a real Chrome, so the job is
-    # minutes long even when everything passes.
+    # The e2e tier below builds the SPA and drives a real Chromium, so the job
+    # is minutes long even when everything passes.
     timeout-minutes: 45
     steps:
       # Full history, not the default shallow one. The CN-1 probe measures how
@@ -53,35 +53,18 @@ jobs:
           for app in smithers-ui smithers-server smithers-shared smithers-tui; do
             pnpm --filter "$app" run test
           done
-      # The launch checklist is what grades the deployed origin afterwards.
-      # Its dry run touches no network and proves the row catalog, the CLI
-      # contract, and the report writer still work before the deploy, not
-      # after — a broken runner would otherwise be discovered at the worst
-      # possible moment.
-      - name: Launch-checklist dry run
-        run: pnpm run checklist -- --dry-run
       # Issue I-4: the deploy is gated on end-to-end behaviour, not only on
-      # unit suites. Both suites are hermetic — the Worker runs on local
-      # workerd against scripts/stub-backends.ts and the browser is the
-      # runner's own Chrome — so this needs no Cloudflare credential and
-      # spends nothing on a model.
+      # unit suites. The UI gate is the Playwright T1 tier
+      # (apps/ui/docs/LOCAL-APP.md "Test tiers"): the local origin in
+      # headless Chromium with the chat stub on, so this needs no Cloudflare
+      # credential and spends nothing on a model.
       #
       # These run as steps of the deploy job rather than as a separate job on
       # purpose: the deploy has to wait for them either way, and a second job
       # would only pay for a second `pnpm install`.
-      - name: Assert the runner ships a browser findBrowser can discover
-        run: |
-          if [ ! -x /usr/bin/google-chrome ]; then
-            echo "/usr/bin/google-chrome is missing from this runner image." >&2
-            echo "findBrowser only probes BROWSER_CANDIDATES" >&2
-            echo "(apps/ui/src/launch-checklist/BrowserLaunch.ts). Install Chrome" >&2
-            echo "at one of those paths, or set CHECKLIST_BROWSER on this job." >&2
-            exit 1
-          fi
-          /usr/bin/google-chrome --version
-      - name: Worker e2e
-        run: pnpm --filter smithers-ui run test:e2e:worker
-      - name: Browser e2e
+      - name: Install the Playwright browser
+        run: pnpm --filter smithers-ui exec playwright install --with-deps chromium
+      - name: Browser e2e (Playwright T1)
         run: pnpm --filter smithers-ui run test:e2e
       - name: Collect e2e artifacts
         if: failure()

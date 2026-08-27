@@ -17,7 +17,7 @@ import {
 } from "@smthrs/ui"
 import type { ApprovalState } from "@smthrs/ui"
 import { MarkdownEditor } from "@smthrs/ui/adapters/markdown-editor"
-import { Check, ExternalLink, GitPullRequest, HardDrive, Maximize2, Minimize2, Server } from "lucide-react"
+import { Check, ExternalLink, GitPullRequest, HardDrive, Maximize2, Minimize2, PanelTop, Server } from "lucide-react"
 import { useState } from "react"
 import type { KeyboardEvent } from "react"
 import { BranchesCardBody } from "./cards/BranchesCard"
@@ -347,6 +347,8 @@ export interface CardViewProps {
   readonly onReposConfirm: () => void
   readonly onMaximize: (id: string) => void
   readonly onMinimize: () => void
+  /* A maximized card's "Open in tab" (docs/LOCAL-APP.md "Cards"): user-triggered only. */
+  readonly onOpenInTab: (id: string) => void
   readonly onConnectGitHub: () => void
   readonly onConnectLocal: () => void
   readonly onRunWorkflow: (name: string) => void
@@ -964,6 +966,7 @@ export function CardView({
   onReposConfirm,
   onMaximize,
   onMinimize,
+  onOpenInTab,
   onConnectGitHub,
   onConnectLocal,
   onRunWorkflow,
@@ -991,27 +994,43 @@ export function CardView({
         data-status={card.status}
         data-maximized={maximized}
         data-run-id={card.kind === "flow-run" ? card.payload.runId : undefined}
+        data-testid={`card-${card.id}`}
         aria-label={card.title}
       >
         <header className="smithers-card-header">
           <span className="smithers-card-title">{card.title}</span>
           <StatusPill status={pillStatus(card)} />
-          <span className="smithers-card-meta">
+          <span className="smithers-card-meta" data-testid={`card-kind-${card.kind}`}>
             {card.kind} · {clockLabel(card.createdAt)}
           </span>
           {maximized ?
             (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="card-maximize-btn"
-                data-flow="card.minimize"
-                aria-label="Minimize card"
-                title="Minimize card"
-                onClick={() => onMinimize()}
-              >
-                <Minimize2 size={13} />
-              </Button>
+              <>
+                {/* Open in tab exists only on the maximized card: a user's explicit act (THE EMBED LAW). */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="card-maximize-btn"
+                  data-flow="tab.card"
+                  data-testid={`card-open-in-tab-${card.id}`}
+                  aria-label="Open in tab"
+                  title="Open in tab"
+                  onClick={() => onOpenInTab(card.id)}
+                >
+                  <PanelTop size={13} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="card-minimize-btn"
+                  data-flow="card.minimize"
+                  aria-label="Minimize card"
+                  title="Minimize card"
+                  onClick={() => onMinimize()}
+                >
+                  <Minimize2 size={13} />
+                </Button>
+              </>
             ) :
             (
               <Button
@@ -1019,6 +1038,7 @@ export function CardView({
                 size="icon"
                 className="card-maximize-btn"
                 data-flow="card.maximize"
+                data-testid={`card-maximize-${card.id}`}
                 aria-label="Maximize card"
                 title="Maximize card"
                 onClick={() => onMaximize(card.id)}

@@ -32,6 +32,8 @@ const bootProgram = (session: BootSession | undefined) =>
 
     if (session === undefined) {
       yield* promiseEffect("load identity session", () => controller.loadSession())
+      // The local server's repositories (the chrome's repo chip); absent seams answer nothing.
+      yield* Effect.sync(() => void controller.loadRepos())
       if (controller.handleAuthReturn(window.location.search)) {
         window.history.replaceState(null, "", window.location.pathname)
       }

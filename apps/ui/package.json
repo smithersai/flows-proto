@@ -9,13 +9,11 @@
     "start": "node scripts/ensure-devkit.mjs && vite build --configLoader runner && electrobun dev",
     "dev": "electrobun dev --watch",
     "build": "node scripts/ensure-devkit.mjs && vite build --configLoader runner && electrobun build",
-    "build:canary": "node scripts/ensure-devkit.mjs && vite build --configLoader runner && electrobun build --env=canary",
     "typecheck": "node scripts/ensure-devkit.mjs && tsc --noEmit",
     "check": "node scripts/ensure-devkit.mjs && tsc --noEmit",
     "test": "bun test src",
     "test:e2e": "playwright test",
-    "test:e2e:native": "bun e2e/playwright/native/run.ts",
-    "checklist": "bun scripts/launch-checklist.ts"
+    "test:e2e:native": "bun e2e/playwright/native/run.ts"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "5.3.0",
