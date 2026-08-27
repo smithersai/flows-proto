@@ -3,11 +3,22 @@ import type * as Target from "@smthrs/targets/Target"
 import * as Fs from "node:fs/promises"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import * as MemoryBackend from "../src/MemoryBackend.ts"
 import * as PackageDiscovery from "../src/PackageDiscovery.ts"
 import { PackageIndex } from "../src/PackageIndex.ts"
 import * as PackageLoader from "../src/PackageLoader.ts"
+
+/** Temp directories this file created; removed after the suite so a run leaves nothing in the OS temp dir. */
+const temporaryDirectories: Array<string> = []
+const tracked = async (directory: Promise<string>): Promise<string> => {
+  const resolved = await directory
+  temporaryDirectories.push(resolved)
+  return resolved
+}
+afterAll(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+})
 
 const forceSpec = NodePath.resolve(import.meta.dirname, "fixtures/force-spec")
 
@@ -18,7 +29,7 @@ const openIndex = async (): Promise<PackageIndex> => {
 }
 
 const temporaryRoot = async (): Promise<string> =>
-  Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-memory-")))
+  tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-memory-"))))
 
 const retainTarget = (): Target.AnyTarget => S.Memory.Retain({ source: S.gitCommit("HEAD"), tags: ["commit", "unit"] })
 

@@ -26,8 +26,19 @@ import * as Fs from "node:fs/promises"
 import * as NodeNet from "node:net"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import { makeCli, normalizeArgv } from "../src/Cli.ts"
+
+/** Temp directories this file created; removed after the suite so a run leaves nothing in the OS temp dir. */
+const temporaryDirectories: Array<string> = []
+const tracked = async (directory: Promise<string>): Promise<string> => {
+  const resolved = await directory
+  temporaryDirectories.push(resolved)
+  return resolved
+}
+afterAll(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => Fs.rm(directory, { recursive: true, force: true })))
+})
 
 const write = async (root: string, relative: string, text: string): Promise<void> => {
   const path = NodePath.join(root, relative)
@@ -67,7 +78,7 @@ const commitAll = (root: string, message = "init"): void => {
 }
 
 const temporaryWorkspace = async (): Promise<string> =>
-  Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-agent-lane-")))
+  tracked(Fs.realpath(await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-agent-lane-"))))
 
 /** One scripted fake response, as `AgentFake.ScriptedResponse` decodes it. */
 interface Response {
@@ -479,6 +490,7 @@ export const Package = S.Package({ targets: { check } })
 `
   const githubPackage = `import { Smithers as S } from "@smthrs/targets"
 import { Package as root } from "../PACKAGE.js"
+
 const setup = S.Github.Setup({ cacheUrl: S.Secret("SMITHERS_CACHE_URL"), cacheToken: S.Secret("SMITHERS_CACHE_TOKEN") })
 const ci = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [root.check] })
 const github = S.Github.CiGen({

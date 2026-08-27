@@ -502,6 +502,11 @@ const importGraph = async (discovery: Discovery): Promise<LoadedGraph> => {
       `evaluating the workspace's declaration modules failed: ${undefinedNamespaceHint(Diagnostic.message(cause))}`,
       { cause }
     )
+  } finally {
+    // The entry module is evaluated and held by the module registry; the
+    // file has no further reader. Every CLI invocation loads a graph, so
+    // leaving the directory behind is one leaked temp dir per command.
+    await Fs.rm(entryDirectory, { recursive: true, force: true })
   }
   const workspace = validateWorkspaceModule(entry.workspace, discovery.workspaceFile)
   const packages: Array<LoadedPackage> = []
