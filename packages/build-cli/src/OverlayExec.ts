@@ -87,9 +87,14 @@ export const resolve = async (options: {
       for (const nested of base) walk(nested)
       return
     }
+    // A Filegroup is a file-set union: an Overlay listed in its `srcs` is a
+    // member of the consumer's own set and reaches it. Every other target
+    // contributes its declared outputs, not its inputs, so its `data` is not
+    // walked: descending there would hand one build's private source
+    // substitution to every downstream consumer of its outputs.
+    if (metadata.target !== "Filegroup") return
     const next: Array<Target.AnyTarget> = []
-    if (metadata.target === "Filegroup") targetsIn(member(metadata.attrs, "srcs"), next, new Set())
-    else targetsIn(member(metadata.attrs, "data"), next, new Set())
+    targetsIn(member(metadata.attrs, "srcs"), next, new Set())
     for (const nested of next) walk(nested)
   }
   for (const target of direct) walk(target)

@@ -700,20 +700,28 @@ export const releasePortals = async (snapshot: PortalSnapshot): Promise<void> =>
  * `.git`, the cache directory, and `node_modules` contents are skipped;
  * symlinks — the e2e clone's node_modules among them — are copied verbatim,
  * so the scratch tree reads the same installed tools without duplicating
- * them.
+ * them. `skip` names further workspace-relative roots the caller is going to
+ * clear anyway — an overlay build's own `outDirs` — so a large previous
+ * output is not copied only to be deleted.
  *
  * @category scratch
  * @since 0.1.0
  */
-export const scratchCopy = async (root: string, cacheDirectory: string): Promise<string> => {
+export const scratchCopy = async (
+  root: string,
+  cacheDirectory: string,
+  skip: ReadonlyArray<string> = []
+): Promise<string> => {
   const destination = await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-scratch-"))
   const cacheAbsolute = NodePath.join(root, ...cacheDirectory.split("/"))
   const gitAbsolute = NodePath.join(root, ".git")
   const nodeModulesAbsolute = NodePath.join(root, "node_modules")
+  const skipped = new Set(skip.map((path) => NodePath.join(root, ...path.split("/"))))
   await Fs.cp(root, destination, {
     recursive: true,
     verbatimSymlinks: true,
-    filter: (source) => source !== cacheAbsolute && source !== gitAbsolute && source !== nodeModulesAbsolute
+    filter: (source) =>
+      source !== cacheAbsolute && source !== gitAbsolute && source !== nodeModulesAbsolute && !skipped.has(source)
   })
   if (await Fs.lstat(nodeModulesAbsolute).then(() => true, () => false)) {
     await Fs.symlink(nodeModulesAbsolute, NodePath.join(destination, "node_modules"), "dir")

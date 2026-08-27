@@ -40,8 +40,11 @@ export interface Plan {
 }
 
 const configPaths = async (root: string, config: string): Promise<ReadonlyArray<string>> => {
+  // `-z` separates records with NUL and the key from its value with a newline,
+  // so a submodule name or path carrying whitespace still parses exactly.
   const raw = await PackageTree.runGit(root, [
     "config",
+    "-z",
     "--file",
     config,
     "--get-regexp",
@@ -49,10 +52,10 @@ const configPaths = async (root: string, config: string): Promise<ReadonlyArray<
   ]).catch(() => "")
   const directory = NodePath.posix.dirname(config) === "." ? "" : NodePath.posix.dirname(config)
   const paths: Array<string> = []
-  for (const line of raw.split("\n")) {
-    const split = line.search(/\s/)
-    if (split < 0) continue
-    const declared = line.slice(split).trim()
+  for (const record of raw.split("\0")) {
+    const newline = record.indexOf("\n")
+    if (newline < 0) continue
+    const declared = record.slice(newline + 1)
     if (declared === "") continue
     paths.push(Input.resolvePath(directory, declared))
   }

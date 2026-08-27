@@ -101,6 +101,19 @@ export type Mode = "execute" | "check" | "write"
  */
 export type PackageVerb = "build" | "test" | "lint" | "run" | "auto"
 
+/**
+ * The rules whose execution mounts a consumer-scoped overlay scratch tree.
+ * Every other rule spawns against the real workspace, so an overlay that
+ * reaches one is refused rather than silently dropped.
+ */
+const overlayScratchRules: ReadonlySet<string> = new Set([
+  "Foundry.Build",
+  "Foundry.Test",
+  "Shell.Build",
+  "Shell.Run",
+  "Shell.Test"
+])
+
 /** The rules the package executor implements (W2 core plus the W3 lanes). */
 const implementedRules: ReadonlySet<string> = new Set([
   "Shell.Build",
@@ -3508,7 +3521,8 @@ export const execute = async (
   const runWithOverlays = async (
     node: PackageNode,
     signal: AbortSignal | undefined,
-    body: (scratch: string) => Promise<ExecOutcome>
+    body: (scratch: string) => Promise<ExecOutcome>,
+    skip: ReadonlyArray<string> = []
   ): Promise<ExecOutcome> => {
     if (node.overlays.length === 0) return body(root)
     const portals = await PackageTree.snapshotPortals(
@@ -3516,7 +3530,7 @@ export const execute = async (
       cacheDirectory,
       (link) => log(`${node.label}  portal left unconfined (target too large): ${link}`)
     )
-    const scratch = await PackageTree.scratchCopy(root, cacheDirectory)
+    const scratch = await PackageTree.scratchCopy(root, cacheDirectory, skip)
     try {
       await OverlayExec.apply(scratch, node.overlays)
       const outcome = await body(scratch)
@@ -3544,6 +3558,9 @@ export const execute = async (
       await captureBuild(node, node.keyPreview)
       return green("ran")
     }
+    // The build's own declared outputs are cleared before it runs, so a stale
+    // previous emit — viem's `src/_cjs` is hundreds of megabytes — is never
+    // copied into the scratch tree in the first place.
     const ran = await runWithOverlays(node, signal, async (scratch) => {
       for (const outDir of node.outDirs) {
         await Fs.rm(NodePath.join(scratch, ...outDir.split("/")), { recursive: true, force: true })
@@ -3559,7 +3576,7 @@ export const execute = async (
       }
       for (const file of output.files) await PackageTree.materializeFile(root, cacheDirectory, file)
       return { ok: true }
-    })
+    }, [...node.outDirs, ...node.outFiles])
     return ran.ok ? green("ran") : fail(ran.error ?? "overlay build failed")
   }
 
@@ -4079,6 +4096,17 @@ export const execute = async (
    * with the service race for a consumer running under services.
    */
   const dispatch = async (node: PackageNode, signal: AbortSignal | undefined): Promise<Outcome> => {
+    // Only the rules routed through `runBuild`/`spawnConsumer` above mount an
+    // overlay scratch tree. Any other rule that spawns a process would compile
+    // or test the unreplaced sources and report green, so carrying an overlay
+    // into one is refused by name instead.
+    if (node.overlays.length > 0 && node.argv !== undefined && !overlayScratchRules.has(node.rule)) {
+      return fail(
+        `${node.rule} takes S.Overlay data replacing ${
+          node.overlays.map((replacement) => replacement.path).join(", ")
+        } but this rule runs against the real tree; it has no consumer-scoped overlay mount`
+      )
+    }
     try {
       switch (node.rule) {
         case "Filegroup":

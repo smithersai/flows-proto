@@ -146,4 +146,17 @@ describe("scratchCopy keeps installed dependencies as host state", () => {
       await Fs.rm(scratch, { recursive: true, force: true })
     }
   })
+
+  it("omits the roots the caller is going to clear anyway", async () => {
+    await Fs.mkdir(NodePath.join(root, "out", "nested"), { recursive: true })
+    await Fs.writeFile(NodePath.join(root, "out", "nested", "stale.js"), "stale")
+    await Fs.writeFile(NodePath.join(root, "kept.txt"), "kept")
+    const scratch = await PackageTree.scratchCopy(root, ".flows", ["out"])
+    try {
+      expect(await Fs.lstat(NodePath.join(scratch, "out")).then(() => true, () => false)).toBe(false)
+      expect(await Fs.readFile(NodePath.join(scratch, "kept.txt"), "utf8")).toBe("kept")
+    } finally {
+      await Fs.rm(scratch, { recursive: true, force: true })
+    }
+  })
 })

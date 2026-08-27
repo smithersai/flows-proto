@@ -793,7 +793,7 @@ missing JSDoc blocks in `GithubTarget.ts`, one unnecessary assertion in
 
 | Repository | Load / graph / plan sweep | Execute / refusal proof | Result |
 | --- | --- | --- | --- |
-| viem | `PATH=/opt/homebrew/bin:$PATH bash /Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/viem viem` | e2e `//src:buildCjs`, `//:size`, `//:typeCheck`, and `SMTHRS_SHARD=1/3 //test:test` | 76 labels, `warnings:[]`, 0 NotImplemented, 56 typed refusals; buildCjs and typeCheck green; size reached its forge-postinstall red; four Anvil services ready before the shard's declared no-network RPC red; clone reset clean with node_modules preserved |
+| viem | `PATH=/opt/homebrew/bin:$PATH bash /Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/viem viem` | e2e `//src:buildCjs`, `//:size`, `//:typeCheck`, and `SMTHRS_SHARD=1/3 //test:test` | re-measured against the restored, unedited spec: `viem ok warnings:[] 76 0 56`; buildCjs green with `_cjs/node/trustedSetups.js` carrying `__dirname` and tracked `src/` byte-identical across the run; `//:typeCheck` `9 targets: 0 hit, 9 ran, 0 failed` past `//contracts:libs`; size reached its forge-postinstall red; four Anvil services ready before the shard's declared no-network RPC red; clone reset clean with node_modules preserved |
 
 Final gates: targets 735/735; build-cli 714 passed + 1 skipped; both package TypeScript and dprint checks green;
 eslint green on `OverlayExec.ts`, `GitSubmoduleExec.ts`, `PackageExec.ts`, and `PackageTree.ts`. `//:typeCheck`
@@ -801,12 +801,30 @@ crossed `//contracts:libs` in 959ms and finished all 9 nodes green. The real sub
 `contracts/lib/*` paths and prints its implied network sandbox. The selected shard has a real vitest argv and
 `shards: 3`.
 
-Spec conflicts: none. The requested `reference/` shelf is absent; the implementation follows existing
+Spec conflicts: one. `~/artsy/viem/PACKAGE.ts:241` declares `S.Package({ defaultVisibility: "public", ... })`, which
+`Package.ts` rejected with `Package received unknown option "defaultVisibility"`; the checkout carried an uncommitted
+working-copy edit deleting that line, so the "viem loads" baseline was measured against a narrowed spec. `S.Package`
+now accepts `defaultVisibility`, records it in `PackageMetadata`, and refuses any value but `"public"` by name
+(omission from the target map is still the only privacy mechanism). The design-partner file was restored with
+`git checkout -- PACKAGE.ts`; pristine `~/artsy/viem` loads and graphs with `warnings: []`.
+
+The requested `reference/` shelf is absent; the implementation follows existing
 `PackageTree.scratchCopy`, portal guarding, CAS capture/verification, and atomic materialization. Shared-file hunks:
 `PackageExec.ts` (`visit`, key material, `captureBuild`, overlay build/spawn helpers, submodule/Shell dispatch, sandbox
-plan rendering) and `PackageTree.ts` (`scratchCopy`, source-root/CAS-root capture split). New modules:
-`OverlayExec.ts`, `GitSubmoduleExec.ts`. Tests: `NodeLaneExecution.test.ts`, `GitSubmoduleExecution.test.ts`,
-`PackageTree.test.ts`.
+plan rendering, the `overlayScratchRules` dispatch guard) and `PackageTree.ts` (`scratchCopy`, source-root/CAS-root
+capture split); `targets/src/Package.ts` (`defaultVisibility`). New modules: `OverlayExec.ts`, `GitSubmoduleExec.ts`.
+Tests: `NodeLaneExecution.test.ts`, `GitSubmoduleExecution.test.ts`, `PackageTree.test.ts`, `PackageApi.test.ts`.
+
+Review pass over this lane found and fixed two overlay defects. (1) `OverlayExec.resolve` walked a dependency
+target's `data`, so an overlay declared as one build's private input leaked to every downstream consumer of that
+build's *outputs*: `//:size` (`Size.Budgets`) carried viem's `trustedSetups` replacement. The walk now descends a
+`Filegroup`'s `srcs` and an `Overlay`'s `base` only — a target contributes its declared outputs, not its inputs.
+(2) Only `Shell.Build`/`Foundry.Build`/`Shell.Test`/`Foundry.Test`/`Shell.Run` mount the overlay scratch tree; every
+other spawning rule dropped the overlay silently and reported green. `dispatch` now refuses those by name
+(`... but this rule runs against the real tree; it has no consumer-scoped overlay mount`). Two smaller repairs:
+`scratchCopy` takes a `skip` list so an overlay build's own `outDirs` — cleared in scratch before it runs — are not
+copied first (viem `//src:buildCjs` went 77.9s back to 37.7s once `src/_esm`/`src/_cjs` stopped being duplicated),
+and `configPaths` reads `git config -z` so a submodule name or path carrying whitespace still parses exactly.
 
 Not done by design: upstream viem lint/format verdicts were left unchanged; size-limit remains honestly red on the
 nested install's incompatible PATH `forge`; the core shard remains honestly red when setup fetches external RPCs

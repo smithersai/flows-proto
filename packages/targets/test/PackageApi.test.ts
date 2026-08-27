@@ -58,6 +58,14 @@ describe("S.Package", () => {
     expect(() => Package({ targets: {}, extra: true } as never)).toThrow(/unknown option/)
   })
 
+  it("records defaultVisibility: \"public\" and refuses a visibility it cannot honour", () => {
+    const stated = Package({ defaultVisibility: "public", targets: { lint } })
+    expect(metadata(stated).defaultVisibility).toBe("public")
+    expect(metadata(Package({ targets: { lint } })).defaultVisibility).toBeUndefined()
+    expect(() => Package({ defaultVisibility: "private", targets: { lint } } as never))
+      .toThrow(/defaultVisibility must be "public"/)
+  })
+
   it("refuses a forged enumerable marker", () => {
     const forged: Record<PropertyKey, unknown> = { lint }
     forged[PackageTypeId] = { abi: "@smthrs/targets/Package/v1", keys: ["lint"] }

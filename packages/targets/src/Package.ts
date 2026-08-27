@@ -4,9 +4,11 @@
  *
  * A Package value is the target map itself — `import { Package as src }`
  * followed by `src.srcs` reads a target property directly — plus a
- * non-enumerable, immutable metadata marker. There is no visibility field:
- * omission from the map is the entire privacy mechanism, and every listed
- * target is public.
+ * non-enumerable, immutable metadata marker. Omission from the map is the
+ * entire privacy mechanism, and every listed target is public. The optional
+ * `defaultVisibility` states that same rule explicitly; `"public"` is the
+ * only value the map semantics can honour, so any other one is refused
+ * rather than silently ignored.
  *
  * @since 0.1.0
  */
@@ -41,6 +43,8 @@ export interface PackageMetadata {
   readonly abi: typeof abi
   /** The map keys, sorted by UTF-16 code unit. */
   readonly keys: ReadonlyArray<string>
+  /** The declared default visibility, when the package stated one. */
+  readonly defaultVisibility?: "public"
 }
 
 /**
@@ -87,12 +91,22 @@ const isWrappableInput = (value: unknown): value is Input.File | Input.Glob =>
  */
 export const Package = <const T extends Readonly<Record<string, MapValue>>>(options: {
   readonly targets: T
+  readonly defaultVisibility?: "public"
 }): PackageValue<{ readonly [K in keyof T]: T[K] extends Target.AnyTarget ? T[K] : Target.AnyTarget }> => {
   if (typeof options !== "object" || options === null || NodeUtil.isProxy(options)) {
     throw new TypeError("Package options must be a plain object")
   }
   for (const key of Object.getOwnPropertyNames(options)) {
-    if (key !== "targets") throw new TypeError(`Package received unknown option ${JSON.stringify(key)}`)
+    if (key !== "targets" && key !== "defaultVisibility") {
+      throw new TypeError(`Package received unknown option ${JSON.stringify(key)}`)
+    }
+  }
+  const defaultVisibility = options.defaultVisibility
+  if (defaultVisibility !== undefined && defaultVisibility !== "public") {
+    throw new TypeError(
+      `Package defaultVisibility must be "public": omission from the target map is the only privacy mechanism, ` +
+        `so ${JSON.stringify(defaultVisibility)} cannot be honoured`
+    )
   }
   const map: unknown = options.targets
   if (
@@ -136,7 +150,11 @@ export const Package = <const T extends Readonly<Record<string, MapValue>>>(opti
     keys.push(key)
   }
   keys.sort(byCodeUnit)
-  const metadata: PackageMetadata = Object.freeze({ abi, keys: Object.freeze(keys) })
+  const metadata: PackageMetadata = Object.freeze({
+    abi,
+    keys: Object.freeze(keys),
+    ...(defaultVisibility === undefined ? {} : { defaultVisibility })
+  })
   Object.defineProperty(result, PackageTypeId, {
     configurable: false,
     enumerable: false,

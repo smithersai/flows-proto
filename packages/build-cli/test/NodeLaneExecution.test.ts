@@ -60,6 +60,16 @@ const overlayConflictBuild = S.Shell.Build({
   data: [overlay, overlayConflict],
   outDirs: ["conflict-out"]
 })
+// Takes the overlay build's outputs, not its inputs: the substitution stays
+// private to the build, so this consumer must see the real source bytes.
+const overlayOutputs = S.Filegroup({ srcs: [overlayBuild] })
+const overlayDownstream = S.Shell.Test({
+  command: "grep -qx base overlay/base.txt && grep -qx replacement overlay-out/result.txt",
+  data: [overlayOutputs]
+})
+// A rule with no overlay scratch mount: the substitution cannot be honoured,
+// so the target is refused rather than run against the unreplaced sources.
+const overlayPack = S.Npm.Pack({ manifest, data: [overlay] })
 const downstream = S.Npm.Downstream({
   repository: "https://example.invalid/repo",
   overrides: { fixture: literal },
@@ -76,7 +86,7 @@ const pages = S.Github.Pages({ site: literal, secrets: [S.Secret("GITHUB_TOKEN")
 const pr = S.Git.Pr({ gates: [gate], secrets: [S.Secret("GITHUB_TOKEN")] })
 export const Package = S.Package({ targets: {
   ci, copy, cron, digest, digestBuild, downstream, gate, literal, markdown, overlay, overlayBuild,
-  overlayConflictBuild, pack, pages, pr,
+  overlayConflictBuild, overlayDownstream, overlayPack, pack, pages, pr,
   publishApproval, publishMissing, size, version
 } })
 `
@@ -244,6 +254,21 @@ describe("Node lane package execution", () => {
     const conflict = await serve(root, ["//:overlayConflictBuild", "--plan"])
     expect(conflict.exitCode).toBe(0)
     expect(conflict.output).toContain("Overlay conflict")
+  })
+
+  it("keeps an overlay private to its own consumer and refuses rules with no scratch mount", async () => {
+    const root = await fixture()
+    // //:overlayDownstream reads the build's outputs. Its own command asserts
+    // both that the real source bytes are intact and that the build did apply
+    // the replacement, so an overlay leaking down the output edge fails it.
+    const downstream = await serve(root, ["//:overlayDownstream"])
+    expect(downstream.exitCode, downstream.logs).toBe(0)
+    expect(await Fs.readFile(NodePath.join(root, "overlay/base.txt"), "utf8")).toBe("base")
+
+    const packed = await serve(root, ["//:overlayPack"])
+    expect(packed.exitCode).not.toBe(0)
+    expect(packed.logs).toContain("no consumer-scoped overlay mount")
+    expect(packed.logs).toContain("overlay/base.txt")
   })
 
   it("keeps Cron and Overlay values inert and gives unsupported remote runners typed reasons", async () => {
