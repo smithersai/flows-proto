@@ -560,6 +560,28 @@ describe("scripted fake and environment selection", () => {
     expect(error.message).toContain("S.Agents")
   })
 
+  it("takes the session ceiling from SMTHRS_AGENT_TIMEOUT_MS for the real CLI factory", async () => {
+    const claude = NodePath.join(root, "fake-claude-slow")
+    await Fs.writeFile(claude, "#!/bin/sh\nsleep 30\n", { mode: 0o755 })
+    const factory = AgentFake.sessionFactoryFromEnvironment(
+      {
+        workspaceRoot: root,
+        agents: AgentTarget.Agents({ default: AgentTarget.ClaudeCode({ model: "m" }) }),
+        executables: { claude }
+      },
+      { SMTHRS_AGENT_TIMEOUT_MS: "500" }
+    )
+    const session = await Effect.runPromise(factory.open(undefined))
+    const error = await Effect.runPromise(Effect.flip(session.run({ purpose: "lint", prompt: "p" })))
+    expect(error.message).toContain("timed out after 500ms")
+    expect(AgentFake.sessionTimeoutFromEnvironment({})).toBeUndefined()
+    expect(AgentFake.sessionTimeoutFromEnvironment({ SMTHRS_AGENT_TIMEOUT_MS: "" })).toBeUndefined()
+    expect(() => AgentFake.sessionTimeoutFromEnvironment({ SMTHRS_AGENT_TIMEOUT_MS: "5m" })).toThrow(
+      /positive integer of milliseconds/
+    )
+    expect(() => AgentFake.sessionTimeoutFromEnvironment({ SMTHRS_AGENT_TIMEOUT_MS: "0" })).toThrow()
+  })
+
   it("refuses an unreadable or invalid script loudly", async () => {
     expect(() => AgentFake.loadFakeScript(NodePath.join(root, "missing.json"))).toThrow()
     const invalid = NodePath.join(root, "invalid.json")

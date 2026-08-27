@@ -32,6 +32,38 @@ import { makeCliSessionFactory } from "./AgentSession.ts"
 export const fakeEnvironmentVariable = "SMTHRS_AGENT_FAKE"
 
 /**
+ * Environment variable naming the per-session wall-clock ceiling in
+ * milliseconds for the real CLI factory. Unset, the factory keeps
+ * {@link defaultSessionTimeoutMs}; a lane that rewrites large files with a
+ * slow model raises it for one invocation without a declaration change.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export const timeoutEnvironmentVariable = "SMTHRS_AGENT_TIMEOUT_MS"
+
+/**
+ * Reads the session ceiling from the environment: a positive integer of
+ * milliseconds, or `undefined` when unset. Anything else refuses loudly,
+ * because a silently ignored ceiling would look like the default.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const sessionTimeoutFromEnvironment = (
+  env: Readonly<Record<string, string | undefined>>
+): number | undefined => {
+  const declared = env[timeoutEnvironmentVariable]
+  if (declared === undefined || declared === "") return undefined
+  if (!/^[1-9][0-9]*$/.test(declared)) {
+    throw new Error(
+      `${timeoutEnvironmentVariable} must be a positive integer of milliseconds: ${JSON.stringify(declared)}`
+    )
+  }
+  return Number(declared)
+}
+
+/**
  * Schema of one scripted session response.
  *
  * A response with `fail` makes the run fail with that message. `purpose`,
@@ -237,7 +269,10 @@ export const sessionFactoryFromEnvironment = (
   env: Readonly<Record<string, string | undefined>> = process.env
 ): SessionFactory => {
   const declared = env[fakeEnvironmentVariable]
-  if (declared === undefined || declared === "") return makeCliSessionFactory(options)
+  if (declared === undefined || declared === "") {
+    const timeoutMs = options.timeoutMs ?? sessionTimeoutFromEnvironment(env)
+    return makeCliSessionFactory(timeoutMs === undefined ? options : { ...options, timeoutMs })
+  }
   const path = NodePath.isAbsolute(declared) ? declared : NodePath.resolve(options.workspaceRoot, declared)
   return makeScriptedSessionFactory(loadFakeScript(path), { logPath: `${path}.spawns.jsonl` })
 }
