@@ -420,7 +420,9 @@ describe("command registry bindings", () => {
       "tab.close.confirm",
       "tab.close.cancel",
       "tab.menu",
-      "repo.open"
+      "repo.open",
+      "target.run",
+      "target.open"
     ])
 
     expect((await controller.commands.run("connect")).status).toBe("executed")

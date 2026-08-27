@@ -225,30 +225,23 @@ export const createTabsController = (ctx: ControllerContext): TabsController => 
 
   const openLocalRepo: TabsController["openLocalRepo"] = async () => {
     if (ctx.repositories.available) {
-      // The native shell: the existing folder-dialog flow (connector.add).
+      // The native shell: the existing folder-dialog flow (connector.add),
+      // then the picked root opens on the local origin like a typed path.
+      const started = Date.now()
       const outcome = await ctx.commands.run("connector.add", "read")
       if (outcome.status === "failed") return outcome.error
-      await loadRepos()
-      return
+      const picked = [...collections.connectors.values()]
+        .filter((connector) => connector.updatedAt >= started)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0]
+      if (picked === undefined) return
+      return ctx.openRepo(picked.root)
     }
     if (typeof window === "undefined" || typeof window.prompt !== "function") {
       return "Opening a repository needs the Smithers app."
     }
     const path = (window.prompt("Repository path") ?? "").trim()
     if (path === "") return
-    let response: Response
-    try {
-      response = await ctx.boundedFetch(`${baseUrl}/api/repo/open`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path })
-      })
-    } catch (error) {
-      return `Could not open ${path}: ${error instanceof Error ? error.message : String(error)}`
-    }
-    if (!response.ok) return await ctx.errorMessageOf(response, `Could not open ${path}`)
-    await response.body?.cancel()
-    await loadRepos()
+    return ctx.openRepo(path)
   }
 
   const notePtyExit: TabsController["notePtyExit"] = (sessionId, code) => {

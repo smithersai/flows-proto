@@ -151,6 +151,8 @@ const NoPayload = Schema.Struct({})
 const RepoTarget = Schema.Struct({ repo: Schema.optional(Schema.String) })
 /** A card id, the handle every id-scoped card act takes. */
 const CardTarget = Schema.Struct({ cardId: Schema.String })
+/** A Smithers target: the repository it belongs to and its label. */
+const TargetRef = Schema.Struct({ repoId: Schema.String, label: Schema.String })
 /** A positive issue or pull-request number beside its optional repo. */
 const NumberedTarget = Schema.Struct({
   number: Schema.Number,
@@ -907,6 +909,30 @@ export const baseFlows = (actions: CommandActions): ReadonlyArray<FlowEntry> => 
     userOnly: true,
     input: NoPayload,
     handler: () => actions.openLocalRepo()
+  }),
+  /*
+   * The html card's bridge (docs/LOCAL-APP.md "Auto-load flow"): a panel's
+   * `run` message runs one target as a streamed target-run card; `open`
+   * points at the target's row in the targets card. Both are the human's
+   * click inside the frame, so neither is disclosed to the model.
+   */
+  flow({
+    name: "target.run",
+    summary: "Run a Smithers target",
+    hidden: true,
+    userOnly: true,
+    args: "<repoId> <label>",
+    input: TargetRef,
+    handler: ({ repoId, label }) => actions.runTarget(repoId, label)
+  }),
+  flow({
+    name: "target.open",
+    summary: "Show a Smithers target in its targets card",
+    hidden: true,
+    userOnly: true,
+    args: "<repoId> <label>",
+    input: TargetRef,
+    handler: ({ repoId, label }) => actions.openTarget(repoId, label)
   })
 ]
 

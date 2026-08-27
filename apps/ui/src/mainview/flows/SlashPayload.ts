@@ -60,6 +60,14 @@ const tokensOf = (args: string | undefined): Array<string> =>
     .split(/\s+/)
     .filter((token) => token !== "")
 
+/** A repository id followed by a target label (`//pkg:name`). */
+const targetRef = (name: string, args: string | undefined): Parsed => {
+  const [repoId, ...rest] = tokensOf(args)
+  const label = rest.join(" ")
+  if (repoId === undefined || repoId === "" || label === "") return no(`${name} needs a repository id and a target label`)
+  return ok({ repoId, label })
+}
+
 /*
  * The grammar, one entry per flow that accepts arguments. A flow absent from
  * this table takes the empty payload — which is also what a flow with no args
@@ -222,7 +230,9 @@ const GRAMMAR: Readonly<Record<string, (args: string | undefined) => Parsed>> = 
   "tab.harness": (args) => required("harnessId", args, "tab.harness needs a harness id"),
   "tab.card": (args) => required("cardId", args, "tab.card needs the card id"),
   "tab.select": (args) => required("tab", args, "tab.select needs a tab id or a position 1-9"),
-  "tab.close": (args) => optional("tabId", args)
+  "tab.close": (args) => optional("tabId", args),
+  "target.run": (args) => targetRef("target.run", args),
+  "target.open": (args) => targetRef("target.open", args)
 }
 
 /**
