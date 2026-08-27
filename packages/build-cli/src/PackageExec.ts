@@ -663,6 +663,10 @@ interface PlanContext {
   readonly graphDigests: Map<string, string>
   /** Repo.Target declaration → child query result for this operation. */
   readonly repoResolutions: RepoResolution.ResolutionCache
+  /** Whether Repo.Target must ask the child CLI for its inert plan. */
+  readonly childPlan: boolean
+  /** Whether the parent invocation selected write mode. */
+  readonly write: boolean
 }
 
 /** Opens (once) the cache store the planner uses for closure rows and graph digests. */
@@ -1491,6 +1495,17 @@ const visit = async (
         repositoryState = await RepoResolution.gitState(repositoryResolution, context.signal)
       } catch (cause) {
         noteRefusal(`child repository @${repositoryResolution.repoName}: ${Diagnostic.message(cause)}`)
+      }
+      if (context.childPlan && refusal === undefined) {
+        try {
+          await RepoResolution.execute(repositoryResolution, {
+            plan: true,
+            write: context.write,
+            signal: context.signal
+          })
+        } catch (cause) {
+          noteRefusal(`child repository @${repositoryResolution.repoName} plan refused: ${Diagnostic.message(cause)}`)
+        }
       }
     }
   }
@@ -2837,7 +2852,9 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     closureDigests: new Map(),
     closureResults: new Map(),
     graphDigests: new Map(),
-    repoResolutions
+    repoResolutions,
+    childPlan: options.plan === true,
+    write: options.write === true
   }
   const roots: Array<string> = []
   try {

@@ -6,6 +6,12 @@ export const Package = S.Package({
   targets: {
     childTest,
     suite: S.Suite({ tests: [childTest] }),
+    alias: S.Alias(childTest),
+    gated: S.Shell.Test({
+      bin: S.Runtime.bin,
+      args: ["-e", "console.log('parent gate consumer')"],
+      gates: [childTest]
+    }),
     parentReadme: S.Shell.Test({
       bin: S.Runtime.bin,
       args: [
