@@ -943,7 +943,7 @@ describe("declaration modules", () => {
       root,
       "PACKAGE.ts",
       `import { Smithers as S } from "@smthrs/targets"
-const test = S.Docker.Build({ context: "." })
+const test = S.Zig.Build({ context: "." })
 export const Package = S.Package({ targets: { test } })
 `
     )
