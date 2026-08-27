@@ -455,6 +455,45 @@ export const Package = S.Package({ targets: { check: S.Shell.Test({ script: S.fi
     expect(second.exitCode).toBe(0)
     expect(second.logs).toContain("//:check  hit")
   })
+
+  it("refuses a command-form shard fan-out instead of running the same command N times", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { check: S.Shell.Test({ command: "true", shards: 3 }) } })
+`
+    )
+    commitAll(root)
+    const planned = await serve(root, ["//:check", "--plan"])
+    expect(planned.output).toContain("Shell.Test shards cannot fan out a command-form declaration")
+  })
+
+  it("spawns a declared script under the interpreter its extension names, under either rule", async () => {
+    // optimism runs one sync-superchain.sh under both S.Shell.Build and
+    // S.Generate; a shell script handed to node is a parse error, not a run.
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(root, "sync.sh", "printf ok > out.txt\n")
+    await write(root, "gen.mjs", "import { writeFileSync } from \"node:fs\"\nwriteFileSync(\"out.txt\", \"ok\")\n")
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+const shellGenerate = S.Generate({ script: S.file("//sync.sh"), changes: ["out.txt"] })
+const nodeGenerate = S.Generate({ script: S.file("//gen.mjs"), changes: ["out.txt"] })
+const shellBuild = S.Shell.Build({ script: S.file("//sync.sh"), outFiles: ["//out.txt"] })
+export const Package = S.Package({ targets: { nodeGenerate, shellBuild, shellGenerate } })
+`
+    )
+    commitAll(root)
+    const planned = await serve(root, ["//...", "--plan"])
+    expect(planned.output).toContain("/bin/sh,sync.sh")
+    expect(planned.output).toMatch(/argv\[2\]: [^\n]*node,gen\.mjs/)
+    expect(planned.output).not.toMatch(/node,sync\.sh/)
+  })
 })
 
 describe("NodeModule.Bin resolution through the package bin map", () => {

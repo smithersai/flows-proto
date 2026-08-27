@@ -235,6 +235,17 @@ export const Package = S.Package({ targets: { run: S.Shell.Run({ command: "echo 
     )
     expect((await openIndex(root)).targets().map((row) => row.label)).toEqual(["//:root"])
   })
+
+  it("keeps packages under the .smithers directory that holds this workspace's own descriptor", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, ".smithers/WORKSPACE.ts", workspaceModule)
+    await write(
+      root,
+      ".smithers/PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"\nexport const Package = S.Package({ targets: { own: S.Shell.Test({ command: "true" }) } })\n`
+    )
+    expect((await openIndex(root)).targets().map((row) => row.label)).toEqual(["//.smithers:own"])
+  })
 })
 
 describe("error fixtures", () => {

@@ -105,6 +105,8 @@ export const workspaceFileOf = async (root: string): Promise<string | undefined>
 interface Walk {
   readonly root: string
   readonly cacheDirectory: string
+  /** This workspace's own descriptor, which never marks a nested workspace. */
+  readonly workspaceFile: string
   readonly signal: AbortSignal | undefined
   readonly found: Array<string>
   directories: number
@@ -117,9 +119,16 @@ const pruned = (walk: Walk, child: string): boolean =>
   child === fixedStoreDirectory ||
   child.startsWith(`${fixedStoreDirectory}/`)
 
-/** Whether a child directory starts a nested package workspace. */
+/**
+ * Whether a child directory starts a nested package workspace.
+ *
+ * The workspace's own descriptor is excluded: a repository whose root
+ * declaration is `.smithers/WORKSPACE.ts` would otherwise see its own
+ * `.smithers/` directory as a nested workspace and prune it from the walk.
+ */
 const nestedWorkspace = async (walk: Walk, child: string): Promise<boolean> => {
   for (const relative of ["WORKSPACE.ts", ".smithers/WORKSPACE.ts"]) {
+    if (`${child}/${relative}` === walk.workspaceFile) continue
     try {
       const stats = await Fs.lstat(NodePath.join(walk.root, child, relative))
       if (stats.isFile() || stats.isSymbolicLink()) return true
@@ -230,6 +239,7 @@ export const discover = async (
   const walk: Walk = {
     root: canonical,
     cacheDirectory,
+    workspaceFile,
     signal: options.signal,
     found: [],
     directories: 0,

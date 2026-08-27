@@ -1522,6 +1522,16 @@ const visit = async (
   const shards = rule === "Shell.Test" && typeof attrMember(attrs, "shards") === "number"
     ? attrMember(attrs, "shards") as number
     : 1
+  // A shard runs because the selector reaches the test runner as an argument.
+  // The `command` form spawns `/bin/sh -c <text>`, whose next operand is `$0`,
+  // not an argument to the runner: fanning it out would run the identical
+  // command once per shard and report every one of them green.
+  if (shards > 1 && typeof attrMember(attrs, "command") === "string") {
+    noteRefusal(
+      `Shell.Test shards cannot fan out a command-form declaration; ` +
+        `the shard selector has no argv slot in "/bin/sh -c". Declare bin, bun, or script instead`
+    )
+  }
   const timeout = attrMember(attrs, "timeout")
   const timeoutMs = typeof timeout === "string" ? durationMs(timeout) : Shell.packageExecTimeoutMs
   let commands: ReadonlyArray<ReadonlyArray<string>> | undefined
@@ -1662,7 +1672,7 @@ const visit = async (
       const resolved: Array<string> = []
       for (
         const entry of [
-          Shell.toolToken({ _tag: "RuntimeBin" }),
+          Shell.scriptInterpreterToken((script as { readonly path: string }).path),
           Shell.scriptToken((script as { readonly path: string }).path)
         ]
       ) {
@@ -4096,7 +4106,9 @@ export const execute = async (
         case "Shell.Test":
         case "Foundry.Test": {
           if (node.rule === "Shell.Test" && node.shards > 1) {
-            const selected = process.env["SMTHRS_SHARD"]
+            // Through the same environment seam the rest of the executor reads,
+            // so an injected environment selects a shard exactly like CI does.
+            const selected = environment["SMTHRS_SHARD"]
             const selection = selected === undefined ? undefined : /^(\d+)\/(\d+)$/.exec(selected)
             if (selection === null) {
               return fail(`invalid SMTHRS_SHARD ${JSON.stringify(selected)}`)

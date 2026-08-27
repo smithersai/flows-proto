@@ -215,6 +215,13 @@ describe("Cargo.Nextest and Cargo.Deny", () => {
     expect(args(Cargo.Deny({ config: Input.file("//deny.toml"), data: [] })))
       .toEqual(["deny", "--config", "//deny.toml", "check"])
   })
+
+  it("renders nextest's compile-only form instead of dropping the declared noRun", () => {
+    // NextestAttrs is PackageTestAttrs, so `noRun` is admitted; rendering it
+    // is what keeps a compile-only declaration from silently running tests.
+    expect(args(Cargo.Nextest({ workspace: true, noRun: true, locked: true, data: [] })))
+      .toEqual(["nextest", "run", "--workspace", "--no-run", "--locked"])
+  })
 })
 
 describe("Cargo.Clippy", () => {

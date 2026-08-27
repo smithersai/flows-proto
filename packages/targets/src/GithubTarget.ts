@@ -66,6 +66,12 @@ export const ReleaseActivity = Schema.Literals([
  */
 export type ReleaseActivity = typeof ReleaseActivity.Type
 
+/**
+ * A `pull_request` trigger activity type.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
 export const PullRequestActivity = Schema.Literals([
   "assigned",
   "unassigned",
@@ -90,6 +96,12 @@ export const PullRequestActivity = Schema.Literals([
   "auto_merge_disabled"
 ])
 
+/**
+ * An `issues` trigger activity type.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
 export const IssueActivity = Schema.Literals([
   "opened",
   "edited",
@@ -109,6 +121,12 @@ export const IssueActivity = Schema.Literals([
   "demilestoned"
 ])
 
+/**
+ * One `workflow_dispatch` input declaration.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
 export const WorkflowDispatchInput = Schema.Struct({
   description: Schema.optional(Schema.String),
   required: Schema.optional(Schema.Boolean),
@@ -154,8 +172,20 @@ export const Concurrency = Schema.Struct({
   cancelInProgress: Schema.Union([Schema.Boolean, Schema.NonEmptyString])
 })
 
+/**
+ * The access level one `permissions` scope grants a job.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
 export const Permission = Schema.Literals(["read", "write", "none"])
 
+/**
+ * One rendered workflow step: an action `uses` step or a `run` step.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
 export const Step = Schema.Union([
   Schema.Struct({
     name: Schema.optional(Schema.NonEmptyString),

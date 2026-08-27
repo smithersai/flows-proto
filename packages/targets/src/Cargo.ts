@@ -676,6 +676,7 @@ export const packageArgs = (
         ...selectionArgs(selection),
         ...targetArgs(values),
         ...featureArgs(values),
+        ...(values["noRun"] === true ? ["--no-run"] : []),
         ...resolutionArgs(values)
       ]
     case "Cargo.Clippy":

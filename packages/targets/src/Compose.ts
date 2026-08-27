@@ -179,7 +179,7 @@ const generateDefinition = Target.make("Generate", {
     if (attrs.script !== undefined) {
       return Target.runTool({
         cwd: ".",
-        argv: [Shell.toolToken(Reference.runtimeBin), Shell.scriptToken(attrs.script.path)],
+        argv: [Shell.scriptInterpreterToken(attrs.script.path), Shell.scriptToken(attrs.script.path)],
         env: attrs.env ?? {},
         secrets: attrs.secrets ?? [],
         timeoutMs: Shell.packageExecTimeoutMs

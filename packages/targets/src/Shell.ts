@@ -162,6 +162,21 @@ export const bunProgramToken = "{smthrs:bun-program}"
 export const scriptToken = (path: string): string => `{smthrs:script:${path}}`
 
 /**
+ * The argv[0] a declared `script` runs under, chosen from its extension.
+ *
+ * A repository writes generator and harness scripts in both dialects — the
+ * design corpus has `.sh` scripts on `S.Shell.*` and on `S.Generate`, and
+ * `.mjs` scripts on `S.Generate` — and the same file must spawn the same way
+ * under either rule. A shell script runs under `/bin/sh`; anything else runs
+ * under the workspace runtime, which is what a JavaScript generator needs.
+ *
+ * @category tokens
+ * @since 0.1.0
+ */
+export const scriptInterpreterToken = (path: string): string =>
+  /\.(?:sh|bash)$/.test(path) ? "/bin/sh" : toolToken(Reference.runtimeBin)
+
+/**
  * Wall-clock bound for one package-mode tool process.
  *
  * Package-mode targets include multi-minute compiles (tsc, relay-compiler
@@ -223,7 +238,7 @@ export const execPayload = (attrs: ExecAttrs): Exec.CallPayload => {
   if (attrs.command !== undefined) {
     argv = ["/bin/sh", "-c", attrs.command]
   } else if (attrs.script !== undefined) {
-    argv = ["/bin/sh", scriptToken(attrs.script.path), ...args]
+    argv = [scriptInterpreterToken(attrs.script.path), scriptToken(attrs.script.path), ...args]
   } else if (attrs.bun !== undefined) {
     argv = [bunToken, bunProgramToken]
   } else if (attrs.bin !== undefined) {
