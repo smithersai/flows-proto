@@ -26,6 +26,7 @@
  *
  * @since 0.1.0
  */
+import { Smithers } from "@smthrs/targets"
 import * as Package from "@smthrs/targets/Package"
 import * as SafeFs from "@smthrs/targets/SafeFs"
 import * as Target from "@smthrs/targets/Target"
@@ -446,6 +447,27 @@ const validatePackageModule = (namespace: unknown, file: string): Package.Packag
   return value
 }
 
+const undefinedRead = /Cannot read properties of undefined \(reading '([^']+)'\)/
+
+/**
+ * The capitalized members the `Smithers` surface exports: the namespaces and
+ * rule constructors a PACKAGE.ts reaches through `S.`.
+ */
+const surfaceNamespaces = (): string => Object.keys(Smithers).filter((key) => /^[A-Z]/.test(key)).sort().join(", ")
+
+/**
+ * A declaration that names a namespace this surface lacks (`S.Go.Test(...)`)
+ * fails as a property read off `undefined`, which names the member but not
+ * the missing namespace. Append what the surface does export so the author
+ * sees the gap instead of a bare JavaScript TypeError.
+ */
+const undefinedNamespaceHint = (message: string): string => {
+  const match = undefinedRead.exec(message)
+  if (match === null) return message
+  return `${message}; a declaration read .${match[1]} off undefined. ` +
+    `If that value is S.<Name>, this loader exports no such namespace; it exports: ${surfaceNamespaces()}`
+}
+
 const importGraph = async (discovery: Discovery): Promise<LoadedGraph> => {
   const entryDirectory = await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-package-entry-"))
   const lines: Array<string> = []
@@ -477,7 +499,7 @@ const importGraph = async (discovery: Discovery): Promise<LoadedGraph> => {
     // so fold it in rather than blaming WORKSPACE.ts for every failure.
     throw new PackageError(
       "module_import_failed",
-      `evaluating the workspace's declaration modules failed: ${Diagnostic.message(cause)}`,
+      `evaluating the workspace's declaration modules failed: ${undefinedNamespaceHint(Diagnostic.message(cause))}`,
       { cause }
     )
   }

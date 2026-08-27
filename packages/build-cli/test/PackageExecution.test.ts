@@ -530,7 +530,7 @@ export const Package = S.Package({ targets: { tool: S.Shell.Test({ bin: S.NodeMo
     expect(keyOf(first.output, "//:tool")).not.toBe(keyOf(second.output, "//:tool"))
   })
 
-  it("keys the three sandbox declarations apart", async () => {
+  it("keys the four sandbox declarations apart", async () => {
     const root = await temporaryWorkspace()
     await write(root, "WORKSPACE.ts", workspaceModule())
     await write(
@@ -538,21 +538,24 @@ export const Package = S.Package({ targets: { tool: S.Shell.Test({ bin: S.NodeMo
       "PACKAGE.ts",
       `import { Smithers as S } from "@smthrs/targets"
 const confined = S.Shell.Run({ command: "true" })
+const loopback = S.Shell.Run({ command: "true", sandbox: { network: "loopback" } })
 const networked = S.Shell.Run({ command: "true", sandbox: { network: true } })
 const open = S.Shell.Run({ command: "true", sandbox: "none" })
-export const Package = S.Package({ targets: { confined, networked, open } })
+export const Package = S.Package({ targets: { confined, loopback, networked, open } })
 `
     )
     commitAll(root)
     const confined = await serve(root, ["//:confined", "--plan"])
+    const loopback = await serve(root, ["//:loopback", "--plan"])
     const networked = await serve(root, ["//:networked", "--plan"])
     const open = await serve(root, ["//:open", "--plan"])
     const keys = [
       keyOf(confined.output, "//:confined"),
+      keyOf(loopback.output, "//:loopback"),
       keyOf(networked.output, "//:networked"),
       keyOf(open.output, "//:open")
     ]
-    expect(new Set(keys).size).toBe(3)
+    expect(new Set(keys).size).toBe(4)
   })
 })
 
@@ -607,6 +610,46 @@ export const Package = S.Package({ targets: { confined, networked, open } })
     } finally {
       server.close()
     }
+  })
+
+  it("admits loopback listeners under { network: \"loopback\" } and nothing else", async () => {
+    // A listener on 127.0.0.1 and one on ::1, each connected to once: the
+    // shape of a Go httptest suite. The default profile fails the bind.
+    const listen = [
+      "const net = require('node:net');",
+      "const once = (host) => new Promise((resolve, reject) => {",
+      "  const server = net.createServer((socket) => socket.end());",
+      "  server.on('error', reject);",
+      "  server.listen(0, host, () => {",
+      "    const client = net.connect(server.address().port, host, () => client.end());",
+      "    client.on('error', reject);",
+      "    client.on('close', () => server.close(() => resolve()));",
+      "  });",
+      "});",
+      "once('127.0.0.1').then(() => once('::1')).then(() => process.exit(0), () => process.exit(1));"
+    ].join(" ")
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(root, "listen.cjs", `${listen}\n`)
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+const confined = S.Shell.Run({ command: ${JSON.stringify(`${process.execPath} listen.cjs`)} })
+const loopback = S.Shell.Run({ command: ${
+        JSON.stringify(`${process.execPath} listen.cjs`)
+      }, sandbox: { network: "loopback" } })
+const egress = S.Shell.Run({ command: "curl -sf --max-time 5 https://example.com/ > /dev/null", sandbox: { network: "loopback" } })
+export const Package = S.Package({ targets: { confined, egress, loopback } })
+`
+    )
+    commitAll(root)
+    const confined = await serve(root, ["//:confined"])
+    expect(confined.exitCode).toBe(1)
+    const loopback = await serve(root, ["//:loopback"])
+    expect(loopback.exitCode).toBe(0)
+    const egress = await serve(root, ["//:egress"])
+    expect(egress.exitCode).toBe(1)
   })
 })
 
@@ -748,5 +791,77 @@ export const Package = S.Package({ targets: { gen } })
     const applied = await serve(root, ["//:gen", "--write"])
     expect(applied.exitCode).toBe(0)
     expect(await Fs.readFile(NodePath.join(root, "out.gen.txt"), "utf8")).toBe("generated\n")
+  })
+
+  it("runs the bin form through the same check, drift, and write bracket", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule(`  host: S.Host({ bins: ["sh"] }),`))
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+const gen = S.Generate({
+  bin: S.Host.bin("sh"),
+  args: ["-c", "printf 'generated\\n' > out.gen.txt"],
+  changes: ["out.gen.txt"]
+})
+export const Package = S.Package({ targets: { gen } })
+`
+    )
+    await write(root, "out.gen.txt", "generated\n")
+    commitAll(root)
+    const green = await serve(root, ["//:gen"])
+    expect(green.exitCode).toBe(0)
+    expect(green.logs).not.toContain("NotImplemented")
+    await write(root, "out.gen.txt", "hand edited\n")
+    const red = await serve(root, ["//:gen"])
+    expect(red.exitCode).toBe(1)
+    expect(red.logs).toContain("out.gen.txt")
+    expect(await Fs.readFile(NodePath.join(root, "out.gen.txt"), "utf8")).toBe("hand edited\n")
+    const applied = await serve(root, ["//:gen", "--write"])
+    expect(applied.exitCode).toBe(0)
+    expect(await Fs.readFile(NodePath.join(root, "out.gen.txt"), "utf8")).toBe("generated\n")
+  })
+
+  it("keeps the stdout form a typed refusal", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule(`  host: S.Host({ bins: ["sh"] }),`))
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+const gen = S.Generate({ bin: S.Host.bin("sh"), args: ["-c", "echo generated"], stdout: "file", changes: ["out.gen.txt"] })
+export const Package = S.Package({ targets: { gen } })
+`
+    )
+    commitAll(root)
+    const { exitCode, logs } = await serve(root, ["//:gen"])
+    expect(exitCode).toBe(1)
+    expect(logs).toContain("NotImplemented")
+    expect(logs).toContain("stdout form")
+  })
+})
+
+describe("declaration modules", () => {
+  it("names the exported namespaces when a declaration reads a rule off an absent one", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+const test = S.Go.Test({ pkgs: ["./..."] })
+export const Package = S.Package({ targets: { test } })
+`
+    )
+    commitAll(root)
+    const { exitCode, output, logs } = await serve(root, ["query", "//..."])
+    expect(exitCode).toBe(1)
+    const text = output + logs
+    expect(text).toContain("module_import_failed")
+    expect(text).toContain("reading 'Test'")
+    expect(text).toContain("this loader exports no such namespace")
+    expect(text).toContain("Shell")
+    expect(text).toContain("Github")
   })
 })

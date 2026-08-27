@@ -44,6 +44,7 @@ export type ErrorCode =
   | "unlabeled_run_target"
   | "duplicate_job_id"
   | "invalid_event_name"
+  | "invalid_schedule"
   | "invalid_path"
   | "preserve_conflict"
   | "outside_write_set"
@@ -319,6 +320,9 @@ const workflowName = /^[A-Za-z0-9_-]+$/
 /** The event-name grammar the `cancelInProgress` sugar accepts. */
 const eventName = /^[a-z][a-z_]*$/
 
+/** Five whitespace-separated fields; GitHub validates the field contents. */
+const cronExpression = /^\S+ \S+ \S+ \S+ \S+$/
+
 /** GitHub job ids must start with a letter or `_`. */
 const jobIdStart = /^[A-Za-z_]/
 
@@ -352,6 +356,23 @@ const renderWorkflow = (
     lines.push("  push:")
     lines.push("    branches:")
     for (const branch of workflow.on.push.branches) lines.push(`      - ${scalar(branch)}`)
+  }
+  if (workflow.on.schedule !== undefined) {
+    lines.push("  schedule:")
+    for (const cron of workflow.on.schedule) {
+      if (!cronExpression.test(cron)) {
+        throw new GithubRenderError(
+          "invalid_schedule",
+          `schedule ${JSON.stringify(cron)} is not a five-field cron expression`
+        )
+      }
+      lines.push(`    - cron: ${scalar(cron)}`)
+    }
+  }
+  if (workflow.on.release !== undefined) {
+    lines.push("  release:")
+    lines.push("    types:")
+    for (const activity of workflow.on.release) lines.push(`      - ${scalar(activity)}`)
   }
   if (workflow.on.workflowDispatch === true) lines.push("  workflow_dispatch:")
   if (workflow.concurrency !== undefined) {

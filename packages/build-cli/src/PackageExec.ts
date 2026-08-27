@@ -263,7 +263,7 @@ export interface PackageNode extends Planner.PlannedTarget {
    */
   readonly keyTemplate: Planner.KeyMaterial | undefined
   readonly refusal: string | undefined
-  readonly sandbox: "none" | { readonly network?: boolean | undefined } | undefined
+  readonly sandbox: "none" | { readonly network?: boolean | "loopback" | undefined } | undefined
   readonly secrets: ReadonlyArray<string>
   readonly argv: ReadonlyArray<string> | undefined
   /**
@@ -948,6 +948,7 @@ const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox
     capabilities.push("fs:write")
   }
   if (sandbox === "none" || (typeof sandbox === "object" && sandbox.network === true)) capabilities.push("net:open")
+  else if (typeof sandbox === "object" && sandbox.network === "loopback") capabilities.push("net:loopback")
   return capabilities
 }
 
@@ -1203,7 +1204,22 @@ const visit = async (
       }
       emit = entries
     } else if (bin !== undefined) {
-      noteRefusal("NotImplemented: the Generate bin/stdout form is not implemented in W2")
+      if (attrMember(attrs, "stdout") !== undefined) {
+        noteRefusal("NotImplemented: the Generate stdout form is not implemented")
+      } else {
+        // The bin form plans the exec payload the Shell flavors plan; the
+        // check-mode scratch copy and the write-mode write-set bracket around
+        // the spawn are form-agnostic, so nothing else differs from the
+        // script form.
+        const payload = Shell.execPayload({
+          bin: bin as Shell.ExecAttrs["bin"],
+          args: attrMember(attrs, "args") as Shell.ExecAttrs["args"]
+        })
+        env = { ...(payload.env as Record<string, string>) }
+        const resolved: Array<string> = []
+        for (const entry of payload.argv as ReadonlyArray<string>) resolved.push(await resolveToken(entry))
+        argv = resolved
+      }
     }
   }
 
@@ -1714,11 +1730,19 @@ const formatDuration = (durationMs: number): string =>
 const sandboxProfile = "(version 1)(allow default)(deny network*)"
 
 /**
- * The profile of a consumer that declared `services`: the network stays
- * denied except outbound loopback, which is how the consumer reaches the
- * service the executor started for it.
+ * The loopback profile: the network stays denied except on the loopback
+ * interface, where binding, accepting, and connecting are allowed. Two
+ * declarations select it: a consumer that declared `services` (it reaches
+ * the service the executor started for it), and a target that declared
+ * `sandbox: { network: "loopback" }` (a test suite that starts its own
+ * local listeners, Go's httptest pattern, where the default profile fails
+ * the bind with "operation not permitted"). Egress stays denied under
+ * both; `localhost` matches 127.0.0.1 and ::1.
  */
-const sandboxProfileWithLoopback = `${sandboxProfile}(allow network-outbound (remote ip "localhost:*"))`
+const sandboxProfileWithLoopback = `${sandboxProfile}` +
+  `(allow network-bind (local ip "localhost:*"))` +
+  `(allow network-inbound (local ip "localhost:*"))` +
+  `(allow network-outbound (remote ip "localhost:*"))`
 
 const wrapSandbox = (
   argv: ReadonlyArray<string>,
@@ -1733,7 +1757,13 @@ const wrapSandbox = (
     log(`${label}  sandbox: unenforced on this platform`)
     return argv
   }
-  return ["/usr/bin/sandbox-exec", "-p", loopback ? sandboxProfileWithLoopback : sandboxProfile, ...argv]
+  const loopbackDeclared = typeof sandbox === "object" && sandbox !== null && sandbox.network === "loopback"
+  return [
+    "/usr/bin/sandbox-exec",
+    "-p",
+    loopback || loopbackDeclared ? sandboxProfileWithLoopback : sandboxProfile,
+    ...argv
+  ]
 }
 
 /** Joins the invocation's abort signal with a per-consumer one, when both exist. */
