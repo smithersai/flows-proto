@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { RepoSchema, TargetSchema } from "./LocalApp"
 
 /*
  * The card wire model, shared by the server boundary (which validates frames off
@@ -442,6 +443,51 @@ export const CardSchema = z.discriminatedUnion("kind", [
     payload: z.object({
       selected: z.string()
     })
+  }),
+  /*
+   * The local app's repository cards (apps/ui/docs/LOCAL-APP.md "Cards"):
+   * the opened repository, its loaded targets, the agent-authored (or
+   * template) HTML panel, and one streamed target run.
+   */
+  z.object({
+    ...cardBaseShape,
+    kind: z.literal("targets"),
+    payload: z.object({
+      repoId: z.string(),
+      repoName: z.string(),
+      status: z.enum(["pending", "done", "failed"]),
+      targets: z.array(TargetSchema),
+      warnings: z.array(z.string()),
+      /** The row the panel's `open` bridge message pointed at; the list highlights it. */
+      highlighted: z.string().optional()
+    })
+  }),
+  z.object({
+    ...cardBaseShape,
+    kind: z.literal("html"),
+    payload: z.object({
+      title: z.string(),
+      html: z.string(),
+      source: z.enum(["agent", "template"]),
+      repoId: z.string()
+    })
+  }),
+  z.object({
+    ...cardBaseShape,
+    kind: z.literal("target-run"),
+    payload: z.object({
+      runId: z.string(),
+      repoId: z.string(),
+      label: z.string(),
+      status: z.enum(["running", "done", "failed"]),
+      exitCode: z.number().nullable(),
+      output: z.string()
+    })
+  }),
+  z.object({
+    ...cardBaseShape,
+    kind: z.literal("repo"),
+    payload: z.object({ repo: RepoSchema })
   })
 ])
 export type Card = z.infer<typeof CardSchema>

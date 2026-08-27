@@ -25,6 +25,7 @@ import type { CloudAgent } from "./CloudAgent"
 import { findNode } from "./Node"
 import type { NodeSidecar } from "./Node"
 import { json, jsonError, notImplemented, readJson, Router } from "./routes"
+import { registerRepoTargetRoutes } from "./routes/repoTargets"
 import { currentSandboxHost, sandboxEnforced } from "./Sandbox"
 
 /** chat.smithers.sh accepts this origin anonymously (verified 2026-08-26). */
@@ -59,6 +60,8 @@ export interface LocalServerOptions {
   readonly openExternal?: (url: string) => Promise<boolean>
   /** A pre-resolved Node sidecar; the default probes once at startup. */
   readonly node?: NodeSidecar | null
+  /** The smthrs build-cli entry for the targets lane; the default resolves it from the checkout (or SMITHERS_BUILD_CLI). */
+  readonly buildCli?: string
   readonly log?: (line: string) => void
 }
 
@@ -319,15 +322,9 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
     return json({ status: "accepted" }, 202)
   })
 
-  // Lane placeholders (L3 repo/targets, L4 harnesses/pty). A lane replaces a
-  // placeholder by registering the same method and path.
+  // Lane placeholders (L4 harnesses/pty). A lane replaces a placeholder by
+  // registering the same method and path; L3 (repo/targets) registers below.
   router.add("GET", "/api/harnesses", () => json({ harnesses: [] }))
-  router.add("GET", "/api/repos", () => json({ repos: [] }))
-  router.add("POST", "/api/repo/open", () => notImplemented("POST /api/repo/open"))
-  router.add("POST", "/api/repo/close", () => notImplemented("POST /api/repo/close"))
-  router.add("POST", "/api/targets/query", () => notImplemented("POST /api/targets/query"))
-  router.add("POST", "/api/targets/run", () => notImplemented("POST /api/targets/run"))
-  router.add("POST", "/api/targets/cancel", () => notImplemented("POST /api/targets/cancel"))
   router.add("GET", "/api/pty", () => notImplemented("GET /api/pty"))
   router.add("POST", "/api/pty", () => notImplemented("POST /api/pty"))
   router.add("POST", "/api/pty/:id/resize", () => notImplemented("POST /api/pty/:id/resize"))
@@ -440,7 +437,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
   const origin = `http://127.0.0.1:${port}`
   log(`SMITHERS_LOCAL_ORIGIN=${origin}`)
 
-  return {
+  const local: LocalServer = {
     origin,
     port,
     router,
@@ -463,6 +460,15 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
       }
       writers.clear()
       server.stop(true)
+    }
+  }
+  // Lane L3: /api/repo/*, /api/targets/* and the target-run topics.
+  const repoTargets = registerRepoTargetRoutes(local, { node: nodeProbe, log, ...(options.buildCli === undefined ? {} : { cli: options.buildCli }) })
+  return {
+    ...local,
+    stop: () => {
+      repoTargets.stop()
+      local.stop()
     }
   }
 }
