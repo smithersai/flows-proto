@@ -48,6 +48,16 @@ export type HarnessErrorCode = typeof HarnessErrorCode.Type
 /**
  * A failure while translating a recorded agent turn.
  *
+ * The engine journals a failed action's error as JSON. `cause` therefore reads
+ * `Schema.Defect()`, the projection the rest of the repo uses for the same
+ * problem: the value stays untouched in process, and the encode projects an
+ * `Error` to its name, message, and cause and anything else to a JSON-safe
+ * form. A plain `Schema.Unknown` fails the encode with `Expected JSON value at
+ * ["cause"]` for any live `Error` or object holding a bigint or a function,
+ * and that encode failure then replaces the failure it was carrying, so the
+ * provider 429 or fetch failure that actually happened never reaches the
+ * journal.
+ *
  * @category errors
  * @since 0.1.0
  * @slop
@@ -55,5 +65,5 @@ export type HarnessErrorCode = typeof HarnessErrorCode.Type
 export class HarnessError extends Schema.TaggedError<HarnessError>()("/harness/HarnessError", {
   code: HarnessErrorCode,
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown)
+  cause: Schema.optional(Schema.Defect())
 }) {}

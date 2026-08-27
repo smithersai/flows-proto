@@ -53,6 +53,11 @@ export type SandboxErrorCode = typeof SandboxErrorCode.Type
 /**
  * A failure of the sandbox binding.
  *
+ * `cause` reads `Schema.Defect()` for the same reason `HarnessError.cause`
+ * does: a sandbox failure shares the action error channel with a harness
+ * failure, so it reaches the same JSON journal encode and has to survive a
+ * live `Error` or a raw object holding non-JSON members.
+ *
  * @category errors
  * @since 0.1.0
  * @slop
@@ -60,7 +65,7 @@ export type SandboxErrorCode = typeof SandboxErrorCode.Type
 export class SandboxError extends Schema.TaggedError<SandboxError>()("flows/harness/SandboxError", {
   code: SandboxErrorCode,
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown)
+  cause: Schema.optional(Schema.Defect())
 }) {}
 
 /**
