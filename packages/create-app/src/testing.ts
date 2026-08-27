@@ -153,9 +153,12 @@ const toMessageLike = (message: ModelRequest.Message): MessageLike => {
 /**
  * Projects a live `ModelRequest` onto the structural shape a fixture stores.
  *
- * `ModelRequest.toolChoice` has no slot in `@smthrs/testing`'s request schema,
- * so it is dropped here and two requests that differ only in `toolChoice`
- * share one replay digest.
+ * `toolChoice` is carried rather than dropped. `@smthrs/testing`'s request
+ * schema holds it, and its replay digest reads it, so two requests that differ
+ * only in `toolChoice` are different calls. Dropping it here would record a
+ * request that the digest of the live request no longer matches, and the replay
+ * would report the recorded call as unscripted. The key is omitted when the
+ * request carries no choice, which is the shape the fixture schema declares.
  */
 const toRequestLike = (request: ModelRequest.ModelRequest): ModelRequestLike => ({
   modelId: request.modelId,
@@ -176,18 +179,9 @@ const toRequestLike = (request: ModelRequest.ModelRequest): ModelRequestLike => 
     stopSequences: request.params.stopSequences,
     thinkingBudget: request.params.thinkingBudget,
     reasoningEffort: request.params.reasoningEffort
-  }
+  },
+  ...(request.toolChoice === undefined ? {} : { toolChoice: request.toolChoice })
 })
-
-/**
- * Keeps the events a fixture can hold.
- *
- * `@smthrs/model`'s event union has `tool-result` and `retry` members that
- * `@smthrs/testing`'s `ModelEventLike` does not, so both are dropped from a
- * recording rather than failing the fixture decode that reads it back.
- */
-const toEventLike = (event: ModelEvent.ModelEvent): ModelEventLike | undefined =>
-  event.type === "tool-result" || event.type === "retry" ? undefined : (event as ModelEventLike)
 
 /**
  * Wraps a live model so every request and its events are appended to `sink`.
@@ -195,6 +189,12 @@ const toEventLike = (event: ModelEvent.ModelEvent): ModelEventLike | undefined =
  * The sink fires once per request, when its stream ends. A failed or
  * interrupted stream records the events seen so far, which is what makes a
  * half-recorded fixture visible instead of empty.
+ *
+ * Every event is recorded. `@smthrs/testing`'s `ModelEventLike` covers each
+ * member of `@smthrs/model`'s event union, `tool-result` and `retry` included,
+ * so nothing has to be dropped. Dropping either would replay a different stream
+ * than the provider produced, and the tool output a harness reported is what
+ * feeds the next request's tool message.
  *
  * @category constructors
  * @since 0.1.0
@@ -208,12 +208,7 @@ export const recordModel = (live: Model, sink: (call: RecordedCall) => void): Mo
           sink({ request: toRequestLike(request), model: request.modelId, events: [...events] })
         })
         return live.stream(request).pipe(
-          Stream.tap((event) =>
-            Effect.sync(() => {
-              const recordable = toEventLike(event)
-              if (recordable !== undefined) events.push(recordable)
-            })
-          ),
+          Stream.tap((event) => Effect.sync(() => events.push(event))),
           Stream.ensuring(flush)
         )
       })
@@ -222,10 +217,15 @@ export const recordModel = (live: Model, sink: (call: RecordedCall) => void): Mo
 /**
  * Adapts a replay `ModelLike` to the production `Model` seam.
  *
- * `@smthrs/testing`'s fixture-contract errors (`UnscriptedModelError`,
- * `ReplayHarnessMismatchError`) are not `ModelError`, so they are narrowed to
- * `invalid_provider_output`. None of the members of `ModelLikeError` declares a
+ * What arrives on the error channel is the provider failure a fixture recorded,
+ * as `ModelLikeError`. That type is structural rather than `ModelError`, so it
+ * is narrowed here to `invalid_provider_output`; no member of it declares a
  * `message` field, so the stable code is what identifies the failure.
+ *
+ * `UnscriptedModelError` and `ReplayHarnessMismatchError` do not come through
+ * here. `@smthrs/testing` dies on both, because a fixture that does not
+ * describe the run is a defect in the test rather than an outcome the code
+ * under test can handle.
  */
 const asModel = (replay: RecordedModel.Replay): Model =>
   makeModel({
@@ -237,7 +237,7 @@ const asModel = (replay: RecordedModel.Replay): Model =>
             message: `recorded model replay failed: ${error.code}`
           })
         ),
-        Stream.map((event) => event as ModelEvent.ModelEvent)
+        Stream.map((event): ModelEvent.ModelEvent => event)
       )
   })
 

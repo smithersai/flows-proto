@@ -90,17 +90,23 @@ describe("recordModel", () => {
     expect(calls[0]!.events).toHaveLength(2)
   })
 
-  it("drops the event kinds a fixture cannot hold", async () => {
+  it("keeps the retry and tool-result events the fixture schema holds", async () => {
     const calls: Array<RecordedCall> = []
-    const withRetry = Model.make({
-      stream: () =>
-        Stream.fromIterable([
-          ModelEvent.ModelEvent.Retry({ type: "retry", attempt: 1, code: "rate_limited", delayMillis: 10 }),
-          ...answer
-        ])
-    })
-    await drain(recordModel(withRetry, (call) => calls.push(call)), request("hi"))
-    expect(calls[0]!.events).toHaveLength(answer.length)
+    const extra = [
+      ModelEvent.ModelEvent.Retry({ type: "retry", attempt: 1, code: "rate_limited", delayMillis: 10 }),
+      ModelEvent.ModelEvent.ToolResult({ type: "tool-result", id: "t1", output: "1 ETH" })
+    ]
+    const withExtra = Model.make({ stream: () => Stream.fromIterable([...extra, ...answer]) })
+    await drain(recordModel(withExtra, (call) => calls.push(call)), request("hi"))
+
+    expect(calls[0]!.events).toHaveLength(extra.length + answer.length)
+    expect(calls[0]!.events.map((event) => event.type).slice(0, 2)).toEqual(["retry", "tool-result"])
+    // The fixture decoder is the reason to keep them: a recording it cannot
+    // read is the failure this whole file exists to catch.
+    const decoded = await Effect.runPromise(
+      Schema.decodeUnknownEffect(Fixture)(JSON.parse(JSON.stringify({ calls })))
+    )
+    expect(decoded.calls[0]!.events.map((event) => event.type).slice(0, 2)).toEqual(["retry", "tool-result"])
   })
 
   it("projects an assistant turn and a tool result onto the fixture shape", async () => {

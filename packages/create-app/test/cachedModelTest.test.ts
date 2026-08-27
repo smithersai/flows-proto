@@ -249,6 +249,42 @@ describe("refusals", () => {
     ).rejects.toThrow("flow \"absent\" is not routed. Known flows: echo")
   })
 
+  it("narrows a recorded provider failure onto the production model seam", async () => {
+    // The recorded failure is the one thing a replay puts on the error channel:
+    // an unscripted request and a harness mismatch are defects that
+    // `@smthrs/testing` dies on. Editing a recorded fixture is how the failure
+    // is produced without a provider, and the events are cleared so the stream
+    // fails at the first call rather than after a settled turn.
+    //
+    // The assertion is the rejection itself, not its text. `asModel` maps the
+    // recorded failure to a `ModelError`, and the engine then re-encodes that
+    // failure for the journal, so the message the caller sees is the engine's.
+    const recorded = JSON.parse(readFileSync(fixturePath, "utf8")) as {
+      calls: Array<{ events: ReadonlyArray<unknown>; failure?: unknown }>
+    }
+    const failingPath = join(dir, "failing.json")
+    writeFileSync(
+      failingPath,
+      JSON.stringify({
+        calls: recorded.calls.map((call) => ({
+          ...call,
+          events: [],
+          failure: { code: "rate_limited", message: "slow down" }
+        }))
+      })
+    )
+
+    await expect(
+      runCachedModelTest("recorded failure", {
+        fixture: pathToFileURL(failingPath),
+        flow: "echo",
+        payload: { topic: "durable workflows" },
+        routes: async () => routed,
+        expect: () => {}
+      })
+    ).rejects.toThrow()
+  })
+
   it("surfaces a replay of a request the fixture never recorded", async () => {
     await expect(
       runCachedModelTest("unscripted request", {
