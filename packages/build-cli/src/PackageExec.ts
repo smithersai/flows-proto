@@ -1681,11 +1681,6 @@ const visit = async (
       argv = resolved
       const declaredEnv = attrMember(attrs, "env")
       if (typeof declaredEnv === "object" && declaredEnv !== null) env = { ...(declaredEnv as Record<string, string>) }
-      const stdout = attrMember(attrs, "stdout")
-      if (typeof stdout === "string") {
-        stdoutPath = Input.resolvePath(packagePath, stdout)
-        writeSet.push(stdoutPath)
-      }
     } else if (typeof command === "string") {
       const payload = Shell.execPayload({
         command,
@@ -1757,12 +1752,14 @@ const visit = async (
           }
         }
         argv = resolved
-        const stdout = attrMember(attrs, "stdout")
-        if (typeof stdout === "string") {
-          stdoutPath = Input.resolvePath(packagePath, stdout)
-          writeSet.push(stdoutPath)
-        }
       }
+    }
+    // Every generator form that spawns a process can declare `stdout`; the
+    // emit form plans no process, so it has no stream to redirect.
+    const stdout = attrMember(attrs, "stdout")
+    if (argv !== undefined && typeof stdout === "string") {
+      stdoutPath = Input.resolvePath(packagePath, stdout)
+      writeSet.push(stdoutPath)
     }
   }
 

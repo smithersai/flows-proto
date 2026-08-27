@@ -494,6 +494,22 @@ export const Package = S.Package({ targets: { nodeGenerate, shellBuild, shellGen
     expect(planned.output).toMatch(/argv\[2\]: [^\n]*node,gen\.mjs/)
     expect(planned.output).not.toMatch(/node,sync\.sh/)
   })
+
+  it("redirects a declared Generate stdout for the command form, not only for script and bin", async () => {
+    const root = await temporaryWorkspace()
+    await write(root, "WORKSPACE.ts", workspaceModule())
+    await write(
+      root,
+      "PACKAGE.ts",
+      `import { Smithers as S } from "@smthrs/targets"
+export const Package = S.Package({ targets: { gen: S.Generate({ command: "printf ok", stdout: "out.txt" }) } })
+`
+    )
+    commitAll(root)
+    const written = await serve(root, ["//:gen", "--write"])
+    expect(written.exitCode).toBe(0)
+    expect(await Fs.readFile(NodePath.join(root, "out.txt"), "utf8")).toBe("ok")
+  })
 })
 
 describe("NodeModule.Bin resolution through the package bin map", () => {
