@@ -5,8 +5,8 @@
  * scripts alone; its `run` / `open` messages reach the controller's window
  * listener, which finds the card through the frame's own attribute.
  */
-import { Badge } from "@smthrs/ui"
-import { groupTargets } from "smithers-shared/TargetsPanel"
+import { Badge, Button } from "@smthrs/ui"
+import { groupTargetsByWorkspace } from "smithers-shared/TargetsPanel"
 import type { Card } from "../state/AppState"
 import { HTML_CARD_FRAME_ATTRIBUTE } from "../state/controller/targets"
 
@@ -26,12 +26,33 @@ export const RepoCardBody = ({ card }: { readonly card: Extract<Card, { kind: "r
       <p className="repo-card-detection" data-detected={repo.smithers.detected}>
         {repo.smithers.reason}
       </p>
+      {/* The plugin manifest problems the open reported; a clean open says nothing. */}
+      {repo.warnings.length > 0 ?
+        (
+          <ul className="targets-card-warnings" role="alert">
+            {repo.warnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}
+          </ul>
+        ) :
+        null}
     </div>
   )
 }
 
-export const TargetsCardBody = ({ card }: { readonly card: Extract<Card, { kind: "targets" }> }) => {
-  const { status, targets, warnings, highlighted } = card.payload
+export const TargetsCardBody = ({
+  card,
+  onRunCommand
+}: {
+  readonly card: Extract<Card, { kind: "targets" }>
+  readonly onRunCommand: (name: string, args?: string) => void
+}) => {
+  const { repoId, repoName, status, targets, warnings, highlighted } = card.payload
+  const workspaces = groupTargetsByWorkspace(targets)
+  /*
+   * The workspace heading only distinguishes something when the repository
+   * has more than one, and the root's own name is the repository — "." is a
+   * path token, not user-facing copy (apps/DESIGN.md §9).
+   */
+  const named = workspaces.length > 1
   return (
     <div className="targets-card">
       {status === "pending" ? <p className="smithers-card-note">Loading targets…</p> : null}
@@ -42,25 +63,45 @@ export const TargetsCardBody = ({ card }: { readonly card: Extract<Card, { kind:
           </ul>
         ) :
         null}
-      {groupTargets(targets).map((group) => (
-        <section key={group.package} className="targets-card-package" data-package={group.package}>
-          <h3 className="targets-card-package-name">{group.package}</h3>
-          <ul className="targets-card-list">
-            {group.targets.map((target) => (
-              <li
-                key={target.label}
-                className="targets-card-row"
-                data-target-row={target.label}
-                data-highlighted={highlighted === target.label}
-              >
-                <span className="targets-card-label">{target.label}</span>
-                <span className="targets-card-type">{target.target}</span>
-                <span className="targets-card-kinds">
-                  {target.kinds.map((kind) => <Badge key={kind} variant="outline">{kind}</Badge>)}
-                </span>
-              </li>
-            ))}
-          </ul>
+      {workspaces.map((workspace) => (
+        <section key={workspace.workspace} className="targets-card-workspace" data-workspace={workspace.workspace}>
+          {named ?
+            (
+              <h3 className="targets-card-workspace-name">
+                {workspace.workspace === "." ? repoName : workspace.workspace}
+              </h3>
+            ) :
+            null}
+          {workspace.packages.map((group) => (
+            <section key={group.package} className="targets-card-package" data-package={group.package}>
+              <h4 className="targets-card-package-name">{group.package}</h4>
+              <ul className="targets-card-list">
+                {group.targets.map((target) => (
+                  <li
+                    key={`${target.workspace}:${target.label}`}
+                    className="targets-card-row"
+                    data-target-row={target.label}
+                    data-highlighted={highlighted === target.label}
+                  >
+                    <span className="targets-card-label">{target.label}</span>
+                    <span className="targets-card-type">{target.target}</span>
+                    <span className="targets-card-kinds">
+                      {target.kinds.map((kind) => <Badge key={kind} variant="outline">{kind}</Badge>)}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-flow="target.run"
+                      data-testid={`targets-run-${target.label}`}
+                      onClick={() => onRunCommand("target.run", `${repoId} ${target.workspace} ${target.label}`)}
+                    >
+                      Run
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
         </section>
       ))}
     </div>

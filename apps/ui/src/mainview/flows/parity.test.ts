@@ -174,6 +174,13 @@ describe("launch-law parity: every affordance is a command", () => {
       /* The /theme picker: nine swatches, one shared handler through onRunCommand. */
       "../cards/ThemePickerCard.tsx": 1,
       /*
+       * The local-app target cards (docs/LOCAL-APP.md "Cards"): one shared
+       * Run handler per file through onRunCommand — the plugin card's per-entry
+       * Run and the targets card's per-row Run both ride target.run.
+       */
+      "../cards/RepoPluginCard.tsx": 1,
+      "../cards/TargetCards.tsx": 1,
+      /*
        * The local-app chrome (docs/LOCAL-APP.md "Tabs"): the strip's select
        * and close per tab, the `+` trigger, its backdrop, the Terminal row,
        * the available and unavailable harness rows, Open repository, Sign in.

@@ -22,7 +22,7 @@ export interface TargetsController {
   /** `POST /api/repo/open`, then the repo card and the auto-load flow. */
   readonly openRepo: (path: string) => Promise<string | void>
   /** `POST /api/targets/run`, then a target-run card fed from the run topic. */
-  readonly runTarget: (repoId: string, label: string) => Promise<string | void>
+  readonly runTarget: (repoId: string, workspace: string, label: string) => Promise<string | void>
   /** Highlight (and scroll to) the target's row in its targets card. */
   readonly openTarget: (repoId: string, label: string) => string | void
   /** The window `message` listener for the html cards' frames; returns the uninstaller. */
@@ -39,6 +39,7 @@ export interface TargetsControllerDependencies {
 export const repoCardId = (repoId: string): string => `repo-${repoId}`
 export const targetsCardId = (repoId: string): string => `targets-${repoId}`
 export const htmlCardId = (repoId: string): string => `html-${repoId}`
+export const repoPluginCardId = (repoId: string): string => `repo-plugin-${repoId}`
 export const targetRunCardId = (runId: string): string => `target-run-${runId}`
 
 /** The bridge frame's own attribute, the door from a `message` event back to its card. */
@@ -159,6 +160,23 @@ export const createTargetsController = (
   }
 
   const loadTargets = async (repo: Repo): Promise<void> => {
+    /*
+     * The repo plugin (docs/LOCAL-APP.md "Plugin manifest") leads when the
+     * manifest parsed: its card is upserted first, ahead of the targets
+     * card, and the generative panel turn is skipped — the panel (and its
+     * template fallback) exists only absent a manifest.
+     */
+    if (repo.plugin !== undefined) {
+      upsert({
+        id: repoPluginCardId(repo.id),
+        kind: "repo-plugin",
+        title: repo.plugin.title,
+        status: "acted",
+        createdAt: Date.now(),
+        ordinal: nextOrdinal(),
+        payload: { repoId: repo.id, manifest: repo.plugin }
+      })
+    }
     const id = targetsCardId(repo.id)
     upsert({
       id,
@@ -199,6 +217,7 @@ export const createTargetsController = (
     const { targets, warnings } = parsed.data
     patch(id, "targets", (card) => ({ payload: { ...card.payload, status: "done", targets, warnings }, status: "acted" }))
 
+    if (repo.plugin !== undefined) return
     const panel = await panelTurn(repo, targets)
     store.dispatch({ type: "message.appended", actor: "system", text: panel.message })
     upsert({
@@ -241,13 +260,13 @@ export const createTargetsController = (
     if (repo.smithers.detected) void loadTargets(repo)
   }
 
-  const runTarget: TargetsController["runTarget"] = async (repoId, label) => {
+  const runTarget: TargetsController["runTarget"] = async (repoId, workspace, label) => {
     let response: Response
     try {
       response = await ctx.boundedFetch(`${baseUrl}/api/targets/run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ repoId, label })
+        body: JSON.stringify({ repoId, workspace, label })
       })
     } catch (error) {
       return `Could not run ${label}: ${error instanceof Error ? error.message : String(error)}`

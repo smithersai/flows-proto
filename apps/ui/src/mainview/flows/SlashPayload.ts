@@ -60,12 +60,23 @@ const tokensOf = (args: string | undefined): Array<string> =>
     .split(/\s+/)
     .filter((token) => token !== "")
 
-/** A repository id followed by a target label (`//pkg:name`). */
+/**
+ * A repository id followed by an optional workspace and a target label
+ * (`//pkg:name`). A label never holds whitespace, so the LAST token is the
+ * label and everything between it and the repo id is the workspace path — a
+ * detected workspace whose directory name has a space still runs where it
+ * was declared. The plugin and targets cards dispatch `repoId workspace
+ * label`; the html panel's bridge sends only `repoId label` and runs at the
+ * root.
+ */
 const targetRef = (name: string, args: string | undefined): Parsed => {
   const [repoId, ...rest] = tokensOf(args)
-  const label = rest.join(" ")
-  if (repoId === undefined || repoId === "" || label === "") return no(`${name} needs a repository id and a target label`)
-  return ok({ repoId, label })
+  if (repoId === undefined || repoId === "" || rest.length === 0) {
+    return no(`${name} needs a repository id and a target label`)
+  }
+  const label = rest[rest.length - 1] ?? ""
+  if (rest.length === 1) return ok({ repoId, label })
+  return ok({ repoId, workspace: rest.slice(0, -1).join(" "), label })
 }
 
 /*

@@ -97,7 +97,7 @@ All bodies and responses are JSON unless noted. Errors:
 | GET | `/api/repos` | | `{ repos: Repo[] }` |
 | POST | `/api/repo/close` | `{ repoId }` | `{ ok }` |
 | POST | `/api/targets/query` | `{ repoId }` | `{ targets: Target[], warnings: string[], durationMs }` |
-| POST | `/api/targets/run` | `{ repoId, label }` | `{ runId }` then frames on WS topic `target-run:<runId>` |
+| POST | `/api/targets/run` | `{ repoId, label, workspace? }` (`workspace` defaults to `"."`, the root) | `{ runId }` then frames on WS topic `target-run:<runId>` |
 | POST | `/api/targets/cancel` | `{ runId }` | `{ ok }` |
 | POST | `/api/pty` | `{ kind: "terminal" \| "harness", cwd, cols, rows, harnessId? }` (`cwd: "~"` means `$HOME`; the server expands it) | `{ sessionId }` |
 | POST | `/api/pty/:id/resize` | `{ cols, rows }` | `{ ok }` |
@@ -123,11 +123,14 @@ type Repo = {
   path: string
   name: string                   // basename, or "owner/name" from the git remote
   git: { branch: string | null; remote: string | null } | null
+  warnings: string[]             // manifest problems at open; empty when clean
+  plugin?: RepoPlugin            // parsed .smithers/UI.json; absent when none or invalid
   smithers: {
-    detected: boolean
-    workspaceFile: string | null // ".smithers/WORKSPACE.ts" | "WORKSPACE.ts"
+    detected: boolean            // iff workspaces is nonempty
+    workspaceFile: string | null // the ROOT's ".smithers/WORKSPACE.ts" | "WORKSPACE.ts"
     declarationFiles: string[]   // relative paths of files that import smthrs
     reason: string               // human-readable detection verdict
+    workspaces: { path: string; title: string }[] // "." first; path relative root, title last segment
   }
 }
 
@@ -137,6 +140,7 @@ type Target = {
   kinds: string[]                // "build" | "test" | "lint" | "run" | "docs"
   package: string                // "//src"
   name: string                   // "lint"
+  workspace: string              // the detected workspace the loader ran in ("." for root)
 }
 
 type PtySession = { sessionId: string; kind: "terminal" | "harness"; harnessId?: string; cwd: string; pid: number; alive: boolean }
@@ -158,25 +162,72 @@ server -> client
 
 ## Repository detection
 
-A directory is a Smithers workspace when both hold:
+A directory is a Smithers workspace when it contains `WORKSPACE.ts` or
+`.smithers/WORKSPACE.ts`. `detectSmithers(root)` discovers the root and its
+child workspaces up to two levels deep, skipping `node_modules`, `.git`,
+`.flows`, `dist`, `build` and `target` (and `.smithers` itself, which is a
+manifest dir, never a workspace). `workspaces` lists them root-first:
+`path` relative to the root with `"."` for the root itself, `title` the
+last path segment (the repo name for the root). `detected` holds iff the
+list is nonempty.
 
-1. `WORKSPACE.ts` or `.smithers/WORKSPACE.ts` exists at the root.
-2. At least one of `WORKSPACE.ts`, `.smithers/WORKSPACE.ts`, `BUILD.ts`, or any
-   `PACKAGE.ts` (walk skipping `node_modules`, `.git`, `.flows`, `dist`,
-   `build`) contains `from "@smthrs/` or `from "smthrs` (single or double
-   quotes).
+`declarationFiles` stays informational: the root declaration files
+(`WORKSPACE.ts`, `.smithers/WORKSPACE.ts`, `BUILD.ts`) and every
+`PACKAGE.ts` below the root — its own walk, skipping `node_modules`,
+`.git`, `.flows`, `dist` and `build` — that contain `from "@smthrs/` or
+`from "smthrs` (single or double quotes). It no longer gates detection.
+`reason` explains a negative verdict ("no WORKSPACE.ts") or counts the
+workspaces found.
 
-`declarationFiles` lists every matching file. `reason` explains a negative
-verdict ("no WORKSPACE.ts", "WORKSPACE.ts does not import smthrs").
+## Plugin manifest
+
+A repository may declare its first-class plugin surface in
+`.smithers/UI.json` (read by `src/bun/RepoPlugin.ts`). The exact schema
+(`RepoPluginSchema` in `apps/shared/src/LocalApp.ts`, strict at every level
+— additional root, group or entry keys reject the file):
+
+```ts
+type RepoPlugin = {
+  schemaVersion: 1
+  name: string
+  title: string
+  summary: string
+  groups: { id: string; title: string; kind: "recipe" | "lint" | "workflow" | "check" }[]
+  entries: {
+    id: string
+    group: string              // must be one of groups[].id
+    workspace: string          // must be one of the detected workspaces
+    label: string              // "//pkg:name"
+    title: string
+    summary: string
+    approval: boolean          // optional in the file, defaults to false
+    agentic: boolean           // optional in the file, defaults to false
+  }[]
+}
+```
+
+An absent file is no plugin and no warning. Anything invalid — bad JSON,
+a strict-shape failure, an undeclared group reference, a non-`//pkg:name`
+label, or an entry naming an undetected workspace — becomes entries in
+`Repo.warnings[]` with `plugin` undefined, never a 500. `POST
+/api/repo/open` and `GET /api/repos` carry `Repo.plugin` when it parsed.
+The `repo` card states `Repo.warnings[]` verbatim in a `role="alert"` list,
+so a refused manifest says why instead of silently growing no plugin card.
 
 ## Targets: load and run
 
 - Loader = the existing CLI `packages/build-cli/src/main.js`, resolved from
   the flows checkout relative to `apps/ui` (`SMITHERS_BUILD_CLI` overrides).
-- Query: `node <cli> query '//...' --format json` with `cwd` = repo root. The
-  output `targets[]` maps 1:1 onto `Target` (split `label` into `package` and
-  `name`). Loader errors become `warnings[]` and an empty list, never a 500.
-- Run: `node <cli> '<label>'` with `cwd` = repo root, streamed to the WS topic.
+- Query: `node <cli> query '//...' --format json` once per detected
+  workspace, each with `cwd` = `join(repo, workspace.path)` and its own
+  120s budget. Every row maps 1:1 onto `Target` (split `label` into
+  `package` and `name`) tagged with its `workspace`. One workspace's loader
+  error becomes a prefixed `warnings[]` entry and never blocks the others.
+- Run: `node <cli> '<label>'` with `cwd` = `join(repo, workspace)`, streamed
+  to the WS topic. `workspace` defaults to `"."` and is validated against the
+  detected set; an undeclared one is a 400 `{ code: "invalid_workspace" }`
+  naming it. A repository with nothing detected has no targets, so every
+  workspace — `"."` included — is refused there.
 - Node sidecar: `findNode()` returns the first Node >= 22.19.0 among
   `SMITHERS_NODE`, `PATH`, `~/.nvm/versions/node/*/bin/node` (highest version),
   `/opt/homebrew/bin/node`, `/usr/local/bin/node`, `~/.volta/bin/node`,
@@ -185,15 +236,23 @@ verdict ("no WORKSPACE.ts", "WORKSPACE.ts does not import smthrs").
 
 ## Auto-load flow (after `/api/repo/open` with `smithers.detected = true`)
 
-1. The SPA dispatches a `targets` card (pending) and calls `/api/targets/query`.
-2. The card fills with the target list.
-3. The SPA calls `/api/chat/turn` with a system instruction that includes the
-   target JSON and the bridge contract below, and asks for a final answer of
-   exactly `{ "message": string, "html": string }` (no tools).
-4. The reply is parsed. If it is not valid JSON with a non-empty `html`, the
+1. When the repo carries a valid plugin manifest, the SPA upserts the
+   `repo-plugin` card FIRST — ahead of the targets card — and the panel
+   turn below is skipped entirely: the generative panel (and its template
+   fallback) exists only absent a manifest.
+2. The SPA dispatches a `targets` card (pending) and calls `/api/targets/query`.
+3. The card fills with the target list, grouped workspace then package; every
+   row's Run button dispatches `target.run` with `{ repoId, workspace, label }`.
+   The workspace heading appears only when the repository has more than one,
+   and the root's heading is the repository name — `"."` is a path token, not
+   user-facing copy.
+4. Absent a manifest, the SPA calls `/api/chat/turn` with a system instruction
+   that includes the target JSON and the bridge contract below, and asks for
+   a final answer of exactly `{ "message": string, "html": string }` (no tools).
+5. The reply is parsed. If it is not valid JSON with a non-empty `html`, the
    SPA renders the built-in `renderTargetsPanel(targets)` template instead
    and keeps the model's text (or a default sentence) as the message.
-5. The SPA appends the message bubble and an `html` card.
+6. The SPA appends the message bubble and an `html` card.
 
 HTML bridge (inside the iframe): `window.parent.postMessage({ smithers: "run", label }, "*")`
 and `{ smithers: "open", label }`. The card listens, dispatches
@@ -222,7 +281,18 @@ v1"); will asked for agent-authored HTML on 2026-08-26.
 { kind: "html",       title, html, source: "agent" | "template", repoId }
 { kind: "target-run", runId, repoId, label, status: "running" | "done" | "failed", exitCode: number | null, output: string }
 { kind: "repo",       repo: Repo }
+{ kind: "repo-plugin", repoId, manifest: RepoPlugin }
 ```
+
+The `repo-plugin` card renders the manifest's title, summary, group
+sections and entries with workspace / approval / agentic / kind badges
+(`@smthrs/ui` `StatusPill`; `EmptyState` for a group without entries); each
+entry's Run dispatches the existing `target.run` flow with
+`{ repoId, workspace, label }`, and the run lands as a `target-run` card
+like any other. `target.run` takes `<repoId> [workspace] <label>`. A label
+never holds whitespace, so the LAST token is the label and everything
+between it and the repo id is the workspace path; the html panel's bridge
+keeps sending only `<repoId> <label>` and runs at the root.
 
 Every card keeps the existing maximize affordance. Maximized cards gain
 "Open in tab" (user-triggered, EMBED LAW compliant), which creates a `card`
@@ -404,7 +474,9 @@ SIGKILL after 2s, and drops the record; `stop()` kills every session.
   still asserts the main process without a window.
 - Specs by milestone: M0 `boot.spec.ts`, `chat.spec.ts`; M1
   `repo-targets.spec.ts`; M2 `tabs.spec.ts`, `terminal.spec.ts`,
-  `harness.spec.ts`.
+  `harness.spec.ts`; the repo plugin `repo-plugin.spec.ts` (fixture
+  `e2e/fixtures/repo-plugin`, secondary `/Users/williamcory/aomi` when
+  present).
 
 ## Branches and worktrees
 

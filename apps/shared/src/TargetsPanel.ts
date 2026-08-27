@@ -40,7 +40,8 @@ export const buildTargetsInstructions = (input: TargetsPromptInput): string =>
         target: target.target,
         kinds: target.kinds,
         package: target.package,
-        name: target.name
+        name: target.name,
+        workspace: target.workspace
       }))
     ),
     "",
@@ -83,7 +84,8 @@ export const parseTargetsInstructions = (instructions: string): ParsedTargetsIns
           target: typeof target.target === "string" ? target.target : "",
           kinds: Array.isArray(target.kinds) ? target.kinds.filter((kind): kind is string => typeof kind === "string") : [],
           package: typeof target.package === "string" ? target.package : "",
-          name: target.name
+          name: target.name,
+          workspace: typeof target.workspace === "string" ? target.workspace : "."
         }))
       }
     } catch {
@@ -143,6 +145,22 @@ export const groupTargets = (
     groups.set(target.package, group)
   }
   return [...groups.entries()].map(([pkg, rows]) => ({ package: pkg, targets: rows }))
+}
+
+/** Targets grouped by workspace, then by package inside each workspace (LOCAL-APP.md "Cards"). */
+export const groupTargetsByWorkspace = (
+  targets: ReadonlyArray<Target>
+): ReadonlyArray<{
+  readonly workspace: string
+  readonly packages: ReadonlyArray<{ readonly package: string; readonly targets: ReadonlyArray<Target> }>
+}> => {
+  const groups = new Map<string, Array<Target>>()
+  for (const target of targets) {
+    const group = groups.get(target.workspace) ?? []
+    group.push(target)
+    groups.set(target.workspace, group)
+  }
+  return [...groups.entries()].map(([workspace, rows]) => ({ workspace, packages: groupTargets(rows) }))
 }
 
 const TEMPLATE_STYLE = [
