@@ -218,14 +218,24 @@ export const execPayload = (attrs: ExecAttrs): Exec.CallPayload => {
   } else if (attrs.bin !== undefined) {
     const runtimeArgs = attrs.runtimeArgs ?? []
     // A build target as the tool edge is never a JavaScript runtime, so it
-    // never takes runtime flags; it is the program itself.
-    const token = Target.isTarget(attrs.bin) ? targetBinToken : toolToken(attrs.bin)
-    if (!Target.isTarget(attrs.bin) && attrs.bin._tag === "RuntimeBin") {
-      argv = [token, ...runtimeArgs, ...args]
-    } else if (!Target.isTarget(attrs.bin) && runtimeArgs.length > 0) {
-      argv = [toolToken(Reference.runtimeBin), ...runtimeArgs, token, ...args]
+    // never takes runtime flags; it is the program itself. Running it under
+    // the workspace runtime would spawn the wrong program and dropping the
+    // flags would spawn the right one with a different argv, so the
+    // declaration is rejected instead.
+    if (Target.isTarget(attrs.bin)) {
+      if (runtimeArgs.length > 0) {
+        throw new Error(
+          "a shell declaration whose bin is a build target cannot take runtimeArgs; " +
+            "they are flags for a JavaScript runtime the built binary is not"
+        )
+      }
+      argv = [targetBinToken, ...args]
+    } else if (attrs.bin._tag === "RuntimeBin") {
+      argv = [toolToken(attrs.bin), ...runtimeArgs, ...args]
+    } else if (runtimeArgs.length > 0) {
+      argv = [toolToken(Reference.runtimeBin), ...runtimeArgs, toolToken(attrs.bin), ...args]
     } else {
-      argv = [token, ...args]
+      argv = [toolToken(attrs.bin), ...args]
     }
   } else {
     throw new Error("shell declaration names no executable")

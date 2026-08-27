@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest"
 import * as Cargo from "../src/Cargo.ts"
 import * as Compose from "../src/Compose.ts"
 import * as Input from "../src/Input.ts"
+import * as Shell from "../src/Shell.ts"
 import * as Target from "../src/Target.ts"
 
 const workspaceSelection = { _tag: "Workspace" } as const
@@ -60,6 +61,43 @@ describe("Cargo.Fetch", () => {
 
   it("participates in the build verb, because its product is its deliverables", () => {
     expect(Target.metadata(fetch as never).kinds).toEqual(["build"])
+  })
+
+  it("renders the bare form for a fetch that names neither a manifest nor a set", () => {
+    // `cargo fetch` with no `--manifest-path` resolves the manifest in the
+    // directory it runs from, which is the workspace root every target spawns
+    // from. The declaration is legal and the rendering says so.
+    const bare = Cargo.Fetch({ outDirs: ["//.cargo-home"], sandbox: { network: true } })
+    expect(Cargo.selectionOf(attrsOf(bare))).toBeUndefined()
+    expect(Cargo.packageArgs("Cargo.Fetch", attrsOf(bare), { _tag: "Workspace" })).toEqual(["fetch"])
+  })
+
+  it("refuses a fetch that names both a manifest and a crate set", () => {
+    // Both are selectors and they say different things about what is locked;
+    // silently preferring one would lock a domain the declaration did not name.
+    expect(() =>
+      Cargo.Fetch({
+        workspace: Input.file("//Cargo.toml"),
+        crates: Cargo.AppSet({ manifests: Input.glob(["*/Cargo.toml"]) }),
+        outDirs: ["//.cargo-home"]
+      })
+    ).toThrow(/at most one of workspace, crates/)
+  })
+})
+
+describe("a build target as a tool edge", () => {
+  const buildCli = Cargo.Build({ package: "aomi-sdk", bins: ["aomi-build"], data: [] })
+
+  it("spawns the built binary itself, with the declaration's own arguments", () => {
+    const payload = Shell.execPayload({ bin: buildCli, args: ["compile"] })
+    expect(payload.argv).toEqual([Shell.targetBinToken, "compile"])
+  })
+
+  it("refuses runtime flags, which belong to a JavaScript runtime it is not", () => {
+    // Dropping them silently would run a different command than the one the
+    // declaration spells, so the declaration is rejected instead.
+    expect(() => Shell.execPayload({ bin: buildCli, args: ["compile"], runtimeArgs: ["--enable-source-maps"] }))
+      .toThrow(/runtimeArgs/)
   })
 })
 
