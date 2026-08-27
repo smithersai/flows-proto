@@ -1255,11 +1255,16 @@ const visit = async (
     // dependent, and a fetch that produced the same lockfile does not. The
     // vendored registry is deliberately not digested — it is the opaque half of
     // the resource, and the lockfile is what fixes what it contains.
+    // The cargo home is the other half of what a dependent consumes: an
+    // `--offline` run reads the registry the fetch delivered, so a fetch that
+    // delivers to a different directory must re-key every dependent. Without
+    // it a fetch that declares no `outFiles` would contribute a constant.
     if (depRule === "Cargo.Fetch" && rule !== "Clean" && planned.refusal === undefined) {
       const delivered = await Input.digestFiles(context.root, [...fetchOutFiles(context, dependency)], {
         signal: context.signal
       })
-      depKey = `cargo-fetch:${Input.digestText(JSON.stringify(delivered))}`
+      const home = fetchCargoHome(context, dependency) ?? null
+      depKey = `cargo-fetch:${Input.digestText(JSON.stringify({ home, delivered }))}`
     }
     if (rule === "Bundler.Rspack.build" && depRule === "Bundler.Rspack.resolve" && planned.refusal === undefined) {
       depKey = graphKeySentinel
@@ -1548,6 +1553,12 @@ const visit = async (
           ? { _tag: "Manifest", path: Input.resolvePath(packagePath, declared.path) }
           : declared
       ]
+    } else if (rule === "Cargo.Fetch" && attrMember(attrs, "crates") === undefined) {
+      // A fetch that names neither a manifest nor a crate set locks the
+      // workspace it runs from: `cargo fetch` with no `--manifest-path`
+      // resolves the manifest in its working directory, which is the
+      // workspace root every target spawns from.
+      selections = [{ _tag: "Workspace" }]
     } else {
       const crates = await crateSetOf(context, attrMember(attrs, "crates"))
       if (typeof crates === "string") noteRefusal(`${rule}: ${crates}`)
