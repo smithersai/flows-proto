@@ -92,6 +92,20 @@ test("a Run button inside the panel streams a target run to completion", async (
   await expect(run.locator("[data-run-status]")).toHaveAttribute("data-run-status", "done")
   await expect(run).toContainText("exit 0")
 
+  // The maximized html card offers Open in tab (L2's card tabs); the tab renders the same card with its frame.
+  const panelId = (await htmlCard(page).getAttribute("data-testid"))?.replace(/^card-/, "") ?? ""
+  expect(panelId).toMatch(/^html-/)
+  await htmlCard(page).getByTestId(`card-maximize-${panelId}`).click()
+  await expect(htmlCard(page)).toHaveAttribute("data-maximized", "true")
+  await page.getByTestId(`card-open-in-tab-${panelId}`).click()
+  const tab = page.getByTestId(`tab-card-${panelId}`)
+  await expect(tab).toHaveAttribute("data-active", "true")
+  const tabBody = page.getByTestId(`tab-body-card-${panelId}`)
+  await expect(tabBody).toBeVisible()
+  await expect(tabBody.getByTestId(`html-card-frame-${panelId}`)).toBeVisible()
+  await expect(tabBody.frameLocator("iframe").getByTestId("stub-panel")).toBeVisible()
+  await page.getByTestId("tab-main").click()
+
   const listed = await request.get("/api/repos")
   expect(listed.status()).toBe(200)
   const { repos } = (await listed.json()) as { repos: Array<{ path: string; smithers: { detected: boolean } }> }
