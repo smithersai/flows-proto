@@ -52,7 +52,7 @@ export interface RemoteCache {
   readonly [TypeId]: typeof TypeId
   readonly endpoint: string
   /**
-   * The declared secret holding the bearer token.
+   * The declared secret holding the bearer token reads authenticate with.
    *
    * A {@link Secret.Secret} rather than a bare variable name, so the remote
    * cache uses the same declaration every other secret-taking target uses. The
@@ -60,10 +60,20 @@ export interface RemoteCache {
    * nothing here ever holds it.
    */
   readonly token: Secret.Secret
+  /**
+   * The declared secret holding the bearer token writes authenticate with,
+   * when the declaration splits read and write credentials. Undefined means
+   * one token serves both directions.
+   */
+  readonly write: Secret.Secret | undefined
 }
 
 /**
  * Options accepted by {@link make}.
+ *
+ * Two forms: the single-token form (`token`, defaulting to
+ * `Secret("SMITHERS_CACHE_TOKEN")`) and the split form (`read` plus an
+ * optional `write`). `token` and `read` name the same slot and are exclusive.
  *
  * @category models
  * @since 0.1.0
@@ -72,6 +82,10 @@ export interface Options {
   readonly endpoint: string
   /** @default Secret("SMITHERS_CACHE_TOKEN") */
   readonly token?: Secret.Secret | undefined
+  /** The read token; an alias of `token` for the split read/write form. */
+  readonly read?: Secret.Secret | undefined
+  /** The write token of the split form. */
+  readonly write?: Secret.Secret | undefined
 }
 
 const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -150,11 +164,11 @@ export const make = (options: Options): RemoteCache => {
   }
   const names = Object.getOwnPropertyNames(options)
   for (const name of names) {
-    if (name !== "endpoint" && name !== "token") {
+    if (name !== "endpoint" && name !== "token" && name !== "read" && name !== "write") {
       throw new TypeError(`RemoteCache received unknown option ${JSON.stringify(name)}`)
     }
   }
-  const read = (name: "endpoint" | "token"): unknown => {
+  const own = (name: "endpoint" | "token" | "read" | "write"): unknown => {
     const descriptor = Object.getOwnPropertyDescriptor(options, name)
     if (descriptor === undefined) return undefined
     if (!("value" in descriptor) || descriptor.enumerable !== true) {
@@ -162,19 +176,27 @@ export const make = (options: Options): RemoteCache => {
     }
     return descriptor.value
   }
-  const endpoint = read("endpoint")
-  const token = read("token")
+  const endpoint = own("endpoint")
+  const token = own("token")
+  const read = own("read")
+  const write = own("write")
   if (typeof endpoint !== "string") throw new TypeError("RemoteCache option endpoint must be a string")
-  if (token !== undefined && !Secret.isSecret(token)) {
-    throw new TypeError("RemoteCache option token must be a Secret declaration")
+  if (token !== undefined && read !== undefined) {
+    throw new TypeError("RemoteCache options token and read name the same slot; declare one, not both")
   }
-  const declared = token ?? Secret.Secret(defaultTokenEnv)
+  for (const [name, value] of [["token", token], ["read", read], ["write", write]] as const) {
+    if (value !== undefined && !Secret.isSecret(value)) {
+      throw new TypeError(`RemoteCache option ${name} must be a Secret declaration`)
+    }
+  }
+  const declared = (token ?? read ?? Secret.Secret(defaultTokenEnv)) as Secret.Secret
   return Object.freeze<RemoteCache>({
     [TypeId]: TypeId,
     endpoint: normalizeEndpoint(endpoint),
     // The endpoint override variable is reserved: a token read from it would
     // make one variable mean two things.
-    token: Secret.Secret(normalizeTokenEnv(declared.env))
+    token: Secret.Secret(normalizeTokenEnv(declared.env)),
+    write: write === undefined ? undefined : Secret.Secret(normalizeTokenEnv((write as Secret.Secret).env))
   })
 }
 
@@ -192,5 +214,6 @@ export const isRemoteCache = (value: unknown): value is RemoteCache => {
   }
   return own(TypeId) === TypeId &&
     typeof own("endpoint") === "string" &&
-    Secret.isSecret(own("token"))
+    Secret.isSecret(own("token")) &&
+    (own("write") === undefined || Secret.isSecret(own("write")))
 }
