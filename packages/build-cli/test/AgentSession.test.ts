@@ -201,6 +201,26 @@ describe("Agent.Lint", () => {
     expect(afterIdentity.message).toContain("exhausted")
   })
 
+  it("treats info findings as advisory: green with them in the report, red on warning or error", async () => {
+    await write("src/a.ts", "export const a = 2\n// TODO later\n")
+    const info: AgentTarget.Finding = { ...finding, severity: "info", message: "in-memory tally; lost on restart" }
+    const advisory = scripted([{ purpose: "lint", findings: [info] }])
+    const report = await Effect.runPromise(runAgentLint(advisory))
+    expect(report.findings).toEqual([info])
+    expect(report.vacuous).toBe(false)
+
+    const mixed = scripted([{ purpose: "lint", findings: [info, { ...finding, severity: "warning" }] }])
+    const error = await Effect.runPromise(Effect.flip(runAgentLint(mixed)))
+    expect(error._tag).toBe("smithers-build/AgentFindingsError")
+    expect(error.message).toBe("the agent reported 1 finding(s)")
+    if (error._tag === "smithers-build/AgentFindingsError") expect(error.findings).toHaveLength(2)
+
+    const fixedWithInfo = scripted([{ purpose: "fix", findings: [info], edits: [] }])
+    const fixReport = await Effect.runPromise(runAgentLint(fixedWithInfo, {}, lintPayload({ mode: "fix" })))
+    expect(fixReport.findings).toEqual([info])
+    expect(fixReport.fixed).toEqual([])
+  })
+
   it("applies fix-mode edits confined to the fixes write-set", async () => {
     await write("src/a.ts", "export const a = 2\n// TODO later\n")
     const factory = scripted([
@@ -210,6 +230,25 @@ describe("Agent.Lint", () => {
     expect(report.fixed).toEqual(["src/a.ts"])
     expect(await read("src/a.ts")).toBe("export const a = 2\n")
     expect(factory.spawns()).toBe(1)
+  })
+
+  it("says whether a fix-mode answer wrote anything when findings remain", async () => {
+    await write("src/a.ts", "export const a = 2\n// TODO later\n")
+    const silent = scripted([{ purpose: "fix", findings: [finding], edits: [] }])
+    const nothing = await Effect.runPromise(
+      Effect.flip(runAgentLint(silent, {}, lintPayload({ mode: "fix" })))
+    )
+    expect(nothing.message).toBe("the agent proposed no edits and reported 1 finding(s)")
+    expect(await read("src/a.ts")).toBe("export const a = 2\n// TODO later\n")
+
+    const partial = scripted([
+      { purpose: "fix", findings: [finding], edits: [{ path: "src/a.ts", contents: "export const a = 2\n" }] }
+    ])
+    const remaining = await Effect.runPromise(
+      Effect.flip(runAgentLint(partial, {}, lintPayload({ mode: "fix" })))
+    )
+    expect(remaining.message).toBe("the agent wrote src/a.ts and still reports 1 finding(s)")
+    expect(await read("src/a.ts")).toBe("export const a = 2\n")
   })
 
   it("rejects a fix-mode edit outside the write-set without touching the tree", async () => {
