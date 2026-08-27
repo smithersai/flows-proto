@@ -497,3 +497,42 @@ Lane L4 (`local-app/harness-terminal`, 2026-08-26):
   `osascript` lacks Accessibility access), so the ResizeObserver refit is
   proven by the mount-time fit only; the adapter posts every changed
   geometry from the same path.
+
+Wave 2 (2026-08-26), on `local-app/base`:
+
+- `3e6af1806` merge of `local-app/repo-targets` (clean).
+- `2265ab8f2` merge of `local-app/harness-terminal`. Conflicts: `server.ts`
+  (both lanes' `LocalServerOptions` kept — `buildCli` next to `home`,
+  `harnesses`, `pty`; every lane placeholder dropped because both lanes
+  register real routes), `server.test.ts` (the placeholder test became an
+  empty-state check for `GET /api/repos`), `AppStore.ts` (both lanes fixed
+  the `harnesses.loaded`/`repos.loaded` reducers the same way for TanStack
+  DB's delete-insert refusal; L3's update-in-place implementation kept, both
+  lanes' tests green). `LOCAL-APP.md` lane notes unioned by the auto-merge.
+  `pnpm-lock.yaml` untouched by either lane.
+- `8ce440d9e` fallout: the unused `notImplemented` import dropped from
+  `server.ts`.
+- `14bcbc36d` probe ruling (see "Sandbox"): the `git -C` branch/remote probe
+  (`Repos.ts`) and the `<bin> --version` probes (`Harnesses.ts`) run under
+  the new `probePolicy` (network deny, writes confined to scratch); `amp`
+  is the one documented exception and stays unwrapped.
+
+Acceptance on `14bcbc36d`:
+
+| Command | Result |
+| --- | --- |
+| `pnpm install --frozen-lockfile && git status --short` | `Already up to date`, clean tree |
+| `pnpm --filter smithers-ui typecheck`, `pnpm --filter smithers-shared typecheck` | exit 0 |
+| `bun test src` (apps/ui) | 865 pass, 0 fail, 98 files |
+| `bun test src` (apps/shared) | 44 pass, 0 fail, 4 files |
+| `pnpm --filter smithers-ui test:e2e` | 17 passed, 1 skipped (`chat.real.spec.ts`, stub on): boot, chat, tabs, repo-targets, terminal, harness |
+| `pnpm --filter smithers-ui test:e2e:native` | 1 passed |
+| `smthrs query '//...' --format json` on `/Users/williamcory/artsy/force` | `targets: 82` |
+
+Cross-lane smoke (headless server on `47396`, chat stub on): `/api/health`
+reports `home`, `node` and `sandbox.enforced: true`; `/api/harnesses` lists
+`claude` 2.1.247 signed-in with its account email; `POST /api/repo/open` on
+`artsy/force` answers `detected: true` with the origin remote (branch null:
+the checkout sits on a detached HEAD); `POST /api/targets/query` answers 82
+targets with no warnings; `POST /api/pty` (`terminal`, `cwd: "~"`) opens a
+session listed `alive: true` at `$HOME` and `DELETE` empties the list.
