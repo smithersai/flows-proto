@@ -33,14 +33,13 @@ export const stampFlows = (hints: ReadonlyArray<FlowBindingHint>) => (root: HTML
   }
 }
 
-/** One selector and the `data-testid` the elements it matches carry (LOCAL-APP.md contract). */
+/** One selector and the `data-testid` the elements it matches carry. */
 export type TestIdHint = readonly [selector: string, testId: string]
 
 /**
- * Stamps `data-testid` on every match under `root`, for the Playwright
- * contract on affordances `@smthrs/ui` renders without pass-through
- * attributes (the composer's Send button). Same ref-callback shape and the
- * same idempotence as `stampFlows`.
+ * Stamps `data-testid` on every match under `root` — the same mount-point
+ * discipline as `stampFlows`, for the ids the Playwright contract names on
+ * affordances `@smthrs/ui` renders (docs/LOCAL-APP.md `data-testid` contract).
  */
 export const stampTestIds = (hints: ReadonlyArray<TestIdHint>) => (root: HTMLElement | null): void => {
   if (root === null) return
@@ -49,9 +48,4 @@ export const stampTestIds = (hints: ReadonlyArray<TestIdHint>) => (root: HTMLEle
       if (element.getAttribute("data-testid") === null) element.setAttribute("data-testid", testId)
     }
   }
-}
-
-/** Runs several ref callbacks against one element. */
-export const composeRefs = (...refs: ReadonlyArray<(root: HTMLElement | null) => void>) => (root: HTMLElement | null): void => {
-  for (const ref of refs) ref(root)
 }

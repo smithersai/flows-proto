@@ -36,16 +36,16 @@ import { CardView } from "./ChatCards"
 import { ConnectorsSurface } from "./ConnectorsSurface"
 import { useController } from "./ControllerContext"
 import { DevtoolsPanel } from "./DevtoolsPanel"
-import { composeRefs, stampFlows, stampTestIds } from "./FlowStamp"
-
-/** The Playwright contract's handle on the composer textarea (LOCAL-APP.md); spread past the prop type's excess check. */
-const COMPOSER_INPUT_TEST_ID: Record<string, string> = { "data-testid": "composer-input" }
+import { stampFlows, stampTestIds } from "./FlowStamp"
 import { tabOutOf } from "./FocusRing"
 import { RichMarkdown } from "./RichMarkdown"
 import type { Card, Message, Suggestion as SuggestionBinding } from "./state/AppState"
 import { WORLD_DISPLAY_NAME } from "./state/AppState"
 import { scrubToolEcho } from "./state/MessageScrub"
+import { MAIN_TAB_ID } from "./state/AppState"
 import { ConfirmDialog, SurfaceHeader } from "./SurfaceChrome"
+import { ChromeBar } from "./tabs/ChromeBar"
+import { TabBodies } from "./tabs/TabBodies"
 import { timeLabel } from "./Timestamps"
 import { ToastStack } from "./ToastStack"
 
@@ -626,13 +626,16 @@ function Composer({
       }
       <div
         className="composer-flow-stamp"
-        ref={composeRefs(
+        ref={(node) => {
           stampFlows([
             [".sui-chat-composer-send", "send"],
             [".sui-chat-composer-stop", "chat.stop"]
-          ]),
-          stampTestIds([[".sui-chat-composer-send", "composer-send"]])
-        )}
+          ])(node)
+          stampTestIds([
+            [".sui-chat-composer-input", "composer-input"],
+            [".sui-chat-composer-send", "composer-send"]
+          ])(node)
+        }}
       >
         <ChatComposer
           className="smithers-composer"
@@ -644,7 +647,7 @@ function Composer({
           onStop={() => controller.runCommand("chat.stop")}
           placeholder={placeholder}
           lifecycleStatus={typing ? "submitted" : "ready"}
-          textareaProps={{ autoFocus, onKeyDown: onComposerKeyDown, ...COMPOSER_INPUT_TEST_ID }}
+          textareaProps={{ autoFocus, onKeyDown: onComposerKeyDown }}
           actions={
             <div className="composer-actions">
               <ComposerConnect
@@ -697,7 +700,9 @@ function App() {
       devtoolsOpen: session.devtoolsOpen,
       surfacesMenuOpen: session.surfacesMenuOpen,
       connectMenuOpen: session.connectMenuOpen,
-      pendingWorldDeleteId: session.pendingWorldDeleteId
+      pendingWorldDeleteId: session.pendingWorldDeleteId,
+      activeTabId: session.activeTabId,
+      tabMenuOpen: session.tabMenuOpen
     }))
   )
   const { data: worldDocumentRows } = useLiveQuery(collections.worldDocuments)
@@ -729,6 +734,7 @@ function App() {
     worldDocuments[0]
   const typing = session.phase === "responding"
   const dark = session.theme === "dark"
+  const activeTabId = session.activeTabId ?? MAIN_TAB_ID
   const streamingMessageId = typing ? messages[messages.length - 1]?.id : undefined
   const identity = identityRows[0]
   const billing = billingRows[0]
@@ -743,7 +749,20 @@ function App() {
    * and dead sign-in flows — so the state names itself up front, once,
    * derived like the rest (never stored, gone the moment a seam answers).
    */
-  const authMessage: Message | undefined = identity?.state === "signed-in" && !identity.allowlisted
+  const authMessage: Message | undefined = identity?.state === "signed-out"
+    ? {
+      id: "auth-state",
+      role: "smithers",
+      text: `Smithers is a design-partner preview — sign in with GitHub to continue.\n\n${
+        identity.scopesPlain ??
+          "The identity service isn't configured on this deployment, so sign-in may not work yet."
+      }`,
+      status: "complete",
+      action: { flow: "auth.sign-in", label: "Sign in with GitHub" },
+      createdAt: 0,
+      ordinal: 0
+    }
+    : identity?.state === "signed-in" && !identity.allowlisted
     ? {
       id: "auth-state",
       role: "smithers",
@@ -791,7 +810,9 @@ function App() {
   const watched = watchedRows[0]
   const needsSelection = identity?.state === "signed-in" && identity.allowlisted &&
     (watched === undefined || watched.selected === null)
-  const suggestions: ReadonlyArray<SuggestionBinding> = needsSelection
+  const suggestions: ReadonlyArray<SuggestionBinding> = identity?.state === "signed-out"
+    ? [{ id: "sign-in", label: "Sign in with GitHub", flow: "auth.sign-in", emphasis: "primary" }]
+    : needsSelection
     ? [{ id: "choose-repos", label: "Choose repos to watch", flow: "repos.watch", emphasis: "primary" }]
     : []
   // A Vite dev build unlocks the admin chrome (devtools, reset) with no
@@ -830,6 +851,12 @@ function App() {
           controller.runCommand("card.minimize")
           return
         }
+        // The `+` menu is one more session menu the shell closes on Escape.
+        if (event.key === "Escape" && session.tabMenuOpen === true) {
+          event.preventDefault()
+          controller.runCommand("tab.menu")
+          return
+        }
         // §21.4 — an open menu closes before anything else the shell owns.
         if (event.key === "Escape" && session.surfacesMenuOpen) {
           event.preventDefault()
@@ -858,6 +885,16 @@ function App() {
       <SmithersUiStyles />
       <MarkdownEditorStyles />
 
+      {/* The chrome bar: the tab strip upper-left, the repo chip and chrome actions right. */}
+      <ChromeBar />
+
+      {
+        /*
+         * The main tab's body IS the chat. Every tab body stays mounted; an
+         * inactive one is hidden, never unmounted (docs/LOCAL-APP.md "Tabs").
+         */
+      }
+      <div className="tab-body" data-kind="main" data-testid="tab-body-main" hidden={activeTabId !== MAIN_TAB_ID}>
       <div className="chat-frame" data-pane={session.surface === "chat" ? undefined : session.surface}>
         <div className="chat-column">
           {
@@ -925,6 +962,7 @@ function App() {
                     maximized={session.maximizedCardId === entry.card.id}
                     onMaximize={(id) => controller.runCommandArgs("card.maximize", id)}
                     onMinimize={() => controller.runCommand("card.minimize")}
+                    onOpenInTab={(id) => controller.runCommandArgs("tab.card", id)}
                     onConnectGitHub={() => controller.runCommand("auth.sign-in")}
                     onConnectLocal={() => controller.runCommandArgs("connector.add", "read")}
                     onRunWorkflow={(name) => controller.runCommandArgs("flow.run", name)}
@@ -1060,7 +1098,11 @@ function App() {
               surfacesTriggerRef={surfacesTriggerRef}
               connectTriggerRef={connectTriggerRef}
               autoFocus={authMessage === undefined}
-              placeholder="Ask Smithers to work on something…"
+              placeholder={identity?.state === "signed-out"
+                ? "Sign in with GitHub first — it's the one step needed…"
+                : identity?.state === "signed-in" && !identity.allowlisted
+                ? "Request access to open the chat…"
+                : "Ask Smithers to work on something…"}
             />
           </div>
 
@@ -1081,30 +1123,6 @@ function App() {
              */
           }
           <div className="corner-chrome">
-            {
-              /*
-               * Sign-in is an option, never a gate (LOCAL-APP.md): the local
-               * app chats anonymously, and this button is the door to the
-               * existing device-flow handoff for whoever wants the signed-in
-               * features.
-               */
-            }
-            {identity?.state !== "signed-in" ?
-              (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="corner-sign-in-btn"
-                  data-flow="auth.sign-in"
-                  data-testid="chrome-sign-in"
-                  aria-label="Sign in with GitHub"
-                  title="Sign in with GitHub"
-                  onClick={() => controller.runCommand("auth.sign-in")}
-                >
-                  Sign in
-                </Button>
-              ) :
-              null}
             {billing !== undefined && billing.state !== "unknown" ?
               (
                 <Button
@@ -1270,6 +1288,10 @@ function App() {
         {/* Admin-only: the panel is absent — not hidden — for everyone else. */}
         {isAdmin && session.devtoolsOpen ? <DevtoolsPanel /> : null}
       </div>
+      </div>
+
+      {/* Terminal, harness, and card tabs; hidden while inactive, never unmounted. */}
+      <TabBodies />
 
       {
         /*
