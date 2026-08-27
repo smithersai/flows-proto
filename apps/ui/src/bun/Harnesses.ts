@@ -10,11 +10,12 @@
  * Version probes run in parallel under one timeout so the route never waits
  * on a slow CLI.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs"
-import { homedir } from "node:os"
-import { delimiter, join, resolve } from "node:path"
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import { basename, delimiter, join, resolve } from "node:path"
 import { HARNESS_IDS } from "smithers-shared/LocalApp"
 import type { Harness } from "smithers-shared/LocalApp"
+import { currentSandboxHost, probePolicy, wrapSandbox } from "./Sandbox"
 
 export type HarnessId = (typeof HARNESS_IDS)[number]
 
@@ -347,12 +348,33 @@ export const detectHarnessesWith = async (host: HarnessHost): Promise<Array<Harn
 /** Versions change with a reinstall, not between two menu opens: one probe per binary path per process. */
 const versionCache = new Map<string, Promise<string | null>>()
 
+/**
+ * Binaries whose `--version` fails under the probe seatbelt profile and runs
+ * unwrapped instead (LOCAL-APP.md, "Sandbox", documented exceptions).
+ * amp: writes under `~/.cache` (beyond `~/.cache/amp`) on every invocation
+ * and aborts when `(deny file-write*)` blocks it.
+ */
+const PROBE_SANDBOX_EXCEPTIONS: ReadonlySet<string> = new Set(["amp"])
+
+/** Seatbelt matches resolved paths, so the scratch dir the probe may write is canonicalised. */
+const probeTmpdir = (): string => {
+  try {
+    return realpathSync(tmpdir())
+  } catch {
+    return tmpdir()
+  }
+}
+
 const runVersion = (binary: string): Promise<string | null> => {
   const cached = versionCache.get(binary)
   if (cached !== undefined) return cached
   const probe = (async (): Promise<string | null> => {
     try {
-      const child = Bun.spawn([binary, "--version"], {
+      // Read-only probe: no network, writes confined to scratch (LOCAL-APP.md, "Sandbox").
+      const wrapped = PROBE_SANDBOX_EXCEPTIONS.has(basename(binary))
+        ? { argv: [binary, "--version"] as ReadonlyArray<string> }
+        : wrapSandbox([binary, "--version"], probePolicy({ tmpdir: probeTmpdir() }), currentSandboxHost())
+      const child = Bun.spawn([...wrapped.argv], {
         stdout: "pipe",
         stderr: "ignore",
         stdin: "ignore",

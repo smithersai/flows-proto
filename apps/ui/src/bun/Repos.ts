@@ -6,10 +6,12 @@
  * `git` run in the repository.
  */
 import { createHash } from "node:crypto"
-import { readdirSync, readFileSync, statSync } from "node:fs"
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { basename, join, relative } from "node:path"
 import type { Repo } from "smithers-shared/LocalApp"
+import { currentSandboxHost, probePolicy, wrapSandbox } from "./Sandbox"
 
 export type SmithersDetection = Repo["smithers"]
 
@@ -91,9 +93,20 @@ export const detectSmithers = (root: string): SmithersDetection => {
   }
 }
 
+/** Seatbelt matches resolved paths, so the scratch dir the probe may write is canonicalised. */
+const probeTmpdir = (): string => {
+  try {
+    return realpathSync(tmpdir())
+  } catch {
+    return tmpdir()
+  }
+}
+
 const git = async (cwd: string, args: ReadonlyArray<string>): Promise<string | null> => {
   try {
-    const child = Bun.spawn(["git", "-C", cwd, ...args], {
+    // Read-only probe: no network, writes confined to scratch (LOCAL-APP.md, "Sandbox").
+    const wrapped = wrapSandbox(["git", "-C", cwd, ...args], probePolicy({ tmpdir: probeTmpdir() }), currentSandboxHost())
+    const child = Bun.spawn([...wrapped.argv], {
       env: { ...(Bun.env as Record<string, string | undefined>), GIT_TERMINAL_PROMPT: "0" },
       stdout: "pipe",
       stderr: "ignore",

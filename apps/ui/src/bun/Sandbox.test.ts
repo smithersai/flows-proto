@@ -3,6 +3,7 @@ import {
   harnessPolicy,
   loaderPolicy,
   privateAliases,
+  probePolicy,
   renderProfile,
   SANDBOX_EXEC,
   sandboxEnforced,
@@ -35,6 +36,25 @@ describe("sandbox policies are data", () => {
       "/tmp",
       "/Users/u/.cache"
     ])
+  })
+
+  test("a probe denies the network and writes only scratch (no repo, no $HOME)", () => {
+    const policy = probePolicy({ tmpdir: "/var/folders/xx/T" })
+    expect(policy.id).toBe("probe")
+    expect(policy.network).toBe("deny")
+    expect(policy.writableDirs).toEqual(["/var/folders/xx/T", "/private/var/folders/xx/T", "/private/tmp"])
+    expect(policy.writableFiles).toEqual([])
+    expect(policy.writablePrefixes).toEqual([])
+  })
+
+  test("the probe profile denies writes everywhere but scratch and the device nodes", () => {
+    const profile = renderProfile(probePolicy({ tmpdir: "/var/folders/xx/T" }))
+    expect(profile).toContain("(deny network*)")
+    expect(profile).toContain("(deny file-write*)")
+    expect(profile).toContain("(allow file-write* (subpath \"/private/var/folders/xx/T\"))")
+    expect(profile).toContain("(allow file-write* (subpath \"/private/tmp\"))")
+    expect(profile).not.toContain("subpath \"/Users")
+    expect(profile).not.toContain("subpath \"/work")
   })
 
   test("a harness keeps the network and writes the repo, its config dirs and scratch", () => {

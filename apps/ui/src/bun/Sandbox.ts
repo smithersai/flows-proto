@@ -10,7 +10,7 @@
  * process environment.
  */
 
-export type SandboxPolicyId = "loader" | "harness" | "terminal"
+export type SandboxPolicyId = "loader" | "harness" | "terminal" | "probe"
 
 export interface SandboxPolicy {
   readonly id: SandboxPolicyId
@@ -73,6 +73,18 @@ export const loaderPolicy = (paths: SandboxPaths): SandboxPolicy => ({
   writablePrefixes: []
 })
 
+/**
+ * A read-only probe (`git -C` repo facts, `<bin> --version`): no network;
+ * writes only scratch. The probe has no repo, so only `tmpdir` is read.
+ */
+export const probePolicy = (paths: Pick<SandboxPaths, "tmpdir">): SandboxPolicy => ({
+  id: "probe",
+  network: "deny",
+  writableDirs: privateAliases([paths.tmpdir, "/private/tmp"]),
+  writableFiles: [],
+  writablePrefixes: []
+})
+
 /** A harness tab (claude, codex, ...): network on; writes the repo, its config dirs and scratch. */
 export const harnessPolicy = (paths: SandboxPaths): SandboxPolicy => ({
   id: "harness",
@@ -94,7 +106,8 @@ export const terminalPolicy = (paths: SandboxPaths): SandboxPolicy => ({
 export const sandboxPolicies: Readonly<Record<SandboxPolicyId, (paths: SandboxPaths) => SandboxPolicy>> = {
   loader: loaderPolicy,
   harness: harnessPolicy,
-  terminal: terminalPolicy
+  terminal: terminalPolicy,
+  probe: probePolicy
 }
 
 /** Seatbelt string literal: backslashes and double quotes escaped. */

@@ -283,11 +283,28 @@ wrapping everywhere (logged). Profiles are seatbelt `(version 1)` text.
 | Loader (`smthrs query`) | `loader` | deny | `<repo>/.flows`, `$TMPDIR`, `/private/tmp` |
 | Harness tab | `harness` | allow | `<repo>`, `~/.claude`, `~/.claude.json`, `~/.codex`, `~/.gemini`, `~/.kimi`, `~/.config`, `~/.cache`, `~/.local`, `$TMPDIR`, `/private/tmp` |
 | Terminal tab | `terminal` | allow | `<repo>`, `$HOME` dotfiles above, `$TMPDIR`, `/private/tmp` |
+| Read-only probes (`git -C` repo facts, `<bin> --version`) | `probe` | deny | `$TMPDIR` (realpathed) + its `/private` twin, `/private/tmp` |
 
 Rationale: seatbelt cannot filter egress by hostname, and claude/codex need
 the network and their config dirs, so harness and terminal spawns confine
 file writes rather than the network. `wrapSandbox` reads only its arguments;
 policies are data so tests can assert the generated profile.
+
+Probe ruling (wave-2 integration, 2026-08-26): the two read-only spawns the
+verifiers flagged — the `git -C` branch/remote probe in `src/bun/Repos.ts`
+and the `<bin> --version` probes in `src/bun/Harnesses.ts` — run under
+`probePolicy` (network deny, file writes confined to the realpathed
+`$TMPDIR`, its `/private` twin and `/private/tmp`). Verified on this
+machine: git facts populate for `artsy/force` and claude/codex versions
+still resolve under the profile.
+
+Documented exception: `amp --version` fails under the probe profile (its
+CLI writes under `~/.cache` — beyond `~/.cache/amp` — on every invocation
+and aborts with "Unexpected error inside Amp CLI." when the profile's
+`(deny file-write*)` blocks it; re-allowing `(subpath "~/.cache/amp")`
+alone is not enough, only `(subpath "~/.cache")` is). The amp probe runs
+unwrapped (`PROBE_SANDBOX_EXCEPTIONS` in `Harnesses.ts`) rather than
+letting the probe policy write into `$HOME`.
 
 Reality check (L4, 2026-08-26, macOS 15 arm64, `claude` 2.1.247, `codex`
 0.149.1, `/bin/zsh -il` with oh-my-zsh): all three start and reach their
