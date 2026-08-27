@@ -9,7 +9,7 @@
  */
 import type * as LocalRepository from "@smthrs/targets/LocalRepository"
 import * as RepoTarget from "@smthrs/targets/RepoTarget"
-import type * as Target from "@smthrs/targets/Target"
+import * as Target from "@smthrs/targets/Target"
 import { spawn } from "node:child_process"
 import * as NodePath from "node:path"
 import type * as PackageIndex from "./PackageIndex.ts"

@@ -9,6 +9,7 @@ import * as Os from "node:os"
 import * as NodePath from "node:path"
 import { promisify } from "node:util"
 import { afterAll, describe, expect, it } from "vitest"
+import { makeCli, normalizeArgv } from "../src/Cli.ts"
 import * as PackageDiscovery from "../src/PackageDiscovery.ts"
 import { isPackageError } from "../src/PackageError.ts"
 import * as PackageLoader from "../src/PackageLoader.ts"
@@ -60,6 +61,39 @@ const runCli = async (
   }
 }
 
+const serveCli = async (
+  root: string,
+  args: ReadonlyArray<string>
+): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> => {
+  let exitCode = 0
+  let stdout = ""
+  let stderr = ""
+  const stdoutWrite = process.stdout.write.bind(process.stdout)
+  const stderrWrite = process.stderr.write.bind(process.stderr)
+  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    stdout += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")
+    return true
+  }) as typeof process.stdout.write
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    stderr += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")
+    return true
+  }) as typeof process.stderr.write
+  try {
+    await makeCli({}).serve([...normalizeArgv(args), "--workspace", root], {
+      exit: (code) => {
+        exitCode = code
+      },
+      stdout: (text) => {
+        stdout += text
+      }
+    })
+  } finally {
+    process.stdout.write = stdoutWrite
+    process.stderr.write = stderrWrite
+  }
+  return { exitCode, stdout, stderr }
+}
+
 describe("opaque local repositories", () => {
   it("prunes declared repositories from package discovery", async () => {
     const root = await workspace()
@@ -82,6 +116,20 @@ describe("opaque local repositories", () => {
       return
     }
     throw new Error("undeclared nested workspace did not refuse discovery")
+  })
+
+  it("refuses a declared repository without a workspace marker", async () => {
+    const root = await workspace()
+    await Fs.rm(NodePath.join(root, "broken", "WORKSPACE.ts"))
+    const declaration = await PackageLoader.loadWorkspaceDeclaration(root, "WORKSPACE.ts")
+    try {
+      await PackageDiscovery.discover(root, { repositories: declaration.repos })
+    } catch (cause) {
+      expect(isPackageError(cause) ? cause.code : undefined).toBe("local_repository_invalid")
+      expect(String(cause)).toContain("repo \"broken\" at broken")
+      return
+    }
+    throw new Error("repository without a workspace marker did not refuse discovery")
   })
 
   it("treats broad globs as opaque while admitting an explicit child prefix", async () => {
@@ -111,36 +159,48 @@ describe("opaque local repositories", () => {
 
   it("lists child kinds and renders the external repository edge", async () => {
     const root = await workspace()
-    const query = await runCli(root, ["query", "//:childTest", "--format", "json"])
+    const query = await serveCli(root, ["query", "//:childTest", "--format", "json"])
     expect(query.exitCode).toBe(0)
     const decoded = JSON.parse(query.stdout) as {
       readonly targets: ReadonlyArray<{ readonly target: string; readonly kinds: ReadonlyArray<string> }>
     }
     expect(decoded.targets).toEqual([{ label: "//:childTest", target: "Repo.Target", kinds: ["test"] }])
-    const graph = await runCli(root, ["graph", "//:childTest", "--format", "json"])
+    const graph = await serveCli(root, ["graph", "//:childTest", "--format", "json"])
     expect(graph.exitCode).toBe(0)
     expect(graph.stdout).toContain("-repo-> @child//:test")
   }, 30_000)
 
   it("executes a parent suite through the child and hits cache on the second clean run", async () => {
     const root = await workspace()
-    const first = await runCli(root, ["//:suite"])
+    const first = await serveCli(root, ["//:suite"])
     expect(first.exitCode).toBe(0)
     expect(`${first.stdout}\n${first.stderr}`).toContain("child repository echo")
-    const second = await runCli(root, ["//:suite"])
+    const second = await serveCli(root, ["//:suite"])
     expect(second.exitCode).toBe(0)
     expect(`${second.stdout}\n${second.stderr}`).toContain("//:childTest  hit")
   }, 60_000)
 
+  it("accepts repository targets through Alias and gates", async () => {
+    const root = await workspace()
+    const query = await serveCli(root, ["query", "//:alias", "--format", "json"])
+    expect(query.exitCode).toBe(0)
+    expect(query.stdout).toContain("\"test\"")
+    const alias = await serveCli(root, ["//:alias"])
+    expect(alias.exitCode).toBe(0)
+    const gated = await serveCli(root, ["//:gated"])
+    expect(gated.exitCode).toBe(0)
+    expect(`${gated.stdout}\n${gated.stderr}`).toContain("//:gated  ran")
+  }, 60_000)
+
   it("admits a parent file input that explicitly enters the child", async () => {
     const root = await workspace()
-    const result = await runCli(root, ["//:parentReadme"])
+    const result = await serveCli(root, ["//:parentReadme"])
     expect(result.exitCode).toBe(0)
   }, 30_000)
 
   it("surfaces a child refusal without breaking the parent load", async () => {
     const root = await workspace()
-    const result = await runCli(root, ["query", "//...", "--format", "json"])
+    const result = await serveCli(root, ["query", "//...", "--format", "json"])
     expect(result.exitCode).toBe(0)
     const decoded = JSON.parse(result.stdout) as {
       readonly targets: ReadonlyArray<{ readonly label: string; readonly refusal?: string | undefined }>
