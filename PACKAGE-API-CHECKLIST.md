@@ -368,3 +368,58 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   namespaces exist instead of a bare TypeError). The remaining Go gaps (toolchains workspace key, S.Go.*,
   S.Docker.*, S.Nix.*, S.Stamp, build target as tool edge, readiness exec probe) are listed with estimates
   in artsy/FLOWS-GO-READINESS.md.
+
+### Lane api/defects 2026-08-27
+
+Three defects fixed test-first on branch `api/defects` (worktree
+`/Users/williamcory/flows-api/defects`); commits `726a608f3` (D1),
+`af8a368f8` (D2), `d70c3778f` + `ba81c3446` (D3). CLI for every proof:
+`node /Users/williamcory/flows-api/defects/packages/build-cli/src/main.js`,
+run from the artsy repo named in the row.
+
+#### Symbols
+
+| Symbol | Status | Proof command | Output tail |
+| --- | --- | --- | --- |
+| `S.NodeModule.Bin(pkg)` one-arg bin-map resolution | [x] | `'//src:deadCode' --plan`, `'//.storybook:storybook' --plan`, `'//.github:danger' --plan` in `~/artsy-e2e/force`, then `'//src:deadCode'` | plans: 0 `refusal` lines each (was `package "knip" exposes 2 binaries…`, `"storybook" … 3 binaries`, `"danger" … 9 binaries`); execute: `"//src:deadCode",Shell.Test,ran,3382.6ms` … `ok: true` (knip's own verdict, green) |
+| `S.NodeModule.Bin(pkg)` still-ambiguous refusal | [p] | `pnpm -C packages/build-cli exec vitest run test/PackageExecution.test.ts -t "bin map"` | 5 passed: unscoped multi-map → package-name entry; scoped `@biomejs/biome` → `biome`; sole differently-named entry wins; multi-map without the package-name entry keeps `name one explicitly: S.NodeModule.Bin(package, bin)`; explicit second arg honored |
+| `S.PackageManager.Pnpm({manifest,lockfile,version?,audit?,workspaces?})` | [x] | `pnpm -C packages/targets exec vitest run test/PackageApi.test.ts` + `pnpm -C packages/build-cli exec vitest run test/PackageExecution.test.ts -t "pnpm manifest"` | targets 21/21 (workspace form validates, BUILD-era `{version,runtime}` keeps working and keeps its runtime TypeError, Workspace accepts the declaration); fixture pnpm workspace loads, `--plan` has no refusal, `//:check  ran` |
+| pnpm CI render / manager binary / lockfile digest | [x] | `pnpm -C packages/build-cli exec vitest run test/GithubRender.test.ts -t "workspace-era pnpm"` | 2 passed: `pnpm/action-setup@v4` with `version: "8"` when pinned (omitted otherwise — the manifest's `packageManager` field pins), `node-version: "26"` / `node-version-file: package.json` from the workspace runtime, `pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}` from the declared lockfile, `pnpm install --frozen-lockfile`; `managerBinaryOf` returns `pnpm` for the tagged declaration and the plan digests the declared lockfile |
+| `S.Memory.Retain` | [x] | `'//:retainCommit'` in `~/artsy-e2e/force` (after `smithers init` seeded the store), then `smithers memory list repo` | `"//:retainCommit",Memory.Retain,ran,1777.8ms`; list shows `commit:3c6f3063d14929cceb99fb61a9663c0014f81790 = {"source":"HEAD","commit":"3c6f3063…","tags":["commit"]}` in namespace `repo`. Without the store the same run is the readable typed failure `smithers memory set repo commit:3c6f3063… {…} exited 4: Error: No workflow found to resolve this workspace's store. Run smithers init…` (argv + stdout now in the text; stderr was empty) |
+| `MemoryCapabilityMissing` typed refusal + help-fixture contract | [x] | `pnpm -C packages/build-cli exec vitest run test/MemoryBackend.test.ts` | 15/15: captured `smithers memory --help` fixture parses to `get, list, rm, set`; a test fails if retain's argv names an unshipped subcommand; `assertMemoryCliCommand("retain")` throws naming `retain` and the shipped set; nonzero exit message carries argv and falls back to stdout when stderr is empty |
+
+#### Repos
+
+| Repo | Load | Proof | Output tail |
+| --- | --- | --- | --- |
+| `~/artsy-e2e/force` | loads, targeted plans/executes above | D1/D3 rows | `//.github:github` unchanged (verified-correct): `run-claude-review.yml=unexpected, run-danger-yarn.yml=unexpected` still reported; clone reset clean after (`git status` empty; smithers-init artifacts and the retained fact removed) |
+| `~/artsy/whatsabi` | still blocked, but not by pnpm | `query '//...'` | the `pnpm requires a declared runtime` failure is gone; new first error verbatim: `module_import_failed: evaluating the workspace's declaration modules failed: Generate declaration at /Users/williamcory/artsy/whatsabi/src/PACKAGE.ts:22:21 is invalid: Expected "file" \| undefined\n  at ["stdout"]` |
+| `~/artsy/viem` | still blocked, but not by pnpm | `query '//...'` | new first error verbatim: `module_import_failed: evaluating the workspace's declaration modules failed: S.Git.Submodules is not a function` (another lane's namespace) |
+
+#### Suites
+
+- targets: `vitest run --coverage.enabled=false` 645/645; `tsc --noEmit` clean; `dprint check` clean.
+- build-cli: `vitest run --coverage.enabled=false` 660 passed, 1 skipped (solo run; a run concurrent with the targets suite flaked 8 timing-sensitive service/agent tests that pass solo); `tsc --noEmit` clean; `dprint check` reports 2 pre-existing unformatted files (`test/SweepHarness.test.ts`, `test/fixtures/sweep-expectations.json`, committed in `43b11003d`, untouched here) — recorded, not new.
+
+#### Spec conflicts found (recorded, not silently narrowed)
+
+- `~/artsy/whatsabi/src/PACKAGE.ts:22` writes `stdout: "_generated-interfaces.ts"` (a filename), but `packages/targets/src/Compose.ts:139` types Generate's `stdout` as the literal `"file"` — PLAN §15.1's `{bin, args, data, stdout: "file"}` notation read as a literal. This is whatsabi's current first load error; fixing Generate's stdout attr is outside this lane's three defects.
+- The defect brief cites smithers 0.34.0; the installed binary (`~/.nvm/versions/node/v24.18.0/bin/smithers`) is 0.33.0 with the identical `memory get|list|rm|set` surface.
+- `smithers memory list` has no `--namespace` flag; the namespace is positional (`smithers memory list repo`), used as the brief's "or the equivalent".
+- `S.Memory.SmithersCloud`'s `init`/`autoInject` have no CLI counterpart in 0.33.0 and do not gate a retain (init is the bank's initialization script, autoInject is agent-context injection); Retain treats them as inert declaration config, documented in `MemoryBackend.retain`'s docs. A memory operation that genuinely needs an unshipped subcommand refuses typed via `assertMemoryCliCommand`.
+- This worktree has no root `CLAUDE.md`/`AGENTS.md` and no `reference/` dir; the corpus lives at `/Users/williamcory/flows/reference`. No new subsystem was designed: D1 extends the existing `binNameOf` manifest reader with npm/npx's own convention, D2 copies the sibling `YarnDeclaration` shape in the same module, D3 reuses `MemoryBackend`'s existing locator/cli seams plus `GitCommit.ts`'s git `execFile` helper for ref resolution.
+
+#### Shared-file hunks (for the merge)
+
+- `packages/build-cli/src/PackageExec.ts`: `binNameOf` (basename selection in a multi-entry map + doc), `managerBinaryOf` (explicit `PnpmPackageManager` tag branch), Memory.Retain dispatch (per-fact log line; catches `MemoryCapabilityMissing`).
+- `packages/build-cli/src/GithubRender.ts`: `toolchainOf` (new `isPnpmDeclaration` branch).
+- `packages/targets/src/WorkspaceDeclaration.ts`: `packageManager` union type ×2 + validator accept `PnpmDeclaration`.
+- `packages/targets/src/PackageManager.ts`: `PnpmWorkspaceOptions`, overloaded `Pnpm`, `PnpmDeclaration`/`isPnpmDeclaration` (new exports; BUILD-era surface unchanged).
+- `packages/build-cli/src/MemoryBackend.ts`: retain rewritten onto `memory set`; new exports `memoryCliCommands`, `parseMemoryHelpCommands`, `MemoryCapabilityMissing`, `assertMemoryCliCommand`, `RetainedFact`; `MemoryCommandFailed` signature now `(exitCode, {args, stdout, stderr})`; `RetainOptions.resolveSource` injection.
+- Tests: `PackageExecution.test.ts` (+2 bin-map, +1 pnpm workspace), `GithubRender.test.ts` (+2), `PackageApi.test.ts` (+3), `MemoryBackend.test.ts` (resolved-backend describe rewritten to the real CLI, +help-fixture/capability/argv-text tests), `AgentLaneExecution.test.ts` (dispatch argv contract), new fixture `test/fixtures/smithers-memory-help.txt`.
+
+#### Not done / out of scope
+
+- whatsabi and viem still do not fully load; both blockers are recorded verbatim above and belong to the Generate-stdout ruling and the Git namespace lane.
+- `smthrs install` in package mode keeps its typed NotImplemented refusal (the W2 surface rule); the "install names pnpm with the workspace runtime" proof lands through the CI render and the manager-binary/lockfile key path.
+- The two pre-existing unformatted build-cli test files and the known eslint baseline (`@slop` tags, `main.js` resolution) are untouched.
