@@ -1410,19 +1410,24 @@ export const runAgentLint = (
       `${promptText}\n\n${instruction}\n\n${envelopeContract}${filesSection}\n\n=== DIFF SLICE ===\n\n${slice.patch}`
     )
     const envelope = yield* session.run({ purpose, prompt })
+    // `info` findings are advisory: they travel in the report and the log,
+    // never in the verdict. A lint is red on warning and error only, or the
+    // severity field in the envelope contract would mean nothing.
+    const blocking = envelope.findings.filter((entry) => entry.severity !== "info")
+    const advisory = envelope.findings.filter((entry) => entry.severity === "info")
     if (payload.mode === "check") {
-      if (envelope.findings.length > 0) {
+      if (blocking.length > 0) {
         return yield* Effect.fail(
           new AgentTarget.AgentFindingsError({
             findings: envelope.findings,
-            message: `the agent reported ${envelope.findings.length} finding(s)`
+            message: `the agent reported ${blocking.length} finding(s)`
           })
         )
       }
       const report: AgentTarget.LintReport = {
         vacuous: false,
         files: slice.files,
-        findings: [],
+        findings: advisory,
         fixed: []
       }
       yield* runtime.verdicts.put(key, JSON.stringify(encodeLintReport(report)))
@@ -1430,15 +1435,20 @@ export const runAgentLint = (
     }
     const overlay = yield* runtime.writeSets.apply(envelope.edits, payload.fixes, undefined)
     const fixed = yield* runtime.writeSets.commit(overlay)
-    if (envelope.findings.length > 0) {
+    if (blocking.length > 0) {
+      // Say whether anything was written: a session that answers a --fix
+      // with findings and no edits reads as "fixes do not cover" otherwise.
+      const wrote = fixed.length === 0
+        ? "proposed no edits and reported"
+        : `wrote ${fixed.join(", ")} and still reports`
       return yield* Effect.fail(
         new AgentTarget.AgentFindingsError({
           findings: envelope.findings,
-          message: `the agent reported ${envelope.findings.length} finding(s) its fixes do not cover`
+          message: `the agent ${wrote} ${blocking.length} finding(s)`
         })
       )
     }
-    return { vacuous: false, files: slice.files, findings: [], fixed }
+    return { vacuous: false, files: slice.files, findings: advisory, fixed }
   })
 
 /** The bounded candidate/gate loop shared by Agent.Diff and Agent.Pr. */

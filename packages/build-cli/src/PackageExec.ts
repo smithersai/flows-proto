@@ -3097,7 +3097,12 @@ export const execute = async (
           log(
             `${node.label}  reviewed ${report.files.length} file(s)` +
               `${report.fixed.length === 0 ? "" : `; wrote ${report.fixed.join(", ")}`}` +
-              `${counted.runs() === 0 ? " (cached verdict)" : ""}`
+              `${counted.runs() === 0 ? " (cached verdict)" : ""}` +
+              `${
+                report.findings.length === 0
+                  ? ""
+                  : `; ${report.findings.length} info finding(s)${renderFindings(report.findings)}`
+              }`
           )
           return green(counted.runs() === 0 ? "hit" : "ran")
         }
