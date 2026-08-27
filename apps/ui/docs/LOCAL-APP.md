@@ -176,11 +176,13 @@ manifest dir, never a workspace). `workspaces` lists them root-first:
 last path segment (the repo name for the root). `detected` holds iff the
 list is nonempty.
 
-`declarationFiles` stays informational: the root declaration files and every
-`PACKAGE.ts` below the root (same walk, same skips) that contain
-`from "@smthrs/` or `from "smthrs` (single or double quotes). It no longer
-gates detection. `reason` explains a negative verdict ("no WORKSPACE.ts")
-or counts the workspaces found.
+`declarationFiles` stays informational: the root declaration files
+(`WORKSPACE.ts`, `.smithers/WORKSPACE.ts`, `BUILD.ts`) and every
+`PACKAGE.ts` below the root — its own walk, skipping `node_modules`,
+`.git`, `.flows`, `dist` and `build` — that contain `from "@smthrs/` or
+`from "smthrs` (single or double quotes). It no longer gates detection.
+`reason` explains a negative verdict ("no WORKSPACE.ts") or counts the
+workspaces found.
 
 ## Plugin manifest
 
@@ -249,6 +251,9 @@ so a refused manifest says why instead of silently growing no plugin card.
 2. The SPA dispatches a `targets` card (pending) and calls `/api/targets/query`.
 3. The card fills with the target list, grouped workspace then package; every
    row's Run button dispatches `target.run` with `{ repoId, workspace, label }`.
+   The workspace heading appears only when the repository has more than one,
+   and the root's heading is the repository name — `"."` is a path token, not
+   user-facing copy.
 4. Absent a manifest, the SPA calls `/api/chat/turn` with a system instruction
    that includes the target JSON and the bridge contract below, and asks for
    a final answer of exactly `{ "message": string, "html": string }` (no tools).

@@ -151,6 +151,24 @@ describe("the targets card", () => {
     button?.click()
     expect(ran).toEqual(["target.run r1 aomi-sdk //:clippyFix"])
   })
+
+  test("names the root workspace by the repository, never by the raw \".\" path token", () => {
+    // Copy rule (apps/DESIGN.md §9): no internal path tokens in user-facing copy.
+    const host = render(<TargetsCardBody card={targetsCard()} onRunCommand={() => {}} />)
+    const root = host.querySelector("[data-workspace=\".\"] .targets-card-workspace-name")
+    expect(root?.textContent).toBe("aomi")
+  })
+
+  test("a single-workspace repo keeps its packages unheaded", () => {
+    const card = targetsCard()
+    const single = {
+      ...card,
+      payload: { ...card.payload, targets: card.payload.targets.filter((target) => target.workspace === ".") }
+    }
+    const host = render(<TargetsCardBody card={single} onRunCommand={() => {}} />)
+    expect(host.querySelector("[data-workspace=\".\"]")).not.toBeNull()
+    expect(host.querySelector(".targets-card-workspace-name")).toBeNull()
+  })
 })
 
 describe("the repo card", () => {
