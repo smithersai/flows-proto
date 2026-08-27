@@ -31,16 +31,107 @@ export const HarnessSchema = z.object({
 })
 export type Harness = z.infer<typeof HarnessSchema>
 
+/*
+ * The repo plugin manifest (apps/ui/docs/LOCAL-APP.md "Plugin manifest"):
+ * the parsed contents of a repository's `.smithers/UI.json`. Strict at every
+ * level — an additional root, group or entry key rejects the file — so a
+ * hand-edited manifest fails loudly at open instead of rendering a guess.
+ */
+export const REPO_PLUGIN_GROUP_KINDS = ["recipe", "lint", "workflow", "check"] as const
+
+/** A target label: `//pkg:name` (`//:name` for the root package). */
+export const TARGET_LABEL = /^\/\/[^\s:]*:[^\s:]+$/
+
+export const RepoPluginGroupSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    kind: z.enum(REPO_PLUGIN_GROUP_KINDS)
+  })
+  .strict()
+export type RepoPluginGroup = z.infer<typeof RepoPluginGroupSchema>
+
+export const RepoPluginEntrySchema = z
+  .object({
+    id: z.string(),
+    group: z.string(),
+    workspace: z.string(),
+    label: z.string().regex(TARGET_LABEL, "a label is `//pkg:name`"),
+    title: z.string(),
+    summary: z.string(),
+    approval: z.boolean().default(false),
+    agentic: z.boolean().default(false)
+  })
+  .strict()
+export type RepoPluginEntry = z.infer<typeof RepoPluginEntrySchema>
+
+export const RepoPluginSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    name: z.string(),
+    title: z.string(),
+    summary: z.string(),
+    groups: z.array(RepoPluginGroupSchema),
+    entries: z.array(RepoPluginEntrySchema)
+  })
+  .strict()
+  .superRefine((manifest, ctx) => {
+    const groups = new Set(manifest.groups.map((group) => group.id))
+    for (const entry of manifest.entries) {
+      if (!groups.has(entry.group)) {
+        ctx.addIssue({ code: "custom", message: `entry ${entry.id} names an undeclared group ${entry.group}` })
+      }
+    }
+  })
+export type RepoPlugin = z.infer<typeof RepoPluginSchema>
+
+/**
+ * The manifest validated against the repository's detected workspaces: every
+ * entry's workspace must be one of them. Shape failures and stray workspaces
+ * come back as issues — the caller turns them into repo warnings, never a 500.
+ */
+export const parseRepoPlugin = (
+  value: unknown,
+  workspaces: ReadonlyArray<string>
+): { readonly plugin: RepoPlugin } | { readonly issues: ReadonlyArray<string> } => {
+  const parsed = RepoPluginSchema.safeParse(value)
+  if (!parsed.success) {
+    return { issues: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`) }
+  }
+  const known = new Set(workspaces)
+  const stray = parsed.data.entries.filter((entry) => !known.has(entry.workspace))
+  if (stray.length > 0) {
+    return {
+      issues: stray.map((entry) => `entry ${entry.id} names an undetected workspace ${entry.workspace}`)
+    }
+  }
+  return { plugin: parsed.data }
+}
+
+export const RepoWorkspaceSchema = z.object({
+  /** Relative to the repo root; "." for the root itself. */
+  path: z.string(),
+  /** The last path segment, or the repo name for the root. */
+  title: z.string()
+})
+export type RepoWorkspace = z.infer<typeof RepoWorkspaceSchema>
+
 export const RepoSchema = z.object({
   id: z.string(),
   path: z.string(),
   name: z.string(),
   git: z.object({ branch: z.string().nullable(), remote: z.string().nullable() }).nullable(),
+  /** Loader and manifest problems surfaced at open; empty when the open was clean. */
+  warnings: z.array(z.string()),
+  /** The parsed `.smithers/UI.json`; absent when the repo declares none (or an invalid one). */
+  plugin: RepoPluginSchema.optional(),
   smithers: z.object({
     detected: z.boolean(),
     workspaceFile: z.string().nullable(),
     declarationFiles: z.array(z.string()),
-    reason: z.string()
+    reason: z.string(),
+    /** Root and child workspaces (LOCAL-APP.md "Repository detection"); detection is nonempty. */
+    workspaces: z.array(RepoWorkspaceSchema)
   })
 })
 export type Repo = z.infer<typeof RepoSchema>
@@ -67,7 +158,9 @@ export const TargetSchema = z.object({
   target: z.string(),
   kinds: z.array(z.string()),
   package: z.string(),
-  name: z.string()
+  name: z.string(),
+  /** The detected workspace the loader ran in ("." for the repo root). */
+  workspace: z.string()
 })
 export type Target = z.infer<typeof TargetSchema>
 

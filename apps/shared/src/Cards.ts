@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { RepoSchema, TargetSchema } from "./LocalApp"
+import { RepoPluginSchema, RepoSchema, TargetSchema } from "./LocalApp"
 
 /*
  * The card wire model, shared by the server boundary (which validates frames off
@@ -488,6 +488,16 @@ export const CardSchema = z.discriminatedUnion("kind", [
     ...cardBaseShape,
     kind: z.literal("repo"),
     payload: z.object({ repo: RepoSchema })
+  }),
+  /*
+   * The repo plugin card (LOCAL-APP.md "Plugin manifest"): the repository's
+   * parsed `.smithers/UI.json`, upserted ahead of the targets card when the
+   * manifest is valid. Each entry's Run rides the existing `target.run` flow.
+   */
+  z.object({
+    ...cardBaseShape,
+    kind: z.literal("repo-plugin"),
+    payload: z.object({ repoId: z.string(), manifest: RepoPluginSchema })
   })
 ])
 export type Card = z.infer<typeof CardSchema>
