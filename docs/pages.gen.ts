@@ -38,6 +38,7 @@ type Page =
   | { path: '/data-structures'; render: 'static' }
   | { path: '/design-decisions'; render: 'static' }
   | { path: '/disaster-recovery'; render: 'static' }
+  | { path: '/examples/real-world'; render: 'static' }
   | { path: '/examples'; render: 'static' }
   | { path: '/external'; render: 'static' }
   | { path: '/'; render: 'static' }
