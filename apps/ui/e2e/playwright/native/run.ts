@@ -57,6 +57,7 @@ const main = async (): Promise<void> => {
     process.exit(0)
   }
   if (process.env.SMITHERS_SKIP_NATIVE_BUILD !== "1") {
+    if ((await run([process.execPath, "scripts/ensure-devkit.mjs"])) !== 0) fail("ensure-devkit failed")
     if ((await run(["pnpm", "exec", "vite", "build", "--configLoader", "runner"])) !== 0) fail("vite build failed")
     if ((await run(["pnpm", "exec", "electrobun", "build", "--env=dev"])) !== 0) fail("electrobun build --env=dev failed")
   }
