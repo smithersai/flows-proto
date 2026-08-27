@@ -7,11 +7,15 @@ import type { SlashItem } from "../flows/registry"
 import { flowRequirements } from "../flows/registry"
 import type { NativeAgent, NativeRepositories } from "../native/NativeBridge"
 import type { AppStore } from "./AppStore"
+import { createPtyClient, pageSocketUrl } from "./PtyClient"
+import type { PtyClient } from "./PtyClient"
 import { createAuthBillingController } from "./controller/auth-billing"
 import { createConnectorController } from "./controller/connectors"
 import { createControllerContext } from "./controller/context"
 import { createFailureController } from "./controller/failures"
 import { createPresentationController } from "./controller/presentation"
+import { createTabsController } from "./controller/tabs"
+import type { TabsController } from "./controller/tabs"
 import { createTurnController } from "./controller/turns"
 import { createWorkflowPumpController } from "./controller/workflow-pump"
 import { createWorkflowController } from "./controller/workflows"
@@ -99,6 +103,21 @@ export interface AppController {
   /* Card maximize/minimize — the user's presentation transition (§2d′). */
   readonly maximizeCard: (id: string) => string | void
   readonly minimizeCard: () => void
+  /* The local-app tabs (docs/LOCAL-APP.md "Tabs"); see controller/tabs.ts. */
+  readonly openTerminalTab: TabsController["openTerminalTab"]
+  readonly openHarnessTab: TabsController["openHarnessTab"]
+  readonly openCardTab: TabsController["openCardTab"]
+  readonly selectTab: TabsController["selectTab"]
+  readonly closeTab: TabsController["closeTab"]
+  readonly confirmTabClose: TabsController["confirmTabClose"]
+  readonly cancelTabClose: TabsController["cancelTabClose"]
+  readonly toggleTabMenu: TabsController["toggleTabMenu"]
+  readonly openLocalRepo: TabsController["openLocalRepo"]
+  readonly loadHarnesses: TabsController["loadHarnesses"]
+  readonly loadRepos: TabsController["loadRepos"]
+  readonly notePtyExit: TabsController["notePtyExit"]
+  /** The PTY transport the terminal tabs attach to (docs/LOCAL-APP.md "/ws"). */
+  readonly pty: PtyClient
   /* The admin dev-tools panel + debug reads (§2b/§2d; admin registry only). */
   readonly toggleDevtools: () => void
   /** Report what drives a turn (admin /debug.backend; DESIGN.md §14). */
@@ -351,6 +370,24 @@ export const createAppController = (
   } = createPresentationController(ctx, adminHealth)
 
   const {
+    openTerminalTab,
+    openHarnessTab,
+    openCardTab,
+    selectTab,
+    closeTab,
+    confirmTabClose,
+    cancelTabClose,
+    toggleTabMenu,
+    openLocalRepo,
+    loadHarnesses,
+    loadRepos,
+    notePtyExit,
+    installKeyboard
+  } = createTabsController(ctx)
+  const pty = createPtyClient({ http, baseUrl, socketUrl: pageSocketUrl })
+  ctx.onDispose(pty.dispose)
+
+  const {
     pumpWorkflowRun,
     stopWatchingRun,
     retryRunWatch,
@@ -555,6 +592,19 @@ export const createAppController = (
     resumeWorkflowRuns,
     maximizeCard,
     minimizeCard,
+    openTerminalTab,
+    openHarnessTab,
+    openCardTab,
+    selectTab,
+    closeTab,
+    confirmTabClose,
+    cancelTabClose,
+    toggleTabMenu,
+    openLocalRepo,
+    loadHarnesses,
+    loadRepos,
+    notePtyExit,
+    pty,
     toggleDevtools,
     toggleSurfacesMenu,
     toggleConnectMenu,
@@ -647,6 +697,8 @@ export const createAppController = (
 
   subscribeToAgent()
   watchIdentityAcrossTabs()
+  // Cmd+T / Cmd+W / Cmd+1..9 on the document, released with the controller.
+  if (typeof document !== "undefined") ctx.onDispose(installKeyboard(document))
 
   const dispose = (): void => {
     // The pumps first (they hold EventSources and timers), then the
@@ -711,6 +763,19 @@ export const createAppController = (
     resumeWorkflowRuns,
     maximizeCard,
     minimizeCard,
+    openTerminalTab,
+    openHarnessTab,
+    openCardTab,
+    selectTab,
+    closeTab,
+    confirmTabClose,
+    cancelTabClose,
+    toggleTabMenu,
+    openLocalRepo,
+    loadHarnesses,
+    loadRepos,
+    notePtyExit,
+    pty,
     toggleDevtools,
     toggleSurfacesMenu,
     toggleConnectMenu,
