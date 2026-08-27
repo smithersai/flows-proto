@@ -1,4 +1,16 @@
-/** Planning helpers for Docker services, OCI builds, bake targets, and pushes. */
+/**
+ * Planning helpers for Docker services, OCI builds, bake targets, and pushes.
+ *
+ * Every Docker rule needs the same host facts before it can plan: the CLI
+ * on PATH, a daemon that answers `docker info`, and a buildx builder that
+ * supports the OCI exporter. This module resolves those once per target
+ * and turns the declarations into argv: `docker run --rm` for supervised
+ * services, `buildx build`/`buildx bake` writing an OCI archive into the
+ * captured output directory, and an approval-gated `docker push` for the
+ * outward effect. A silent daemon is a typed refusal, never a green no-op.
+ *
+ * @since 0.1.0
+ */
 import type * as Docker from "@smthrs/targets/Docker"
 import * as Input from "@smthrs/targets/Input"
 import { createHash } from "node:crypto"
@@ -7,12 +19,22 @@ import * as NodePath from "node:path"
 import * as PackageTree from "./PackageTree.ts"
 import type * as ServiceSupervisor from "./ServiceSupervisor.ts"
 
-/** Resolved docker CLI plus daemon identity. */
+/**
+ * Resolved docker CLI plus daemon identity.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type DockerTool =
   | { readonly ok: true; readonly path: string; readonly builder: string | undefined; readonly identity: unknown }
   | { readonly ok: false; readonly refusal: string; readonly identity: unknown }
 
-/** Resolves Docker and verifies that its daemon answers. */
+/**
+ * Resolves Docker and verifies that its daemon answers.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const resolveDocker = async (): Promise<DockerTool> => {
   const path = PackageTree.findOnPath("docker")
   if (path === undefined) {
@@ -31,14 +53,19 @@ export const resolveDocker = async (): Promise<DockerTool> => {
     ? { ok: true, path, builder, identity }
     : {
       ok: false,
-      refusal: `docker daemon did not answer \"docker info\": ${daemon.output.trim() || `exit ${daemon.exitCode}`}`,
+      refusal: `docker daemon did not answer "docker info": ${daemon.output.trim() || `exit ${daemon.exitCode}`}`,
       identity
     }
 }
 
 const safeTarget = (target: string): string => target.replaceAll(/[^A-Za-z0-9._-]/g, "-")
 
-/** The package-relative output directory of a Docker build target. */
+/**
+ * The package-relative output directory of a Docker build target.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const outputDir = (rule: "Docker.Build" | "Docker.Bake", packagePath: string, attrs: unknown): string =>
   Input.resolvePath(
     packagePath,
@@ -59,7 +86,12 @@ const scalar = (value: unknown): string | undefined => {
   return undefined
 }
 
-/** Reduced plan fields for a Docker build/bake/push. */
+/**
+ * Reduced plan fields for a Docker build/bake/push.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface Plan {
   readonly argv?: ReadonlyArray<string> | undefined
   readonly outDirs: ReadonlyArray<string>
@@ -67,7 +99,12 @@ export interface Plan {
   readonly refusal?: string | undefined
 }
 
-/** Plans one non-service Docker target. */
+/**
+ * Plans one non-service Docker target.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const plan = async (options: {
   readonly rule: "Docker.Build" | "Docker.Bake" | "Docker.Push"
   readonly packagePath: string
@@ -143,16 +180,31 @@ export const plan = async (options: {
   }
 }
 
-/** Creates output parents before Docker writes its OCI tar. */
+/**
+ * Creates output parents before Docker writes its OCI tar.
+ *
+ * @category execution
+ * @since 0.1.0
+ */
 export const prepareOutputs = async (root: string, outDirs: ReadonlyArray<string>): Promise<void> => {
   for (const outDir of outDirs) await Fs.mkdir(NodePath.join(root, ...outDir.split("/")), { recursive: true })
 }
 
-/** Stable container name derived from a target label. */
+/**
+ * Stable container name derived from a target label.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const containerName = (label: string): string =>
   `smthrs-${createHash("sha256").update(label).digest("hex").slice(0, 20)}`
 
-/** Resolves one Docker service declaration into the supervisor's process spec. */
+/**
+ * Resolves one Docker service declaration into the supervisor's process spec.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const serviceSpec = async (options: {
   readonly label: string
   readonly cwd: string

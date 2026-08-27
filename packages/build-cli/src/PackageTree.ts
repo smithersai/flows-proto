@@ -60,7 +60,12 @@ export const findOnPath = (name: string): string | undefined => {
   return findAllOnPath(name)[0]
 }
 
-/** Searches every PATH entry for an executable, preserving PATH order. */
+/**
+ * Searches every PATH entry for an executable, preserving PATH order.
+ *
+ * @category tools
+ * @since 0.1.0
+ */
 export const findAllOnPath = (name: string): ReadonlyArray<string> => {
   const found: Array<string> = []
   const environmentPath = process.env["PATH"] ?? ""
@@ -102,7 +107,12 @@ const probeOutputLimit = 2 * 1024
  */
 export const probeVersion = (path: string): Promise<Probe> => probeCommand(path, ["--version"])
 
-/** Runs one bounded tool identity/readiness command. */
+/**
+ * Runs one bounded tool identity/readiness command.
+ *
+ * @category tools
+ * @since 0.1.0
+ */
 export const probeCommand = (path: string, args: ReadonlyArray<string>): Promise<Probe> =>
   new Promise((resolve) => {
     NodeChildProcess.execFile(

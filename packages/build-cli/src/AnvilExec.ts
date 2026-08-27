@@ -1,9 +1,25 @@
-/** Planning and service-spec helpers for `S.Anvil.Fork`. */
+/**
+ * Planning and service-spec helpers for `S.Anvil.Fork`.
+ *
+ * An Anvil fork is a supervised service, so this module resolves the host
+ * `anvil` binary (with the typed host refusal as identity when absent) and
+ * renders the fork declaration into a supervisor spec: loopback bind,
+ * port readiness, and the RPC secret resolved at spawn. The spawn argv
+ * carries the secret value while the canonical argv redacts it, so the
+ * supervisor's identity comparison never sees the credential.
+ *
+ * @since 0.1.0
+ */
 import type * as Anvil from "@smthrs/targets/Anvil"
 import * as PackageTree from "./PackageTree.ts"
 import type * as ServiceSupervisor from "./ServiceSupervisor.ts"
 
-/** Resolves anvil and returns the identity used by the package key. */
+/**
+ * Resolves anvil and returns the identity used by the package key.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const resolveAnvil = async () => {
   const path = PackageTree.findOnPath("anvil")
   if (path === undefined) {
@@ -17,7 +33,12 @@ export const resolveAnvil = async () => {
   return { ok: true as const, path, identity: { tag: "Anvil", path, probe } }
 }
 
-/** Resolves one fork target to the scoped service supervisor. */
+/**
+ * Resolves one fork target to the scoped service supervisor.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const serviceSpec = async (options: {
   readonly label: string
   readonly cwd: string

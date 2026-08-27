@@ -356,16 +356,36 @@ export * as SecretProxy from "./SecretProxy.ts"
  */
 export * as Shell from "./Shell.ts"
 
-/** mise version authority and pinned binary references. */
+/**
+ * mise version authority and pinned binary references.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
 export const Mise = MiseSurface
 
-/** Foundry toolchain plus forge build/test/fmt targets. */
+/**
+ * Foundry toolchain plus forge build/test/fmt targets.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
 export * as Foundry from "./Foundry.ts"
 
-/** Anvil fork services. */
+/**
+ * Anvil fork services.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
 export * as Anvil from "./Anvil.ts"
 
-/** Docker services, OCI builds, bake targets, and pushes. */
+/**
+ * Docker services, OCI builds, bake targets, and pushes.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
 export * as Docker from "./Docker.ts"
 
 /**

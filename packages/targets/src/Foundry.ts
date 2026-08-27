@@ -1,4 +1,15 @@
-/** Foundry workspace toolchain and forge target declarations. */
+/**
+ * Foundry workspace toolchain and forge target declarations.
+ *
+ * `Foundry.Toolchain` is the workspace layer that binds the repo's
+ * foundry.toml to its mise version authority; `Foundry.Build`,
+ * `Foundry.Test`, and `Foundry.Fmt` are the forge compile, test, and
+ * format rules keyed on that toolchain, the resolved forge identity, and
+ * the declared config. Fmt is a check/write rule confined to its declared
+ * `changes` write set.
+ *
+ * @since 0.1.0
+ */
 import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
 import * as Input from "./Input.ts"
@@ -7,21 +18,41 @@ import * as Reference from "./Reference.ts"
 import * as Shell from "./Shell.ts"
 import * as Target from "./Target.ts"
 
-/** Workspace layer binding a foundry config to an optional version authority. */
+/**
+ * Workspace layer binding a foundry config to an optional version authority.
+ *
+ * @category declarations
+ * @since 0.1.0
+ */
 export const ToolchainDeclaration = Schema.TaggedStruct("FoundryToolchain", {
   config: Input.File,
   versions: Schema.optional(Mise.Declaration)
 })
 
-/** Workspace layer binding a foundry config to an optional version authority. */
+/**
+ * Workspace layer binding a foundry config to an optional version authority.
+ *
+ * @category declarations
+ * @since 0.1.0
+ */
 export type ToolchainDeclaration = typeof ToolchainDeclaration.Type
 
-/** Checks whether a value is a Foundry toolchain declaration. */
+/**
+ * Checks whether a value is a Foundry toolchain declaration.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
 export const isToolchainDeclaration: (value: unknown) => value is ToolchainDeclaration = Schema.is(
   ToolchainDeclaration
 )
 
-/** Declares the workspace's Foundry configuration and version authority. */
+/**
+ * Declares the workspace's Foundry configuration and version authority.
+ *
+ * @category declarations
+ * @since 0.1.0
+ */
 export const Toolchain = (options: {
   readonly config: Input.File
   readonly versions?: Mise.Declaration | undefined
@@ -51,14 +82,24 @@ const shared = {
   sandbox: Schema.optional(Attr.Sandbox)
 } as const
 
-/** Attrs for `S.Foundry.Build`. */
+/**
+ * Attrs for `S.Foundry.Build`.
+ *
+ * @category attrs
+ * @since 0.1.0
+ */
 export const BuildAttrs = Schema.Struct({
   ...shared,
   skip: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   outDirs: Schema.Array(Schema.NonEmptyString)
 })
 
-/** Attrs for `S.Foundry.Test`. */
+/**
+ * Attrs for `S.Foundry.Test`.
+ *
+ * @category attrs
+ * @since 0.1.0
+ */
 export const TestAttrs = Schema.Struct({
   ...shared,
   ffi: Schema.optional(Schema.Array(Target.Target)),
@@ -66,7 +107,12 @@ export const TestAttrs = Schema.Struct({
   services: Schema.optional(Attr.Services)
 })
 
-/** Attrs for `S.Foundry.Fmt`. */
+/**
+ * Attrs for `S.Foundry.Fmt`.
+ *
+ * @category attrs
+ * @since 0.1.0
+ */
 export const FmtAttrs = Schema.Struct({
   config: Schema.optional(Input.File),
   data: Schema.optional(Attr.Data),
@@ -98,14 +144,26 @@ const fmtDefinition = Target.make("Foundry.Fmt", {
   implementation: () => Target.runTool(Shell.execPayload({ bin: forge, args: ["fmt", "--check"] }))
 })
 
-/** Compiles Solidity sources with forge and captures the declared output directories. */
-export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTarget =>
-  buildDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Compiles Solidity sources with forge and captures the declared output directories.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTarget => buildDefinition(attrs)
 
-/** Runs forge tests under the declared profile and service/data edges. */
-export const Test = (attrs: (typeof TestAttrs)["~type.make.in"]): Target.AnyTarget =>
-  testDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Runs forge tests under the declared profile and service/data edges.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Test = (attrs: (typeof TestAttrs)["~type.make.in"]): Target.AnyTarget => testDefinition(attrs)
 
-/** Checks or writes forge formatting inside the declared write set. */
-export const Fmt = (attrs: (typeof FmtAttrs)["~type.make.in"]): Target.AnyTarget =>
-  fmtDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Checks or writes forge formatting inside the declared write set.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Fmt = (attrs: (typeof FmtAttrs)["~type.make.in"]): Target.AnyTarget => fmtDefinition(attrs)

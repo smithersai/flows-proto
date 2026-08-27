@@ -1,4 +1,16 @@
-/** Docker service, OCI build, bake, and outward push target declarations. */
+/**
+ * Docker service, OCI build, bake, and outward push target declarations.
+ *
+ * `Docker.Serve`/`Docker.Service` run an image as a scoped,
+ * readiness-gated service through the supervisor (`docker run --rm`, the
+ * declared `init` commands as post-readiness `docker exec`), exactly the
+ * way `Shell.Serve` supervises a host process. `Docker.Build` and
+ * `Docker.Bake` are cached builds that capture an OCI archive directory
+ * through the CAS. `Docker.Push` is an outward effect: uncached,
+ * approval-gated, and run only with its declared secrets.
+ *
+ * @since 0.1.0
+ */
 import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
 import * as Input from "./Input.ts"
@@ -9,7 +21,12 @@ const imageFields = {
   tag: Schema.optional(Schema.NonEmptyString)
 } as const
 
-/** Attrs for `S.Docker.Serve` and `S.Docker.Service`. */
+/**
+ * Attrs for `S.Docker.Serve` and `S.Docker.Service`.
+ *
+ * @category attrs
+ * @since 0.1.0
+ */
 export const ServeAttrs = Schema.Struct({
   ...imageFields,
   env: Schema.optional(Attr.Env),
@@ -23,7 +40,12 @@ export const ServeAttrs = Schema.Struct({
   sandbox: Schema.optional(Attr.Sandbox)
 })
 
-/** Attrs for a Dockerfile build. */
+/**
+ * Attrs for a Dockerfile build.
+ *
+ * @category attrs
+ * @since 0.1.0
+ */
 export const BuildAttrs = Schema.Struct({
   dockerfile: Input.File,
   context: Schema.NonEmptyString,
@@ -33,7 +55,12 @@ export const BuildAttrs = Schema.Struct({
   sandbox: Schema.optional(Attr.Sandbox)
 })
 
-/** Attrs for a buildx bake target. */
+/**
+ * Attrs for a buildx bake target.
+ *
+ * @category attrs
+ * @since 0.1.0
+ */
 export const BakeAttrs = Schema.Struct({
   config: Input.File,
   target: Schema.NonEmptyString,
@@ -41,7 +68,12 @@ export const BakeAttrs = Schema.Struct({
   sandbox: Schema.optional(Attr.Sandbox)
 })
 
-/** Attrs for an outward image push. */
+/**
+ * Attrs for an outward image push.
+ *
+ * @category attrs
+ * @since 0.1.0
+ */
 export const PushAttrs = Schema.Struct({
   image: Target.Target,
   registry: Schema.NonEmptyString,
@@ -88,22 +120,42 @@ const pushDefinition = Target.make("Docker.Push", {
   implementation: () => Target.notImplemented("Docker.Push")
 })
 
-/** Runs an image as a scoped service. */
-export const Serve = (attrs: (typeof ServeAttrs)["~type.make.in"]): Target.AnyTarget =>
-  serveDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Runs an image as a scoped service.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Serve = (attrs: (typeof ServeAttrs)["~type.make.in"]): Target.AnyTarget => serveDefinition(attrs)
 
-/** Alias-shaped Docker service constructor used by viem. */
-export const Service = (attrs: (typeof ServeAttrs)["~type.make.in"]): Target.AnyTarget =>
-  serviceDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Alias-shaped Docker service constructor used by viem.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Service = (attrs: (typeof ServeAttrs)["~type.make.in"]): Target.AnyTarget => serviceDefinition(attrs)
 
-/** Builds a Dockerfile into a captured OCI archive directory. */
-export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTarget =>
-  buildDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Builds a Dockerfile into a captured OCI archive directory.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Build = (attrs: (typeof BuildAttrs)["~type.make.in"]): Target.AnyTarget => buildDefinition(attrs)
 
-/** Builds one declared buildx bake target into a captured OCI archive directory. */
-export const Bake = (attrs: (typeof BakeAttrs)["~type.make.in"]): Target.AnyTarget =>
-  bakeDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Builds one declared buildx bake target into a captured OCI archive directory.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Bake = (attrs: (typeof BakeAttrs)["~type.make.in"]): Target.AnyTarget => bakeDefinition(attrs)
 
-/** Declares an approval-gated, uncached image push. */
-export const Push = (attrs: (typeof PushAttrs)["~type.make.in"]): Target.AnyTarget =>
-  pushDefinition(attrs) as unknown as Target.AnyTarget
+/**
+ * Declares an approval-gated, uncached image push.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const Push = (attrs: (typeof PushAttrs)["~type.make.in"]): Target.AnyTarget => pushDefinition(attrs)

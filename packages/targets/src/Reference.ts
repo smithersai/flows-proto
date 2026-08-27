@@ -120,12 +120,22 @@ export const RuntimeNpx = Schema.TaggedStruct("RuntimeNpx", {
  */
 export type RuntimeNpx = typeof RuntimeNpx.Type
 
-/** Schema for a tool whose version authority is the workspace's mise config. */
+/**
+ * Schema for a tool whose version authority is the workspace's mise config.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
 export const MiseBin = Schema.TaggedStruct("MiseBin", {
   name: Schema.NonEmptyString
 })
 
-/** A tool whose version authority is the workspace's mise config. */
+/**
+ * A tool whose version authority is the workspace's mise config.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type MiseBin = typeof MiseBin.Type
 
 /**
@@ -209,7 +219,12 @@ export const runtimeBin: RuntimeBin = Object.freeze(RuntimeBin.make({}))
 export const runtimeNpx = (spec: string): RuntimeNpx =>
   Object.freeze(RuntimeNpx.make({ spec: boundedName(spec, "Runtime.npx spec") }))
 
-/** References one binary pinned by the workspace's `S.Mise` config. */
+/**
+ * References one binary pinned by the workspace's `S.Mise` config.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
 export const miseBin = (name: string): MiseBin =>
   Object.freeze(MiseBin.make({ name: boundedName(name, "Mise.bin name") }))
 

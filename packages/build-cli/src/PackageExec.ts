@@ -20,12 +20,11 @@
  * @since 0.1.0
  */
 import * as AgentTarget from "@smthrs/targets/AgentTarget"
-import * as Anvil from "@smthrs/targets/Anvil"
+import type * as Anvil from "@smthrs/targets/Anvil"
 import * as BundlerTarget from "@smthrs/targets/BundlerTarget"
 import * as Compose from "@smthrs/targets/Compose"
-import * as Docker from "@smthrs/targets/Docker"
+import type * as Docker from "@smthrs/targets/Docker"
 import * as Exec from "@smthrs/targets/Exec"
-import * as Foundry from "@smthrs/targets/Foundry"
 import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as Input from "@smthrs/targets/Input"
 import type * as Reference from "@smthrs/targets/Reference"

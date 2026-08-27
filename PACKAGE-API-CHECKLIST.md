@@ -482,3 +482,19 @@ Not done here: full viem/optimism/tapes loads and sweeps remain blocked by the
 exact cross-lane errors above; aomi-sdk and every Rust/Cargo symbol/proof are
 explicitly delegated; the tapes pgduckdb image could not be executed after
 the upstream registry rate-limited the pull. No `~/artsy` file was edited.
+
+Review addendum (2026-08-27, second pass): the implementation above was
+re-reviewed against the goal. One defect class was found and fixed: the
+lane's new modules and exports violated the repo's eslint JSDoc rules
+(missing module headers, missing `@since`/`@category` tags, unnecessary
+type assertions on the target constructors, a value import of the unused
+`@smthrs/targets/Foundry` in `PackageExec.ts`, and two
+`no-useless-escape` quotes in `DockerExec.ts`). All are corrected;
+`eslint src --max-warnings=0` is clean for `packages/targets` and reports
+only the known baseline (`@slop` tags, `main.js` import resolution,
+`effect-resolution.d.ts`) for `packages/build-cli`. Re-verified after the
+fixes: both packages' `tsc -b tsconfig.json` + `tsc -p tsconfig.test.json
+--noEmit`, targets vitest 650/650, build-cli vitest 659 passed + 1
+skipped, targets dprint clean, build-cli dprint shows only the two known
+baseline files, and the chain-exec fixture sweep still plans 11 targets
+with zero `NotImplemented` and the same two typed refusals.

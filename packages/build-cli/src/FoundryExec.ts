@@ -1,4 +1,16 @@
-/** Planning helpers for Foundry targets and mise-pinned tool references. */
+/**
+ * Planning helpers for Foundry targets and mise-pinned tool references.
+ *
+ * forge shares a name with unrelated binaries, so resolution probes every
+ * PATH candidate and keeps the one whose version output is Foundry's; the
+ * declared foundry.toml and the workspace's mise pins enter the key as
+ * digested authority, and an absent or wrong forge is a typed refusal.
+ * `S.Mise.bin` resolution lives here too: the pinned version is read from
+ * the declared mise config and execution refuses when mise itself is not
+ * on the host.
+ *
+ * @since 0.1.0
+ */
 import type * as Foundry from "@smthrs/targets/Foundry"
 import * as Input from "@smthrs/targets/Input"
 import type * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
@@ -6,7 +18,12 @@ import * as Fs from "node:fs/promises"
 import * as NodePath from "node:path"
 import * as PackageTree from "./PackageTree.ts"
 
-/** One resolved executable and the complete identity entering target keys. */
+/**
+ * One resolved executable and the complete identity entering target keys.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export type ResolvedTool =
   | { readonly ok: true; readonly path: string; readonly identity: unknown }
   | { readonly ok: false; readonly refusal: string; readonly identity: unknown }
@@ -52,7 +69,12 @@ const miseVersion = async (root: string, config: unknown, name: string): Promise
   }
 }
 
-/** Resolves `S.Mise.bin`, keying the declared config and pinned tool entry. */
+/**
+ * Resolves `S.Mise.bin`, keying the declared config and pinned tool entry.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const resolveMiseBin = async (
   root: string,
   workspace: WorkspaceDeclaration.WorkspaceDeclaration,
@@ -105,7 +127,12 @@ const resolveForge = async (): Promise<ResolvedTool> => {
   }
 }
 
-/** The reduced plan fields a Foundry target contributes to PackageExec. */
+/**
+ * The reduced plan fields a Foundry target contributes to PackageExec.
+ *
+ * @category models
+ * @since 0.1.0
+ */
 export interface Plan {
   readonly argv?: ReadonlyArray<string> | undefined
   readonly cwd: string
@@ -115,7 +142,12 @@ export interface Plan {
   readonly refusal?: string | undefined
 }
 
-/** Plans one Foundry rule from validated attrs. */
+/**
+ * Plans one Foundry rule from validated attrs.
+ *
+ * @category planning
+ * @since 0.1.0
+ */
 export const plan = async (options: {
   readonly root: string
   readonly packagePath: string
