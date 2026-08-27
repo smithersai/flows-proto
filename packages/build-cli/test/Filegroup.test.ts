@@ -178,6 +178,13 @@ describe("filegroup queries", () => {
     ])
   })
 
+  it("refuses deps() over a pattern with more than one root", async () => {
+    const workspace = await Workspace.make(root, root)
+    await expect(Query.run(workspace, "deps(//...)")).rejects.toThrow(
+      /deps\(\) requires one exact or default target/
+    )
+  })
+
   it("never selects a group as a verb root", async () => {
     const workspace = await Workspace.make(root, root)
     await expect(Planner.make(workspace, "build", "//:group")).rejects.toThrow(
