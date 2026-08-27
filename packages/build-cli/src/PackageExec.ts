@@ -122,7 +122,13 @@ const implementedRules: ReadonlySet<string> = new Set([
 ])
 
 /** Rules whose default mode is the non-mutating check. */
-const checkModeRules: ReadonlySet<string> = new Set(["Shell.Diff", "Generate", "Github.CiGen", "Agent.Lint", "Cargo.Fmt"])
+const checkModeRules: ReadonlySet<string> = new Set([
+  "Shell.Diff",
+  "Generate",
+  "Github.CiGen",
+  "Agent.Lint",
+  "Cargo.Fmt"
+])
 
 /**
  * Rules that act outward or run for their side effects. They never gate:
@@ -756,13 +762,13 @@ const crateSetOf = async (
   const target = operandTarget(value)
   if (target !== undefined) {
     if (!Cargo.isAppSet(target)) {
-      return `crates must name S.Cargo.AppSet targets; ${labelOf(context, target)} is ${
-        Target.metadata(target).target
-      }`
+      return `crates must name S.Cargo.AppSet targets; ${labelOf(context, target)} is ${Target.metadata(target).target}`
     }
     return appSetCrates(context, target)
   }
-  if (typeof value === "object" && value !== null && (value as { readonly _tag?: unknown })._tag === "FilesDifference") {
+  if (
+    typeof value === "object" && value !== null && (value as { readonly _tag?: unknown })._tag === "FilesDifference"
+  ) {
     const difference = value as { readonly left: unknown; readonly right: unknown }
     const left = await crateSetOf(context, difference.left)
     if (typeof left === "string") return left
@@ -967,19 +973,6 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
         }
       } else {
         const probe = await probeOnce(context, path)
-        // The declared channel is key material and the resolved cargo is
-        // probed, so a channel bump or a compiler change re-keys every cargo
-        // target. Selecting the channel is the toolchain layer's own job and
-        // is not implemented here; a mismatch is reported, not enforced,
-        // because refusing would make every cargo target unrunnable on a host
-        // that has a working compiler.
-        if (layer.channel !== undefined && !probe.output.includes(layer.channel)) {
-          context.log(
-            `warning: the workspace pins Rust ${layer.channel} but ${path} reports ${
-              probe.output.trim() === "" ? "no version" : probe.output.trim()
-            }`
-          )
-        }
         outcome = {
           _tag: "resolved",
           tool: {
@@ -1582,6 +1575,15 @@ const visit = async (
     if (rule === "Cargo.Fetch") cargoOutFiles = fetchOutFiles(context, target)
     const declaredEnv = attrMember(attrs, "env")
     env = typeof declaredEnv === "object" && declaredEnv !== null ? { ...declaredEnv as Record<string, string> } : {}
+    // The declared channel is selected, not hoped for: `RUSTUP_TOOLCHAIN` is
+    // how rustup's cargo proxy picks a toolchain, and a cargo that is not a
+    // proxy ignores it. A host without the pinned channel fails at the start
+    // of the run, naming the channel, instead of mid-compile on a rustc
+    // version the crates refuse.
+    const layer = WorkspaceDeclaration.rustToolchain(context.index.workspace)
+    if (layer?.channel !== undefined && env["RUSTUP_TOOLCHAIN"] === undefined) {
+      env["RUSTUP_TOOLCHAIN"] = layer.channel
+    }
   }
   if (cargoHome !== undefined && env["CARGO_HOME"] === undefined) {
     env["CARGO_HOME"] = cargoHome
@@ -2099,8 +2101,8 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
     rootModes.set(row.label, rootMode(Target.metadata(row.target).target, options))
   }
   const workspace = index.workspace
-  const lockfilePath =
-    (workspace.packageManager as { readonly lockfile?: { readonly path?: unknown } } | undefined)?.lockfile?.path
+  const lockfilePath = (workspace.packageManager as { readonly lockfile?: { readonly path?: unknown } } | undefined)
+    ?.lockfile?.path
   const lockfileDigest = typeof lockfilePath === "string"
     ? await Input.digestFile(NodePath.join(index.root, Input.resolvePath("", lockfilePath)), {
       workspaceRoot: index.root,

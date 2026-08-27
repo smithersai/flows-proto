@@ -10,8 +10,8 @@
 import { describe, expect, it } from "vitest"
 import * as Input from "../src/Input.ts"
 import * as PackageManager from "../src/PackageManager.ts"
-import * as RustToolchain from "../src/RustToolchain.ts"
 import * as Runtime from "../src/Runtime.ts"
+import * as RustToolchain from "../src/RustToolchain.ts"
 import * as WorkspaceDeclaration from "../src/WorkspaceDeclaration.ts"
 
 const cache = WorkspaceDeclaration.Cache({ directory: ".flows" })
@@ -72,8 +72,7 @@ describe("Workspace toolchains", () => {
       .toThrow(/runtime/)
     expect(() => WorkspaceDeclaration.Workspace("x", { ...options, toolchains: rust } as never))
       .toThrow(/toolchains must be an array/)
-    expect(() =>
-      WorkspaceDeclaration.Workspace("x", { ...options, toolchains: [RustToolchain.Pinned({})] } as never)
-    ).toThrow(/toolchain layer declaration/)
+    expect(() => WorkspaceDeclaration.Workspace("x", { ...options, toolchains: [RustToolchain.Pinned({})] } as never))
+      .toThrow(/toolchain layer declaration/)
   })
 })

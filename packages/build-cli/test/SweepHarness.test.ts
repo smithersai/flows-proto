@@ -4,8 +4,8 @@ import {
   classifyOutcome,
   compareLabelSets,
   defaults,
-  expectedOutcome,
   type Expectations,
+  expectedOutcome,
   loadExpectations,
   parseCliJson,
   resetCommands,
@@ -109,7 +109,7 @@ describe("sweep expectations file", () => {
 
 describe("outcome classifier", () => {
   it("classifies exit 0 as green", () => {
-    const { classified } = observed(0, '{"ok":true}')
+    const { classified } = observed(0, "{\"ok\":true}")
     expect(classified.outcome).toBe("green")
   })
 
@@ -291,7 +291,12 @@ describe("graph output parsing", () => {
       results: [
         { label: "//a:x", class: "executes-green", verdict: "pass" },
         { label: "//a:y", class: "typed-refusal", verdict: "alternate", reason: "graceful no-op" },
-        { label: "//a:z", class: "executes-green", verdict: "mismatch", reason: "expected green, observed failed (exit 1)" }
+        {
+          label: "//a:z",
+          class: "executes-green",
+          verdict: "mismatch",
+          reason: "expected green, observed failed (exit 1)"
+        }
       ],
       skipped: [{ label: "//a:h", class: "heavy" }]
     })
