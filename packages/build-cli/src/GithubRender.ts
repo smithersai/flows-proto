@@ -23,7 +23,7 @@ import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as PackageManager from "@smthrs/targets/PackageManager"
 import type * as Runtime from "@smthrs/targets/Runtime"
 import type * as Target from "@smthrs/targets/Target"
-import type * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
+import * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
 import * as NodeCrypto from "node:crypto"
 import * as Fs from "node:fs/promises"
 import * as NodePath from "node:path"
@@ -168,30 +168,45 @@ const mapping = (entries: Readonly<Record<string, string>>, indent: string): Rea
 /** Strips the workspace-label prefix from a declared file path. */
 const workspacePath = (path: string): string => path.startsWith("//") ? path.slice(2) : path
 
-/** The toolchain facts the composite setup action renders from. */
+/**
+ * The toolchain facts the composite setup action renders from.
+ *
+ * Every JavaScript field is optional because a workspace may have no
+ * JavaScript in it: a Cargo workspace declares `toolchains` instead of the
+ * runtime/packageManager/nodeModules trio, and its setup action installs a
+ * Rust toolchain and nothing else. A workspace that declares both renders
+ * both, in the order the fields appear here.
+ */
 interface Toolchain {
   /** `node-version` / `node-version-file` (exclusive) for setup-node, or bun. */
   readonly runtime:
     | { readonly kind: "node-version"; readonly version: string }
     | { readonly kind: "node-version-file"; readonly file: string }
     | { readonly kind: "bun"; readonly version: string }
-    | { readonly kind: "go"; readonly file: string }
+    | undefined
+  /** The declared Rust toolchain layer, as the pin `dtolnay/rust-toolchain` reads. */
+  readonly rust: { readonly channel: string | undefined; readonly file: string | undefined } | undefined
   /** The extra action that installs the package manager itself, if any. */
   readonly managerAction: { readonly uses: string; readonly with?: Readonly<Record<string, string>> } | undefined
-  /** The package-manager store directory the cache step saves. */
-  readonly storePath: string | undefined
-  /** The cache key prefix, `<manager>-store-`. */
-  readonly storePrefix: string | undefined
-  /** The lockfile whose digest keys the store cache. */
-  readonly lockfile: string | undefined
-  /** The frozen install command. */
-  readonly install: string | undefined
+  /** The package-manager store the cache step saves, absent without one. */
+  readonly store:
+    | { readonly path: string; readonly prefix: string; readonly lockfile: string; readonly install: string }
+    | undefined
   /** The argv prefix that runs a workspace-local binary. */
   readonly exec: ReadonlyArray<string>
 }
 
-const runtimeFacts = (runtime: Runtime.Runtime | Runtime.NodeDeclaration | undefined): Toolchain["runtime"] => {
-  if (runtime === undefined) return { kind: "go", file: "go.mod" }
+/** The Rust layer facts, or undefined for a workspace that declares none. */
+const rustFacts = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolchain["rust"] => {
+  const layer = WorkspaceDeclaration.rustToolchain(workspace)
+  if (layer === undefined) return undefined
+  return {
+    channel: layer.channel,
+    file: layer.toolchain === undefined ? undefined : workspacePath(layer.toolchain.path)
+  }
+}
+
+const runtimeFacts = (runtime: Runtime.Runtime | Runtime.NodeDeclaration): Toolchain["runtime"] => {
   if ("name" in runtime && runtime.name === "bun") return { kind: "bun", version: runtime.version }
   if ("name" in runtime && runtime.name === "node") return { kind: "node-version", version: runtime.version }
   // The WORKSPACE.ts NodeDeclaration: an exclusive version | manifest union.
@@ -201,30 +216,26 @@ const runtimeFacts = (runtime: Runtime.Runtime | Runtime.NodeDeclaration | undef
 }
 
 const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolchain => {
-  const runtime = runtimeFacts(workspace.runtime)
+  const rust = rustFacts(workspace)
   const manager = workspace.packageManager
-  if (manager === undefined) {
-    const go = workspace.toolchains?.find((entry) => entry._tag === "GoToolchain") as
-      | { readonly mod?: { readonly path?: string } }
-      | undefined
-    return {
-      runtime: { kind: "go", file: workspacePath(go?.mod?.path ?? "go.mod") },
-      managerAction: undefined,
-      storePath: undefined,
-      storePrefix: undefined,
-      lockfile: undefined,
-      install: undefined,
-      exec: ["smthrs"]
-    }
+  if (workspace.runtime === undefined || manager === undefined) {
+    // A toolchain-only workspace: no runtime to set up, no store to cache, no
+    // install to run. `smthrs` is on PATH because the job installed it, the
+    // same way the JavaScript forms rely on the workspace install.
+    return { runtime: undefined, rust, managerAction: undefined, store: undefined, exec: ["smthrs"] }
   }
+  const runtime = runtimeFacts(workspace.runtime)
   if (PackageManager.isYarnDeclaration(manager)) {
     return {
       runtime,
+      rust,
       managerAction: undefined,
-      storePath: "~/.cache/yarn",
-      storePrefix: "yarn-store-",
-      lockfile: workspacePath(manager.lockfile.path),
-      install: "yarn install --frozen-lockfile",
+      store: {
+        path: "~/.cache/yarn",
+        prefix: "yarn-store-",
+        lockfile: workspacePath(manager.lockfile.path),
+        install: "yarn install --frozen-lockfile"
+      },
       exec: ["yarn", "exec", "smthrs"]
     }
   }
@@ -232,21 +243,27 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
     case "pnpm":
       return {
         runtime,
+        rust,
         managerAction: { uses: "pnpm/action-setup@v4", with: { version: manager.version } },
-        storePath: "~/.pnpm-store",
-        storePrefix: "pnpm-store-",
-        lockfile: PackageManager.lockfileName(manager),
-        install: "pnpm install --frozen-lockfile",
+        store: {
+          path: "~/.pnpm-store",
+          prefix: "pnpm-store-",
+          lockfile: PackageManager.lockfileName(manager),
+          install: "pnpm install --frozen-lockfile"
+        },
         exec: ["pnpm", "exec", "smthrs"]
       }
     case "bun":
       return {
         runtime,
+        rust,
         managerAction: { uses: "oven-sh/setup-bun@v2" },
-        storePath: "~/.bun/install/cache",
-        storePrefix: "bun-store-",
-        lockfile: PackageManager.lockfileName(manager),
-        install: "bun install --frozen-lockfile",
+        store: {
+          path: "~/.bun/install/cache",
+          prefix: "bun-store-",
+          lockfile: PackageManager.lockfileName(manager),
+          install: "bun install --frozen-lockfile"
+        },
         exec: ["bun", "x", "smthrs"]
       }
   }
@@ -290,7 +307,7 @@ const renderSetupAction = (
       lines.push("      with:", ...mapping(toolchain.managerAction.with, "        "))
     }
   }
-  switch (toolchain.runtime.kind) {
+  switch (toolchain.runtime?.kind) {
     case "node-version":
       lines.push("    - uses: actions/setup-node@v4")
       lines.push("      with:", ...mapping({ "node-version": toolchain.runtime.version }, "        "))
@@ -302,24 +319,29 @@ const renderSetupAction = (
     case "bun":
       // setup-bun installed the runtime above; nothing further to declare.
       break
-    case "go":
-      lines.push("    - uses: actions/setup-go@v6")
-      lines.push("      with:", ...mapping({ "go-version-file": toolchain.runtime.file }, "        "))
+    case undefined:
+      // A toolchain-only workspace: nothing to install for JavaScript.
       break
   }
-  if (toolchain.storePath !== undefined && toolchain.storePrefix !== undefined && toolchain.lockfile !== undefined) {
+  if (toolchain.rust !== undefined) {
+    // The declared layer is the pin: the channel when the workspace names one,
+    // and the pin file otherwise, which the action reads on its own.
+    lines.push("    - uses: dtolnay/rust-toolchain@stable")
+    if (toolchain.rust.channel !== undefined) {
+      lines.push("      with:", ...mapping({ toolchain: toolchain.rust.channel }, "        "))
+    }
+  }
+  if (toolchain.store !== undefined) {
     lines.push("    - uses: actions/cache@v4")
     lines.push(
       "      with:",
       ...mapping({
-        path: toolchain.storePath,
-        key: `${toolchain.storePrefix}\${{ hashFiles('${toolchain.lockfile}') }}`,
-        "restore-keys": toolchain.storePrefix
+        path: toolchain.store.path,
+        key: `${toolchain.store.prefix}\${{ hashFiles('${toolchain.store.lockfile}') }}`,
+        "restore-keys": toolchain.store.prefix
       }, "        ")
     )
-  }
-  if (toolchain.install !== undefined) {
-    lines.push(`    - run: ${scalar(toolchain.install)}`)
+    lines.push(`    - run: ${scalar(toolchain.store.install)}`)
     lines.push("      shell: bash")
   }
   if (inputs.length > 0) {

@@ -154,7 +154,7 @@ export const attachFiles = <T extends Target.AnyTarget>(target: T): T & { readon
 export const GenerateAttrs = Schema.Struct({
   emit: Schema.optional(Schema.Record(Schema.String, Schema.Union([Schema.String, Reference.Symlink]))),
   script: Schema.optional(Input.File),
-  bin: Schema.optional(Reference.Tool),
+  bin: Schema.optional(Attr.Executable),
   args: Schema.optional(Attr.Args),
   env: Schema.optional(Attr.Env),
   secrets: Schema.optional(Attr.Secrets),

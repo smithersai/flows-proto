@@ -19,8 +19,8 @@ import * as PackageManager from "./PackageManager.ts"
 import * as Reference from "./Reference.ts"
 import * as RemoteCache from "./RemoteCache.ts"
 import * as Runtime from "./Runtime.ts"
+import * as RustToolchain from "./RustToolchain.ts"
 import * as Target from "./Target.ts"
-import * as Toolchain from "./Toolchain.ts"
 
 /**
  * Schema for the workspace cache declaration.
@@ -378,7 +378,13 @@ export interface WorkspaceDeclaration {
   readonly runtime: Runtime.Runtime | Runtime.NodeDeclaration | undefined
   readonly packageManager: PackageManager.PackageManager | PackageManager.YarnDeclaration | undefined
   readonly nodeModules: NodeModulesDeclaration | undefined
-  readonly toolchains: ReadonlyArray<Toolchain.Declaration> | undefined
+  /**
+   * The toolchain layers this workspace's targets resolve against, in
+   * declared order. Empty for a JavaScript workspace, which states its
+   * toolchain through the `runtime`/`packageManager`/`nodeModules` trio
+   * instead.
+   */
+  readonly toolchains: ReadonlyArray<RustToolchain.ToolchainDeclaration>
   readonly flags: FlagsDeclaration | undefined
   readonly host: HostDeclaration | undefined
   readonly memory: SmithersCloudDeclaration | undefined
@@ -416,7 +422,7 @@ export interface WorkspaceOptions {
   readonly runtime?: Runtime.Runtime | Runtime.NodeDeclaration | undefined
   readonly packageManager?: PackageManager.PackageManager | PackageManager.YarnDeclaration | undefined
   readonly nodeModules?: NodeModulesDeclaration | undefined
-  readonly toolchains?: ReadonlyArray<Toolchain.Declaration> | undefined
+  readonly toolchains?: ReadonlyArray<RustToolchain.ToolchainDeclaration> | undefined
   readonly flags?: FlagsDeclaration | undefined
   readonly host?: HostDeclaration | undefined
   readonly memory?: SmithersCloudDeclaration | undefined
@@ -483,36 +489,46 @@ export const Workspace = (name: string, options: WorkspaceOptions): WorkspaceDec
   if (!isCacheDeclaration(options.cache)) {
     throw new TypeError("Workspace cache must be an S.Cache declaration")
   }
-  const hasNode = options.runtime !== undefined || options.packageManager !== undefined ||
-    options.nodeModules !== undefined
-  const hasToolchains = options.toolchains !== undefined && options.toolchains.length > 0
-  if (!hasNode && !hasToolchains) throw new TypeError("Workspace requires the Node keys or a non-empty toolchains list")
-  if (
-    hasNode &&
-    (options.runtime === undefined || options.packageManager === undefined || options.nodeModules === undefined)
-  ) {
-    throw new TypeError("Workspace runtime, packageManager, and nodeModules must be declared together")
+  // The toolchain layer list generalizes the JavaScript trio for a workspace
+  // that has no JavaScript in it. A Cargo workspace has no Node runtime, no
+  // package manager, and no installed-modules tree, and making it declare
+  // three values it does not have would put three lies in every Rust
+  // WORKSPACE.ts. So: declare at least one layer, or declare the trio. A
+  // workspace that has both — a repository with a Rust workspace beside a
+  // pnpm one — declares both, and each target resolves against the layer its
+  // rule names.
+  let toolchains: ReadonlyArray<RustToolchain.ToolchainDeclaration> = []
+  if (options.toolchains !== undefined) {
+    if (!Array.isArray(options.toolchains)) throw new TypeError("Workspace toolchains must be an array")
+    for (const layer of options.toolchains) {
+      if (!RustToolchain.isToolchainDeclaration(layer)) {
+        throw new TypeError("Workspace toolchains entries must each be a toolchain layer declaration, S.Rust.Toolchain")
+      }
+    }
+    toolchains = [...options.toolchains]
   }
-  if (
-    options.runtime !== undefined && !Runtime.isRuntime(options.runtime) && !Runtime.isNodeDeclaration(options.runtime)
-  ) {
-    throw new TypeError("Workspace runtime must be an S.Runtime declaration")
-  }
-  if (
-    options.packageManager !== undefined && !PackageManager.isPackageManager(options.packageManager) &&
-    !PackageManager.isYarnDeclaration(options.packageManager)
-  ) {
-    throw new TypeError("Workspace packageManager must be an S.PackageManager declaration")
-  }
-  if (options.nodeModules !== undefined && !isNodeModulesDeclaration(options.nodeModules)) {
-    throw new TypeError("Workspace nodeModules must be an S.Npm.NodeModules declaration")
-  }
-  if (
-    options.toolchains !== undefined &&
-    (!Array.isArray(options.toolchains) || options.toolchains.length === 0 ||
-      !options.toolchains.every(Toolchain.isDeclaration))
-  ) {
-    throw new TypeError("Workspace toolchains must be a non-empty array of toolchain declarations")
+  const declaresToolchain = toolchains.length > 0
+  if (options.runtime === undefined && declaresToolchain) {
+    if (options.packageManager !== undefined || options.nodeModules !== undefined) {
+      throw new TypeError(
+        "Workspace declares packageManager or nodeModules without a runtime; the JavaScript trio is all or nothing"
+      )
+    }
+  } else {
+    if (!Runtime.isRuntime(options.runtime) && !Runtime.isNodeDeclaration(options.runtime)) {
+      throw new TypeError(
+        "Workspace runtime must be an S.Runtime declaration, or the workspace must declare a toolchains layer"
+      )
+    }
+    if (
+      !PackageManager.isPackageManager(options.packageManager) &&
+      !PackageManager.isYarnDeclaration(options.packageManager)
+    ) {
+      throw new TypeError("Workspace packageManager must be an S.PackageManager declaration")
+    }
+    if (!isNodeModulesDeclaration(options.nodeModules)) {
+      throw new TypeError("Workspace nodeModules must be an S.Npm.NodeModules declaration")
+    }
   }
   if (options.flags !== undefined && !isFlagsDeclaration(options.flags)) {
     throw new TypeError("Workspace flags must be an S.Flags declaration")
@@ -560,7 +576,7 @@ export const Workspace = (name: string, options: WorkspaceOptions): WorkspaceDec
   value["runtime"] = options.runtime
   value["packageManager"] = options.packageManager
   value["nodeModules"] = options.nodeModules
-  value["toolchains"] = options.toolchains === undefined ? undefined : Object.freeze([...options.toolchains])
+  value["toolchains"] = Object.freeze(toolchains)
   value["flags"] = options.flags
   value["host"] = options.host
   value["memory"] = options.memory
@@ -588,3 +604,18 @@ export const agentNames = (workspace: WorkspaceDeclaration): ReadonlySet<string>
  */
 export const flagNames = (workspace: WorkspaceDeclaration): ReadonlySet<string> =>
   new Set(workspace.flags === undefined ? [] : Object.keys(workspace.flags.flags))
+
+/**
+ * The first declared Rust toolchain layer, or undefined for a workspace that
+ * declares none.
+ *
+ * Every `S.Cargo.*` target resolves cargo through this layer, so a workspace
+ * without one refuses those targets by name rather than falling back to
+ * whatever `cargo` happens to be on PATH.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const rustToolchain = (
+  workspace: WorkspaceDeclaration
+): RustToolchain.ToolchainDeclaration | undefined => workspace.toolchains[0]

@@ -22,7 +22,7 @@ import * as Target from "./Target.ts"
 
 /** The attr fields every Shell flavor shares. */
 const sharedFields = {
-  bin: Schema.optional(Reference.Tool),
+  bin: Schema.optional(Attr.Executable),
   bun: Schema.optional(Schema.NonEmptyString),
   command: Schema.optional(Schema.NonEmptyString),
   using: Schema.optional(Attr.Using),
@@ -111,6 +111,20 @@ export const DiffAttrs = Schema.Struct({
 export const toolToken = (tool: Reference.Tool): string => `{smthrs:tool:${JSON.stringify(tool)}}`
 
 /**
+ * The sentinel argv token for a build target used as a tool edge,
+ * `bin: sdk.buildCli`.
+ *
+ * A target cannot be serialized into a token the way a reference can, and it
+ * does not have to be: a declaration names exactly one `bin`, so the planner
+ * knows which dependency the token stands for and substitutes the executable
+ * that target declares it produces.
+ *
+ * @category tokens
+ * @since 0.1.0
+ */
+export const targetBinToken = "{smthrs:target-bin}"
+
+/**
  * The sentinel argv token for a workspace flag reference, `S.Flags.<name>`.
  *
  * @category tokens
@@ -162,7 +176,7 @@ export const packageExecTimeoutMs = 30 * 60 * 1000
  * @since 0.1.0
  */
 export interface ExecAttrs {
-  readonly bin?: Reference.Tool | undefined
+  readonly bin?: Reference.Tool | Target.AnyTarget | undefined
   readonly bun?: string | undefined
   readonly command?: string | undefined
   readonly using?: Readonly<Record<string, Reference.Tool>> | undefined
@@ -206,12 +220,15 @@ export const execPayload = (attrs: ExecAttrs): Exec.CallPayload => {
     argv = [bunToken, bunProgramToken]
   } else if (attrs.bin !== undefined) {
     const runtimeArgs = attrs.runtimeArgs ?? []
-    if (attrs.bin._tag === "RuntimeBin") {
-      argv = [toolToken(attrs.bin), ...runtimeArgs, ...args]
-    } else if (runtimeArgs.length > 0) {
-      argv = [toolToken(Reference.runtimeBin), ...runtimeArgs, toolToken(attrs.bin), ...args]
+    // A build target as the tool edge is never a JavaScript runtime, so it
+    // never takes runtime flags; it is the program itself.
+    const token = Target.isTarget(attrs.bin) ? targetBinToken : toolToken(attrs.bin)
+    if (!Target.isTarget(attrs.bin) && attrs.bin._tag === "RuntimeBin") {
+      argv = [token, ...runtimeArgs, ...args]
+    } else if (!Target.isTarget(attrs.bin) && runtimeArgs.length > 0) {
+      argv = [toolToken(Reference.runtimeBin), ...runtimeArgs, token, ...args]
     } else {
-      argv = [toolToken(attrs.bin), ...args]
+      argv = [token, ...args]
     }
   } else {
     throw new Error("shell declaration names no executable")

@@ -103,6 +103,34 @@ export const RuntimeBin = Schema.TaggedStruct("RuntimeBin", {})
 export type RuntimeBin = typeof RuntimeBin.Type
 
 /**
+ * Schema for the workspace Rust toolchain's cargo binary, `S.Rust.bin`.
+ *
+ * The reference names no executable path: the planner resolves it against the
+ * workspace `toolchains` layer, so a workspace without one refuses every cargo
+ * target by name instead of running whatever `cargo` is on PATH.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const CargoBin = Schema.TaggedStruct("CargoBin", {})
+
+/**
+ * The workspace Rust toolchain's cargo binary.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type CargoBin = typeof CargoBin.Type
+
+/**
+ * The workspace cargo binary as an inert reference value.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const cargoBin: CargoBin = Object.freeze(CargoBin.make({}))
+
+/**
  * Schema for an npx-style one-shot tool reference, `S.Runtime.npx(spec)`.
  *
  * @category schemas
@@ -121,87 +149,13 @@ export const RuntimeNpx = Schema.TaggedStruct("RuntimeNpx", {
 export type RuntimeNpx = typeof RuntimeNpx.Type
 
 /**
- * Schema for the selected Go toolchain binary.
- *
- * @category schemas
- * @since 0.1.0
- */
-export const GoBin = Schema.TaggedStruct("GoBin", {})
-/**
- * A selected Go toolchain binary reference.
- *
- * @category models
- * @since 0.1.0
- */
-export type GoBin = typeof GoBin.Type
-/**
- * Schema for a versioned one-shot Go tool reference.
- *
- * @category schemas
- * @since 0.1.0
- */
-export const GoRun = Schema.TaggedStruct("GoRun", { spec: Schema.NonEmptyString })
-/**
- * A versioned one-shot Go tool reference.
- *
- * @category models
- * @since 0.1.0
- */
-export type GoRun = typeof GoRun.Type
-/**
- * Schema for a binary supplied by a Nix development shell.
- *
- * @category schemas
- * @since 0.1.0
- */
-export const NixBin = Schema.TaggedStruct("NixBin", { name: Schema.NonEmptyString })
-/**
- * A binary supplied by a Nix development shell.
- *
- * @category models
- * @since 0.1.0
- */
-export type NixBin = typeof NixBin.Type
-const targetTypeId = Symbol.for("smithers-build/Target")
-/**
- * Structural view admitted when a build target is used as a tool.
- *
- * @category models
- * @since 0.1.0
- */
-export interface TargetTool {
-  readonly _tag: string
-}
-/**
- * Schema for a build target used as an executable tool edge.
- *
- * @category schemas
- * @since 0.1.0
- */
-export const TargetTool = Schema.declare<TargetTool>((value): value is TargetTool =>
-  (typeof value === "object" && value !== null || typeof value === "function") &&
-  typeof (value as { readonly _tag?: unknown })._tag === "string" &&
-  Object.getOwnPropertyDescriptor(value, targetTypeId)?.value !== undefined
-)
-
-/**
  * Schema for every executable tool reference an attrs `bin` or `using` slot
  * accepts.
  *
  * @category schemas
  * @since 0.1.0
  */
-export const Tool = Schema.Union([
-  NodeModuleBin,
-  HostBin,
-  PackageManagerBin,
-  RuntimeBin,
-  RuntimeNpx,
-  GoBin,
-  GoRun,
-  NixBin,
-  TargetTool
-])
+export const Tool = Schema.Union([NodeModuleBin, HostBin, PackageManagerBin, RuntimeBin, RuntimeNpx, CargoBin])
 
 /**
  * Every executable tool reference.
@@ -274,28 +228,6 @@ export const runtimeBin: RuntimeBin = Object.freeze(RuntimeBin.make({}))
  */
 export const runtimeNpx = (spec: string): RuntimeNpx =>
   Object.freeze(RuntimeNpx.make({ spec: boundedName(spec, "Runtime.npx spec") }))
-
-/**
- * References the selected Go toolchain binary.
- *
- * @category constructors
- * @since 0.1.0
- */
-export const goBin: GoBin = Object.freeze(GoBin.make({}))
-/**
- * References a versioned one-shot Go tool.
- *
- * @category constructors
- * @since 0.1.0
- */
-export const goRun = (spec: string): GoRun => Object.freeze(GoRun.make({ spec: boundedName(spec, "Go.run spec") }))
-/**
- * References a binary supplied by a Nix development shell.
- *
- * @category constructors
- * @since 0.1.0
- */
-export const nixBin = (name: string): NixBin => Object.freeze(NixBin.make({ name: boundedName(name, "Nix.bin name") }))
 
 /**
  * Schema for a declared symlink emit value, `S.symlink(path)`.
