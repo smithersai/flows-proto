@@ -24,6 +24,7 @@
  * @since 0.1.0
  */
 import * as Schema from "effect/Schema"
+import * as Input from "./Input.ts"
 
 /**
  * Schema for the supported ways of obtaining a Rust toolchain.
@@ -179,3 +180,176 @@ export const cargo = (toolchain: RustToolchain, args: ReadonlyArray<string>): Ar
   toolchain.cargo,
   ...args
 ]
+
+/**
+ * Schema for the workspace Rust toolchain layer, `S.Rust.Toolchain`.
+ *
+ * The layer is what a Cargo workspace declares instead of a JavaScript
+ * runtime and package manager: it names the cargo and rustup executables
+ * every `S.Cargo.*` target resolves against, and the pin that fixes their
+ * version. Two forms exist because two design partners pin differently. A
+ * repository with a checked-in `rust-toolchain.toml` names that file
+ * (`toolchain`) and, when it commits one, its lockfile; a repository whose CI
+ * pins the channel by hand names the channel as declared text (`channel`)
+ * beside the workspace manifest the pin applies to. Exactly one of the two is
+ * present, so a declaration can never say two different things about which
+ * compiler runs.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const ToolchainDeclaration = Schema.TaggedStruct("RustToolchain", {
+  workspace: Schema.optional(Input.File),
+  channel: Schema.optional(Schema.NonEmptyString),
+  toolchain: Schema.optional(Input.File),
+  lockfile: Schema.optional(Input.File),
+  rustup: Schema.NonEmptyString,
+  cargo: Schema.NonEmptyString
+})
+
+/**
+ * One declared workspace Rust toolchain layer.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type ToolchainDeclaration = typeof ToolchainDeclaration.Type
+
+/**
+ * Options accepted by {@link Toolchain}.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface ToolchainOptions {
+  /** The Cargo workspace manifest the pin applies to. */
+  readonly workspace?: Input.File | undefined
+  /** The channel this workspace pins as declared text, for example `"1.91"`. */
+  readonly channel?: string | undefined
+  /** The checked-in `rustup` pin file. */
+  readonly toolchain?: Input.File | undefined
+  /** The committed lockfile, when the repository commits one. */
+  readonly lockfile?: Input.File | undefined
+  /** @default "rustup" */
+  readonly rustup?: string | undefined
+  /** @default "cargo" */
+  readonly cargo?: string | undefined
+}
+
+const declaredFile = (value: unknown, what: string): Input.File => {
+  if (
+    typeof value !== "object" || value === null ||
+    (value as { readonly _tag?: unknown })._tag !== "File" ||
+    typeof (value as { readonly path?: unknown }).path !== "string"
+  ) throw new TypeError(`${what} must be an S.file declaration`)
+  return value as Input.File
+}
+
+const toolchainOptionNames: ReadonlySet<string> = new Set([
+  "workspace",
+  "channel",
+  "toolchain",
+  "lockfile",
+  "rustup",
+  "cargo"
+])
+
+/**
+ * Declares the workspace Rust toolchain layer.
+ *
+ * @example
+ * ```ts
+ * import { Smithers as S } from "@smthrs/targets"
+ *
+ * const rust = S.Rust.Toolchain({ workspace: S.file("//Cargo.toml"), channel: "1.91" })
+ * ```
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const Toolchain = (options: ToolchainOptions = {}): ToolchainDeclaration => {
+  if (typeof options !== "object" || options === null) {
+    throw new TypeError("Rust.Toolchain options must be an object")
+  }
+  for (const key of Object.getOwnPropertyNames(options)) {
+    if (!toolchainOptionNames.has(key)) {
+      throw new TypeError(`Rust.Toolchain received unknown option ${JSON.stringify(key)}`)
+    }
+  }
+  const named = [
+    options.channel === undefined ? undefined : "channel",
+    options.toolchain === undefined
+      ? undefined
+      : "toolchain"
+  ].filter((entry) => entry !== undefined)
+  if (named.length !== 1) {
+    throw new Error(
+      `Rust.Toolchain requires exactly one of channel, toolchain; received ${
+        named.length === 0 ? "none" : named.join(", ")
+      }`
+    )
+  }
+  return Object.freeze(ToolchainDeclaration.make({
+    ...(options.workspace === undefined
+      ? {}
+      : { workspace: declaredFile(options.workspace, "Rust.Toolchain workspace") }),
+    ...(options.channel === undefined ? {} : { channel: usable(options.channel, "rust toolchain channel") }),
+    ...(options.toolchain === undefined
+      ? {}
+      : { toolchain: declaredFile(options.toolchain, "Rust.Toolchain toolchain") }),
+    ...(options.lockfile === undefined ? {} : { lockfile: declaredFile(options.lockfile, "Rust.Toolchain lockfile") }),
+    rustup: options.rustup === undefined ? "rustup" : usable(options.rustup, "rustup executable"),
+    cargo: options.cargo === undefined ? "cargo" : usable(options.cargo, "cargo executable")
+  }))
+}
+
+/**
+ * Checks whether a value is a workspace Rust toolchain layer declaration.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
+export const isToolchainDeclaration: (value: unknown) => value is ToolchainDeclaration = Schema.is(
+  ToolchainDeclaration
+)
+
+/**
+ * Builds the argv that installs the declared toolchain layer.
+ *
+ * The channel form names the channel, so a host without it installs exactly
+ * what the workspace pinned. The pin-file form installs bare: `rustup` reads
+ * the file and brings the components and targets it names with it.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const toolchainInstall = (declaration: ToolchainDeclaration): ReadonlyArray<string> =>
+  declaration.channel === undefined
+    ? [declaration.rustup, "toolchain", "install"]
+    : [declaration.rustup, "toolchain", "install", declaration.channel]
+
+/**
+ * The declared files a toolchain layer contributes as key material.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const toolchainInputs = (declaration: ToolchainDeclaration): ReadonlyArray<Input.File> =>
+  [declaration.workspace, declaration.toolchain, declaration.lockfile].filter((entry) => entry !== undefined)
+
+/**
+ * The key-material identity of one toolchain layer: what fixes the compiler,
+ * without the executable paths the planner resolves separately.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const toolchainIdentity = (declaration: ToolchainDeclaration): unknown => ({
+  tag: "RustToolchain",
+  channel: declaration.channel ?? null,
+  toolchain: declaration.toolchain?.path ?? null,
+  lockfile: declaration.lockfile?.path ?? null,
+  workspace: declaration.workspace?.path ?? null,
+  cargo: declaration.cargo,
+  rustup: declaration.rustup
+})

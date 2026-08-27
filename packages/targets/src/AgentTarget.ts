@@ -33,6 +33,108 @@ import * as Target from "./Target.ts"
 export const maximumPromptBytes = 1024 * 1024
 
 /**
+ * Schema for a Claude Code agent declaration.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const ClaudeCodeAgent = Schema.TaggedStruct("AgentClaudeCode", {
+  model: Schema.NonEmptyString
+})
+
+/**
+ * A Claude Code agent declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type ClaudeCodeAgent = typeof ClaudeCodeAgent.Type
+
+/**
+ * Schema for a Codex agent declaration.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const CodexAgent = Schema.TaggedStruct("AgentCodex", {
+  model: Schema.NonEmptyString
+})
+
+/**
+ * A Codex agent declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type CodexAgent = typeof CodexAgent.Type
+
+/**
+ * Schema for an agent pool declaration naming sibling agents.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const PoolAgent = Schema.TaggedStruct("AgentPool", {
+  agents: Schema.Array(Schema.NonEmptyString)
+})
+
+/**
+ * An agent pool declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type PoolAgent = typeof PoolAgent.Type
+
+/**
+ * Schema for one workspace agent declaration.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const AgentDeclaration = Schema.Union([ClaudeCodeAgent, CodexAgent, PoolAgent])
+
+/**
+ * One workspace agent declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type AgentDeclaration = typeof AgentDeclaration.Type
+
+/**
+ * Checks whether a value is one workspace agent declaration.
+ *
+ * @category guards
+ * @since 0.1.0
+ */
+export const isAgentDeclaration: (value: unknown) => value is AgentDeclaration = Schema.is(AgentDeclaration)
+
+/**
+ * Schema for the `agent` attr: a reference to a workspace-declared agent
+ * (`S.Agents.luna`), or an agent declaration written where it is used
+ * (`S.Agent.Codex("luna")`).
+ *
+ * Both spellings say the same thing about which agent runs. The reference
+ * form names the workspace's reviewed set and is what a repository with an
+ * `S.Agents({ ... })` declaration writes; the inline form is what a
+ * repository without one writes, and it is not less explicit — the
+ * declaration is right there in the lane.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const AgentSelector = Schema.Union([Reference.AgentRef, AgentDeclaration])
+
+/**
+ * The `agent` attr: a workspace agent reference, or an inline declaration.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type AgentSelector = typeof AgentSelector.Type
+
+/**
  * Maximum findings accepted from one agent response.
  *
  * @category constants
@@ -396,7 +498,7 @@ export type PrError = typeof PrError.Type
  * @since 0.1.0
  */
 export const LintPayload = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(AgentSelector),
   promptPath: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
   packageDirectory: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPathLength))),
   diffs: Schema.Array(Input.GitDiff),
@@ -452,7 +554,7 @@ export type LintReport = typeof LintReport.Type
  * @since 0.1.0
  */
 export const DiffPayload = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(AgentSelector),
   promptPath: Schema.NonEmptyString.check(Schema.isMaxLength(maximumPathLength)),
   packageDirectory: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPathLength))),
   payloadSpec: Schema.Record(Schema.String, Reference.InputSpec),
@@ -651,7 +753,7 @@ export const targetIdentity = (target: Target.AnyTarget): string => {
  * @since 0.1.0
  */
 export const LintAttrs = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(AgentSelector),
   prompt: Input.File,
   data: Attr.Data,
   fixes: Schema.optional(Schema.Array(Schema.NonEmptyString))
@@ -703,7 +805,7 @@ export const Lint = (attrs: (typeof LintAttrs)["~type.make.in"]): Target.AnyTarg
  * @since 0.1.0
  */
 export const DiffAttrs = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(AgentSelector),
   prompt: Input.File,
   payload: Schema.optional(Schema.Record(Schema.String, Reference.InputSpec)),
   mcp: Schema.optional(Schema.Array(Reference.McpHttp)),
@@ -765,7 +867,7 @@ export const Diff = (attrs: (typeof DiffAttrs)["~type.make.in"]): Target.AnyTarg
  * @since 0.1.0
  */
 export const PrAttrs = Schema.Struct({
-  agent: Schema.optional(Reference.AgentRef),
+  agent: Schema.optional(AgentSelector),
   prompt: Input.File,
   data: Attr.Data,
   changes: Schema.Array(Schema.NonEmptyString),
@@ -820,100 +922,39 @@ const prDefinition = Target.make("Agent.Pr", {
 export const Pr = (attrs: (typeof PrAttrs)["~type.make.in"]): Target.AnyTarget => prDefinition(attrs)
 
 /**
- * Schema for a Claude Code agent declaration.
+ * The model name one agent declaration names.
  *
- * @category schemas
- * @since 0.1.0
+ * The model is the whole declaration, so a bare string is the same
+ * declaration written shorter: `S.Agent.Codex("luna")` and
+ * `S.Agent.Codex({ model: "luna" })` construct the same value. Both spellings
+ * appear in design-partner declarations, and neither is more correct than the
+ * other.
  */
-export const ClaudeCodeAgent = Schema.TaggedStruct("AgentClaudeCode", {
-  model: Schema.NonEmptyString
-})
+const modelOf = (options: string | { readonly model: string }, what: string): string => {
+  const model = typeof options === "string" ? options : options?.model
+  if (typeof model !== "string" || model.trim() === "") {
+    throw new TypeError(`${what} requires a model name`)
+  }
+  return model
+}
 
 /**
- * A Claude Code agent declaration.
- *
- * @category models
- * @since 0.1.0
- */
-export type ClaudeCodeAgent = typeof ClaudeCodeAgent.Type
-
-/**
- * Schema for a Codex agent declaration.
- *
- * @category schemas
- * @since 0.1.0
- */
-export const CodexAgent = Schema.TaggedStruct("AgentCodex", {
-  model: Schema.NonEmptyString
-})
-
-/**
- * A Codex agent declaration.
- *
- * @category models
- * @since 0.1.0
- */
-export type CodexAgent = typeof CodexAgent.Type
-
-/**
- * Schema for an agent pool declaration naming sibling agents.
- *
- * @category schemas
- * @since 0.1.0
- */
-export const PoolAgent = Schema.TaggedStruct("AgentPool", {
-  agents: Schema.Array(Schema.NonEmptyString)
-})
-
-/**
- * An agent pool declaration.
- *
- * @category models
- * @since 0.1.0
- */
-export type PoolAgent = typeof PoolAgent.Type
-
-/**
- * Schema for one workspace agent declaration.
- *
- * @category schemas
- * @since 0.1.0
- */
-export const AgentDeclaration = Schema.Union([ClaudeCodeAgent, CodexAgent, PoolAgent])
-
-/**
- * One workspace agent declaration.
- *
- * @category models
- * @since 0.1.0
- */
-export type AgentDeclaration = typeof AgentDeclaration.Type
-
-/**
- * Checks whether a value is one workspace agent declaration.
- *
- * @category guards
- * @since 0.1.0
- */
-export const isAgentDeclaration: (value: unknown) => value is AgentDeclaration = Schema.is(AgentDeclaration)
-
-/**
- * Declares a Claude Code agent.
+ * Declares a Claude Code agent, by model name or as `{ model }`.
  *
  * @category constructors
  * @since 0.1.0
  */
-export const ClaudeCode = (options: { readonly model: string }): ClaudeCodeAgent =>
-  Object.freeze(ClaudeCodeAgent.make({ model: options.model }))
+export const ClaudeCode = (options: string | { readonly model: string }): ClaudeCodeAgent =>
+  Object.freeze(ClaudeCodeAgent.make({ model: modelOf(options, "Agent.ClaudeCode") }))
 
 /**
- * Declares a Codex agent.
+ * Declares a Codex agent, by model name or as `{ model }`.
  *
  * @category constructors
  * @since 0.1.0
  */
-export const Codex = (options: { readonly model: string }): CodexAgent =>
-  Object.freeze(CodexAgent.make({ model: options.model }))
+export const Codex = (options: string | { readonly model: string }): CodexAgent =>
+  Object.freeze(CodexAgent.make({ model: modelOf(options, "Agent.Codex") }))
 
 /**
  * Declares a pool over sibling agent names.

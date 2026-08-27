@@ -368,3 +368,90 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   namespaces exist instead of a bare TypeError). The remaining Go gaps (toolchains workspace key, S.Go.*,
   S.Docker.*, S.Nix.*, S.Stamp, build target as tool edge, readiness exec probe) are listed with estimates
   in artsy/FLOWS-GO-READINESS.md.
+- 2026-08-27 (Rust/Cargo readiness pass, from aomi-labs/aomi-sdk): the full-fidelity
+  design-partner files load and execute. (1) `S.Workspace` takes a `toolchains` layer
+  list; the runtime/packageManager/nodeModules trio is required only for a workspace
+  that declares no layer, and the JavaScript path is unchanged. (2) `S.Rust.Toolchain`
+  in both forms (`{ workspace, channel }` and `{ toolchain, lockfile }`); the declared
+  channel reaches every cargo run as `RUSTUP_TOOLCHAIN`, so a host without the pin
+  fails at the start of the run naming the channel. (3) `S.Cargo.Fetch/Build/Test/
+  Clippy/Fmt/Doc` and the `S.Cargo.AppSet` crate set, keyed on the expanded set's
+  manifests and their contents; `S.Files.difference` composes over crate sets.
+  `Cargo.Fmt/Clippy/Test` keep their BUILD-era check constructors under the same names,
+  told apart by the crate selector. (4) A build target as a tool edge
+  (`S.Shell.Build({ bin: sdk.buildCli })`, `S.Generate({ bin })`), resolving to the one
+  binary that build declares. (5) `S.Agent.Codex("luna")` (bare model name) and an
+  agent declaration written inline on a lane's `agent` attr, for a repository with no
+  `S.Agents` map. Proof, from `/Users/williamcory/aomi/aomi-sdk`: `query '//...'` lists
+  40 labels with zero refusals; `graph '//:ci'` renders the Suite and its 11 edges;
+  `lint '//sdk:format'` really runs `cargo fmt --all -- --check` green and hits the
+  cache on the repeat; `build '//sdk:fetch'` delivers `Cargo.lock` and a 655M
+  `.cargo-home` in 21.7s, after which `lint '//sdk:clippy'` runs
+  `cargo clippy --workspace --lib --locked --offline -- -D warnings` green under the
+  sandbox in 27.6s and hits on the repeat. `//apps:compile` plans 35 per-crate commands
+  from the AppSet difference. The aomi (JavaScript) regression is unchanged at 121
+  labels. Deferred, with reasons, in the same pass: `Cargo.Build`/`Cargo.Doc` are not
+  cacheable (their product is a `target/` tree this lane does not capture into the
+  store, so replaying the verdict would report a build the working tree may no longer
+  hold; cargo's own incremental compilation is what makes the repeat cheap), the
+  toolchain layer does not install a missing channel (it renders the argv and the CI
+  setup step; a local host installs it with `rustup toolchain install <channel>`), and
+  a crate-set target is one node running N cargo commands rather than N keyed nodes
+  (per-crate node fan-out needs planner-level synthesis of labels that no Package map
+  declares). Two `//:ci` members stay red against the live design-partner tree, both
+  because the declaration says something the tree does not support, and neither is a
+  loader refusal: `//ext:test` has two `aomi-ext` unit tests that call
+  `https://blue-api.morpho.org/graphql` for real while the declaration opens no network
+  (the fix is `sandbox: { network: true }` on that target, or `#[ignore]` on the two
+  tests), and `//apps:{compile,clippy,test}` pass `--locked` against 35 crates excluded
+  from the root workspace, so each is its own lockfile domain that `//sdk:fetch` — one
+  fetch over one workspace manifest — never locked. `S.Cargo.Fetch` now takes a `crates`
+  selector so that second one is a one-line declaration fix
+  (`S.Cargo.Fetch({ crates, outDirs: ["//.cargo-home"], sandbox: { network: true } })`,
+  named in the apps targets' `data`); proved in `CargoPlan.test.ts`, not applied, because
+  the design-partner files are read-only here. Mid-pass the live design partner moved:
+  aomi-sdk 5d2adbc..542c6d0 (2026-08-27 03:14-03:17) added five agent lanes and three
+  guard scripts, and four of the new lanes name `S.Agents.luna`/`S.Agents.sol` while
+  WORKSPACE.ts still declares no `agents` map, so every command against that revision
+  refuses at index time with `unknown_agent`. The measurements above are the revision
+  before it. On the new revision, with `agents: S.Agents({ default, luna, sol })` added
+  to a read-only `git archive` copy and nothing else changed, `query '//...'` lists 48
+  labels and `test '//:ci' --plan` reports zero refusals.
+- 2026-08-27 (Rust/Cargo review pass, same design partner): the surface above re-verified
+  against `aomi-labs/aomi-sdk` d135b86 and four defects fixed. (1) A macOS `cc` reached
+  through `PATH` — the Xcode toolchain clang, not the `/usr/bin/cc` shim — takes its
+  sysroot from `SDKROOT` and looks nowhere else, and `Exec.inheritedEnvironmentNames`
+  withheld it, so every cargo target with a `-sys` dependency died on
+  `fatal error: 'stdlib.h' file not found` three processes down. `SDKROOT` and
+  `DEVELOPER_DIR` now inherit like `PATH` does. It went unseen in the first pass because
+  that pass measured against the design partner's warm `target/`, where `aws-lc-sys` was
+  already built; a clean tree fails every time. (2) A `Cargo.Fetch` dependency substituted
+  the digest of its delivered files for its own key, which dropped the `CARGO_HOME` it
+  delivers to: two workspaces differing only in the fetch's `outDirs` keyed their offline
+  dependents identically, and a fetch declaring no `outFiles` contributed a constant. The
+  substitute key now carries the resolved cargo home. (3) `S.Shell.Build({ bin: <target>,
+  runtimeArgs })` dropped the runtime flags silently; a built binary is not a JavaScript
+  runtime, so the declaration is refused instead of running a different argv. (4)
+  `S.Cargo.Fetch` accepted `workspace` and `crates` together and silently locked only the
+  first, and the planner refused a fetch that named neither even though the rendering
+  handles it; naming both is now a declaration error and naming neither plans the bare
+  `cargo fetch`. Proof, from a read-only `git archive` copy of d135b86 with the missing
+  `agents` map added (see below): `query '//...'` lists 48 labels across 6 packages with
+  zero refusals; `graph '//:ci'` renders the Suite and its 11 edges; `lint '//sdk:format'`
+  runs `cargo fmt --all -- --check` green in 720ms and hits the cache on the repeat;
+  `build '//sdk:fetch'` delivers an 89KB `Cargo.lock` and a 655M `.cargo-home` in 14.4s;
+  `lint '//sdk:clippy'` then runs
+  `cargo clippy --workspace --lib --locked --offline -- -D warnings` green under the
+  sandbox against that fetch. The JavaScript regression was re-measured directly rather
+  than recalled: the same `query '//...'` over `/Users/williamcory/aomi/aomi` at the branch
+  base and at HEAD returns the identical 151-label set with zero refusals (the earlier
+  "121 labels" line above predates the design partner's own growth and is superseded by
+  this measurement, not by a behavior change). The live d135b86 revision still refuses at
+  index time with `unknown_agent: S.Agents.luna names no declared workspace agent`: five
+  agent lanes in `PACKAGE.ts` and `apps/PACKAGE.ts` name `S.Agents.luna`/`S.Agents.sol`
+  while `WORKSPACE.ts` declares no `agents` map. That is the partner's declaration to fix
+  — a reference to an undeclared agent has no correct resolution — and the one-line fix is
+  `agents: S.Agents({ default, luna, sol })` in `WORKSPACE.ts`, or the inline
+  `S.Agent.Codex("luna")` form on each lane. `//apps:*` was not exercised in this pass:
+  the 35 excluded app crates are each their own lockfile domain and `//apps:fetch` was
+  outside the time budget.

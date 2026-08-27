@@ -290,11 +290,39 @@ export const RustToolchain = RustToolchainModule
 export type RustToolchain = RustToolchainModule.RustToolchain
 
 /**
- * Declared cargo gates and the argv each one renders to.
+ * The WORKSPACE.ts Rust surface: `Rust.Toolchain({ workspace, channel })` or
+ * `Rust.Toolchain({ toolchain, lockfile })`, the layer a Cargo workspace
+ * declares in place of the JavaScript runtime and package manager.
  *
- * The targets themselves are `Smithers.CargoLint` and `Smithers.CargoTest`; this
- * namespace holds the check constructors a BUILD.ts file passes them,
- * `Cargo.Fmt()`, `Cargo.Clippy()`, and `Cargo.Test()`.
+ * The namespace is the same module {@link RustToolchain} names; the two
+ * spellings coexist because the BUILD-era `RustToolchain.Pinned` declaration
+ * predates the layer and keeps working unchanged.
+ *
+ * @category namespace exports
+ * @since 0.1.0
+ */
+export const Rust = RustToolchainModule
+
+/**
+ * One declared workspace Rust toolchain layer.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Rust = RustToolchainModule.ToolchainDeclaration
+
+/**
+ * The cargo surface, in both of its generations.
+ *
+ * Package mode: `Cargo.Fetch`, `Cargo.Build`, `Cargo.Test`, `Cargo.Clippy`,
+ * `Cargo.Fmt`, `Cargo.Doc`, and the `Cargo.AppSet` crate set. Each is a target
+ * whose crate selector — `workspace: true`, `package: "<name>"`, or
+ * `crates: <set>` — says which crates it runs over.
+ *
+ * BUILD.ts: the check constructors the legacy `Smithers.CargoLint` and
+ * `Smithers.CargoTest` targets take as an attr. `Cargo.Fmt()`,
+ * `Cargo.Clippy()`, and `Cargo.Test()` still return those check values; a call
+ * that names a crate selector returns the package-mode target instead.
  *
  * @category namespace exports
  * @since 0.1.0

@@ -337,6 +337,14 @@ const tail = (text: string): string => keepTail(text, stderrTailLimit)
  * the variable carries a mode, not machine identity, so inheriting it keeps
  * tool behavior aligned with the host the run is actually on.
  *
+ * `SDKROOT` and `DEVELOPER_DIR` are the same kind of variable one layer down:
+ * they say where the platform's C headers and libraries live, the way `PATH`
+ * says where its executables live. A macOS `cc` resolved through `PATH` to an
+ * Xcode toolchain clang takes its sysroot from `SDKROOT` and looks nowhere
+ * else, so withholding it fails any cargo target with a `-sys` dependency on
+ * `'stdlib.h' file not found` — a host configuration problem reported as a
+ * compile error three processes down.
+ *
  * @category constants
  * @since 0.1.0
  */
@@ -344,10 +352,12 @@ export const inheritedEnvironmentNames: ReadonlyArray<string> = Object.freeze([
   "APPDATA",
   "CI",
   "COMSPEC",
+  "DEVELOPER_DIR",
   "HOME",
   "LOCALAPPDATA",
   "PATH",
   "PATHEXT",
+  "SDKROOT",
   "SYSTEMROOT",
   "TEMP",
   "TMP",
