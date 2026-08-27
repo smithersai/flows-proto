@@ -454,3 +454,16 @@ Lane L4 (`local-app/harness-terminal`, 2026-08-26):
 - `e2e/playwright/terminal.spec.ts` and `harness.spec.ts` run against the
   real origin (T1). `harness.spec.ts` skips its signed-in assertions with a
   reason when `~/.claude.json` has no `oauthAccount`.
+- Real window (the dev `.app` launched with `ELECTROBUN_CEF_REMOTE_DEBUGGING_PORT`,
+  driven over CDP, 2026-08-26): the `+` menu's Terminal row opens a zsh tab,
+  a click in the emulator takes keyboard focus and `echo hi-from-cef` renders
+  its output; Cmd+T opens a second terminal tab and activates it; the first
+  fit posts the real geometry (`145x49` at 1180x800) to `/api/pty/:id/resize`;
+  the Claude Code row reads `Claude Code will@codeplane.app`, its tab shows
+  the banner under the harness sandbox and typed text lands in Claude Code's
+  composer; Cmd+W asks, confirms, and `GET /api/pty` empties. A native window
+  resize could not be driven from the harness (CDP's `Browser.getWindowForTarget`
+  answers "Browser window not found" for the embedded CEF view, and
+  `osascript` lacks Accessibility access), so the ResizeObserver refit is
+  proven by the mount-time fit only; the adapter posts every changed
+  geometry from the same path.
