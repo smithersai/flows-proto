@@ -64,6 +64,57 @@ export const ReleaseActivity = Schema.Literals([
  */
 export type ReleaseActivity = typeof ReleaseActivity.Type
 
+export const PullRequestActivity = Schema.Literals([
+  "assigned",
+  "unassigned",
+  "labeled",
+  "unlabeled",
+  "opened",
+  "edited",
+  "closed",
+  "reopened",
+  "synchronize",
+  "converted_to_draft",
+  "locked",
+  "unlocked",
+  "enqueued",
+  "dequeued",
+  "milestoned",
+  "demilestoned",
+  "ready_for_review",
+  "review_requested",
+  "review_request_removed",
+  "auto_merge_enabled",
+  "auto_merge_disabled"
+])
+
+export const IssueActivity = Schema.Literals([
+  "opened",
+  "edited",
+  "deleted",
+  "transferred",
+  "pinned",
+  "unpinned",
+  "closed",
+  "reopened",
+  "assigned",
+  "unassigned",
+  "labeled",
+  "unlabeled",
+  "locked",
+  "unlocked",
+  "milestoned",
+  "demilestoned"
+])
+
+export const WorkflowDispatchInput = Schema.Struct({
+  description: Schema.optional(Schema.String),
+  required: Schema.optional(Schema.Boolean),
+  default: Schema.optional(Schema.Union([Schema.String, Schema.Boolean, Schema.Number])),
+  type: Schema.optional(Schema.Literals(["boolean", "choice", "environment", "string"])),
+  options: Schema.optional(Schema.Array(Schema.String))
+})
+
 /**
  * Schema for a generated workflow's trigger table. `schedule` takes
  * five-field cron expressions (rendered as GitHub's `schedule: [{ cron }]`
@@ -73,11 +124,21 @@ export type ReleaseActivity = typeof ReleaseActivity.Type
  * @since 0.1.0
  */
 export const On = Schema.Struct({
-  pullRequest: Schema.optional(Schema.Boolean),
+  pullRequest: Schema.optional(Schema.Union([
+    Schema.Boolean,
+    Schema.Struct({
+      branches: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+      types: Schema.optional(Schema.Array(PullRequestActivity))
+    })
+  ])),
+  issues: Schema.optional(Schema.Struct({ types: Schema.optional(Schema.Array(IssueActivity)) })),
   push: Schema.optional(Schema.Struct({ branches: Schema.Array(Schema.NonEmptyString) })),
   schedule: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   release: Schema.optional(Schema.Array(ReleaseActivity)),
-  workflowDispatch: Schema.optional(Schema.Boolean)
+  workflowDispatch: Schema.optional(Schema.Union([
+    Schema.Boolean,
+    Schema.Struct({ inputs: Schema.Record(Schema.String, WorkflowDispatchInput) })
+  ]))
 })
 
 /**
@@ -91,6 +152,28 @@ export const Concurrency = Schema.Struct({
   cancelInProgress: Schema.Union([Schema.Boolean, Schema.NonEmptyString])
 })
 
+export const Permission = Schema.Literals(["read", "write", "none"])
+
+export const Step = Schema.Union([
+  Schema.Struct({
+    name: Schema.optional(Schema.NonEmptyString),
+    id: Schema.optional(Schema.NonEmptyString),
+    uses: Schema.NonEmptyString,
+    with: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+    env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+    if: Schema.optional(Schema.NonEmptyString)
+  }),
+  Schema.Struct({
+    name: Schema.optional(Schema.NonEmptyString),
+    id: Schema.optional(Schema.NonEmptyString),
+    run: Schema.NonEmptyString,
+    shell: Schema.optional(Schema.NonEmptyString),
+    workingDirectory: Schema.optional(Schema.NonEmptyString),
+    env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+    if: Schema.optional(Schema.NonEmptyString)
+  })
+])
+
 /**
  * Attrs for {@link Workflow}.
  *
@@ -101,6 +184,13 @@ export const WorkflowAttrs = Schema.Struct({
   name: Schema.NonEmptyString,
   on: On,
   concurrency: Schema.optional(Concurrency),
+  permissions: Schema.optional(Schema.Record(Schema.String, Permission)),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  environment: Schema.optional(Schema.NonEmptyString),
+  condition: Schema.optional(Schema.NonEmptyString),
+  jobName: Schema.optional(Schema.NonEmptyString),
+  runsOn: Schema.optional(Schema.NonEmptyString),
+  steps: Schema.optional(Schema.Array(Step)),
   setup: Schema.optional(Target.Target),
   affected: Schema.optional(Schema.Boolean),
   run: Schema.Array(Target.Target)

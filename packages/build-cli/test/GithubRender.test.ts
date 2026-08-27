@@ -382,6 +382,82 @@ describe("triggers", () => {
   it("rejects a release activity GitHub does not define", () => {
     expect(() => S.Github.Workflow({ name: "release", on: { release: ["tagged"] }, run: [] } as never)).toThrow()
   })
+
+  it("renders typed pull request and issue triggers plus dispatch inputs", () => {
+    const workflow = S.Github.Workflow({
+      name: "coordinate",
+      on: {
+        pullRequest: { types: ["opened", "ready_for_review", "labeled"] },
+        issues: { types: ["opened", "labeled"] },
+        workflowDispatch: {
+          inputs: {
+            force_publish: {
+              description: "Publish even when unchanged",
+              required: true,
+              default: false,
+              type: "boolean"
+            }
+          }
+        }
+      },
+      run: []
+    })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"]]),
+      packageDir: ".github"
+    })
+    const content = rendered.files.find((file) => file.path === "workflows/coordinate.yml")!.content
+    expect(content).toContain(
+      "  pull_request:\n    types:\n      - opened\n      - ready_for_review\n      - labeled\n"
+    )
+    expect(content).toContain("  issues:\n    types:\n      - opened\n      - labeled\n")
+    expect(content).toContain(
+      "  workflow_dispatch:\n    inputs:\n      force_publish:\n        description: Publish even when unchanged\n" +
+        "        required: true\n        default: false\n        type: boolean\n"
+    )
+  })
+
+  it("renders permissions, job policy, and custom steps", () => {
+    const workflow = S.Github.Workflow({
+      name: "coordinate",
+      on: { issues: { types: ["opened"] } },
+      permissions: { contents: "read", "pull-requests": "write", issues: "read" },
+      env: { CARGO_TERM_COLOR: "always" },
+      environment: "prod",
+      condition: "github.event_name != 'pull_request' || github.event.pull_request.state == 'open'",
+      jobName: "Coordinate",
+      runsOn: "blacksmith-4vcpu-ubuntu-2404",
+      steps: [
+        {
+          uses: "actions/checkout@v4",
+          with: { repository: "aomi-labs/aomi-scrum", token: "${{ secrets.COORDINATOR_TOKEN }}" }
+        },
+        { name: "Install", run: "bun install", workingDirectory: ".smithers" },
+        { name: "Coordinate", run: "bun run coordinate", env: { GH_TOKEN: "${{ github.token }}" } }
+      ],
+      run: []
+    })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"]]),
+      packageDir: ".github"
+    })
+    const content = rendered.files.find((file) => file.path === "workflows/coordinate.yml")!.content
+    expect(content).toContain("permissions:\n  contents: read\n  pull-requests: write\n  issues: read\n")
+    expect(content).toContain("env:\n  CARGO_TERM_COLOR: always\n")
+    expect(content).toContain("    name: Coordinate\n")
+    expect(content).toContain("    environment: prod\n")
+    expect(content).toContain("    runs-on: blacksmith-4vcpu-ubuntu-2404\n")
+    expect(content).toContain("      - uses: actions/checkout@v4\n        with:\n")
+    expect(content).toContain("          repository: aomi-labs/aomi-scrum\n")
+    expect(content).toContain("        working-directory: \".smithers\"\n")
+    expect(content).toContain("        env:\n          GH_TOKEN: \"${{ github.token }}\"\n")
+  })
 })
 
 describe("toolchain variants", () => {
