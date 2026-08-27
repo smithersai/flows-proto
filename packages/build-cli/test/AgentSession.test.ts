@@ -274,6 +274,8 @@ describe("Agent.Diff", () => {
     const prompt = factory.requests()[0]!.prompt
     expect(prompt).toContain("=== FILES ===\n\n--- src/a.ts ---\nexport const a = 1\n")
     expect(prompt.indexOf("=== FILES ===")).toBeGreaterThan(prompt.indexOf("Respond with one JSON object"))
+    // A tool-less session is told so, before a prompt can imply "check the tree".
+    expect(prompt).toContain("You have no tools and no filesystem, shell, or network access in this session")
 
     // Without data files the prompt carries no section at all.
     const bare = scripted([{ purpose: "diff", edits: [{ path: "src/gen.ts", contents: "v1\n" }] }])
