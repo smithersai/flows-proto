@@ -701,3 +701,31 @@ refusals; missing nix/mise/hurl/gotestsum/cargo-deny and approvals/secrets
 remain explicit plan refusals. The Docker-container Cargo build stays blocked
 until the declaration supplies its image/command contract. No fake green was
 introduced for those cases.
+
+#### Review pass over lane api/gaps
+
+Six defects found by re-reading the lane diff against the `~/artsy` corpus and
+fixed on the branch. Each has a regression test that fails without its fix.
+
+| Defect | Where | Evidence | Fix |
+| --- | --- | --- | --- |
+| A `.sh` script handed to `S.Generate` planned as `node <script>`, while the same file under `S.Shell.Build` planned as `/bin/sh <script>` | `Compose.ts` generate script branch, `PackageExec.ts` Generate block | `optimism/op-core/PACKAGE.ts:21,31` declare one `sync-superchain.sh` under both rules; the plan printed `node,op-core/superchain/sync-superchain.sh` | `Shell.scriptInterpreterToken` picks `/bin/sh` for `.sh`/`.bash` and the workspace runtime otherwise, for both rules; force's `.mjs` generators still plan under node |
+| `Shell.Test({ command, shards })` appended the shard selector after `/bin/sh -c <text>`, where it becomes `$0` and never reaches a runner: N identical runs, N green shards | `PackageExec.ts` shard extraction | no `~/artsy` declaration uses it; viem shards through `bin` | typed plan refusal naming the forms that can carry the selector |
+| The shard selector read `process.env` directly, bypassing the executor's `options.environment` seam | `PackageExec.ts` `Shell.Test` dispatch | seam already exists at `const environment = options.environment ?? process.env` | reads through the seam |
+| Nested-workspace pruning treated a repository's own `.smithers/WORKSPACE.ts` as a nested workspace and dropped every package beneath `.smithers/` | `PackageDiscovery.ts` `nestedWorkspace` | force, tapes, aomi, slop-computer all root at `.smithers/WORKSPACE.ts` | the walk carries its own `workspaceFile` and never counts it as nested |
+| `Cargo.Nextest` admitted `noRun` (its attrs are `PackageTestAttrs`) but never rendered `--no-run`, so a compile-only declaration ran the tests | `Cargo.ts` `packageArgs` | `optimism/rust/PACKAGE.ts:18` uses `S.Cargo.Nextest` | renders `--no-run` like `Cargo.Test` |
+| `S.Generate({ command, stdout })` admitted `stdout` and dropped the redirection; only the script and bin branches applied it | `PackageExec.ts` Generate block | `whatsabi/src/PACKAGE.ts:22` uses the bin form with `stdout` | one hoisted write-set entry covers script, command, and bin; the emit form plans no process and is untouched |
+
+Also: `packages/targets/src` was not eslint-clean on the merged line (five
+missing JSDoc blocks in `GithubTarget.ts`, one unnecessary assertion in
+`PackageManager.ts`, both arriving with earlier lane merges). Both fixed;
+`eslint src --max-warnings=0` is now clean for `@smthrs/targets`, and
+`@smthrs/build-cli` is down to its documented `@slop`/`main.js` baseline.
+
+| Check | Exact command | Result |
+| --- | --- | --- |
+| targets suite | `pnpm -C packages/targets exec vitest run --coverage.enabled=false` | 39 files, 735 passed |
+| build-cli suite | `pnpm -C packages/build-cli exec vitest run --coverage.enabled=false` | 42 files, 710 passed, 1 skipped |
+| type checks | `pnpm -C packages/{targets,build-cli} exec tsc --noEmit -p tsconfig.json` | both green |
+| format | package-local `npx dprint check` | both green |
+| whatsabi bin-form `stdout` after the hoist | `cd ~/artsy-e2e/whatsabi && node <tree>/packages/build-cli/src/main.js '//src:generated'` | `ok: true`, `//src:generated Generate ran`, clone status unchanged |
