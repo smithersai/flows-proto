@@ -3106,14 +3106,14 @@ export const execute = async (
     if (node.outDirs.length !== 1) return "directory archive requires exactly one declared outDir"
     const tar = PackageTree.findOnPath("tar")
     if (tar === undefined) return "host binary \"tar\" is not present on PATH; Go.ModDownload cache capture cannot run"
-    const archive = Input.resolvePath(cacheDirectory, `tmp/go-mod-${node.keyPreview}.tgz`)
+    const archive = Input.resolvePath(cacheDirectory, `tmp/go-mod-${node.keyPreview}.tar`)
     const absoluteArchive = NodePath.join(root, ...archive.split("/"))
     await Fs.mkdir(NodePath.dirname(absoluteArchive), { recursive: true })
     const created = await spawnNode(
       node,
       root,
       options.signal,
-      [tar, "-czf", absoluteArchive, "-C", NodePath.join(root, ...node.outDirs[0]!.split("/")), "."]
+      [tar, "-cf", absoluteArchive, "-C", NodePath.join(root, ...node.outDirs[0]!.split("/")), "."]
     )
     if (!created.ok) return created.error ?? "tar archive creation failed"
     const manifest = await PackageTree.captureFile(root, cacheDirectory, archive)
@@ -3132,7 +3132,7 @@ export const execute = async (
     ) return false
     const tar = PackageTree.findOnPath("tar")
     if (tar === undefined) return false
-    const archive = Input.resolvePath(cacheDirectory, `tmp/go-mod-${node.keyPreview}.tgz`)
+    const archive = Input.resolvePath(cacheDirectory, `tmp/go-mod-${node.keyPreview}.tar`)
     const manifest: PackageTree.FileManifest = { path: archive, digest: record.digest, executable: false }
     if (await PackageTree.verifyFileManifest(root, cacheDirectory, manifest) !== undefined) return false
     await PackageTree.materializeFile(root, cacheDirectory, manifest)
@@ -3141,7 +3141,7 @@ export const execute = async (
     const listed = await spawnNode(node, root, options.signal, [
       "/bin/sh",
       "-c",
-      "exec \"$1\" -tzf \"$2\" > \"$3\"",
+      "exec \"$1\" -tf \"$2\" > \"$3\"",
       "sh",
       tar,
       absoluteArchive,
@@ -3166,7 +3166,7 @@ export const execute = async (
     await makeRemovable(destination)
     await Fs.rm(destination, { recursive: true, force: true })
     await Fs.mkdir(destination, { recursive: true })
-    const extracted = await spawnNode(node, root, options.signal, [tar, "-xzf", absoluteArchive, "-C", destination])
+    const extracted = await spawnNode(node, root, options.signal, [tar, "-xf", absoluteArchive, "-C", destination])
     await Fs.rm(absoluteArchive, { force: true })
     return extracted.ok
   }
