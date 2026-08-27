@@ -16,8 +16,10 @@ bun e2e/run.ts --phase A          # only the unconfigured-seam suites
 bun e2e/run.ts --port 8799        # a port of your own; $FLOWS_E2E_PORT also works
 ```
 
-`package.json` exposes `test:e2e`, `test:e2e:list`, and `test:e2e:all` (the
-landed `scripts/worker-e2e.ts` suite, then this one).
+`package.json` exposes `test:e2e:hermetic`, `test:e2e:list`, and `test:e2e:all`
+(the landed `scripts/worker-e2e.ts` suite, then this one). `test:e2e` is the
+Playwright T1 tier (`docs/LOCAL-APP.md` "Test tiers"): `playwright.config.ts`
+and `e2e/playwright/*.spec.ts`.
 
 ## GitHub persona policy
 

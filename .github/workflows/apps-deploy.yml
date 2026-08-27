@@ -82,7 +82,7 @@ jobs:
       - name: Worker e2e
         run: pnpm --filter smithers-ui run test:e2e:worker
       - name: Browser e2e
-        run: pnpm --filter smithers-ui run test:e2e
+        run: pnpm --filter smithers-ui run test:e2e:hermetic
       - name: Collect e2e artifacts
         if: failure()
         run: |
