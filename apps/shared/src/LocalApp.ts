@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { TargetRunEventSchema } from "./TargetGraph"
 
 /*
  * The local-app wire model (apps/ui/docs/LOCAL-APP.md "HTTP and WebSocket
@@ -83,12 +84,7 @@ export type TargetsQueryResponse = z.infer<typeof TargetsQueryResponseSchema>
 export const TargetRunResponseSchema = z.object({ runId: z.string() })
 
 /** One frame on the WS topic `target-run:<runId>`. */
-export const TargetRunFrameSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("stdout"), data: z.string() }),
-  z.object({ type: z.literal("stderr"), data: z.string() }),
-  z.object({ type: z.literal("exit"), code: z.number().nullable() }),
-  z.object({ type: z.literal("error"), message: z.string() })
-])
+export const TargetRunFrameSchema = TargetRunEventSchema
 export type TargetRunFrame = z.infer<typeof TargetRunFrameSchema>
 
 /** The server -> client envelope carrying a run frame. */

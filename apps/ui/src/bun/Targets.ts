@@ -9,6 +9,8 @@ import { homedir, tmpdir } from "node:os"
 import { resolve } from "node:path"
 import type { Target, TargetRunFrame } from "smithers-shared/LocalApp"
 import { splitLabel } from "smithers-shared/LocalApp"
+import { criticalPath } from "smithers-shared/TargetGraph"
+import type { GraphEdge, NodeTiming, RunSummary, TargetRunEvent } from "smithers-shared/TargetGraph"
 import type { NodeSidecar } from "./Node"
 import { currentSandboxHost, loaderPolicy, wrapSandbox } from "./Sandbox"
 import type { SandboxHost, SandboxPaths } from "./Sandbox"
@@ -142,6 +144,8 @@ export interface TargetRun {
   readonly repoId: string
   readonly repo: string
   readonly label: string
+  readonly labels: ReadonlyArray<string>
+  readonly startedAt: number
   status: TargetRunStatus
   exitCode: number | null
 }
@@ -152,11 +156,12 @@ export interface TargetRunnerOptions {
   /** A run nobody attached to starts on its own after this long. */
   readonly autoStartMs?: number
   readonly log?: (line: string) => void
+  readonly onEvent?: (run: TargetRun, event: TargetRunEvent) => void
 }
 
 export interface TargetRunner {
   /** Registers a run; the child starts on `attach`, or after `autoStartMs`. */
-  readonly start: (run: { readonly repoId: string; readonly repo: string; readonly label: string; readonly node: NodeSidecar }) => TargetRun
+  readonly start: (run: { readonly repoId: string; readonly repo: string; readonly label: string; readonly node: NodeSidecar; readonly edges?: ReadonlyArray<GraphEdge> }) => TargetRun
   /** A subscriber is listening: spawn now if not yet started. */
   readonly attach: (runId: string) => boolean
   readonly cancel: (runId: string) => boolean
@@ -165,6 +170,116 @@ export interface TargetRunner {
 }
 
 export const runTopic = (runId: string): string => `target-run:${runId}`
+
+const durationMs = (amount: string | undefined, unit: string | undefined): number | undefined => {
+  if (amount === undefined) return undefined
+  const number = Number(amount)
+  if (!Number.isFinite(number)) return undefined
+  return Math.round(unit === "s" ? number * 1000 : number)
+}
+
+export interface RunStdoutParser {
+  readonly push: (type: "stdout" | "stderr", data: string, at?: number) => ReadonlyArray<TargetRunEvent>
+  readonly finish: (at?: number) => ReadonlyArray<TargetRunEvent>
+  readonly timings: () => ReadonlyArray<NodeTiming>
+  readonly summary: () => RunSummary | undefined
+}
+
+/** Incrementally parses stable executor status/summary lines and JSON envelopes. */
+export const createRunStdoutParser = (options: {
+  readonly edges?: ReadonlyArray<GraphEdge>
+  readonly startedAt: number
+}): RunStdoutParser => {
+  let stdout = ""
+  const nodes = new Map<string, NodeTiming>()
+  let lastSummary: RunSummary | undefined
+  const parseSummary = (line: string, at: number): TargetRunEvent | undefined => {
+    const head = /^\s*(\d+)\s+targets?:\s*(.*)$/i.exec(line)
+    if (head === null) return undefined
+    const rest = head[2]!
+    const count = (status: string): number => Number(new RegExp(`(?:^|[,;]\\s*)?(\\d+)\\s+${status}\\b`, "i").exec(rest)?.[1] ?? 0)
+    const elapsed = /\((\d+(?:\.\d+)?)\s*(ms|s)\)\s*$/.exec(rest)
+    const failed = count("failed") + count("refused")
+    lastSummary = {
+      total: Number(head[1]), hit: count("hit"), ran: count("ran"), failed, skipped: count("skipped"),
+      durationMs: durationMs(elapsed?.[1], elapsed?.[2]) ?? at - options.startedAt,
+      ok: failed === 0,
+      criticalPath: [...criticalPath([...nodes.values()], options.edges ?? [])]
+    }
+    return { type: "summary", summary: lastSummary, at }
+  }
+  const parseObject = (line: string, at: number): Array<TargetRunEvent> => {
+    if (!line.trimStart().startsWith("{")) return []
+    let value: unknown
+    try { value = JSON.parse(line) } catch { return [] }
+    if (typeof value !== "object" || value === null) return []
+    const body = value as { targets?: unknown; summary?: unknown }
+    if (!Array.isArray(body.targets)) return []
+    const events: Array<TargetRunEvent> = []
+    for (const item of body.targets) {
+      if (typeof item !== "object" || item === null) continue
+      const row = item as Record<string, unknown>
+      if (typeof row.label !== "string" || typeof row.status !== "string") continue
+      if (!["pending", "running", "hit", "ran", "failed", "skipped", "refused", "cancelled"].includes(row.status)) continue
+      const ms = typeof row.durationMs === "number" ? row.durationMs : undefined
+      const node: NodeTiming = {
+        label: row.label,
+        status: row.status as NodeTiming["status"],
+        ...(typeof row.startedAt === "number" ? { startedAt: row.startedAt } : ms === undefined ? {} : { startedAt: at - ms }),
+        ...(typeof row.endedAt === "number" ? { endedAt: row.endedAt } : row.status === "running" || row.status === "pending" ? {} : { endedAt: at }),
+        ...(ms === undefined ? {} : { durationMs: ms }),
+        ...(typeof row.key === "string" ? { key: row.key } : {}),
+        ...(typeof row.reason === "string" ? { reason: row.reason } : {})
+      }
+      nodes.set(node.label, node)
+      events.push({ type: "node", node, at })
+    }
+    return events
+  }
+  const parseLine = (line: string, at: number): Array<TargetRunEvent> => {
+    const fromJson = parseObject(line, at)
+    if (fromJson.length > 0) return fromJson
+    const summary = parseSummary(line, at)
+    if (summary !== undefined) return [summary]
+    const match = /^(\/\/\S+)\s+(pending|running|hit|ran|failed|skipped|refused|cancelled)\b(?:\s+(\d+(?:\.\d+)?)\s*(ms|s))?(?:\s+(.+))?\s*$/.exec(line)
+    if (match === null) return []
+    const status = match[2] as NodeTiming["status"]
+    const ms = durationMs(match[3], match[4])
+    const detail = match[5]?.trim()
+    const key = /(?:^|\s)key[=:]\s*([^\s]+)/i.exec(detail ?? "")?.[1]
+    const reason = (status === "failed" || status === "refused" || status === "skipped") && detail !== undefined ? detail : undefined
+    const prior = nodes.get(match[1]!)
+    const settled = !["pending", "running"].includes(status)
+    const node: NodeTiming = {
+      label: match[1]!, status,
+      ...(prior?.startedAt !== undefined ? { startedAt: prior.startedAt } : status === "pending" ? {} : { startedAt: ms === undefined ? at : at - ms }),
+      ...(settled ? { endedAt: at } : {}),
+      ...(ms === undefined ? {} : { durationMs: ms }),
+      ...(key === undefined ? {} : { key }),
+      ...(reason === undefined ? {} : { reason })
+    }
+    nodes.set(node.label, node)
+    return [{ type: "node", node, at }]
+  }
+  const push: RunStdoutParser["push"] = (type, data, at = Date.now()) => {
+    if (type === "stderr") return []
+    stdout += data
+    const lines = stdout.split(/\r?\n/)
+    stdout = lines.pop() ?? ""
+    return lines.flatMap((line) => parseLine(line, at))
+  }
+  return {
+    push,
+    finish: (at = Date.now()) => {
+      if (stdout === "") return []
+      const line = stdout
+      stdout = ""
+      return parseLine(line, at)
+    },
+    timings: () => [...nodes.values()],
+    summary: () => lastSummary
+  }
+}
 
 /** `node <cli> '<label>'` per run, streamed to the run's topic. */
 export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner => {
@@ -175,24 +290,39 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
     readonly node: NodeSidecar
     child: ReturnType<typeof Bun.spawn> | undefined
     timer: ReturnType<typeof setTimeout> | undefined
+    readonly edges: ReadonlyArray<GraphEdge>
+    readonly parser: RunStdoutParser
+    summaryEmitted: boolean
   }
   const runs = new Map<string, Live>()
 
   const emit = (run: TargetRun, frame: TargetRunFrame): void => {
     options.publish(runTopic(run.runId), { type: "target-run", runId: run.runId, frame })
+    options.onEvent?.(run, frame)
   }
 
-  const pump = async (stream: ReadableStream<Uint8Array>, run: TargetRun, type: "stdout" | "stderr"): Promise<void> => {
+  const pump = async (stream: ReadableStream<Uint8Array>, live: Live, type: "stdout" | "stderr"): Promise<void> => {
     const decoder = new TextDecoder()
     const reader = stream.getReader()
     for (;;) {
       const { value, done } = await reader.read()
       if (done) break
       const data = decoder.decode(value, { stream: true })
-      if (data !== "") emit(run, { type, data })
+      if (data !== "") {
+        const label = /^(\/\/\S+)/.exec(data)?.[1]
+        emit(live.run, { type, data, ...(label === undefined ? {} : { label }) })
+        for (const event of live.parser.push(type, data)) {
+          if (event.type === "summary") live.summaryEmitted = true
+          emit(live.run, event)
+        }
+      }
     }
     const rest = decoder.decode()
-    if (rest !== "") emit(run, { type, data: rest })
+    if (rest !== "") {
+      const label = /^(\/\/\S+)/.exec(rest)?.[1]
+      emit(live.run, { type, data: rest, ...(label === undefined ? {} : { label }) })
+      for (const event of live.parser.push(type, rest)) emit(live.run, event)
+    }
   }
 
   const spawn = (live: Live): void => {
@@ -200,6 +330,7 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
     if (live.timer !== undefined) clearTimeout(live.timer)
     live.timer = undefined
     live.run.status = "running"
+    emit(live.run, { type: "started", runId: live.run.runId, label: live.run.label, labels: [...live.run.labels], at: live.run.startedAt })
     if (!existsSync(cli)) {
       live.run.status = "failed"
       emit(live.run, { type: "error", message: `The smthrs loader is missing at ${cli} (set SMITHERS_BUILD_CLI).` })
@@ -223,12 +354,23 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
     live.child = child
     log(`target-run ${live.run.runId}: ${live.run.label} in ${live.run.repo} (pid ${child.pid})`)
     void Promise.all([
-      pump(child.stdout as ReadableStream<Uint8Array>, live.run, "stdout"),
-      pump(child.stderr as ReadableStream<Uint8Array>, live.run, "stderr")
+      pump(child.stdout as ReadableStream<Uint8Array>, live, "stdout"),
+      pump(child.stderr as ReadableStream<Uint8Array>, live, "stderr")
     ])
       .catch(() => {})
       .then(() => child.exited)
       .then((code) => {
+        for (const event of live.parser.finish()) {
+          if (event.type === "summary") live.summaryEmitted = true
+          emit(live.run, event)
+        }
+        if (!live.summaryEmitted) {
+          const timings = [...live.parser.timings()]
+          const count = (status: NodeTiming["status"]): number => timings.filter((node) => node.status === status).length
+          const failed = count("failed") + count("refused")
+          const summary: RunSummary = { total: timings.length, hit: count("hit"), ran: count("ran"), failed, skipped: count("skipped"), durationMs: Date.now() - live.run.startedAt, ok: code === 0 && failed === 0, criticalPath: [...criticalPath(timings, live.edges)] }
+          emit(live.run, { type: "summary", summary, at: Date.now() })
+        }
         live.run.exitCode = code
         live.run.status = code === 0 ? "done" : "failed"
         emit(live.run, { type: "exit", code })
@@ -236,9 +378,11 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
   }
 
   return {
-    start: ({ repoId, repo, label, node }) => {
-      const run: TargetRun = { runId: crypto.randomUUID(), repoId, repo, label, status: "pending", exitCode: null }
-      const live: Live = { run, node, child: undefined, timer: undefined }
+    start: ({ repoId, repo, label, node, edges = [] }) => {
+      const startedAt = Date.now()
+      const labels = label.split(/\s+/).filter((part) => part.startsWith("//"))
+      const run: TargetRun = { runId: crypto.randomUUID(), repoId, repo, label, labels, startedAt, status: "pending", exitCode: null }
+      const live: Live = { run, node, edges, parser: createRunStdoutParser({ edges, startedAt }), child: undefined, timer: undefined, summaryEmitted: false }
       runs.set(run.runId, live)
       live.timer = setTimeout(() => spawn(live), options.autoStartMs ?? 1000)
       return run

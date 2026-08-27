@@ -9,6 +9,7 @@ import { json, jsonError, readJson } from "../routes"
 import type { LocalServer } from "../server"
 import { createTargetRunner, queryTargets } from "../Targets"
 import type { TargetRunner } from "../Targets"
+import { queryTargetGraph } from "../TargetGraph"
 
 export interface RepoTargetRoutesOptions {
   readonly node: Promise<NodeSidecar | null>
@@ -88,7 +89,13 @@ export const registerRepoTargetRoutes = (
     if (repo === undefined) return jsonError(404, "repo_not_found", `No open repository with id ${repoId}.`)
     const node = await options.node
     if (node === null) return jsonError(503, "node_missing", "No Node.js >= 22.19 was found for the smthrs CLI.")
-    const run = runner.start({ repoId, repo: repo.path, label, node })
+    let edges: Awaited<ReturnType<typeof queryTargetGraph>>["edges"] = []
+    try {
+      edges = (await queryTargetGraph({ repoId, repo: repo.path, node, ...(options.cli === undefined ? {} : { cli: options.cli }) })).edges
+    } catch (error) {
+      options.log?.(`target-run graph unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const run = runner.start({ repoId, repo: repo.path, label, node, edges })
     return json({ runId: run.runId })
   })
 
