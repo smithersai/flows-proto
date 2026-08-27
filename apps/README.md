@@ -28,25 +28,15 @@ different repository and are what a broken sign-in usually means.
 
 ## Running it locally
 
-| Command                                     | From            | What runs                                                                                                                                   |
-| ------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm dev`                                  | repository root | The UI on `http://localhost:5173`. Forwards to `pnpm --filter smithers-ui run web`, so the `--configLoader runner` flag lives in one place. |
-| `pnpm --filter smithers-ui run serve:local` | anywhere        | The UI built and served by `wrangler dev`, i.e. the UI **and** the product Worker together. Use this to exercise the `/api` seams.          |
-| `pnpm --filter smithers-ui run build`       | anywhere        | The production bundle into `apps/ui/dist`, which the Worker serves as static assets.                                                        |
+| Command                               | From            | What runs                                                                                                                                                     |
+| ------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                            | repository root | The Electrobun app. Forwards to `pnpm --filter smithers-ui run start` (devkit projection, `vite build --configLoader runner`, `electrobun dev`), so the launch lives in one place. |
+| `pnpm --filter smithers-ui run build` | anywhere        | The Electrobun bundle: `vite build` into `apps/ui/dist`, then `electrobun build`.                                                                             |
 
-Dev rides the deployed seams. Everything the product Worker proxies in
-production (`/api/auth`, `/api/identity`, `/api/billing`,
-`/api/repos`, `/api/github`, `/api/user`, `/api/notifications`,
-`/api/workflow`, `/api/client-errors`) forwards to
-`https://canary.smithers.sh`, so the identity probe answers definitively
-instead of "unavailable". Point that elsewhere with **`SMITHERS_DEV_UPSTREAM`**:
-
-```sh
-SMITHERS_DEV_UPSTREAM=http://127.0.0.1:8787 pnpm dev
-```
-
-The chat seam (`/api/agent`) stays local — `apps/ui/src/dev/AgentApi.ts` serves
-it, with `SMITHERS_CHAT_URL` and `SMITHERS_CHAT_ORIGIN` naming the upstream it
-relays to. Signed-in state cannot exist on `localhost` whatever you point at:
-the session cookie and the GitHub OAuth callback are bound to the canary
-origin, so completing a sign-in continues there.
+The app serves the SPA from a Bun local origin on `127.0.0.1` and forwards
+`/api/auth/*` and `/api/identity/*` to `https://canary.smithers.sh`; chat calls
+`chat.smithers.sh` with no login. Ports, env flags (`SMITHERS_LOCAL_PORT`,
+`SMITHERS_CHAT_STUB`, ...), the HTTP and WebSocket API, and the test tiers are
+specified in `apps/ui/docs/LOCAL-APP.md`. Signed-in state completes on the
+canary origin: the session cookie and the GitHub OAuth callback are bound
+there.

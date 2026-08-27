@@ -368,6 +368,12 @@ Wave 1 (2026-08-26), on `local-app/base`:
   stays out), `e2e/README.md` (replaced by a pointer to the Playwright tiers),
   `.github/workflows/apps-deploy.yml` (UI gate is `test:e2e`). `pnpm-lock.yaml`
   is foundation's; `pnpm install` changed nothing.
+- Repair after `58d7e99d7`: the root scripts pin in
+  `packages/flows/test/vitestCoverageIsolation.test.ts` follows the web-script
+  removal (`checklist` gone, `dev` forwards to `start`), so the root `test`
+  fan-out is green again; `apps/server` drops its `dev` and `serve:local`
+  forwarders to the removed `smithers-ui` `web` script; `apps/README.md`
+  describes `pnpm dev` as the Electrobun launch.
 
 Acceptance on `24f337536`:
 
