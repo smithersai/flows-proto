@@ -28,6 +28,7 @@ const resolve = (
 
 const keyed = {
   ANTHROPIC_API_KEY: "anthropic-key",
+  GEMINI_API_KEY: "gemini-key",
   OPENAI_API_KEY: "openai-key",
   OPENROUTER_API_KEY: "openrouter-key"
 }
@@ -48,7 +49,15 @@ describe("NodeControl.seatResolver providers", () => {
     [
       ["anthropic", "anthropic:claude-sonnet-4-5", "https://api.anthropic.com/v1/messages", 200_000],
       ["openai", "openai:gpt-5.6-sol", "https://api.openai.com/v1/responses", 400_000],
-      ["openrouter", "openrouter:openai/gpt-5.6-sol", "https://openrouter.ai/api/v1/responses", 400_000]
+      ["openrouter", "openrouter:openai/gpt-5.6-sol", "https://openrouter.ai/api/v1/responses", 400_000],
+      // Google serves only Chat Completions, and mounts it under
+      // `/v1beta/openai` rather than at the origin.
+      [
+        "gemini",
+        "gemini:gemini-3-flash-preview",
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        128_000
+      ]
     ] as const
   )("routes a keyed %s seat to its own endpoint", async (_provider, seat, url, tokens) => {
     const resolved = await Effect.runPromise(resolve(keyed, seat))
@@ -126,6 +135,7 @@ describe("NodeControl.seatResolver credentials", () => {
       ["anthropic", "anthropic:claude-sonnet-4-5", "ANTHROPIC_API_KEY"],
       ["openai", "openai:gpt-5.6-sol", "OPENAI_API_KEY"],
       ["openrouter", "openrouter:openai/gpt-5.6-sol", "OPENROUTER_API_KEY"],
+      ["gemini", "gemini:gemini-3-flash-preview", "GEMINI_API_KEY"],
       ["a bare model id", "claude-sonnet-4-5", "ANTHROPIC_API_KEY"]
     ] as const
   )("refuses %s with its key variable absent and with it empty, naming the variable", async (

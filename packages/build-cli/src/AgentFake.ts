@@ -32,6 +32,38 @@ import { makeCliSessionFactory } from "./AgentSession.ts"
 export const fakeEnvironmentVariable = "SMTHRS_AGENT_FAKE"
 
 /**
+ * Environment variable naming the per-session wall-clock ceiling in
+ * milliseconds for the real CLI factory. Unset, the factory keeps
+ * {@link defaultSessionTimeoutMs}; a lane that rewrites large files with a
+ * slow model raises it for one invocation without a declaration change.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export const timeoutEnvironmentVariable = "SMTHRS_AGENT_TIMEOUT_MS"
+
+/**
+ * Reads the session ceiling from the environment: a positive integer of
+ * milliseconds, or `undefined` when unset. Anything else refuses loudly,
+ * because a silently ignored ceiling would look like the default.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const sessionTimeoutFromEnvironment = (
+  env: Readonly<Record<string, string | undefined>>
+): number | undefined => {
+  const declared = env[timeoutEnvironmentVariable]
+  if (declared === undefined || declared === "") return undefined
+  if (!/^[1-9][0-9]*$/.test(declared)) {
+    throw new Error(
+      `${timeoutEnvironmentVariable} must be a positive integer of milliseconds: ${JSON.stringify(declared)}`
+    )
+  }
+  return Number(declared)
+}
+
+/**
  * Schema of one scripted session response.
  *
  * A response with `fail` makes the run fail with that message. `purpose`,
@@ -132,6 +164,21 @@ const scriptedError = (
 ): AgentTarget.AgentSessionError => new AgentTarget.AgentSessionError({ phase, message })
 
 /**
+ * The `--- <path> ---` headers under a prompt's `=== FILES ===` section, for
+ * cross-process proofs that a lane rendered its data closure.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const promptFilesOf = (prompt: string): ReadonlyArray<string> => {
+  const start = prompt.indexOf("\n=== FILES ===\n")
+  if (start === -1) return []
+  const end = prompt.indexOf("\n=== DIFF SLICE ===\n", start)
+  const section = prompt.slice(start, end === -1 ? undefined : end)
+  return [...section.matchAll(/^--- (.+) ---$/gm)].map((match) => match[1]!)
+}
+
+/**
  * A session factory that replays one {@link FakeScript} deterministically.
  *
  * The response cursor is shared across every session the factory opens: run
@@ -157,7 +204,8 @@ export const makeScriptedSessionFactory = (
       const line = JSON.stringify({
         seq: seen.length,
         purpose: request.purpose,
-        promptDigest: createHash("sha256").update(request.prompt, "utf8").digest("hex")
+        promptDigest: createHash("sha256").update(request.prompt, "utf8").digest("hex"),
+        files: promptFilesOf(request.prompt)
       })
       NodeFs.appendFileSync(options.logPath, `${line}\n`, "utf8")
     }
@@ -221,7 +269,10 @@ export const sessionFactoryFromEnvironment = (
   env: Readonly<Record<string, string | undefined>> = process.env
 ): SessionFactory => {
   const declared = env[fakeEnvironmentVariable]
-  if (declared === undefined || declared === "") return makeCliSessionFactory(options)
+  if (declared === undefined || declared === "") {
+    const timeoutMs = options.timeoutMs ?? sessionTimeoutFromEnvironment(env)
+    return makeCliSessionFactory(timeoutMs === undefined ? options : { ...options, timeoutMs })
+  }
   const path = NodePath.isAbsolute(declared) ? declared : NodePath.resolve(options.workspaceRoot, declared)
   return makeScriptedSessionFactory(loadFakeScript(path), { logPath: `${path}.spawns.jsonl` })
 }

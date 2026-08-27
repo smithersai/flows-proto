@@ -247,6 +247,47 @@ describe("Agent.Lint", () => {
 })
 
 describe("Agent.Diff", () => {
+  it("renders the runtime's data files under === FILES ===, omitting oversized and binary bodies by name", async () => {
+    await Fs.mkdir(NodePath.join(root, "src"), { recursive: true })
+    await Fs.writeFile(NodePath.join(root, "src/a.ts"), "export const a = 1\n")
+    await Fs.writeFile(NodePath.join(root, "big.txt"), Buffer.alloc(AgentSession.maximumSessionFileBytes + 1, 0x61))
+    await Fs.writeFile(NodePath.join(root, "nul.dat"), Buffer.from([0x62, 0x00, 0x63]))
+    const dataFiles = ["src/a.ts", "big.txt", "nul.dat"]
+
+    const rendered = await Effect.runPromise(AgentSession.renderDataFiles(root, dataFiles))
+    expect(rendered).toBe(
+      "\n\n=== FILES ===\n\n--- src/a.ts ---\nexport const a = 1\n\n\n" +
+        `--- big.txt (omitted: ${AgentSession.maximumSessionFileBytes + 1} bytes) ---\n\n` +
+        "--- nul.dat (omitted: binary) ---"
+    )
+    expect(await Effect.runPromise(AgentSession.renderDataFiles(root, []))).toBe("")
+    const missing = await Effect.runPromise(Effect.flip(AgentSession.renderDataFiles(root, ["absent.ts"])))
+    expect(missing._tag).toBe("smithers-build/AgentSessionError")
+
+    const factory = scripted([{ purpose: "diff", edits: [{ path: "src/gen.ts", contents: "v1\n" }] }])
+    await Effect.runPromise(
+      AgentSession.runAgentDiff(
+        runtimeOf({ sessions: factory, gates: AgentFake.makeScriptedGateRunner([[green]]), dataFiles }),
+        diffPayload()
+      )
+    )
+    const prompt = factory.requests()[0]!.prompt
+    expect(prompt).toContain("=== FILES ===\n\n--- src/a.ts ---\nexport const a = 1\n")
+    expect(prompt.indexOf("=== FILES ===")).toBeGreaterThan(prompt.indexOf("Respond with one JSON object"))
+    // A tool-less session is told so, before a prompt can imply "check the tree".
+    expect(prompt).toContain("You have no tools and no filesystem, shell, or network access in this session")
+
+    // Without data files the prompt carries no section at all.
+    const bare = scripted([{ purpose: "diff", edits: [{ path: "src/gen.ts", contents: "v1\n" }] }])
+    await Effect.runPromise(
+      AgentSession.runAgentDiff(
+        runtimeOf({ sessions: bare, gates: AgentFake.makeScriptedGateRunner([[green]]) }),
+        diffPayload()
+      )
+    )
+    expect(bare.requests()[0]!.prompt).not.toContain("=== FILES ===")
+  })
+
   it("refuses a missing required payload input before any session exists", async () => {
     const factory = scripted([])
     const error = await Effect.runPromise(
@@ -521,6 +562,28 @@ describe("scripted fake and environment selection", () => {
     expect(error.message).toContain("S.Agents")
   })
 
+  it("takes the session ceiling from SMTHRS_AGENT_TIMEOUT_MS for the real CLI factory", async () => {
+    const claude = NodePath.join(root, "fake-claude-slow")
+    await Fs.writeFile(claude, "#!/bin/sh\nsleep 30\n", { mode: 0o755 })
+    const factory = AgentFake.sessionFactoryFromEnvironment(
+      {
+        workspaceRoot: root,
+        agents: AgentTarget.Agents({ default: AgentTarget.ClaudeCode({ model: "m" }) }),
+        executables: { claude }
+      },
+      { SMTHRS_AGENT_TIMEOUT_MS: "500" }
+    )
+    const session = await Effect.runPromise(factory.open(undefined))
+    const error = await Effect.runPromise(Effect.flip(session.run({ purpose: "lint", prompt: "p" })))
+    expect(error.message).toContain("timed out after 500ms")
+    expect(AgentFake.sessionTimeoutFromEnvironment({})).toBeUndefined()
+    expect(AgentFake.sessionTimeoutFromEnvironment({ SMTHRS_AGENT_TIMEOUT_MS: "" })).toBeUndefined()
+    expect(() => AgentFake.sessionTimeoutFromEnvironment({ SMTHRS_AGENT_TIMEOUT_MS: "5m" })).toThrow(
+      /positive integer of milliseconds/
+    )
+    expect(() => AgentFake.sessionTimeoutFromEnvironment({ SMTHRS_AGENT_TIMEOUT_MS: "0" })).toThrow()
+  })
+
   it("refuses an unreadable or invalid script loudly", async () => {
     expect(() => AgentFake.loadFakeScript(NodePath.join(root, "missing.json"))).toThrow()
     const invalid = NodePath.join(root, "invalid.json")
@@ -601,6 +664,94 @@ describe("CLI engine adapters", () => {
     const session = await Effect.runPromise(factory.open(undefined))
     const envelope = await Effect.runPromise(session.run({ purpose: "lint", prompt: "p" }))
     expect(envelope.note).toBe("from claude")
+  })
+
+  it("hands claude a mcpServers record: empty without declared servers, the lane's S.Mcp.Http entries with them", async () => {
+    const argvPath = NodePath.join(root, "fake-claude-argv.txt")
+    const claude = await fakeExecutable(
+      "fake-claude-argv",
+      `printf '%s\\n' "$@" > "${argvPath}"\necho '{"result": "{\\"findings\\": []}"}'`
+    )
+    const factory = AgentSession.makeCliSessionFactory({
+      workspaceRoot: root,
+      agents: AgentTarget.Agents({ default: AgentTarget.ClaudeCode({ model: "m" }) }),
+      executables: { claude },
+      timeoutMs: 10_000
+    })
+    const configAfter = async (): Promise<unknown> => {
+      const argv = (await Fs.readFile(argvPath, "utf8")).trimEnd().split("\n")
+      const flag = argv.indexOf("--mcp-config")
+      expect(flag).toBeGreaterThan(-1)
+      expect(argv).toContain("--strict-mcp-config")
+      return JSON.parse(argv[flag + 1]!)
+    }
+
+    const bare = await Effect.runPromise(factory.open(undefined))
+    await Effect.runPromise(bare.run({ purpose: "lint", prompt: "p" }))
+    // The CLI rejects `{}` ("mcpServers: Invalid input: expected record, received undefined").
+    expect(await configAfter()).toEqual({ mcpServers: {} })
+
+    const declared = await Effect.runPromise(
+      factory.open(undefined, [Reference.Mcp.Http("issues", "https://example.test/mcp")])
+    )
+    await Effect.runPromise(declared.run({ purpose: "diff", prompt: "p" }))
+    expect(await configAfter()).toEqual({
+      mcpServers: { issues: { type: "http", url: "https://example.test/mcp" } }
+    })
+  })
+
+  it("reports codex's stdout error events when it exits non-zero with an empty stderr", async () => {
+    const stream = [
+      `{"type":"thread.started","thread_id":"t"}`,
+      `{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for \`luna\` not found."}}`,
+      `{"type":"turn.started"}`,
+      `{"type":"error","message":"The luna model is not supported when using Codex with a ChatGPT account."}`,
+      `{"type":"turn.failed","error":{"message":"The luna model is not supported when using Codex with a ChatGPT account."}}`
+    ]
+    const codex = await fakeExecutable(
+      "fake-codex-error",
+      `cat > /dev/null\n${stream.map((line) => `echo '${line}'`).join("\n")}\nexit 1`
+    )
+    const factory = AgentSession.makeCliSessionFactory({
+      workspaceRoot: root,
+      agents: AgentTarget.Agents({ default: AgentTarget.Codex({ model: "luna" }) }),
+      executables: { codex },
+      timeoutMs: 10_000
+    })
+    const session = await Effect.runPromise(factory.open(undefined))
+    const error = await Effect.runPromise(Effect.flip(session.run({ purpose: "lint", prompt: "p" })))
+    expect(error.message).toContain("exited 1: Model metadata for `luna` not found.; The luna model is not supported")
+    expect(AgentSession.codexErrorMessages("not json\n{\"type\":\"turn.completed\"}")).toEqual([])
+  })
+
+  it("falls back to the stdout tail when claude exits non-zero with nothing on stderr", async () => {
+    const claude = await fakeExecutable("fake-claude-quiet", `echo 'rate limited, try later'\nexit 2`)
+    const factory = AgentSession.makeCliSessionFactory({
+      workspaceRoot: root,
+      agents: AgentTarget.Agents({ default: AgentTarget.ClaudeCode({ model: "m" }) }),
+      executables: { claude },
+      timeoutMs: 10_000
+    })
+    const session = await Effect.runPromise(factory.open(undefined))
+    const error = await Effect.runPromise(Effect.flip(session.run({ purpose: "lint", prompt: "p" })))
+    expect(error.message).toContain("exited 2: rate limited, try later")
+  })
+
+  it("claudeMcpConfig renders every declared server as a streamable-HTTP entry", () => {
+    expect(JSON.parse(AgentSession.claudeMcpConfig([]))).toEqual({ mcpServers: {} })
+    expect(
+      JSON.parse(
+        AgentSession.claudeMcpConfig([
+          Reference.Mcp.Http("github", "https://api.githubcopilot.com/mcp/"),
+          Reference.Mcp.Http("sentry", "https://mcp.sentry.dev/mcp")
+        ])
+      )
+    ).toEqual({
+      mcpServers: {
+        github: { type: "http", url: "https://api.githubcopilot.com/mcp/" },
+        sentry: { type: "http", url: "https://mcp.sentry.dev/mcp" }
+      }
+    })
   })
 
   it("parses the last codex agent_message from a fake codex JSONL stream", async () => {

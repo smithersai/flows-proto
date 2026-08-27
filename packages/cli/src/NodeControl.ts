@@ -387,6 +387,7 @@ export const engineDurable = (
 
 const apiKeyVariable: Readonly<Record<string, string>> = {
   anthropic: "ANTHROPIC_API_KEY",
+  gemini: "GEMINI_API_KEY",
   openai: "OPENAI_API_KEY",
   openrouter: "OPENROUTER_API_KEY"
 }
@@ -484,13 +485,30 @@ export const seatResolver = (
         // OpenRouter is the OpenAI Responses surface at a different origin, so
         // its seats spell the model as `openrouter:vendor/model` and route
         // through the compatible constructor.
+        //
+        // Google serves only Chat Completions, mounted under `/v1beta/openai`
+        // rather than at the origin, so its seats spell the model as
+        // `gemini:gemini-3-flash-preview` and name that path explicitly.
         return yield* provider === "anthropic"
           ? seatOf(Route.anthropic({ apiKey: Redacted.make(key) }), executor, seat, modelId)
+          : provider === "gemini"
+          ? seatOf(
+            OpenAICompatible.make({
+              id: "gemini",
+              baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+              path: "/chat/completions",
+              apiKey: Redacted.make(key)
+            }),
+            executor,
+            seat,
+            modelId
+          )
           : provider === "openrouter"
           ? seatOf(
             OpenAICompatible.make({
               id: "openrouter",
               baseUrl: "https://openrouter.ai/api",
+              protocol: "responses",
               apiKey: Redacted.make(key)
             }),
             executor,

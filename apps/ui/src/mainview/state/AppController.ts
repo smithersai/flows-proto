@@ -9,6 +9,7 @@ import type { NativeAgent, NativeRepositories } from "../native/NativeBridge"
 import type { AppStore } from "./AppStore"
 import { createPtyClient, pageSocketUrl } from "./PtyClient"
 import type { PtyClient } from "./PtyClient"
+import { createTargetRunClient } from "./TargetRunClient"
 import { createAuthBillingController } from "./controller/auth-billing"
 import { createConnectorController } from "./controller/connectors"
 import { createControllerContext } from "./controller/context"
@@ -16,6 +17,8 @@ import { createFailureController } from "./controller/failures"
 import { createPresentationController } from "./controller/presentation"
 import { createTabsController } from "./controller/tabs"
 import type { TabsController } from "./controller/tabs"
+import { createTargetsController } from "./controller/targets"
+import type { TargetsController } from "./controller/targets"
 import { createTurnController } from "./controller/turns"
 import { createWorkflowPumpController } from "./controller/workflow-pump"
 import { createWorkflowController } from "./controller/workflows"
@@ -118,6 +121,10 @@ export interface AppController {
   readonly notePtyExit: TabsController["notePtyExit"]
   /** The PTY transport the terminal tabs attach to (docs/LOCAL-APP.md "/ws"). */
   readonly pty: PtyClient
+  /* Lane L3 (docs/LOCAL-APP.md "Auto-load flow"); see controller/targets.ts. */
+  readonly openRepo: TargetsController["openRepo"]
+  readonly runTarget: TargetsController["runTarget"]
+  readonly openTarget: TargetsController["openTarget"]
   /* The admin dev-tools panel + debug reads (§2b/§2d; admin registry only). */
   readonly toggleDevtools: () => void
   /** Report what drives a turn (admin /debug.backend; DESIGN.md §14). */
@@ -386,6 +393,15 @@ export const createAppController = (
   } = createTabsController(ctx)
   const pty = createPtyClient({ http, baseUrl, socketUrl: pageSocketUrl })
   ctx.onDispose(pty.dispose)
+  const targetRuns = createTargetRunClient({ socketUrl: pageSocketUrl })
+  ctx.onDispose(targetRuns.dispose)
+  const { openRepo, runTarget, openTarget, installBridge } = createTargetsController(ctx, {
+    nextOrdinal: nextTranscriptOrdinal,
+    loadRepos,
+    runs: targetRuns,
+    surfaceCommandFailure
+  })
+  ctx.openRepo = openRepo
 
   const {
     pumpWorkflowRun,
@@ -605,6 +621,9 @@ export const createAppController = (
     loadRepos,
     notePtyExit,
     pty,
+    openRepo,
+    runTarget,
+    openTarget,
     toggleDevtools,
     toggleSurfacesMenu,
     toggleConnectMenu,
@@ -699,6 +718,8 @@ export const createAppController = (
   watchIdentityAcrossTabs()
   // Cmd+T / Cmd+W / Cmd+1..9 on the document, released with the controller.
   if (typeof document !== "undefined") ctx.onDispose(installKeyboard(document))
+  // The html cards' iframe bridge (run / open), released with the controller.
+  if (typeof window !== "undefined") ctx.onDispose(installBridge(window))
 
   const dispose = (): void => {
     // The pumps first (they hold EventSources and timers), then the
@@ -776,6 +797,9 @@ export const createAppController = (
     loadRepos,
     notePtyExit,
     pty,
+    openRepo,
+    runTarget,
+    openTarget,
     toggleDevtools,
     toggleSurfacesMenu,
     toggleConnectMenu,

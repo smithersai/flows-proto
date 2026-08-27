@@ -55,6 +55,57 @@ export const PtySessionSchema = z.object({
 })
 export type PtySession = z.infer<typeof PtySessionSchema>
 
+/*
+ * One Smithers target as `smthrs query '//...' --format json` lists it
+ * (LOCAL-APP.md "Targets: load and run"): the loader's `{ label, target,
+ * kinds }` row plus the label split into its package and name.
+ */
+export const TARGET_KINDS = ["build", "test", "lint", "run", "docs"] as const
+
+export const TargetSchema = z.object({
+  label: z.string(),
+  target: z.string(),
+  kinds: z.array(z.string()),
+  package: z.string(),
+  name: z.string()
+})
+export type Target = z.infer<typeof TargetSchema>
+
+/** `POST /api/targets/query` */
+export const TargetsQueryResponseSchema = z.object({
+  targets: z.array(TargetSchema),
+  warnings: z.array(z.string()),
+  durationMs: z.number()
+})
+export type TargetsQueryResponse = z.infer<typeof TargetsQueryResponseSchema>
+
+/** `POST /api/targets/run` */
+export const TargetRunResponseSchema = z.object({ runId: z.string() })
+
+/** One frame on the WS topic `target-run:<runId>`. */
+export const TargetRunFrameSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("stdout"), data: z.string() }),
+  z.object({ type: z.literal("stderr"), data: z.string() }),
+  z.object({ type: z.literal("exit"), code: z.number().nullable() }),
+  z.object({ type: z.literal("error"), message: z.string() })
+])
+export type TargetRunFrame = z.infer<typeof TargetRunFrameSchema>
+
+/** The server -> client envelope carrying a run frame. */
+export const TargetRunMessageSchema = z.object({
+  type: z.literal("target-run"),
+  runId: z.string(),
+  frame: TargetRunFrameSchema
+})
+export type TargetRunMessage = z.infer<typeof TargetRunMessageSchema>
+
+/** Splits a `//pkg/path:name` label into its package and name. */
+export const splitLabel = (label: string): { readonly package: string; readonly name: string } => {
+  const colon = label.lastIndexOf(":")
+  if (colon < 0) return { package: label, name: label.replace(/^\/\//, "").split("/").pop() ?? label }
+  return { package: label.slice(0, colon), name: label.slice(colon + 1) }
+}
+
 /** `GET /api/harnesses` */
 export const HarnessesResponseSchema = z.object({ harnesses: z.array(HarnessSchema) })
 /** `GET /api/repos` */

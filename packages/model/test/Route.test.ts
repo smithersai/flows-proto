@@ -146,10 +146,38 @@ describe("Route.prepare", () => {
       apiKey: Redacted.make("compatible-secret")
     }))
 
-    expect(compatible.protocol.id).toBe("openai-responses")
+    // Chat Completions is the default because it is the surface compatible
+    // deployments actually serve.
+    expect(compatible.protocol.id).toBe("openai-chat-completions")
     expect(compatible.protocol.supportsDeferred("gpt-5.4")).toBe(false)
+    expect(compatible.endpoint.url).toBe("https://api.groq.com/openai/v1/chat/completions")
     expect(compatible.headers).toBeUndefined()
     await expect(Route.prepare(compatible, request).pipe(Effect.runPromise)).resolves.toMatchObject({ routeId: "groq" })
+  })
+
+  it("serves the Responses surface on request, and a deployment's own path", async () => {
+    const responses = Result.getOrThrow(OpenAICompatible.make({
+      id: "openrouter",
+      baseUrl: "https://openrouter.ai/api",
+      apiKey: Redacted.make("compatible-secret"),
+      protocol: "responses"
+    }))
+
+    expect(responses.protocol.id).toBe("openai-responses")
+    expect(responses.protocol.supportsDeferred("gpt-5.4")).toBe(false)
+    expect(responses.endpoint.url).toBe("https://openrouter.ai/api/v1/responses")
+
+    const mounted = Result.getOrThrow(OpenAICompatible.make({
+      id: "gemini",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiKey: Redacted.make("compatible-secret"),
+      path: "/chat/completions"
+    }))
+
+    expect(mounted.endpoint.url).toBe("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+    await expect(Route.prepare(mounted, request).pipe(Effect.runPromise)).resolves.toMatchObject({
+      protocolId: "openai-chat-completions"
+    })
   })
 
   it("carries an OpenAI-compatible deployment's own headers and rejects an unusable base URL", async () => {
@@ -161,7 +189,7 @@ describe("Route.prepare", () => {
     }))
 
     expect(withHeaders.headers).toEqual({ "x-tenant": "acme" })
-    expect(withHeaders.endpoint.url).toBe("https://vllm.test/v1/responses")
+    expect(withHeaders.endpoint.url).toBe("https://vllm.test/v1/chat/completions")
     const prepared = await Effect.runPromise(Route.prepare(withHeaders, request))
     expect(prepared.publicHeaders).toEqual({ "content-type": "application/json", "x-tenant": "acme" })
 
