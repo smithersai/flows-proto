@@ -7,7 +7,7 @@
 import { existsSync, realpathSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { resolve } from "node:path"
-import type { Target, TargetRunFrame } from "smithers-shared/LocalApp"
+import type { Target } from "smithers-shared/LocalApp"
 import { splitLabel } from "smithers-shared/LocalApp"
 import { criticalPath } from "smithers-shared/TargetGraph"
 import type { GraphEdge, NodeTiming, RunSummary, TargetRunEvent } from "smithers-shared/TargetGraph"
@@ -296,7 +296,7 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
   }
   const runs = new Map<string, Live>()
 
-  const emit = (run: TargetRun, frame: TargetRunFrame): void => {
+  const emit = (run: TargetRun, frame: TargetRunEvent): void => {
     options.publish(runTopic(run.runId), { type: "target-run", runId: run.runId, frame })
     options.onEvent?.(run, frame)
   }

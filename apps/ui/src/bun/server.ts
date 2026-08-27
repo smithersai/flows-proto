@@ -484,7 +484,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
   }
   // Lane L3: /api/repo/*, /api/targets/* and the target-run topics.
   const repoTargets = registerRepoTargetRoutes(local, { node: nodeProbe, log, ...(options.buildCli === undefined ? {} : { cli: options.buildCli }) })
-  const targetGraph = registerTargetGraphRoutes(local, { repos: repoTargets.repos, node: nodeProbe, ...(options.buildCli === undefined ? {} : { cli: options.buildCli }) })
+  const targetGraph = registerTargetGraphRoutes(local, { repos: repoTargets.repos, history: repoTargets.history, node: nodeProbe, ...(options.buildCli === undefined ? {} : { cli: options.buildCli }) })
   return {
     ...local,
     stop: () => {

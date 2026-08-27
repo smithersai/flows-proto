@@ -10,6 +10,8 @@ import type { LocalServer } from "../server"
 import { createTargetRunner, queryTargets } from "../Targets"
 import type { TargetRunner } from "../Targets"
 import { queryTargetGraph } from "../TargetGraph"
+import { createTargetRunHistory } from "../TargetRunHistory"
+import type { TargetRunHistory } from "../TargetRunHistory"
 
 export interface RepoTargetRoutesOptions {
   readonly node: Promise<NodeSidecar | null>
@@ -20,6 +22,7 @@ export interface RepoTargetRoutesOptions {
 export interface RepoTargetRoutes {
   readonly repos: RepoStore
   readonly runner: TargetRunner
+  readonly history: TargetRunHistory
   readonly stop: () => void
 }
 
@@ -34,8 +37,10 @@ export const registerRepoTargetRoutes = (
   options: RepoTargetRoutesOptions
 ): RepoTargetRoutes => {
   const repos = createRepoStore()
+  const history = createTargetRunHistory()
   const runner = createTargetRunner({
     publish: server.publish,
+    onEvent: (run, event) => history.event(run, event),
     ...(options.cli === undefined ? {} : { cli: options.cli }),
     ...(options.log === undefined ? {} : { log: options.log })
   })
@@ -96,6 +101,7 @@ export const registerRepoTargetRoutes = (
       options.log?.(`target-run graph unavailable: ${error instanceof Error ? error.message : String(error)}`)
     }
     const run = runner.start({ repoId, repo: repo.path, label, node, edges })
+    await history.start(run)
     return json({ runId: run.runId })
   })
 
@@ -120,6 +126,7 @@ export const registerRepoTargetRoutes = (
   return {
     repos,
     runner,
+    history,
     stop: () => {
       unregister()
       runner.stop()

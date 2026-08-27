@@ -3,11 +3,13 @@ import type { RepoStore } from "../Repos"
 import { json, jsonError, readJson } from "../routes"
 import type { LocalServer } from "../server"
 import { queryTargetGraph } from "../TargetGraph"
+import type { TargetRunHistory } from "../TargetRunHistory"
 
 export interface TargetGraphRoutesOptions {
   readonly repos: RepoStore
   readonly node: Promise<NodeSidecar | null>
   readonly cli?: string
+  readonly history: TargetRunHistory
 }
 
 const field = (body: unknown, name: string): unknown =>
@@ -42,6 +44,25 @@ export const registerTargetGraphRoutes = (
       ...(options.cli === undefined ? {} : { cli: options.cli })
     })
     return json(result)
+  })
+
+  server.router.add("POST", "/api/targets/runs", async ({ request }) => {
+    const parsed = await readJson(request)
+    if ("error" in parsed) return parsed.error
+    const repoId = stringField(parsed.body, "repoId")
+    if (repoId === undefined) return jsonError(400, "invalid_request", "Body must be { repoId }.")
+    const repo = options.repos.get(repoId)
+    if (repo === undefined) return jsonError(404, "repo_not_found", `No open repository with id ${repoId}.`)
+    return json({ runs: await options.history.list(repoId, repo.path) })
+  })
+
+  server.router.add("POST", "/api/targets/runs/replay", async ({ request }) => {
+    const parsed = await readJson(request)
+    if ("error" in parsed) return parsed.error
+    const runId = stringField(parsed.body, "runId")
+    if (runId === undefined) return jsonError(400, "invalid_request", "Body must be { runId }.")
+    const replay = await options.history.replay(runId, options.repos.list().map((repo) => ({ id: repo.id, path: repo.path })))
+    return replay === undefined ? jsonError(404, "run_not_found", `No target run with id ${runId}.`) : json(replay)
   })
 
   return { stop: () => {} }
