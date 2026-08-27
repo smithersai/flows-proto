@@ -109,16 +109,20 @@ Lane C (bundler): S.Bundler.Rspack({config}), .resolve({entries,universe}), .bui
 - [ ] `//src:buildClientDev` real rspack build keyed on graph digest — not run on force (production-scale rspack build; deferred as heavy). The keying is proven through the CLI on the rsbuild-mini fixture (`test/LaneExecution.test.ts`): build keys on `bundler-graph:<digest>` at execution (key template + sentinel), warm run hits, a universe-only edit re-resolves the graph but replays the build, an in-graph edit re-runs it; outputs captured through the CAS path and restored on hit.
 
 Lane D (agents): S.Agents registry, Agent.Lint (vacuous green, fixes write-set, --fix), Agent.Diff (payload/S.Input.*, S.Mcp.Http, gates loop, maxRounds), Agent.Pr shape, agent caching
-- [ ] proof: clean-diff `//src:ssrLint` vacuously green with zero spawns; staged bad-SSR edit in e2e clone triggers real luna run (or scripted fake with --agent-fake); cached verdict replays
-- [ ] `//workflows/fix-sentry-issue:fixSentryIssue` headless missing-payload refusal; MCP unreachable = early fail
+- [x] clean-diff `//src:ssrLint` vacuously green with zero spawns — proof: e2e clone 2026-08-27, `smthrs '//src:ssrLint'` → `ran 15ms`, exit 0, no agent process spawned (lane dispatch landed in af840f0a4; scripted-fake proofs in `test/AgentLaneExecution.test.ts`, 7cab74f67)
+- [ ] staged bad-SSR edit in the e2e clone triggers a real luna run and the cached verdict replays — real sessions proven on artsy/slop-computer `//:harden` (86410b987, 97fdc3fd9), not yet on force
+- [p] `//workflows/fix-sentry-issue:fixSentryIssue` headless refusal; MCP unreachable = early fail — proof: plan sweep 2026-08-27 refuses typed at plan time (`approval required … package mode has no durable approval store`) before payload/MCP; payload-missing and MCP-unreachable refusals proven with the scripted fake in `AgentLaneExecution.test.ts`
 
 Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write install, S.Github.Setup/Workflow/CiGen (+preserve, affected), S.Github.Pr, S.Memory.Retain / S.Memory.SmithersCloud
 - [x] `Github.Workflow` `on.schedule` (five-field cron strings, rendered as `schedule: [{ cron }]`, `invalid_schedule` refusal otherwise) and `on.release` (GitHub's seven activity types, rendered as `release: { types }`) — 2026-08-26, GithubRender.test.ts; the nightly.yaml/release.yaml shapes tapes and aomi preserved by hand.
-- [ ] proof: `//:commit` in e2e clone produces gated conventional commit; `.github --write` renders 3 ymls + preserves 3 hand-written; `//github:pr` refuses without token+approval; Memory targets no-op gracefully without smithers cloud, real when configured
+- [b] `//:commit` in the e2e clone — refuses typed before staging: gate `//:detectSecrets` needs host bin `detect-secrets-hook` (absent); declared/-m/agent message paths proven with the fake (7cab74f67)
+- [p] `//.github:github` check reports drift correctly (2026-08-27: 4 generated files missing, `run-claude-review.yml`/`run-danger-yarn.yml` `unexpected` — correct, the spec preserves only the 3 files it names); `--write` render+preserve proven in `AgentLaneExecution.test.ts`
+- [p] `//.github:pr` plans; refuses without token+approval at execution (fake-proven)
+- [ ] Memory targets: `//:retainCommit` fails `smithers memory exited 4:` — `MemoryBackend` calls `smithers memory retain`, which smithers 0.34.0 lacks (only get/list/rm/set); fix in flight on lane api/defects (2026-08-27)
 
 ## Phase W4 — full sweep
 
-- [ ] Every force label plans (`smthrs graph '//...'` zero NotImplemented at plan time)
+- [x] Every force label plans — proof: 2026-08-27 `--plan` sweep over all 81 e2e-clone labels: zero NotImplemented; every refusal typed (host bins hokusai/detect-secrets/yalc, approval-required ×3, missing `--input name`). Regression found: `S.NodeModule.Bin("knip"|"storybook"|"danger")` refuses on multi-bin packages (since 43b11003d) — fix in flight on lane api/defects
 - [ ] Executes-green set: lint, typeCheck, test (jest), routesGen, relayArtifacts+relay, format, suites, claudeMd, beep, syncSchema, importGraph, buildClientDev, server/app closure tests
 - [ ] Correct-refusal set ([b]): syncEnv/publishAssets/danger (creds), deleteReviewApp (approval+sandbox none), hokusai/detect-secrets/yalc (host bins), fixSentryIssue (payload)
 - [ ] Adversarial review pass + fixes; identity/cache-key/write-set invariant tests green
