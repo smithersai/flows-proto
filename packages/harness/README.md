@@ -47,6 +47,48 @@ The root entry point exports these namespaces; each is also importable from `@sm
 | `Transcript`       | `TranscriptErrorCode`, `TranscriptError`, `ProjectedMessage`, `ProjectedState`, `CellEvidence`, `projectStateResult`, `projectResult`                                                                                                                                                                                                                                                                                                                                                      | Projects journal entries into model-facing transcript state.                      |
 | `VariablesPanel`   | `bound`, `Binding`, `Stamp`, `Ledger`, `stamp`, `render`                                                                                                                                                                                                                                                                                                                                                                                                                                   | Renders what the realm holds and when each name was last bound.                   |
 
-`@smthrs/harness/QuickJSSandbox` exports `make` and `layer`: the QuickJS-WASM `Sandbox` binding, which runs the same single-file build on Node and in a browser and enforces the default ceilings above. It is also the one binding that offers `Sandbox.openRealm`, the persistent realm every run holds for its whole life (`docs/specs/Concepts/Repl Realm.md`).
+`@smthrs/harness/QuickJSSandbox` exports `make` and `layer`: the QuickJS-WASM `Sandbox` binding, which runs the same single-file build on Node and in a browser and enforces the default ceilings above. It is also the one binding that offers `Sandbox.openRealm`, the persistent realm every run holds for its whole life (`docs/specs/Concepts/Repl Realm.md`). It also exports `VariantService`, `Variant`, `layerVariantLive`, `layerVariant`, `makeWithVariant` and `layerWithVariant`, which are how a host names the build instead of taking the default; see below.
 
 `@smthrs/harness/package.json` is also exported. `internal/*` and nested `*/index` subpaths are not public.
+
+## Naming the QuickJS build
+
+`make` and `layer` compile the single-file build from bytes, which is what Node and a browser want. Some runtimes forbid that. Cloudflare's workerd runs no WebAssembly it did not compile itself: `WebAssembly.compile` over bytes fails at runtime, and the only module a worker can instantiate is one its toolchain bundled and handed over as an import.
+
+`QuickJSSandbox.Variant` is that seam. `layerVariantLive` provides the single-file default and `layerVariant(variant)` provides a build the host names; `layerWithVariant` and `makeWithVariant` are the sandbox over whichever one is in context. `@smthrs/agent/Agent` carries the same pair: `layerDefaults` is unchanged and `layerDefaultsWithVariant` takes the build from context.
+
+A worker names its build with the `.wasm` module its bundler compiled:
+
+```ts
+import wasmfile from "@jitl/quickjs-wasmfile-release-sync"
+import wasmModule from "@jitl/quickjs-wasmfile-release-sync/wasm"
+import * as QuickJSSandbox from "@smthrs/harness/QuickJSSandbox"
+import { Layer } from "effect"
+import { newVariant } from "quickjs-emscripten-core"
+
+const layer = QuickJSSandbox.layerWithVariant.pipe(
+  Layer.provide(QuickJSSandbox.layerVariant(newVariant(wasmfile, { wasmModule })))
+)
+```
+
+`test/QuickJSVariant.test.ts` runs a cell against a variant built that way under Node, reading and compiling the `.wasm` file itself in place of the bundler.
+
+## The workerd smoke
+
+`test/workerd/` is a wrangler project that imports the sandbox, names the bundled `.wasm` module, and runs one cell in its `fetch` handler. It is not a pnpm workspace member, because wrangler ships the workerd binary and nothing else in the repository needs it.
+
+```sh
+cd packages/harness/test/workerd
+npm install
+node smoke.mjs
+```
+
+`smoke.mjs` starts `wrangler dev`, waits for the worker, and fails unless the cell completed. `npm run dev` serves the same worker on `http://127.0.0.1:8799` for hand inspection.
+
+The smoke is **not** part of `pnpm --filter @smthrs/harness run test`. It needs a separate install and a downloaded runtime, so `test/WorkerdSmoke.test.ts` skips unless `FLOWS_WORKERD_SMOKE=1` is set:
+
+```sh
+FLOWS_WORKERD_SMOKE=1 pnpm --filter @smthrs/harness run test
+```
+
+`FLOWS_WORKERD_PORT` and `FLOWS_WORKERD_STARTUP_MS` override the port and the readiness deadline.
