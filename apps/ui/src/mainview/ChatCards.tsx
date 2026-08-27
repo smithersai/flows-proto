@@ -33,6 +33,7 @@ import { NotificationsCardBody } from "./cards/NotificationsCard"
 import { RepoImportCardBody } from "./cards/RepoImportCard"
 import { RunHistoryCardBody } from "./cards/RunHistoryCard"
 import { RunTimelineCardBody } from "./cards/RunTimelineCard"
+import { RepoPluginCardBody } from "./cards/RepoPluginCard"
 import { HtmlCardBody, RepoCardBody, TargetRunCardBody, TargetsCardBody } from "./cards/TargetCards"
 import { ThemePickerCardBody } from "./cards/ThemePickerCard"
 import type { Card, WorldDocument } from "./state/AppState"
@@ -129,7 +130,7 @@ const pillStatus = (card: Card): string => {
     return card.payload.status
   }
   if (card.kind === "run-timeline") return card.payload.status
-  if (card.kind === "html" || card.kind === "repo") return "done"
+  if (card.kind === "html" || card.kind === "repo" || card.kind === "repo-plugin") return "done"
   if (card.status === "acted") return "done"
   if (card.kind !== "status") return "pending"
   const progress = card.payload.progress
@@ -1123,7 +1124,8 @@ export function CardView({
           {card.kind === "file" ? <FileCardBody card={card} onRunCommand={onRunCommand} /> : null}
           {card.kind === "theme-picker" ? <ThemePickerCardBody card={card} onRunCommand={onRunCommand} /> : null}
           {card.kind === "repo" ? <RepoCardBody card={card} /> : null}
-          {card.kind === "targets" ? <TargetsCardBody card={card} /> : null}
+          {card.kind === "repo-plugin" ? <RepoPluginCardBody card={card} onRunCommand={onRunCommand} /> : null}
+          {card.kind === "targets" ? <TargetsCardBody card={card} onRunCommand={onRunCommand} /> : null}
           {card.kind === "html" ? <HtmlCardBody card={card} /> : null}
           {card.kind === "target-run" ? <TargetRunCardBody card={card} /> : null}
           {card.kind === "graph" ? <GraphCardBody card={card} onRunCommand={onRunCommand} /> : null}

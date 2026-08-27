@@ -161,7 +161,8 @@ export const queryTargets = async (options: TargetsQueryOptions): Promise<Target
   const started = Date.now()
   const cli = options.cli ?? resolveBuildCli()
   const warnings: Array<string> = []
-  if (options.node === null) {
+  const node = options.node
+  if (node === null) {
     warnings.push("No Node.js >= 22.19 was found for the smthrs loader (SMITHERS_NODE, PATH, nvm, homebrew).")
     return { targets: [], warnings, durationMs: Date.now() - started }
   }

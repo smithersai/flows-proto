@@ -16,7 +16,16 @@ const manifest = {
   summary: "Cross-repo workflows.",
   groups: [{ id: "checks", title: "Checks", kind: "check" }],
   entries: [
-    { id: "check", group: "checks", workspace: ".", label: "//:check", title: "Check everything", summary: "One gate." }
+    {
+      id: "check",
+      group: "checks",
+      workspace: ".",
+      label: "//:check",
+      title: "Check everything",
+      summary: "One gate.",
+      approval: false,
+      agentic: false
+    }
   ]
 }
 

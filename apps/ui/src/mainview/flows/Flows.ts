@@ -151,8 +151,8 @@ const NoPayload = Schema.Struct({})
 const RepoTarget = Schema.Struct({ repo: Schema.optional(Schema.String) })
 /** A card id, the handle every id-scoped card act takes. */
 const CardTarget = Schema.Struct({ cardId: Schema.String })
-/** A Smithers target: the repository it belongs to and its label. */
-const TargetRef = Schema.Struct({ repoId: Schema.String, label: Schema.String })
+/** A Smithers target: the repository it belongs to, its detected workspace, and its label. */
+const TargetRef = Schema.Struct({ repoId: Schema.String, label: Schema.String, workspace: Schema.optional(Schema.String) })
 /** A positive issue or pull-request number beside its optional repo. */
 const NumberedTarget = Schema.Struct({
   number: Schema.Number,
@@ -921,9 +921,9 @@ export const baseFlows = (actions: CommandActions): ReadonlyArray<FlowEntry> => 
     summary: "Run a Smithers target",
     hidden: true,
     userOnly: true,
-    args: "<repoId> <label>",
+    args: "<repoId> [workspace] <label>",
     input: TargetRef,
-    handler: ({ repoId, label }) => actions.runTarget(repoId, label)
+    handler: ({ repoId, label, workspace }) => actions.runTarget(repoId, workspace ?? ".", label)
   }),
   flow({
     name: "target.open",
