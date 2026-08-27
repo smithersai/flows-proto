@@ -31,6 +31,8 @@ const bootProgram = (session: BootSession | undefined) =>
     if (session === undefined) {
       // Electrobun has no server renderer; it retains the existing client-side session path.
       yield* promiseEffect("load identity session", () => controller.loadSession())
+      // The local server's repositories (the chrome's repo chip); absent seams answer nothing.
+      yield* Effect.sync(() => void controller.loadRepos())
       yield* Effect.sync(bindChain)
       if (controller.handleAuthReturn(window.location.search)) {
         window.history.replaceState(null, "", window.location.pathname)

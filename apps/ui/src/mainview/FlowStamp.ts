@@ -32,3 +32,20 @@ export const stampFlows = (hints: ReadonlyArray<FlowBindingHint>) => (root: HTML
     }
   }
 }
+
+/** One selector and the `data-testid` the elements it matches carry. */
+export type TestIdHint = readonly [selector: string, testId: string]
+
+/**
+ * Stamps `data-testid` on every match under `root` — the same mount-point
+ * discipline as `stampFlows`, for the ids the Playwright contract names on
+ * affordances `@smthrs/ui` renders (docs/LOCAL-APP.md `data-testid` contract).
+ */
+export const stampTestIds = (hints: ReadonlyArray<TestIdHint>) => (root: HTMLElement | null): void => {
+  if (root === null) return
+  for (const [selector, testId] of hints) {
+    for (const element of root.querySelectorAll<HTMLElement>(selector)) {
+      if (element.getAttribute("data-testid") === null) element.setAttribute("data-testid", testId)
+    }
+  }
+}
