@@ -630,3 +630,74 @@ differ from a cold one in metadata; `atomicWrite` now chmods explicitly.
 (3) The `unexpected_status` and `request_failed` branches had no coverage; the
 fixture server answers 404 on `/missing*` and the suite asserts both typed
 failures write nothing. Suites, `tsc`, eslint, and dprint re-run green.
+
+### Lane api/gaps 2026-08-27
+
+The Rust/Cargo lane was merged first as `4e53080d9`, resolving every shared
+conflict as a union. The completed Fetch lane was subsequently merged as
+`a57beda81` so force also meets the cross-repository zero-NotImplemented bar.
+No file under `~/artsy` was edited. Execution used disposable clones under
+`~/artsy-e2e`; all four clones were restored with `git reset --hard HEAD` and
+`git clean -fdx`, and finish with zero status rows.
+
+| Owned surface | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| `S.Shell.Test({ shards })` and graph-derived CI matrix | [x] | `pnpm -C packages/build-cli exec vitest run --coverage.enabled=false test/PackageExecution.test.ts test/GithubRender.test.ts`; `cd ~/artsy/viem && node /Users/williamcory/flows-api/gaps/packages/build-cli/src/main.js '//test:test' --plan --format json` | independent shard keys/hits; CI matrix `shard: [1, 2, 3]`; viem plan prints `shards: 3` and the honest missing-`vitest` refusal |
+| `S.Shell.Serve({ services })` | [p] | `cd ~/artsy/tapes && node /Users/williamcory/flows-api/gaps/packages/build-cli/src/main.js graph '//...'` plus build-cli service suites | 67 labels, `warnings: []`; nested service edges load and use the existing supervisor path |
+| Shell `script`/`timeout`; `S.Generate({ command })` | [x] | targets `PackageApi.test.ts`; build-cli `PackageExecution.test.ts`; optimism all-label plan sweep | strict duration syntax; script argv executes; declaration timeout reaches `Exec`; zero NotImplemented |
+| direct `S.Agent.Codex("luna")`, agent-composed Git message, `Agent.Pr` payload/MCP | [p] | targets `AgentTarget.test.ts`; build-cli `AgentSession.test.ts`; tapes all-label plan sweep | tapes root loads all 67 labels; payload/MCP retained; direct selector validates |
+| Go/Rust version authority via Mise/Nix | [p] | targets `Go.test.ts` and `RustToolchainDeclaration.test.ts`; optimism query/graph | 79 labels, `warnings: []`; Mise config is keyed without requiring the generic toolchain brand |
+| `Cargo.Nextest`, `Cargo.Deny`, build `target`/`container`, fmt toolchain, implicit workspace | [p]/[b] | targets `CargoPackage.test.ts`; build-cli `CargoPlan.test.ts`; optimism `//rust:deny` and `//rust:konaPrestate` plans | nextest resolves installed `cargo-nextest`; absent `cargo-deny` is typed; underspecified Docker container build refuses rather than running on the host |
+| nested workspace discovery boundary | [x] | `pnpm -C packages/build-cli exec vitest run --coverage.enabled=false test/PackageRouting.test.ts`; root queries for tapes and aomi-sdk | nested demo workspaces are pruned; tapes 67 and aomi-sdk 36 root labels load |
+| `Go.ModDownload` large-directory caching | [x] | build-cli `GoExecution.test.ts`; tapes e2e `//:contractSeals` twice | module cache captured as one tar CAS blob; production run `fetch ran 42.9s`, test `ran 7.7s`; repeat `fetch hit`, test `hit 2ms` |
+| merged `S.Fetch` execution | [x] | build-cli `FetchTarget.test.ts`; force repository sweep | Effect HttpClient, digest-before-write, atomic output, CAS restore; force has zero NotImplemented |
+
+| Repository | Load / graph / plan sweep | Execute / typed-refusal proof | Result |
+| --- | --- | --- | --- |
+| force | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps force` | Fetch lane's real download/hit receipt | 82 labels, `warnings: []`, 0 NotImplemented |
+| whatsabi | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps whatsabi` | typed host/outward refusals; upstream README fence check remains honestly red | 47 labels, `warnings: []`, 0 NotImplemented |
+| viem | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps viem` | e2e `//src:srcs` ran; `//test:test --plan` says `node_modules binary not found ... vitest`; shard fan-out executes in the unit e2e | 76 labels, `warnings: []`, 0 NotImplemented |
+| tapes | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps tapes` | e2e `//:contractSeals` ran then hit with the fetched module-cache resource | 67 labels, `warnings: []`, 0 NotImplemented |
+| optimism | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps optimism`; `//rust:deny` and `//rust:konaPrestate` plans | e2e `//:checkOpGethVersion` ran 697ms then hit 18ms; exact Cargo refusals name absent driver / missing container contract | 79 labels, `warnings: []`, 0 NotImplemented |
+| aomi | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps aomi` | typed host, approval, and input refusals only | 121 labels, `warnings: []`, 0 NotImplemented |
+| aomi-sdk | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps aomi-sdk` | e2e `//sdk:format` ran 969ms then hit 3ms; `//:sdkVersionBump` honestly red because base/current are both 4.0.0 | 36 labels, `warnings: []`, 0 NotImplemented |
+| slop-computer | `/Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/gaps slop-computer` | typed host/outward refusals only | 35 labels, `warnings: []`, 0 NotImplemented |
+
+Final package proof:
+
+| Check | Exact command | Result |
+| --- | --- | --- |
+| targets suite | `pnpm -C packages/targets exec vitest run --coverage.enabled=false` | 39 files, 734 passed |
+| build-cli suite | `pnpm -C packages/build-cli exec vitest run --coverage.enabled=false` | 42 files, 706 passed, 1 skipped |
+| type checks | `pnpm -C packages/{targets,build-cli} exec tsc --noEmit -p tsconfig.json` | both green |
+| format / lint | package-local `pnpm exec dprint check`; eslint over every touched source | green |
+
+Spec conflicts and rulings:
+
+1. `optimism/rust/PACKAGE.ts:61-66` asks for `container: "docker"` but names
+   neither an image nor a container command. The host has Docker, but choosing
+   an image would invent reproducibility inputs, so planning returns the typed
+   refusal `declares no image or container command`.
+2. The live viem clone has no installed `node_modules`; sharded vitest targets
+   therefore plan with the existing exact missing-binary refusal. Installing
+   dependencies was not silently folded into a test target.
+3. aomi-sdk's SDK version guard is executable but correctly red on the current
+   snapshot (`base=4.0.0 current=4.0.0`); Cargo fmt is the green cached receipt.
+4. The earlier Go lane reported that a per-file CAS manifest could not hold
+   tapes' module cache. This lane stores it as one tar blob and validates every
+   archive path before extraction; it no longer reports `cached JSON has too
+   many members`.
+
+Shared-file hunks: `PackageExec.ts` (new rule dispatch, Cargo drivers,
+timeouts, shard execution, tar capture), `GithubRender.ts` (shard matrix),
+`PackageDiscovery.ts` (nested workspace boundary), `GoExec.ts` (Mise config
+authority), and targets `Shell.ts`, `Cargo.ts`, `Compose.ts`, `AgentTarget.ts`,
+`Go.ts`, `RustToolchain.ts`. The initial Cargo merge also unions the prior
+lane's `AgentSession.ts`, `Reference.ts`, `WorkspaceDeclaration.ts`, and
+`Smithers.ts` additions.
+
+Not done by design: `Overlay` and `Npm.Downstream` retain their existing typed
+refusals; missing nix/mise/hurl/gotestsum/cargo-deny and approvals/secrets
+remain explicit plan refusals. The Docker-container Cargo build stays blocked
+until the declaration supplies its image/command contract. No fake green was
+introduced for those cases.
