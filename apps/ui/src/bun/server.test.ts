@@ -91,15 +91,10 @@ describe("the local origin", () => {
     expect(wrongMethod.status).toBe(405)
   })
 
-  test("lane placeholders: harnesses and repos are empty lists, the rest 501", async () => {
+  test("lane placeholders: harnesses and repos are empty lists, the pty routes 501", async () => {
     expect(await (await fetch(`${server.origin}/api/harnesses`)).json()).toEqual({ harnesses: [] })
     expect(await (await fetch(`${server.origin}/api/repos`)).json()).toEqual({ repos: [] })
     for (const [method, path] of [
-      ["POST", "/api/repo/open"],
-      ["POST", "/api/repo/close"],
-      ["POST", "/api/targets/query"],
-      ["POST", "/api/targets/run"],
-      ["POST", "/api/targets/cancel"],
       ["GET", "/api/pty"],
       ["POST", "/api/pty"],
       ["POST", "/api/pty/abc/resize"],
