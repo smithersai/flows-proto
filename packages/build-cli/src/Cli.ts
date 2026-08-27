@@ -7,6 +7,7 @@ import * as Config from "@smthrs/targets/Config"
 import * as Target from "@smthrs/targets/Target"
 import { Cli, z } from "incur"
 import * as NodePath from "node:path"
+import * as CreateApp from "./CreateApp.ts"
 import * as Diagnostic from "./Diagnostic.ts"
 import { runInstall } from "./engine.ts"
 import * as Executor from "./Executor.ts"
@@ -457,6 +458,33 @@ export const makeCli = (config: RuntimeConfig = {}) =>
         } catch (cause) {
           return context.error({
             code: "install_failed",
+            exitCode: 1,
+            message: Diagnostic.message(cause),
+            retryable: false
+          })
+        }
+      }
+    })
+    .command("create-app", {
+      description: "Scaffold a Smithers app from a @smthrs/create-app template",
+      args: z.object({ dir: z.string().describe("Directory to create; its name becomes the app name") }),
+      options: z.object({
+        template: z.string().default("default").describe("Template name: default or aomi"),
+        link: z.boolean().default(true).describe(
+          "Point @smthrs/* dependencies at the checkout the templates came from; --no-link keeps versions"
+        )
+      }),
+      alias: { template: "t" },
+      async run(context) {
+        try {
+          return await CreateApp.scaffold({
+            directory: context.args.dir,
+            template: context.options.template,
+            link: context.options.link
+          })
+        } catch (cause) {
+          return context.error({
+            code: "create_app_failed",
             exitCode: 1,
             message: Diagnostic.message(cause),
             retryable: false
