@@ -32,17 +32,21 @@ import {
 
 const readSource = (relative: string): string => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8")
 
-const serverIndex = readSource("../../../../server/src/index.ts")
+/*
+ * The sink is the local origin (src/bun/server.ts) in the local app; the
+ * deployed Worker used to hold this half of the contract.
+ */
+const serverIndex = readSource("../../bun/server.ts")
 const mainSource = readSource("../main.tsx")
 const watchdogSource = readSource("../StartupWatchdog.ts")
 
 /** A `const NAME = "value";` declaration in the Worker, or undefined. */
 const serverString = (name: string): string | undefined =>
-  new RegExp(`const ${name} = "([^"]+)";`).exec(serverIndex)?.[1]
+  new RegExp(`const ${name} = "([^"]+)"`).exec(serverIndex)?.[1]
 
 /** A `const NAME = 16 * 1024;` style declaration in the Worker, or undefined. */
 const serverBytes = (name: string): number | undefined => {
-  const match = new RegExp(`const ${name} = (\\d+)(?: \\* (\\d+))?;`).exec(serverIndex)
+  const match = new RegExp(`const ${name} = (\\d+)(?: \\* (\\d+))?`).exec(serverIndex)
   if (match === null) return undefined
   const base = Number(match[1])
   return match[2] === undefined ? base : base * Number(match[2])
@@ -64,14 +68,12 @@ const recordingFetch = (): { readonly sends: Array<Sent>; readonly fetchImpl: Cl
 
 const bodyOf = (sent: Sent): Record<string, unknown> => JSON.parse(String(sent.init.body)) as Record<string, unknown>
 
-describe("the client-error reporter's contract with the Worker", () => {
+describe("the client-error reporter's contract with the local origin", () => {
   test("posts to the path the Worker actually routes, by the method it routes", () => {
     // Red when the Worker renames the route or stops accepting POST: every
     // crash report would 404 and the admin error log would stay empty.
     expect(serverString("CLIENT_ERRORS_PATH")).toBe(CLIENT_ERRORS_PATH)
-    expect(serverIndex).toContain(
-      "if (url.pathname === CLIENT_ERRORS_PATH && request.method === \"POST\") {"
-    )
+    expect(serverIndex).toContain("router.add(\"POST\", CLIENT_ERRORS_PATH, ")
     const { sends, fetchImpl } = recordingFetch()
     createClientErrorReporter({ fetchImpl, pathname: () => "/" }).report("error", new Error("boom"))
     expect(sends[0]?.input).toBe(CLIENT_ERRORS_PATH)

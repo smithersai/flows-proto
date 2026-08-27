@@ -58,6 +58,28 @@ Electrobun 2.0.1 (build.mainProcess: "bun", Bun 1.4.0)
 - `SMITHERS_CHAT_STUB=1` replaces CloudAgent with a deterministic local stub
   (echoes the last user message, and for the targets prompt returns a valid
   `{message, html}`) so the suite runs offline and in CI.
+- Identity: the local origin forwards `/api/auth/*` and `/api/identity/*` to
+  `https://canary.smithers.sh` (Origin rewritten, `Domain=` stripped from
+  `Set-Cookie`) so the Sign in button's device flow reaches a real seam;
+  with the stub on, `/api/auth/session` answers `{ status: "signed-out" }`
+  locally and the rest 501. Identity never gates the chat: the signed-out
+  refusal in `turns.ts`, the signed-out opening message, the sign-in pill
+  and the gated composer placeholder are gone; sign-in is the
+  `chrome-sign-in` button in the corner chrome.
+- The chain runtime (`createChainRuntime`) is not bound in the local app;
+  `createAgentSeat(createLocalAgent())` is the whole seat.
+- Electrobun 2.x: the SDK lives in `.hutch/devkit` (projected by
+  `electrobun prepare`, implicitly by `dev`/`build`); `tsconfig.json`
+  extends its `tsconfig.json`, `vite.config.ts` uses `electrobunViteAliases`,
+  `hutch.config.ts` selects pnpm. `.hutch/` and `.cottontail-tmp/` are
+  ignored. `scripts/ensure-devkit.mjs` projects the devkit when it is missing
+  or its version differs from the installed `electrobun`: it runs as
+  `postinstall` (soft: warns without failing `pnpm install`) and ahead of
+  `typecheck`, `check`, `start`, `build`, `build:canary`, the T1 web server
+  and the T2 launcher, so `pnpm install && pnpm --filter smithers-ui typecheck`
+  works in a fresh clone. The first projection on a machine downloads Hutch
+  and the Electrobun release into `~/.hutch` (network required); `pnpm run
+  devkit` runs it by hand.
 
 ## HTTP and WebSocket API
 
@@ -272,19 +294,34 @@ Never append `--dangerously-skip-permissions` or `--yolo`.
 ## Test tiers
 
 - Unit: `bun test src` (existing) plus new tests for `Sandbox.ts`, `Node.ts`,
-  `Harnesses.ts`, repo detection, target JSON mapping.
+  `server.ts`, `Harnesses.ts`, repo detection, target JSON mapping.
 - T1 (gates every milestone): `@playwright/test` in
   `apps/ui/e2e/playwright/*.spec.ts`, `apps/ui/playwright.config.ts`,
-  `webServer` = `bun src/bun/serve.ts` with `SMITHERS_LOCAL_PORT=47311`,
-  `SMITHERS_CHAT_STUB=1` by default (`SMITHERS_CHAT_STUB=0` hits the real
-  endpoint), chromium headless. Script: `pnpm --filter smithers-ui test:e2e`.
-- T2 (smoke on the real window): `apps/ui/e2e/playwright/native/*.spec.ts`,
-  script `test:e2e:native`: builds with Electrobun 2.0 (`bundleCEF: true`,
-  `defaultRenderer: "cef"` on mac), launches the app with
-  `ELECTROBUN_CEF_REMOTE_DEBUGGING_PORT=9333`, then
-  `chromium.connectOverCDP("http://127.0.0.1:9333")`. If CEF acquisition is
-  impossible on this machine, T2 falls back to the existing
-  `e2e/native/native-launch.ts` pattern and the fallback is documented here.
+  `webServer` = `bun e2e/playwright/webserver.ts` (a `vite build`, skipped
+  with `SMITHERS_SKIP_SPA_BUILD=1`, then `src/bun/serve.ts`) with
+  `SMITHERS_LOCAL_PORT=47311`, `SMITHERS_CHAT_STUB=1` by default
+  (`SMITHERS_CHAT_STUB=0` hits the real endpoint and enables
+  `chat.real.spec.ts`), chromium headless. Script:
+  `pnpm --filter smithers-ui test:e2e`.
+- T2 (smoke on the real window): `apps/ui/e2e/playwright/native/*.native.spec.ts`,
+  script `test:e2e:native` (`e2e/playwright/native/run.ts`): `vite build`,
+  `electrobun build --env=dev` (`bundleCEF: true`, `defaultRenderer: "cef"`
+  on mac), then launches `build/dev-macos-<arch>/Smithers-dev.app/Contents/MacOS/launcher`
+  directly with `ELECTROBUN_CEF_REMOTE_DEBUGGING_PORT=9333`,
+  `SMITHERS_LOCAL_PORT=47313`, `SMITHERS_CHAT_STUB=1`, waits for
+  `/api/health` and `http://127.0.0.1:9333/json/version`, and runs
+  `playwright.native.config.ts` with `SMITHERS_NATIVE_CDP` /
+  `SMITHERS_NATIVE_ORIGIN` in the env; the spec attaches with
+  `chromium.connectOverCDP`, asserts the page URL is the local origin, the
+  title, and `composer-input`. Verified 2026-08-26 on macOS arm64: the CEF
+  archive downloads on the first build (cached under `~/.hutch`), the dev
+  build logs `[CEF] Remote debugging enabled on 127.0.0.1:9333`, and the
+  spec passes. `SMITHERS_SKIP_NATIVE_BUILD=1` reuses `build/` and `dist/`.
+  Without `SMITHERS_NATIVE_CDP` the spec skips with the reason, so a bare
+  `playwright test --config playwright.native.config.ts` never fails for
+  lack of a window. The old `e2e/native/native-launch.ts` fallback is
+  removed; `e2e/native/MainProcess.ts` (driven by `src/bun/Main.test.ts`)
+  still asserts the main process without a window.
 - Specs by milestone: M0 `boot.spec.ts`, `chat.spec.ts`; M1
   `repo-targets.spec.ts`; M2 `tabs.spec.ts`, `terminal.spec.ts`,
   `harness.spec.ts`.

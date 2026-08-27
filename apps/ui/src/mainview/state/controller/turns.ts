@@ -658,35 +658,9 @@ export const createTurnController = (
       return
     }
     /*
-     * Auth is a conversation state: a definitive signed-out or
-     * non-allowlisted answer never reaches the backend — the attempt
-     * resolves to a calm one-line reply whose action is the one needed
-     * step. The composer's draft stays; the user's words are never eaten.
-     * (Slash commands above still run: /auth.sign-in works signed-out.)
+     * No auth gate: the local app chats anonymously through the local
+     * origin (LOCAL-APP.md). Sign-in stays a command, never a precondition.
      */
-    const identity = store.collections.identitySessions.get("identity")
-    if (identity?.state === "signed-out") {
-      store.dispatch({
-        type: "message.appended",
-        actor: "system",
-        text: "Sign in with GitHub first — that's the one step between you and this conversation.",
-        action: { flow: "auth.sign-in", label: "Sign in with GitHub" }
-      })
-      return
-    }
-    if (identity?.state === "signed-in" && !identity.allowlisted) {
-      store.dispatch({
-        type: "message.appended",
-        actor: "system",
-        text: identity.accessRequested
-          ? "Your request is already in — the chat opens up as soon as there's a spot."
-          : "Smithers is open to design partners only right now — request access and we'll open the chat.",
-        ...(identity.accessRequested
-          ? {}
-          : { action: { flow: "auth.request-access", label: "Request access" } })
-      })
-      return
-    }
     const turnId = crypto.randomUUID()
     ctx.activeTurn = {
       id: turnId,

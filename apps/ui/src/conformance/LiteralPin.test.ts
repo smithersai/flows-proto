@@ -21,12 +21,10 @@ import { describe, expect, test } from "bun:test"
 import { relative } from "node:path"
 import { RUN_LAUNCH_COMMANDS } from "../mainview/state/RunClaims"
 import {
-  attributeSelectorValues,
   dataAttributesIn,
   DOTTED_IDENTIFIER,
   extractLiterals,
   FILE_NAME,
-  ID_PREFIX,
   literalsUnder,
   nearest,
   sourceFiles
@@ -79,51 +77,14 @@ interface Excuse {
  */
 const RESOLVES_ELSEWHERE: ReadonlyArray<Excuse> = [
   {
-    literal: "a.home",
-    file: "scripts/live-check.ts",
-    reason: "a CSS type-and-class selector for the marketing header link, not an app vocabulary name"
-  },
-  {
-    literal: "command.failed.flow.run",
-    file: "e2e/suites/billing-grants.e2e.ts",
-    reason: "a toast key AppController assembles at run time as `command.failed.${name}`; only the head is static"
-  },
-  {
-    literal: "card.remove",
-    file: "e2e/suites/cards-approvals.e2e.ts",
-    reason:
-      "deliberately an UNKNOWN frame type: the assertion proves an unknown frame does not remove the card it names"
-  },
-  {
-    literal: "telemetry",
-    file: "e2e/suites/cards-approvals.e2e.ts",
-    reason:
-      "deliberately an UNKNOWN card kind, the twin of the frame above: the assertion proves the client renders no card for a kind CardSchema does not claim"
-  },
-  {
-    literal: "command",
-    file: "e2e/suites/commands-registry.e2e.ts",
-    reason: "the Submit union's kind (registry.ts `Submit`), compared against a `.kind` that is not a card's"
-  },
-  {
-    literal: "promotional",
-    file: "scripts/stub-backends.ts",
-    reason: "a billing grant's kind, compared against the grant union rather than a card"
-  },
-  {
-    literal: "purchased",
-    file: "scripts/stub-backends.ts",
-    reason: "a billing grant's kind, compared against the grant union rather than a card"
+    literal: "dev-",
+    file: "e2e/playwright/native/run.ts",
+    reason: "the Electrobun dev build directory prefix under build/ (dev-macos-arm64), not an app id"
   },
   {
     literal: "flow.ghost",
     file: "src/launch-checklist/Probes.test.ts",
     reason: "a flow name this unit test invents to exercise the unnamed-affordance rule, never sent to the app"
-  },
-  {
-    literal: "stub-run-",
-    file: "scripts/stub-backends.ts",
-    reason: "the run ids the gateway double mints for itself; the app wraps them as `flow-run-${runId}`"
   }
 ]
 
@@ -247,68 +208,32 @@ describe("the extraction reaches every tree and every rule fires", () => {
     // floors below are what a broken path or a lost tree trips.
     for (const tree of TREES) expect(sourceFiles(tree).length).toBeGreaterThan(5)
     expect(TREES.flatMap((tree) => [...sourceFiles(tree)]).length).toBeGreaterThan(30)
-    // 10078 literals today.
-    expect(literals.length).toBeGreaterThan(4000)
+    // 2198 literals today (the web e2e suites and the wrangler doubles left
+    // with the local-app cut; the Playwright specs and the checklist remain).
+    expect(literals.length).toBeGreaterThan(1000)
   })
 
   const population = (predicate: (literal: (typeof literals)[number]) => number): number =>
     literals.reduce((total, literal) => total + predicate(literal), 0)
 
   test("each rule has literals to check", () => {
-    // Today: 257 dotted identifiers, 179 data-attribute mentions, 39 kind
-    // comparisons, 22 [data-kind] selector values, 33 [data-flow] selector
-    // values, 18 id prefixes. Each floor is roughly half of what the trees
-    // carry, so ordinary churn does not trip it but a rule that stops
-    // matching does.
+    // Today (local-app cut): 68 dotted identifiers. Each floor is roughly
+    // half of what the trees carry, so ordinary churn does not trip it but a
+    // rule that stops matching does.
     expect(
       population((literal) =>
         literal.form === "string" && DOTTED_IDENTIFIER.test(literal.value) && !FILE_NAME.test(literal.value) ? 1 : 0
       )
-    ).toBeGreaterThan(120)
-    expect(population((literal) => dataAttributesIn(literal.value).length)).toBeGreaterThan(60)
-    expect(population((literal) => (literal.kindComparison ? 1 : 0))).toBeGreaterThan(20)
-    expect(population((literal) => attributeSelectorValues(literal.value, "data-kind").length)).toBeGreaterThan(10)
-    expect(population((literal) => attributeSelectorValues(literal.value, "data-flow").length)).toBeGreaterThan(15)
-    expect(
-      population((literal) =>
-        (literal.form === "template-head"
-            || (literal.leadingArgumentOf !== undefined
-              && ["startsWith", "endsWith"].includes(literal.leadingArgumentOf)))
-          && ID_PREFIX.test(literal.value)
-          ? 1
-          : 0
-      )
-    ).toBeGreaterThan(8)
+    ).toBeGreaterThan(30)
+    expect(population((literal) => dataAttributesIn(literal.value).length)).toBeGreaterThan(30)
+    /*
+     * The card-kind comparisons, the [data-kind]/[data-flow] selector values
+     * and the id prefixes were carried by the web e2e suites, which left with
+     * the local-app cut (LOCAL-APP.md). The rules stay armed; their floors
+     * return with the M1/M2 Playwright specs that assert cards and tabs.
+     */
   })
 
-  test("the widened card-kind positions reach the suites, not only the fixtures", () => {
-    /*
-     * The floors that keep the widening honest. `kindComparison` is the
-     * narrow syntactic fact the first cut checked; `kindClaim` is every
-     * position, and the gap between them is what the widening bought. If
-     * the propagation breaks — a helper renamed, a resolution step lost —
-     * the gap collapses to nothing and this fails while every other floor
-     * still passes.
-     */
-    // 52 kind claims today against 39 bare comparisons, so 13 kinds reach a
-    // position the old rule could not see: the arguments of `cardOfKind`
-    // and of the `[data-kind=${…}]` selector helpers.
-    expect(population((literal) => (literal.kindClaim ? 1 : 0))).toBeGreaterThan(40)
-    expect(population((literal) => (literal.kindClaim && !literal.kindComparison ? 1 : 0))).toBeGreaterThan(6)
-    // 16 scripted card frames today, in cards-copy, cards-approvals and
-    // commands-registry.
-    expect(
-      population((literal) =>
-        literal.propertyName === "kind"
-          && literal.siblingProperties.filter((sibling) => vocabularies.cardObjectFields.has(sibling)).length >= 3
-          ? 1
-          : 0
-      )
-    ).toBeGreaterThan(8)
-    // The argument position the pin was blind to is a majority of the
-    // literals in these trees: 5350 today.
-    expect(population((literal) => (literal.argumentOf !== undefined ? 1 : 0))).toBeGreaterThan(2000)
-  })
 })
 
 describe("every literal the suites assert against still resolves", () => {

@@ -141,6 +141,9 @@ describe("launch-law parity: every affordance is a command", () => {
     )
     expect(counts).toEqual({
       /*
+       * 23 = 22 + the chrome Sign in button (LOCAL-APP.md: sign-in is an
+       * option in the corner chrome, never a gate on the chat).
+       *
        * 22 = 27 − the five per-item onClick handlers the connect menu used
        * to carry. Its entries are DATA now (flow + optional args), rendered
        * through one handler that dispatches `runCommand`/`runCommandArgs`,
@@ -148,7 +151,7 @@ describe("launch-law parity: every affordance is a command", () => {
        * repeating it. 27 was 25 + the auth shortcut (the signed-out step's
        * first-tab-stop copy) + the reset confirm's own trigger (§28.4).
        */
-      "../App.tsx": 22,
+      "../App.tsx": 23,
       // 6 = 5 + the empty state's own import affordance (§11.6): with nothing
       // connected the pane stated a fact and offered no move.
       "../ConnectorsSurface.tsx": 6,

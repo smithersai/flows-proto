@@ -119,7 +119,7 @@ const CANDIDATES = [
 ]
 
 describe("wave 14 §1 — the opening message is never filler", () => {
-  test("signed out: the opening (and only) message IS the auth conversation state", async () => {
+  test("signed out: no opening message at all; the transcript starts empty (LOCAL-APP.md)", async () => {
     const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
     const controller = createAppController(store, unavailableRepositories, silentAgent, {
       ...backend({
@@ -133,8 +133,8 @@ describe("wave 14 §1 — the opening message is never filler", () => {
     await settled()
 
     const { host, markup } = mount(controller)
-    expect(host.querySelectorAll(SMITHERS_MESSAGES)).toHaveLength(1)
-    expect(openingMessage(host)).toMatch(/sign in with github/i)
+    expect(host.querySelectorAll(SMITHERS_MESSAGES)).toHaveLength(0)
+    expect(openingMessage(host)).toBe("")
     expect(FILLER.test(markup())).toBe(false)
   })
 

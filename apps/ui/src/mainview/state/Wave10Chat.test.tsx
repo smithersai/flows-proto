@@ -139,7 +139,7 @@ describe("wave 10 — the derived pill row (§2a/§2f)", () => {
     expect(host.querySelectorAll(".smithers-suggestion")).toHaveLength(0)
   })
 
-  test("signed-out, the one pill is the Sign in binding — a command, never a prompt string", async () => {
+  test("signed-out, no pill: sign-in is the chrome button, never a gate on the chat (LOCAL-APP.md)", async () => {
     const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
     const controller = createAppController(store, unavailableRepositories, silentAgent)
     store.dispatch({
@@ -153,10 +153,9 @@ describe("wave 10 — the derived pill row (§2a/§2f)", () => {
     })
     await settled()
     const { host } = mount(controller)
-    const pills = host.querySelectorAll<HTMLElement>(".smithers-suggestion")
-    expect(pills).toHaveLength(1)
-    expect(pills[0]?.dataset.flow).toBe("auth.sign-in")
-    expect(pills[0]?.textContent).toContain("Sign in with GitHub")
+    expect(host.querySelectorAll(".smithers-suggestion")).toHaveLength(0)
+    const signIn = host.querySelector<HTMLElement>("[data-testid=\"chrome-sign-in\"]")
+    expect(signIn?.dataset.flow).toBe("auth.sign-in")
   })
 
   test("needsSelection, the one pill opens the chooser as the gold binding", async () => {
@@ -360,8 +359,8 @@ describe("wave 10 — the maximize transition (§2d′)", () => {
   })
 })
 
-describe("wave 10 — the auth gate is pre-model (§2a″)", () => {
-  test("a signed-out send never touches the turn seam: zero startTurn calls, the deterministic reply + affordance", async () => {
+describe("local app: identity is not a gate on the chat (LOCAL-APP.md)", () => {
+  test("a signed-out send reaches the turn seam: one startTurn call, no sign-in reply", async () => {
     const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
     let turns = 0
     const countingAgent: NativeAgent = {
@@ -386,10 +385,10 @@ describe("wave 10 — the auth gate is pre-model (§2a″)", () => {
     await settled()
     controller.send("list my issues")
     await settled()
-    expect(turns).toBe(0)
+    expect(turns).toBe(1)
     const reply = [...store.collections.messages.values()].find((message) =>
       message.text.includes("Sign in with GitHub first")
     )
-    expect(reply?.action?.flow).toBe("auth.sign-in")
+    expect(reply).toBeUndefined()
   })
 })
