@@ -10,6 +10,7 @@
  *
  * @since 0.1.0
  */
+import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 import * as Attr from "./Attr.ts"
 import * as Secret from "./Secret.ts"
@@ -65,6 +66,99 @@ export const ReleaseActivity = Schema.Literals([
 export type ReleaseActivity = typeof ReleaseActivity.Type
 
 /**
+ * Schema for the pull-request activity types accepted by GitHub Actions.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const PullRequestActivity = Schema.Literals([
+  "assigned",
+  "unassigned",
+  "labeled",
+  "unlabeled",
+  "opened",
+  "edited",
+  "closed",
+  "reopened",
+  "synchronize",
+  "converted_to_draft",
+  "locked",
+  "unlocked",
+  "enqueued",
+  "dequeued",
+  "milestoned",
+  "demilestoned",
+  "ready_for_review",
+  "review_requested",
+  "review_request_removed",
+  "auto_merge_enabled",
+  "auto_merge_disabled"
+])
+
+/**
+ * A pull-request activity type accepted by GitHub Actions.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type PullRequestActivity = typeof PullRequestActivity.Type
+
+/**
+ * Schema for the issue activity types accepted by GitHub Actions.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const IssueActivity = Schema.Literals([
+  "opened",
+  "edited",
+  "deleted",
+  "transferred",
+  "pinned",
+  "unpinned",
+  "closed",
+  "reopened",
+  "assigned",
+  "unassigned",
+  "labeled",
+  "unlabeled",
+  "locked",
+  "unlocked",
+  "milestoned",
+  "demilestoned"
+])
+
+/**
+ * An issue activity type accepted by GitHub Actions.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type IssueActivity = typeof IssueActivity.Type
+
+/**
+ * Schema for one typed manual-dispatch input.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const WorkflowDispatchInput = Schema.Struct({
+  description: Schema.optional(Schema.String),
+  required: Schema.optional(Schema.Boolean),
+  default: Schema.optional(Schema.Union([Schema.String, Schema.Boolean, Schema.Number])),
+  type: Schema.Literals(["boolean", "choice", "environment", "string"]),
+  options: Schema.optional(Schema.Array(Schema.String))
+})
+
+/**
+ * One typed manual-dispatch input.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type WorkflowDispatchInput = typeof WorkflowDispatchInput.Type
+
+/**
  * Schema for a generated workflow's trigger table. `schedule` takes
  * five-field cron expressions (rendered as GitHub's `schedule: [{ cron }]`
  * list); `release` takes the activity types that fire it.
@@ -73,11 +167,21 @@ export type ReleaseActivity = typeof ReleaseActivity.Type
  * @since 0.1.0
  */
 export const On = Schema.Struct({
-  pullRequest: Schema.optional(Schema.Boolean),
+  pullRequest: Schema.optional(Schema.Union([
+    Schema.Boolean,
+    Schema.Struct({
+      branches: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+      types: Schema.optional(Schema.Array(PullRequestActivity))
+    })
+  ])),
+  issues: Schema.optional(Schema.Struct({ types: Schema.optional(Schema.Array(IssueActivity)) })),
   push: Schema.optional(Schema.Struct({ branches: Schema.Array(Schema.NonEmptyString) })),
   schedule: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   release: Schema.optional(Schema.Array(ReleaseActivity)),
-  workflowDispatch: Schema.optional(Schema.Boolean)
+  workflowDispatch: Schema.optional(Schema.Union([
+    Schema.Boolean,
+    Schema.Struct({ inputs: Schema.Record(Schema.String, WorkflowDispatchInput) })
+  ]))
 })
 
 /**
@@ -92,6 +196,61 @@ export const Concurrency = Schema.Struct({
 })
 
 /**
+ * Schema for one repository permission level in a generated workflow.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const Permission = Schema.Literals(["read", "write", "none"])
+
+/**
+ * One repository permission level in a generated workflow.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Permission = typeof Permission.Type
+
+const stepBase = {
+  name: Schema.optional(Schema.NonEmptyString),
+  id: Schema.optional(Schema.NonEmptyString),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  if: Schema.optional(Schema.NonEmptyString)
+}
+
+/**
+ * Schema for one raw GitHub Actions step in declaration order.
+ *
+ * An action step names `uses`; a shell step names `run`, either as one string
+ * or as lines the renderer joins with newlines. The two forms are exclusive so
+ * a declaration cannot emit a step GitHub would reject for naming both.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const Step = Schema.Union([
+  Schema.Struct({
+    ...stepBase,
+    uses: Schema.NonEmptyString,
+    with: Schema.optional(Schema.Record(Schema.String, Schema.String))
+  }),
+  Schema.Struct({
+    ...stepBase,
+    run: Schema.Union([Schema.NonEmptyString, Schema.NonEmptyArray(Schema.String)]),
+    shell: Schema.optional(Schema.NonEmptyString),
+    workingDirectory: Schema.optional(Schema.NonEmptyString)
+  })
+])
+
+/**
+ * One raw GitHub Actions step.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type Step = typeof Step.Type
+
+/**
  * Attrs for {@link Workflow}.
  *
  * @category schemas
@@ -101,9 +260,18 @@ export const WorkflowAttrs = Schema.Struct({
   name: Schema.NonEmptyString,
   on: On,
   concurrency: Schema.optional(Concurrency),
+  permissions: Schema.optional(Schema.Record(Schema.String, Permission)),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  environment: Schema.optional(Schema.NonEmptyString),
+  condition: Schema.optional(Schema.NonEmptyString),
+  jobName: Schema.optional(Schema.NonEmptyString),
+  runsOn: Schema.optional(Schema.NonEmptyString),
+  steps: Schema.optional(Schema.NonEmptyArray(Step)),
   setup: Schema.optional(Target.Target),
   affected: Schema.optional(Schema.Boolean),
-  run: Schema.Array(Target.Target)
+  run: Schema.Array(Target.Target).pipe(
+    Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<Target.AnyTarget>>([]))
+  )
 })
 
 const workflowDefinition = Target.make("Github.Workflow", {
