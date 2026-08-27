@@ -1167,6 +1167,9 @@ importers:
       '@smthrs/agent':
         specifier: 0.1.0
         version: link:../agent
+      '@smthrs/capability':
+        specifier: 0.1.0
+        version: link:../capability
       '@smthrs/engine':
         specifier: 0.1.0
         version: link:../engine

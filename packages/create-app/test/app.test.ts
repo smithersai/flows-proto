@@ -90,3 +90,15 @@ describe("defaults", () => {
     expect(defaultMaxFrames).toBe(8)
   })
 })
+
+describe("defineTools grant", () => {
+  it("defaults to the appliance grant", () => {
+    const tools = defineTools([])
+    expect(tools.grant).toEqual([{ action: "*", resource: "*" }])
+  })
+
+  it("keeps a narrowed grant as declared", () => {
+    const tools = defineTools([], { grant: [{ action: "net:post:*", resource: "https://example.com/*" }] })
+    expect(tools.grant).toEqual([{ action: "net:post:*", resource: "https://example.com/*" }])
+  })
+})

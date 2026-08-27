@@ -135,7 +135,8 @@
     "@smthrs/registry": "0.1.0",
     "@smthrs/targets": "0.1.0",
     "@smthrs/testing": "0.1.0",
-    "effect": "4.0.0-rc.108"
+    "effect": "4.0.0-rc.108",
+    "@smthrs/capability": "0.1.0"
   },
   "peerDependencies": {
     "react": "^19.0.0",

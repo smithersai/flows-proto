@@ -210,6 +210,21 @@ export const defineSandbox = (options: Omit<SandboxSpec, "_tag">): SandboxSpec =
 export interface ToolsSpec {
   readonly _tag: "ToolsSpec"
   readonly sources: ReadonlyArray<FlowBinding.Source>
+  /**
+   * The capability envelope every cell of every flow runs under.
+   *
+   * The default is the appliance grant: an app trusts the tools it ships, so
+   * everything a shipped binding declares is granted. Without it the harness
+   * refuses every call that declares a capability, `tevm/*` included. Narrow
+   * it when the app embeds tools it does not own.
+   */
+  readonly grant: ReadonlyArray<ToolsGrant>
+}
+
+/** One capability pattern of a {@link ToolsSpec} grant. */
+export interface ToolsGrant {
+  readonly action: string
+  readonly resource: string
 }
 
 /**
@@ -226,7 +241,10 @@ export interface ToolsSpec {
  * @category constructors
  * @since 0.1.0
  */
-export const defineTools = (sources: ReadonlyArray<FlowBinding.Source>): ToolsSpec => ({ _tag: "ToolsSpec", sources })
+export const defineTools = (
+  sources: ReadonlyArray<FlowBinding.Source>,
+  options?: { readonly grant?: ReadonlyArray<ToolsGrant> }
+): ToolsSpec => ({ _tag: "ToolsSpec", sources, grant: options?.grant ?? [{ action: "*", resource: "*" }] })
 
 /**
  * One flow: a payload, an output schema, and the prompt that opens the run.

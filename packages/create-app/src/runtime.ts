@@ -9,6 +9,7 @@
  *
  * @since 0.1.0
  */
+import * as Capability from "@smthrs/capability/Capability"
 import * as Agent from "@smthrs/agent/Agent"
 import * as AgentAction from "@smthrs/agent/AgentAction"
 import * as Seat from "@smthrs/agent/Seat"
@@ -154,7 +155,7 @@ export const layerFor = (options: LayerOptions) => {
     registry: emptyRegistry(),
     limits: limitsOf(options.agent, options.sandbox),
     flows: options.tools.sources,
-    capabilityEnvelope: [],
+    capabilityEnvelope: options.tools.grant.map((pattern) => new Capability.CapabilityPattern(pattern as never)),
     maxFrames: options.agent.maxFrames ?? defaultMaxFrames
   })
   const seats = SeatResolver.layer({
