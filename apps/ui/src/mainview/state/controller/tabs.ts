@@ -87,7 +87,8 @@ export const createTabsController = (ctx: ControllerContext): TabsController => 
     store.dispatch({
       type: "tab.opened",
       actor: "user",
-      tab: { id: `tab-${sessionId}`, kind: "terminal", title: "Terminal", sessionId, cwd: directory }
+      // The session id is the tab id: unique per process, and `tab-<id>` stays a readable test id.
+      tab: { id: sessionId, kind: "terminal", title: "Terminal", sessionId, cwd: directory }
     })
   }
 
@@ -113,7 +114,7 @@ export const createTabsController = (ctx: ControllerContext): TabsController => 
       type: "tab.opened",
       actor: "user",
       tab: {
-        id: `tab-${sessionId}`,
+        id: sessionId,
         kind: "harness",
         title: harness.displayName,
         sessionId,
@@ -133,7 +134,7 @@ export const createTabsController = (ctx: ControllerContext): TabsController => 
       store.dispatch({
         type: "tab.opened",
         actor: "user",
-        tab: { id: `tab-card-${cardId}`, kind: "card", title: card.title, cardId }
+        tab: { id: `card-${cardId}`, kind: "card", title: card.title, cardId }
       })
     }
     // The tab now shows the card; the transcript's copy returns to its embedded form.

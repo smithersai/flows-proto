@@ -21,6 +21,7 @@
     "test:e2e:web:shell": "bun scripts/web-chat-shell-e2e.ts",
     "test:e2e:worker": "bun scripts/worker-e2e.ts",
     "test:e2e": "bun e2e/run.ts",
+    "test:e2e:playwright": "playwright test",
     "test:e2e:list": "bun e2e/run.ts --list",
     "test:e2e:all": "bun scripts/worker-e2e.ts && bun e2e/run.ts",
     "checklist": "bun scripts/launch-checklist.ts",
@@ -61,13 +62,14 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "1.53.0",
     "@happy-dom/global-registrator": "^20.11.2",
+    "@playwright/test": "1.62.1",
     "@types/bun": "latest",
     "@types/d3-force": "3.0.10",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/three": "0.185.0",
-    "@cloudflare/vite-plugin": "1.53.0",
     "@vitejs/plugin-react": "6.0.1",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
