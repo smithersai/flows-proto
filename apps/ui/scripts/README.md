@@ -1,3 +1,12 @@
+> Local-app cut (2026-08-26, `docs/LOCAL-APP.md`): the hermetic web runners
+> (`web-chat-*.ts`, `worker-e2e.ts`, `e2e-harness.ts`, `stub-backends.ts`,
+> `launch-gateway-double.ts`, `live-check.ts`) and the `wrangler dev` stack
+> they booted were removed with the web build path. End-to-end coverage is
+> the Playwright tiers: `pnpm --filter smithers-ui test:e2e` (T1, local
+> origin in headless Chromium) and `test:e2e:native` (T2, the Electrobun
+> window over CDP). The sections below that describe those runners are
+> historical.
+
 # apps/ui/scripts
 
 E2E and live-check scripts. Unless a section says otherwise, run them from

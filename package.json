@@ -7,9 +7,8 @@
   "scripts": {
     "browser": "node scripts/browser-check.mjs",
     "check": "pnpm --recursive --if-present run check",
-    "checklist": "pnpm --filter smithers-ui run checklist",
     "circular": "pnpm --recursive --if-present run circular",
-    "dev": "pnpm --filter smithers-ui run web",
+    "dev": "pnpm --filter smithers-ui run start",
     "deploy:dry": "pnpm --filter smithers-server run deploy:dry",
     "lint": "pnpm --recursive --if-present run lint",
     "test": "pnpm --recursive --if-present run test",

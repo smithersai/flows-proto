@@ -95,6 +95,8 @@ export { Exec, ExecError, ExecLive } from "./Exec.ts"
 export { StandardPackage } from "./StandardPackage.ts"
 /** @category targets @since 0.1.0 */
 export { Filegroup } from "./Filegroup.ts"
+/** @category targets @since 0.1.0 */
+export { Fetch } from "./Fetch.ts"
 /** @category actions @since 0.1.0 */
 export { ExpandFilegroup, ExpandFilegroupLive, FilegroupError } from "./Filegroup.ts"
 /** @category guards @since 0.1.0 */

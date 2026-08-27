@@ -6,9 +6,13 @@ import type { NativeAgent } from "./NativeBridge"
 const MAX_ERROR_BYTES = 320
 
 export interface WebAgentOptions {
-  /** Same-origin Vite dev proxy by default; override for tests or a deployed boundary. */
+  /** Same origin by default; override for tests or a deployed boundary. */
   readonly baseUrl?: string
   readonly fetchImpl?: FetchLike
+  /** The turn route; the local app serves CHAT_TURN_PATH. */
+  readonly turnPath?: string
+  /** The cancel route; the local app serves CHAT_CANCEL_PATH. */
+  readonly cancelPath?: string
 }
 
 /**
@@ -121,21 +125,20 @@ const streamFrames = async (
 }
 
 /**
- * Pure-web counterpart to the Electrobun RPC agent: POSTs turns to the same-origin
- * `/api/agent` boundary (the Vite dev proxy in development) which keeps the
- * chat.smithers.sh credentials and origin server-side, then renders the streamed
- * NDJSON AgentTurnFrames exactly like the native bridge does.
+ * The HTTP agent: POSTs turns to a same-origin boundary that keeps the
+ * chat.smithers.sh URL and origin server-side, then renders the streamed
+ * NDJSON AgentTurnFrames.
  */
 /*
- * NOT a chat backend. The browser chat runs the Agent Chain in the page and
- * spends a model only through /api/model/stream (DESIGN.md §14); nothing in
- * src/mainview composes this client. It remains the client for the
- * `/api/agent/turn` seam the Worker still serves for the terminal client
- * (apps/tui) and the native shell, and it is what the e2e harness drives to
- * hold that seam to its contract.
+ * The local app's chat backend (LOCAL-APP.md): ControllerBoot composes it
+ * against the local origin's /api/chat/turn and /api/chat/cancel. The
+ * default paths are the product Worker's /api/agent seam, which the terminal
+ * client (apps/tui) still speaks.
  */
 export const createWebAgent = (options: WebAgentOptions = {}): NativeAgent => {
   const baseUrl = options.baseUrl ?? ""
+  const turnPath = options.turnPath ?? TURN_PATH
+  const cancelPath = options.cancelPath ?? CANCEL_PATH
   const fetchImpl = options.fetchImpl ?? fetch.bind(globalThis)
   const listeners = new Set<(frame: AgentTurnFrame) => void>()
   const activeTurns = new Map<string, AbortController>()
@@ -154,7 +157,7 @@ export const createWebAgent = (options: WebAgentOptions = {}): NativeAgent => {
       activeTurns.set(request.runId, abortController)
       let response: Response
       try {
-        response = await fetchImpl(`${baseUrl}${TURN_PATH}`, {
+        response = await fetchImpl(`${baseUrl}${turnPath}`, {
           method: "POST",
           signal: abortController.signal,
           headers: { "content-type": "application/json" },
@@ -200,7 +203,7 @@ export const createWebAgent = (options: WebAgentOptions = {}): NativeAgent => {
         active.abort()
         activeTurns.delete(runId)
       }
-      await fetchImpl(`${baseUrl}${CANCEL_PATH}`, {
+      await fetchImpl(`${baseUrl}${cancelPath}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ runId })

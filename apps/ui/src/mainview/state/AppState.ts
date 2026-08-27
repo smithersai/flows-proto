@@ -1,4 +1,6 @@
 import { CardPatchSchema, CardPlanItemSchema, CardSchema } from "smithers-shared/Cards"
+import { HARNESS_IDS, HarnessSchema, RepoSchema } from "smithers-shared/LocalApp"
+import type { Harness, Repo } from "smithers-shared/LocalApp"
 import { REPOSITORY_ACCESS_VALUES } from "smithers-shared/NativeRepository"
 import type { LocalRepositoryInspection, RepositoryAccess } from "smithers-shared/NativeRepository"
 import { z } from "zod"
@@ -6,6 +8,8 @@ import { z } from "zod"
 export { CardPatchSchema, CardPlanItemSchema, CardSchema }
 import type { Card, CardPatch } from "smithers-shared/Cards"
 export type { Card, CardPatch, CardPlanItem } from "smithers-shared/Cards"
+export { HARNESS_IDS, HarnessSchema, RepoSchema }
+export type { Harness, Repo }
 
 export const ActorSchema = z.enum(["user", "smithers", "system"])
 export type Actor = z.infer<typeof ActorSchema>
@@ -168,9 +172,59 @@ export const SessionSchema = z.object({
    * (missing = none) so persisted sessions parse without a schema reset.
    */
   recentCommands: z.array(z.string()).optional(),
+  /*
+   * The local-app tab strip (docs/LOCAL-APP.md "Tabs"). The selected tab,
+   * the `+` menu's open state, and the tab a close is asking about all live
+   * here for the same reason as connectMenuOpen and pendingWorldDeleteId: a
+   * component is a projection, never an authority. Optional (missing =
+   * main / closed / none) so sessions persisted before the fields parse.
+   */
+  activeTabId: z.string().optional(),
+  tabMenuOpen: z.boolean().optional(),
+  pendingTabCloseId: z.string().nullable().optional(),
   revision: z.number().int().nonnegative()
 })
 export type Session = z.infer<typeof SessionSchema>
+
+/*
+ * The local-app tabs (docs/LOCAL-APP.md "Tabs"). `Tab` is the contract union
+ * verbatim; `TabRow` is what the collection stores: the same record plus its
+ * place in the strip (creation order) and, for a process tab, the exit code
+ * once the PTY ends (undefined while it is alive).
+ */
+export type Tab =
+  | { id: "main"; kind: "main"; title: "Smithers" }
+  | { id: string; kind: "terminal"; title: string; sessionId: string; cwd: string }
+  | { id: string; kind: "harness"; title: string; sessionId: string; harnessId: Harness["id"]; cwd: string }
+  | { id: string; kind: "card"; title: string; cardId: string }
+
+const tabRowShape = {
+  ordinal: z.number().int().nonnegative()
+}
+const processTabShape = {
+  ...tabRowShape,
+  sessionId: z.string(),
+  cwd: z.string(),
+  exitCode: z.number().nullable().optional()
+}
+
+export const TabSchema = z.discriminatedUnion("kind", [
+  z.object({ ...tabRowShape, id: z.literal("main"), kind: z.literal("main"), title: z.literal("Smithers") }),
+  z.object({ ...processTabShape, id: z.string(), kind: z.literal("terminal"), title: z.string() }),
+  z.object({
+    ...processTabShape,
+    id: z.string(),
+    kind: z.literal("harness"),
+    title: z.string(),
+    harnessId: z.enum(HARNESS_IDS)
+  }),
+  z.object({ ...tabRowShape, id: z.string(), kind: z.literal("card"), title: z.string(), cardId: z.string() })
+])
+export type TabRow = z.infer<typeof TabSchema>
+
+export const MAIN_TAB_ID = "main"
+
+export const mainTab = (): TabRow => ({ id: "main", kind: "main", title: "Smithers", ordinal: 0 })
 
 /*
  * The watched-repos selection (Wave 10): a local mirror of the identity
@@ -654,6 +708,20 @@ export type AppTransition =
     /** The action that rides the message (sign-in, request access, retry). */
     action?: { flow: string; label: string }
   }
+  /* The local-app tabs (docs/LOCAL-APP.md "Tabs"). */
+  | { type: "tab.opened"; actor: "user"; tab: Tab }
+  | { type: "tab.selected"; actor: Actor; id: string }
+  | {
+    /* The close question for a tab whose process is alive; `id: null` answers "keep it". */
+    type: "tab.close.asked"
+    actor: Actor
+    id: string | null
+  }
+  | { type: "tab.closed"; actor: "user" | "system"; id: string }
+  | { type: "tab.menu.toggled"; actor: Actor; open: boolean }
+  | { type: "pty.exited"; actor: "system"; sessionId: string; code: number | null }
+  | { type: "harnesses.loaded"; actor: "system"; harnesses: ReadonlyArray<Harness> }
+  | { type: "repos.loaded"; actor: "system"; repos: ReadonlyArray<Repo> }
 
 export const initialSession = (theme: Session["theme"]): Session => ({
   id: "main",
@@ -669,6 +737,9 @@ export const initialSession = (theme: Session["theme"]): Session => ({
   surfacesMenuOpen: false,
   connectMenuOpen: false,
   pendingWorldDeleteId: null,
+  activeTabId: MAIN_TAB_ID,
+  tabMenuOpen: false,
+  pendingTabCloseId: null,
   revision: 0
 })
 

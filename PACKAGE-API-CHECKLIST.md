@@ -26,6 +26,9 @@ creds/host bin — proof is the correct refusal).
 - [x] PackageIndex: path+key labels only, duplicate/two-label/cycle/case fatal, omission privacy, `no_default_target` — proof: fixture error suite (case_collision, target_multiple_labels, package_import_cycle with chain, legacy_target_export, module_not_regular symlink, no_default_target, unknown_agent, one-way WORKSPACE import) + force golden label list (2026-08-25)
 - [c] Full S namespace constructs (every symbol below at least `[c]`) — proof: `smthrs graph '//...'` renders the complete force graph, 81 nodes / 94 classified edges (data/gates/services/deps); every implementation is `Target.notImplemented` and execution verbs refuse package mode loudly (2026-08-25)
 - [x] CLI package-mode: `smthrs query|graph` auto-detect via WORKSPACE.ts — proof: runs from force cwd (and subdirectories, `:lint` relative form) with no flags; BUILD.ts mode unchanged (348/348 build-cli tests) (2026-08-25)
+- [p] S.Fetch({url, sha256, out}) — constructs a `build`-kind target, `out` is its declared output (shared output-path law), data-legal for consumers; execution is the typed NotImplemented refusal — proof: live force `query '//...'` lists 82 labels including `//data:schemaPinned` (rule Fetch, kinds [build]); `smthrs '//data:schemaPinned' --plan` shows `refusal: "NotImplemented: Fetch …"`; `packages/targets/test/Fetch.test.ts`, `packages/build-cli/test/FetchTarget.test.ts` (2026-08-26)
+- [c] S.RemoteCache.make({endpoint, read, write}) — split read/write secrets alongside the BUILD-era `token` form (`token` and `read` are the same slot, exclusive); `write` is carried on the declaration — proof: live force WORKSPACE loads; `RemoteCache.test.ts` split-form cases (2026-08-26)
+- [c] S.Cache({directory, remote}) — optional `remote` must be an `S.RemoteCache.make` declaration; inert data on the workspace, package-mode remote replication is not wired — proof: live force WORKSPACE loads; `FetchTarget.test.ts` reads `workspace.cache.remote` back (2026-08-26)
 
 W1 e2e commands (run from `/Users/williamcory/artsy/force`):
 
@@ -120,6 +123,15 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
 
 ## Log
 
+- 2026-08-26 local-app L1 (targets API): live force had drifted past the
+  frozen fixture (`S.Fetch` in data/PACKAGE.ts; `S.RemoteCache.make({read,
+  write})` and `S.Cache({remote})` in .smithers/WORKSPACE.ts), so `query`
+  failed at module import ("S.Fetch is not a function"). Added the three
+  surfaces (new `packages/targets/src/Fetch.ts`; RemoteCache/Cache extended
+  compatibly). Live force: `query '//...' --format json` = 82 targets,
+  `graph '//...'` = 82 nodes / 94 edges / 0 warnings, zero load-time
+  refusals. The frozen force-spec fixture is unchanged (still 81 labels).
+  Suites: targets 641/641, build-cli suite green (see lane report).
 - 2026-08-25: checklist created; fixtures frozen (18 files); e2e clone built.
 - 2026-08-25 slice 2 (resolver/bundler/services dispatch): `PackageExec`
   executes ImportClosure, Test, Bundler.Rspack.resolve/build, Shell.Serve

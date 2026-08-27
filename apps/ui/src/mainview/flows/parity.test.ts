@@ -81,6 +81,7 @@ const PRESENTATION_ONLY = [
   "onReposConfirm(", // delegated: App.tsx binds it to repos.watch.confirm
   "onMaximize(", // delegated: App.tsx binds it to runCommandArgs("card.maximize", ...)
   "onMinimize(", // delegated: App.tsx binds it to card.minimize
+  "onOpenInTab(", // delegated: App.tsx and tabs/CardTabBody.tsx bind it to runCommandArgs("tab.card", ...)
   "onConnectGitHub(", // delegated: App.tsx binds it to auth.sign-in
   "onConnectLocal(", // delegated: App.tsx binds it to runCommandArgs("connector.add", ...)
   "onRunWorkflow(", // delegated: App.tsx binds it to runCommandArgs("flow.run", ...)
@@ -141,6 +142,9 @@ describe("launch-law parity: every affordance is a command", () => {
     )
     expect(counts).toEqual({
       /*
+       * The chrome Sign in button (LOCAL-APP.md: sign-in is an option in the
+       * chrome, never a gate on the chat) is one of ChromeBar's nine below.
+       *
        * 22 = 27 − the five per-item onClick handlers the connect menu used
        * to carry. Its entries are DATA now (flow + optional args), rendered
        * through one handler that dispatches `runCommand`/`runCommandArgs`,
@@ -153,8 +157,9 @@ describe("launch-law parity: every affordance is a command", () => {
       // connected the pane stated a fact and offered no move.
       "../ConnectorsSurface.tsx": 6,
       // 23 − the three recommendation-card affordances the deleted reco
-      // feature carried (accept / edit / dismiss).
-      "../ChatCards.tsx": 20,
+      // feature carried (accept / edit / dismiss), + the maximized card's
+      // "Open in tab" (docs/LOCAL-APP.md "Cards").
+      "../ChatCards.tsx": 21,
       "../DevtoolsPanel.tsx": 1,
       "../SurfaceChrome.tsx": 3,
       "../ToastStack.tsx": 1,
@@ -167,7 +172,15 @@ describe("launch-law parity: every affordance is a command", () => {
       "../cards/NotificationsCard.tsx": 2,
       "../cards/RepoImportCard.tsx": 1,
       /* The /theme picker: nine swatches, one shared handler through onRunCommand. */
-      "../cards/ThemePickerCard.tsx": 1
+      "../cards/ThemePickerCard.tsx": 1,
+      /*
+       * The local-app chrome (docs/LOCAL-APP.md "Tabs"): the strip's select
+       * and close per tab, the `+` trigger, its backdrop, the Terminal row,
+       * the available and unavailable harness rows, Open repository, Sign in.
+       */
+      "../tabs/ChromeBar.tsx": 9,
+      /* The live-process close question: confirm through tab.close.confirm. */
+      "../tabs/TabBodies.tsx": 1
     })
   })
 
@@ -181,6 +194,8 @@ describe("launch-law parity: every affordance is a command", () => {
     expect(app).toContain("runCommandArgs(\"repos.watch.toggle\"")
     expect(app).toContain("\"repos.watch.confirm\"")
     expect(app).toContain("runCommandArgs(\"card.maximize\"")
+    expect(app).toContain("runCommandArgs(\"tab.card\"")
+    expect(files["../tabs/CardTabBody.tsx"]).toContain("runCommandArgs(\"tab.card\"")
     expect(app).toContain("runCommandArgs(\"connector.add\"")
     expect(app).toContain("runCommandArgs(\"flow.run\"")
     const connectors = files["../ConnectorsSurface.tsx"]

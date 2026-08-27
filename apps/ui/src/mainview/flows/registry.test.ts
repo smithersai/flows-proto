@@ -411,7 +411,16 @@ describe("command registry bindings", () => {
       "files.read",
       "repos.app",
       "reload",
-      "flows"
+      "flows",
+      "tab.terminal",
+      "tab.harness",
+      "tab.card",
+      "tab.select",
+      "tab.close",
+      "tab.close.confirm",
+      "tab.close.cancel",
+      "tab.menu",
+      "repo.open"
     ])
 
     expect((await controller.commands.run("connect")).status).toBe("executed")

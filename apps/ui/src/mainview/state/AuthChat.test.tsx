@@ -92,7 +92,7 @@ const backend = (
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe("auth is a conversation state — the chat is the only page", () => {
-  test("signed-out: the chat renders with the opening sign-in message riding the transcript", async () => {
+  test("signed-out: the chat renders open, with sign-in as the chrome's option (LOCAL-APP.md)", async () => {
     const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
     const controller = createAppController(store, unavailableRepositories, silentAgent, {
       ...backend({
@@ -111,16 +111,14 @@ describe("auth is a conversation state — the chat is the only page", () => {
     expect(host.querySelector(".smithers-transcript")).not.toBeNull()
     expect(host.querySelector(".smithers-composer")).not.toBeNull()
     expect(host.querySelector(".landing-surface")).toBeNull()
-    // The opening Smithers message carries the sentence, the plain-words
-    // scopes, and the sign-in action bound to the registered command.
-    expect(html).toContain("Smithers is a design-partner preview — sign in with GitHub to continue.")
-    expect(html).toContain("See your GitHub profile.")
-    const signIn = host.querySelector<HTMLButtonElement>("[data-flow=\"auth.sign-in\"]")
+    // No auth gate rides the transcript: sign-in is the chrome button, bound
+    // to the registered command, and the composer invites the conversation.
+    expect(html).not.toContain("sign in with GitHub to continue")
+    const signIn = host.querySelector<HTMLButtonElement>("[data-testid=\"chrome-sign-in\"]")
     expect(signIn).not.toBeNull()
-    expect(signIn?.textContent).toContain("Sign in with GitHub")
+    expect(signIn?.dataset.flow).toBe("auth.sign-in")
     expect(controller.commands.find("auth.sign-in")).toBeDefined()
-    // The composer is honestly gated: the hint names the one needed step.
-    expect(host.querySelector("textarea")?.placeholder).toContain("Sign in with GitHub first")
+    expect(host.querySelector("textarea")?.placeholder).toBe("Ask Smithers to work on something…")
   })
 
   test("an adopted signed-out session (the server-rendered web boot) still names the scopes", async () => {
@@ -141,14 +139,14 @@ describe("auth is a conversation state — the chat is the only page", () => {
     await controller.adoptSession({ state: "signed-out", login: null, allowlisted: false, admin: false })
     await settled()
 
-    const { markup } = mount(controller)
+    const { host, markup } = mount(controller)
     const html = markup()
-    expect(html).toContain("Smithers is a design-partner preview — sign in with GitHub to continue.")
-    expect(html).toContain("See your GitHub profile.")
+    expect(html).not.toContain("sign in with GitHub to continue")
     expect(html).not.toContain("The identity service isn't configured")
+    expect(host.querySelector("[data-testid=\"chrome-sign-in\"]")).not.toBeNull()
   })
 
-  test("signed-out: an attempted send answers in the transcript, never the network", async () => {
+  test("signed-out: a send reaches the agent; the chat is not gated on identity", async () => {
     const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
     const controller = createAppController(store, unavailableRepositories, silentAgent, {
       ...backend({
@@ -161,10 +159,11 @@ describe("auth is a conversation state — the chat is the only page", () => {
     controller.send("is anyone there?")
     await settled()
     flushSync(() => {})
-    expect(markup()).toContain("Sign in with GitHub first — that's the one step")
+    expect(markup()).not.toContain("Sign in with GitHub first")
+    expect(markup()).toContain("is anyone there?")
   })
 
-  test("signed-out shows ONLY the auth conversation — no welcome, no invitation under it (wave 12 §4)", async () => {
+  test("signed-out shows an empty transcript: no auth message, no welcome, no pills", async () => {
     /*
      * Live earlier today: under the sign-in message the chat still rendered
      * the seeded "Hey — I'm Smithers. Tell me what you're working on" — an
@@ -183,14 +182,12 @@ describe("auth is a conversation state — the chat is the only page", () => {
 
     const { host, markup } = mount(controller)
     const html = markup()
-    expect(html).toContain("sign in with GitHub to continue")
+    expect(html).not.toContain("sign in with GitHub to continue")
     expect(html).not.toContain("Tell me what you’re working on")
     expect(html).not.toContain("Tell me what you're working on")
-    // ONE entry in the transcript: the auth state, nothing riding under it.
-    expect(host.querySelectorAll(".smithers-transcript > *")).toHaveLength(1)
-    // The one suggestion is the sign-in binding — the genuinely next step.
+    expect(host.querySelector(".smithers-chat-message")).toBeNull()
     const pills = [...host.querySelectorAll(".smithers-suggestion")].map((pill) => pill.textContent)
-    expect(pills).toEqual(["Sign in with GitHub"])
+    expect(pills).toEqual([])
   })
 
   test("signed-in but not allowlisted: the same chat carries the request-access message", async () => {
@@ -210,7 +207,7 @@ describe("auth is a conversation state — the chat is the only page", () => {
     expect(markup()).toContain("design partners only right now")
     const request = host.querySelector<HTMLButtonElement>("[data-flow=\"auth.request-access\"]")
     expect(request?.textContent).toContain("Request access")
-    expect(host.querySelector("textarea")?.placeholder).toContain("Request access")
+    expect(host.querySelector("textarea")?.placeholder).toBe("Ask Smithers to work on something…")
   })
 
   test("a definitive $0 keeps the composer live, and a healthy composer renders NO status text (§2g)", async () => {

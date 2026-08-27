@@ -17,6 +17,7 @@ import * as Input from "./Input.ts"
 import { isSmithersCloudDeclaration, type SmithersCloudDeclaration } from "./MemoryTarget.ts"
 import * as PackageManager from "./PackageManager.ts"
 import * as Reference from "./Reference.ts"
+import * as RemoteCache from "./RemoteCache.ts"
 import * as Runtime from "./Runtime.ts"
 import * as Target from "./Target.ts"
 
@@ -27,7 +28,14 @@ import * as Target from "./Target.ts"
  * @since 0.1.0
  */
 export const CacheDeclaration = Schema.TaggedStruct("Cache", {
-  directory: Schema.NonEmptyString
+  directory: Schema.NonEmptyString,
+  remote: Schema.optional(
+    Schema.declare<RemoteCache.RemoteCache>(RemoteCache.isRemoteCache, {
+      identifier: "smithers-build/RemoteCache",
+      title: "remote cache declaration",
+      description: "An S.RemoteCache.make declaration"
+    })
+  )
 })
 
 /**
@@ -47,13 +55,31 @@ export type CacheDeclaration = typeof CacheDeclaration.Type
 export const isCacheDeclaration: (value: unknown) => value is CacheDeclaration = Schema.is(CacheDeclaration)
 
 /**
- * Declares the workspace cache directory.
+ * Declares the workspace cache directory and, optionally, the remote cache
+ * (`S.RemoteCache.make(...)`) it replicates to. The remote declaration is
+ * inert data here; the CLI reads it when it opens the workspace cache.
  *
  * @category constructors
  * @since 0.1.0
  */
-export const Cache = (options: { readonly directory: string }): CacheDeclaration =>
-  CacheDeclaration.make({ directory: Config.normalizeCacheDirectory(options.directory) })
+export const Cache = (options: {
+  readonly directory: string
+  readonly remote?: RemoteCache.RemoteCache | undefined
+}): CacheDeclaration => {
+  if (typeof options !== "object" || options === null) throw new TypeError("Cache options must be an object")
+  for (const key of Object.getOwnPropertyNames(options)) {
+    if (key !== "directory" && key !== "remote") {
+      throw new TypeError(`Cache received unknown option ${JSON.stringify(key)}`)
+    }
+  }
+  if (options.remote !== undefined && !RemoteCache.isRemoteCache(options.remote)) {
+    throw new TypeError("Cache remote must be an S.RemoteCache.make declaration")
+  }
+  return CacheDeclaration.make({
+    directory: Config.normalizeCacheDirectory(options.directory),
+    ...(options.remote === undefined ? {} : { remote: options.remote })
+  })
+}
 
 /**
  * Schema for the workspace host-binary declaration.
