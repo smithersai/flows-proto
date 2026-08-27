@@ -3,7 +3,7 @@ import { Smithers as S } from "@smthrs/targets"
 import { Package as src } from "../src/PACKAGE.js"
 
 const srcs = S.Filegroup({
-  srcs: S.glob(["**"])
+  srcs: S.glob(["**"]),
 })
 
 // Upstream CI does not cover the examples; knip ignores them. They should
@@ -12,9 +12,9 @@ const srcs = S.Filegroup({
 const check = S.Shell.Test({
   bin: S.PackageManager.bin,
   args: ["--filter", "./examples/*", "exec", "tsc", "--noEmit"],
-  data: [srcs, src.build]
+  data: [srcs, src.build],
 })
 
 export const Package = S.Package({
-  targets: { check, srcs }
+  targets: { check, srcs },
 })

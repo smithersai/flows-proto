@@ -15,19 +15,19 @@ const runtime = S.Runtime.Node({ manifest: packageJson })
 const packageManager = S.PackageManager.Pnpm({
   manifest: packageJson,
   lockfile,
-  workspaces: workspaceConfig
+  workspaces: workspaceConfig,
 })
 
 const nodeModules = S.Npm.NodeModules({
   packageJson,
-  workspaces: workspaceConfig
+  workspaces: workspaceConfig,
 })
 
 // forge and anvil come from the host foundry install (CI pins v1.7.1),
 // docker backs the tempo localnet containers, git materializes the
 // contract submodules.
 const host = S.Host({
-  bins: ["forge", "anvil", "docker", "git"]
+  bins: ["forge", "anvil", "docker", "git"],
 })
 
 export const Workspace = S.Workspace("viem", {
@@ -36,5 +36,5 @@ export const Workspace = S.Workspace("viem", {
   runtime,
   packageManager,
   nodeModules,
-  host
+  host,
 })

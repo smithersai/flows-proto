@@ -45,7 +45,9 @@
     },
     "//.github:github": {
       "class": "executes-green",
-      "alternates": [{ "expect": "red", "notes": "drift red if the committed .github/workflows no longer match the CiGen render" }],
+      "alternates": [
+        { "expect": "red", "notes": "drift red if the committed .github/workflows no longer match the CiGen render" }
+      ],
       "notes": "CiGen in default check mode; the sweep never passes --write."
     },
     "//.github:pr": {
@@ -140,7 +142,12 @@
     "//:postCommit": {
       "class": "typed-refusal",
       "refusal": { "code": "memory-unavailable", "substring": "memory" },
-      "alternates": [{ "expect": "green", "notes": "Lane E allows Memory targets to no-op gracefully when smithers cloud is unconfigured; suite is then green via claudeConfig+routesGen" }],
+      "alternates": [
+        {
+          "expect": "green",
+          "notes": "Lane E allows Memory targets to no-op gracefully when smithers cloud is unconfigured; suite is then green via claudeConfig+routesGen"
+        }
+      ],
       "notes": "Suite [claudeConfig, routesGen, retainCommit]; outcome tracks retainCommit. Integration must settle refusal-vs-graceful-no-op once W2/Lane E lands."
     },
     "//:postMerge": {
@@ -238,7 +245,12 @@
       "class": "heavy",
       "expect": "green",
       "network": true,
-      "alternates": [{ "expect": "red", "notes": "relative-ci-agent may require RELATIVE_CI credentials/CI context not modelled by declared secrets" }],
+      "alternates": [
+        {
+          "expect": "red",
+          "notes": "relative-ci-agent may require RELATIVE_CI credentials/CI context not modelled by declared secrets"
+        }
+      ],
       "notes": "npx relative-ci-agent over bundleReportClient output; behavior outside CI is unverified."
     },
     "//src:clean": {
@@ -248,7 +260,9 @@
     },
     "//src:cleanRelay": {
       "class": "executes-green",
-      "alternates": [{ "expect": "red", "notes": "the default sandbox may deny writes outside the workspace ($TMPDIR)" }],
+      "alternates": [
+        { "expect": "red", "notes": "the default sandbox may deny writes outside the workspace ($TMPDIR)" }
+      ],
       "notes": "rm -rf of RelayFindGraphQLTags-* under $TMPDIR; W2 checklist uses it as the Shell.Run command-form proof."
     },
     "//src:conventionsLint": {
@@ -330,7 +344,12 @@
     "//src:ruleOfThree": {
       "class": "typed-refusal",
       "refusal": { "code": "approval-required", "substring": "approval" },
-      "alternates": [{ "expect": "green", "notes": "a clean diff may make the agent target vacuously green before the approval gate is consulted" }],
+      "alternates": [
+        {
+          "expect": "green",
+          "notes": "a clean diff may make the agent target vacuously green before the approval gate is consulted"
+        }
+      ],
       "notes": "Agent.Pr with approval: \"required\"; headless refusal expected."
     },
     "//src:scan": {
@@ -375,7 +394,9 @@
     },
     "//src:unreachableCode": {
       "class": "executes-green",
-      "alternates": [{ "expect": "red", "notes": "an honest red if force currently has files outside the import closure" }],
+      "alternates": [
+        { "expect": "red", "notes": "an honest red if force currently has files outside the import closure" }
+      ],
       "notes": "S.Test that srcs minus importGraph.files is empty; CI runs it, so green is the expected steady state."
     },
     "//src/Apps/Auction:srcs": {

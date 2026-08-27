@@ -12,7 +12,14 @@
     "operatorPosition": "maintain",
     "arrowFunction.useParentheses": "force"
   },
-  "excludes": ["**/dist", "**/build", "**/coverage", ".smithers", "test/fixtures/force-spec"],
+  "excludes": [
+    "**/dist",
+    "**/build",
+    "**/coverage",
+    ".smithers",
+    "test/fixtures/force-spec",
+    "test/fixtures/viem-node-spec"
+  ],
   "plugins": [
     "https://plugins.dprint.dev/typescript-0.93.4.wasm",
     "https://plugins.dprint.dev/markdown-0.20.0.wasm",

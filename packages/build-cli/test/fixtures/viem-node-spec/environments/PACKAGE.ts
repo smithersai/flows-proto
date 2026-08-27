@@ -12,7 +12,7 @@ const envTest = (name: string, runtime?: SmithersValue) => {
     bin: S.PackageManager.bin,
     args: ["--filter", `test-${name}`, "test"],
     data: [S.Filegroup({ srcs: S.glob([`${name}/**`]) }), src.build],
-    runtime
+    runtime,
   })
 }
 
@@ -29,7 +29,7 @@ const testTsc = envTest("tsc", S.Runtime.Node({ version: "22" }))
 const testVite = envTest("vite")
 
 const envs = S.Suite({
-  tests: [testBun, testNode22, testNodeLatest, testNext, testTsc, testVite]
+  tests: [testBun, testNode22, testNodeLatest, testNext, testTsc, testVite],
 })
 
 export const Package = S.Package({
@@ -40,6 +40,6 @@ export const Package = S.Package({
     testNode22,
     testNodeLatest,
     testTsc,
-    testVite
-  }
+    testVite,
+  },
 })

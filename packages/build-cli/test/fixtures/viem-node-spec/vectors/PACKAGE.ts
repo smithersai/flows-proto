@@ -3,7 +3,7 @@ import { Smithers as S } from "@smthrs/targets"
 import { Package as src } from "../src/PACKAGE.js"
 
 const srcs = S.Filegroup({
-  srcs: S.glob(["**", "!**/*.json"])
+  srcs: S.glob(["**", "!**/*.json"]),
 })
 
 // Cross-implementation vectors: generate.ts derives cases from independent
@@ -14,15 +14,15 @@ const generate = S.Shell.Build({
   bin: S.NodeModule.Bin("bun"),
   args: ["vectors/generate.ts"],
   data: [srcs, src.srcs],
-  outFiles: ["**/*.json"]
+  outFiles: ["**/*.json"],
 })
 
 const test = S.Shell.Test({
   bin: S.NodeModule.Bin("bun"),
   args: ["test", "vectors"],
-  data: [srcs, generate, src.srcs]
+  data: [srcs, generate, src.srcs],
 })
 
 export const Package = S.Package({
-  targets: { generate, srcs, test }
+  targets: { generate, srcs, test },
 })

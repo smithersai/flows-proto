@@ -426,3 +426,19 @@ resolution. The requested `reference/bazel` and `reference/opencode` shelves are
 Merge note: `PackageManager.ts` contains the same tiny Pnpm workspace-declaration compatibility hunk expected from
 lane `api/defects` (`{manifest, lockfile, version?, workspaces?, audit?}`; runtime comes from `Workspace`). Deduplicate
 that overlap when lanes merge.
+
+Review pass (2026-08-27, same lane branch): re-ran every headline proof and fixed three findings. (1) The viem fixture
+copies had been dprint-reformatted despite the byte-for-byte claim; they are now literal copies of the `~/artsy/viem`
+files and `packages/build-cli/dprint.json` excludes `test/fixtures/viem-node-spec` (the `force-spec` precedent) so the
+format gate accepts them. (2) Removed a dead `if (cwd === ".") cwd = "."` no-op in the `Npm.Pack` planner.
+(3) Repaired the pre-existing dprint failures in `test/SweepHarness.test.ts` and
+`test/fixtures/sweep-expectations.json` (untouched by this lane; format-only). Re-verified after the fixes: targets
+663/663, build-cli 658 passed + 1 skipped, both `tsc --noEmit` checks, dprint clean in both packages, whatsabi
+query/graph warning-free with only `data`/`gates` edges, a fresh 47-label plan sweep with zero `NotImplemented`,
+plan-time typed refusals for `publish`/`release`/`deployDocs`, `pack` green with cache hit and restored tarball,
+`apiCompat` green over a cache-hit published baseline, `checkReadme` honestly red on the upstream README fences, and
+`testViem` refused with typed missing `INFURA_API_KEY`. One host caveat for reproducing `pack`: the first `pnpm` on
+this machine's PATH is a corepack shim that exits 1 on whatsabi's bare `"packageManager": "pnpm"` field ("No version
+specified"); the real pnpm at `/opt/homebrew/bin/pnpm` (10.10.0) packs it cleanly, so run the e2e proofs with
+`PATH=/opt/homebrew/bin:$PATH`. `Git.Submodules`/`Git.Submodule` plans were additionally probed in a scratch
+workspace (argv `git submodule update --init --recursive --force -- <paths>`, cacheable, `//`-prefix stripped).

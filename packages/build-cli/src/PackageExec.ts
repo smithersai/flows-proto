@@ -1495,7 +1495,6 @@ const visit = async (
       }
       const tarball = `${manifest.name.replace(/^@/, "").replaceAll("/", "-")}-${manifest.version}.tgz`
       cwd = NodePath.posix.dirname(manifestPath)
-      if (cwd === ".") cwd = "."
       argv = [context.managerBinary, "pack"]
       outFiles.push(Input.resolvePath(cwd, tarball))
       lane = { kind: "npm-pack", manifestPath }

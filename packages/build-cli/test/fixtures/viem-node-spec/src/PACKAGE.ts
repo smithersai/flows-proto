@@ -14,14 +14,14 @@ const srcs = S.Filegroup({
     "!**/*.bench-d.ts",
     "!_cjs/**",
     "!_esm/**",
-    "!_types/**"
-  ])
+    "!_types/**",
+  ]),
 })
 
 // Tests are colocated with the source; the vitest projects in
 // //test:PACKAGE.ts consume this group.
 const tests = S.Filegroup({
-  srcs: S.glob(["**/*.test.ts", "**/*.test-d.ts", "**/*.bench.ts", "**/*.bench-d.ts"])
+  srcs: S.glob(["**/*.test.ts", "**/*.test-d.ts", "**/*.bench.ts", "**/*.bench-d.ts"]),
 })
 
 // The CJS emit needs a different trustedSetups implementation. Upstream
@@ -31,35 +31,35 @@ const tests = S.Filegroup({
 // mutating the tree.
 const cjsSources = S.Overlay({
   base: srcs,
-  replace: { "node/trustedSetups.ts": S.file("node/trustedSetups_cjs.ts") }
+  replace: { "node/trustedSetups.ts": S.file("node/trustedSetups_cjs.ts") },
 })
 
 // Literal materializes a fixed file, replacing the printf > package.json
 // stamps in the build scripts.
 const esmStamp = S.Literal({
   path: "_esm/package.json",
-  content: "{\"type\":\"module\",\"sideEffects\":false}"
+  content: '{"type":"module","sideEffects":false}',
 })
 
 const cjsStamp = S.Literal({
   path: "_cjs/package.json",
-  content: "{\"type\":\"commonjs\"}"
+  content: '{"type":"commonjs"}',
 })
 
 const typesStamp = S.Literal({
   path: "_types/package.json",
-  content: "{\"type\":\"module\"}"
+  content: '{"type":"module"}',
 })
 
 const compileEsm = S.Shell.Build({
   bin: S.NodeModule.Bin("typescript", "tsc"),
   args: ["--project", "tsconfig.build.json", "--outDir", "./src/_esm"],
   data: [srcs, buildTsconfig, baseTsconfig],
-  outDirs: ["_esm"]
+  outDirs: ["_esm"],
 })
 
 const buildEsm = S.Filegroup({
-  srcs: [compileEsm, esmStamp]
+  srcs: [compileEsm, esmStamp],
 })
 
 // Upstream wraps tsc in scripts/runTsc.js only to pass CLI overrides; the
@@ -67,51 +67,43 @@ const buildEsm = S.Filegroup({
 const compileCjs = S.Shell.Build({
   bin: S.NodeModule.Bin("typescript", "tsc"),
   args: [
-    "--project",
-    "tsconfig.build.json",
-    "--module",
-    "commonjs",
-    "--moduleResolution",
-    "node",
-    "--outDir",
-    "./src/_cjs",
+    "--project", "tsconfig.build.json",
+    "--module", "commonjs",
+    "--moduleResolution", "node",
+    "--outDir", "./src/_cjs",
     "--removeComments",
-    "--verbatimModuleSyntax",
-    "false"
+    "--verbatimModuleSyntax", "false",
   ],
   data: [cjsSources, buildTsconfig, baseTsconfig],
-  outDirs: ["_cjs"]
+  outDirs: ["_cjs"],
 })
 
 const buildCjs = S.Filegroup({
-  srcs: [compileCjs, cjsStamp]
+  srcs: [compileCjs, cjsStamp],
 })
 
 const compileTypes = S.Shell.Build({
   bin: S.NodeModule.Bin("typescript", "tsc"),
   args: [
-    "--project",
-    "tsconfig.build.json",
-    "--declarationDir",
-    "./src/_types",
+    "--project", "tsconfig.build.json",
+    "--declarationDir", "./src/_types",
     "--emitDeclarationOnly",
     "--declaration",
     "--declarationMap",
-    "--incremental",
-    "false"
+    "--incremental", "false",
   ],
   data: [srcs, buildTsconfig, baseTsconfig],
-  outDirs: ["_types"]
+  outDirs: ["_types"],
 })
 
 const buildTypes = S.Filegroup({
-  srcs: [compileTypes, typesStamp]
+  srcs: [compileTypes, typesStamp],
 })
 
 // The publishable package: the three emits the exports map in
 // src/package.json points at.
 const build = S.Filegroup({
-  srcs: [buildEsm, buildCjs, buildTypes]
+  srcs: [buildEsm, buildCjs, buildTypes],
 })
 
 // version:update writes the package version into errors/version.ts so
@@ -120,7 +112,7 @@ const version = S.Generate({
   bin: S.NodeModule.Bin("bun"),
   args: ["scripts/updateVersion.ts"],
   data: [packageJson],
-  changes: ["errors/version.ts"]
+  changes: ["errors/version.ts"],
 })
 
 // gen:tempo-abis derives ABI and selector tables plus a test fixture.
@@ -133,8 +125,8 @@ const tempoAbis = S.Generate({
   changes: [
     "//src/tempo/Abis.ts",
     "//src/tempo/Selectors.ts",
-    "//test/src/tempo/earnContracts.ts"
-  ]
+    "//test/src/tempo/earnContracts.ts",
+  ],
 })
 
 // gen:tokenlist fetches the upstream token list, so the generator is one
@@ -144,7 +136,7 @@ const tokenlist = S.Generate({
   args: ["scripts/generateTokenlist.ts"],
   data: [srcs],
   changes: ["tokens/**"],
-  sandbox: { network: true }
+  sandbox: { network: true },
 })
 
 export const Package = S.Package({
@@ -157,6 +149,6 @@ export const Package = S.Package({
     tempoAbis,
     tests,
     tokenlist,
-    version
-  }
+    version,
+  },
 })
