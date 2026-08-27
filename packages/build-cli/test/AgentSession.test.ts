@@ -603,6 +603,57 @@ describe("CLI engine adapters", () => {
     expect(envelope.note).toBe("from claude")
   })
 
+  it("hands claude a mcpServers record: empty without declared servers, the lane's S.Mcp.Http entries with them", async () => {
+    const argvPath = NodePath.join(root, "fake-claude-argv.txt")
+    const claude = await fakeExecutable(
+      "fake-claude-argv",
+      `printf '%s\\n' "$@" > "${argvPath}"\necho '{"result": "{\\"findings\\": []}"}'`
+    )
+    const factory = AgentSession.makeCliSessionFactory({
+      workspaceRoot: root,
+      agents: AgentTarget.Agents({ default: AgentTarget.ClaudeCode({ model: "m" }) }),
+      executables: { claude },
+      timeoutMs: 10_000
+    })
+    const configAfter = async (): Promise<unknown> => {
+      const argv = (await Fs.readFile(argvPath, "utf8")).trimEnd().split("\n")
+      const flag = argv.indexOf("--mcp-config")
+      expect(flag).toBeGreaterThan(-1)
+      expect(argv).toContain("--strict-mcp-config")
+      return JSON.parse(argv[flag + 1]!)
+    }
+
+    const bare = await Effect.runPromise(factory.open(undefined))
+    await Effect.runPromise(bare.run({ purpose: "lint", prompt: "p" }))
+    // The CLI rejects `{}` ("mcpServers: Invalid input: expected record, received undefined").
+    expect(await configAfter()).toEqual({ mcpServers: {} })
+
+    const declared = await Effect.runPromise(
+      factory.open(undefined, [Reference.Mcp.Http("issues", "https://example.test/mcp")])
+    )
+    await Effect.runPromise(declared.run({ purpose: "diff", prompt: "p" }))
+    expect(await configAfter()).toEqual({
+      mcpServers: { issues: { type: "http", url: "https://example.test/mcp" } }
+    })
+  })
+
+  it("claudeMcpConfig renders every declared server as a streamable-HTTP entry", () => {
+    expect(JSON.parse(AgentSession.claudeMcpConfig([]))).toEqual({ mcpServers: {} })
+    expect(
+      JSON.parse(
+        AgentSession.claudeMcpConfig([
+          Reference.Mcp.Http("github", "https://api.githubcopilot.com/mcp/"),
+          Reference.Mcp.Http("sentry", "https://mcp.sentry.dev/mcp")
+        ])
+      )
+    ).toEqual({
+      mcpServers: {
+        github: { type: "http", url: "https://api.githubcopilot.com/mcp/" },
+        sentry: { type: "http", url: "https://mcp.sentry.dev/mcp" }
+      }
+    })
+  })
+
   it("parses the last codex agent_message from a fake codex JSONL stream", async () => {
     const codex = await fakeExecutable(
       "fake-codex",
