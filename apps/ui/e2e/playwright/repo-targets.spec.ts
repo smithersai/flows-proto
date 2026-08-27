@@ -98,9 +98,13 @@ test("a Run button inside the panel streams a target run to completion", async (
   await htmlCard(page).getByTestId(`card-maximize-${panelId}`).click()
   await expect(htmlCard(page)).toHaveAttribute("data-maximized", "true")
   await page.getByTestId(`card-open-in-tab-${panelId}`).click()
-  const tab = page.getByTestId(`tab-card-${panelId}`)
+  // openCardTab coins the tab id as `card-${cardId}` (state/controller/tabs.ts), and the
+  // chrome renders `tab-${tab.id}` / `tab-body-${tab.id}` over it. Compose the id the same
+  // way so the literal pin checks each half against the prefixes the app really builds.
+  const cardTabId = `card-${panelId}`
+  const tab = page.getByTestId(`tab-${cardTabId}`)
   await expect(tab).toHaveAttribute("data-active", "true")
-  const tabBody = page.getByTestId(`tab-body-card-${panelId}`)
+  const tabBody = page.getByTestId(`tab-body-${cardTabId}`)
   await expect(tabBody).toBeVisible()
   await expect(tabBody.getByTestId(`html-card-frame-${panelId}`)).toBeVisible()
   await expect(tabBody.frameLocator("iframe").getByTestId("stub-panel")).toBeVisible()
