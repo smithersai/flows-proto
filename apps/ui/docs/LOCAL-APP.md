@@ -176,6 +176,13 @@ manifest dir, never a workspace). `workspaces` lists them root-first:
 last path segment (the repo name for the root). `detected` holds iff the
 list is nonempty.
 
+The app queries each workspace on its own, but the loader is stricter
+about the tree: a root workspace must declare every child workspace under
+it (`repos: { tools: S.LocalRepository("tools") }` in its `WORKSPACE.ts`)
+or its own query refuses with `nested_workspace_undeclared`, which the app
+reports as that workspace's warning. The e2e fixture declares its child
+for that reason.
+
 `declarationFiles` stays informational: the root declaration files
 (`WORKSPACE.ts`, `.smithers/WORKSPACE.ts`, `BUILD.ts`) and every
 `PACKAGE.ts` below the root — its own walk, skipping `node_modules`,
