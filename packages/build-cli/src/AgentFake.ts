@@ -132,6 +132,21 @@ const scriptedError = (
 ): AgentTarget.AgentSessionError => new AgentTarget.AgentSessionError({ phase, message })
 
 /**
+ * The `--- <path> ---` headers under a prompt's `=== FILES ===` section, for
+ * cross-process proofs that a lane rendered its data closure.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const promptFilesOf = (prompt: string): ReadonlyArray<string> => {
+  const start = prompt.indexOf("\n=== FILES ===\n")
+  if (start === -1) return []
+  const end = prompt.indexOf("\n=== DIFF SLICE ===\n", start)
+  const section = prompt.slice(start, end === -1 ? undefined : end)
+  return [...section.matchAll(/^--- (.+) ---$/gm)].map((match) => match[1]!)
+}
+
+/**
  * A session factory that replays one {@link FakeScript} deterministically.
  *
  * The response cursor is shared across every session the factory opens: run
@@ -157,7 +172,8 @@ export const makeScriptedSessionFactory = (
       const line = JSON.stringify({
         seq: seen.length,
         purpose: request.purpose,
-        promptDigest: createHash("sha256").update(request.prompt, "utf8").digest("hex")
+        promptDigest: createHash("sha256").update(request.prompt, "utf8").digest("hex"),
+        files: promptFilesOf(request.prompt)
       })
       NodeFs.appendFileSync(options.logPath, `${line}\n`, "utf8")
     }

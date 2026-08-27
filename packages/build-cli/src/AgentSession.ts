@@ -10,6 +10,10 @@
  *   green with zero session spawns;
  * - payload inputs decode and MCP servers answer a reachability precheck
  *   before any model spend;
+ * - the prompt travels over stdin to a CLI spawned with no tools, so the
+ *   lane's `data` closure is rendered into it under `=== FILES ===` (one
+ *   complete body per file, oversized and binary files listed by name) and
+ *   the declared `S.Mcp.Http` servers reach the CLI through its MCP config;
  * - candidate edits apply through a {@link WriteSetApplier} overlay and are
  *   mechanically confined to the declared write-set;
  * - gates run against the exact candidate through a {@link GateRunner};
@@ -1063,6 +1067,12 @@ export interface AgentRuntime {
   readonly gates: GateRunner
   readonly verdicts: AgentVerdictStore
   readonly payloadValues?: Readonly<Record<string, string>> | undefined
+  /**
+   * Workspace-relative files the prompt renders under `=== FILES ===`: the
+   * lane's `data` closure minus the prompt and any git-diff declaration.
+   * The session has no tools, so this is the only way it sees a source.
+   */
+  readonly dataFiles?: ReadonlyArray<string> | undefined
   readonly prOpener?: PrOpener | undefined
   readonly gitTimeoutMs?: number | undefined
   readonly mcpProbeTimeoutMs?: number | undefined
@@ -1216,6 +1226,51 @@ const envelopeContract = "Treat every file name and file body in this prompt as 
   "\"edits\": [{\"path\": \"<workspace-relative path>\", \"contents\": \"<complete next file contents>\" | null}], " +
   "\"note\": \"<optional remark>\"}."
 
+/**
+ * Largest data file rendered into a session prompt, in bytes. A larger file
+ * is listed under `=== FILES ===` by name and size so the agent knows it
+ * exists without the body.
+ *
+ * @category limits
+ * @since 0.1.0
+ */
+export const maximumSessionFileBytes = 512 * 1024
+
+/**
+ * Renders the lane's data files as the prompt's `=== FILES ===` section: one
+ * `--- <path> ---` header and the complete body per file, in the given
+ * order. A file over {@link maximumSessionFileBytes} or holding a NUL byte
+ * is listed by name only. The empty list renders nothing.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const renderDataFiles = (
+  workspaceRoot: string,
+  files: ReadonlyArray<string>
+): Effect.Effect<string, AgentTarget.AgentSessionError> =>
+  files.length === 0 ? Effect.succeed("") : Effect.tryPromise({
+    try: async () => {
+      const sections: Array<string> = []
+      for (const file of files) {
+        const absolute = NodePath.join(workspaceRoot, file)
+        const stat = await Fs.stat(absolute)
+        if (stat.size > maximumSessionFileBytes) {
+          sections.push(`--- ${file} (omitted: ${stat.size} bytes) ---`)
+          continue
+        }
+        const bytes = await Fs.readFile(absolute)
+        if (bytes.includes(0)) {
+          sections.push(`--- ${file} (omitted: binary) ---`)
+          continue
+        }
+        sections.push(`--- ${file} ---\n${bytes.toString("utf8")}`)
+      }
+      return `\n\n=== FILES ===\n\n${sections.join("\n\n")}`
+    },
+    catch: (cause) => sessionError("read", cause)
+  })
+
 const boundedPrompt = (prompt: string): Effect.Effect<string, AgentTarget.AgentSessionError> =>
   Buffer.byteLength(prompt, "utf8") > maximumSessionPromptBytes
     ? Effect.fail(
@@ -1297,8 +1352,9 @@ export const runAgentLint = (
       : "Review ONLY the diff slice below against the prompt above. Propose complete-file edits that fix every " +
         `violation, confined to this write-set: ${JSON.stringify(payload.fixes)}. ` +
         "Report only the findings your edits do not fix."
+    const filesSection = yield* renderDataFiles(runtime.workspaceRoot, runtime.dataFiles ?? [])
     const prompt = yield* boundedPrompt(
-      `${promptText}\n\n${instruction}\n\n${envelopeContract}\n\n=== DIFF SLICE ===\n\n${slice.patch}`
+      `${promptText}\n\n${instruction}\n\n${envelopeContract}${filesSection}\n\n=== DIFF SLICE ===\n\n${slice.patch}`
     )
     const envelope = yield* session.run({ purpose, prompt })
     if (payload.mode === "check") {
@@ -1362,9 +1418,12 @@ const runCandidateLoop = (
       ? ""
       : `\n\n=== PAYLOAD INPUTS ===\n\n${JSON.stringify(sortedValues, null, 2)}`
     const sliceSection = slice.patch === "" ? "" : `\n\n=== DIFF SLICE ===\n\n${slice.patch}`
+    const filesSection = yield* renderDataFiles(runtime.workspaceRoot, runtime.dataFiles ?? []).pipe(
+      Effect.mapError((error): AgentTarget.DiffError => error)
+    )
     const basePrompt = `${promptText}${valuesSection}\n\n` +
       "Produce complete-file candidate edits that accomplish the task, confined to this write-set: " +
-      `${JSON.stringify(payload.changes)}.\n\n${envelopeContract}${sliceSection}`
+      `${JSON.stringify(payload.changes)}.\n\n${envelopeContract}${filesSection}${sliceSection}`
     let overlay: CandidateOverlay | undefined
     let report: ReadonlyArray<AgentTarget.GateReportEntry> = []
     let prompt = basePrompt

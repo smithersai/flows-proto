@@ -247,6 +247,45 @@ describe("Agent.Lint", () => {
 })
 
 describe("Agent.Diff", () => {
+  it("renders the runtime's data files under === FILES ===, omitting oversized and binary bodies by name", async () => {
+    await Fs.mkdir(NodePath.join(root, "src"), { recursive: true })
+    await Fs.writeFile(NodePath.join(root, "src/a.ts"), "export const a = 1\n")
+    await Fs.writeFile(NodePath.join(root, "big.txt"), Buffer.alloc(AgentSession.maximumSessionFileBytes + 1, 0x61))
+    await Fs.writeFile(NodePath.join(root, "nul.dat"), Buffer.from([0x62, 0x00, 0x63]))
+    const dataFiles = ["src/a.ts", "big.txt", "nul.dat"]
+
+    const rendered = await Effect.runPromise(AgentSession.renderDataFiles(root, dataFiles))
+    expect(rendered).toBe(
+      "\n\n=== FILES ===\n\n--- src/a.ts ---\nexport const a = 1\n\n\n" +
+        `--- big.txt (omitted: ${AgentSession.maximumSessionFileBytes + 1} bytes) ---\n\n` +
+        "--- nul.dat (omitted: binary) ---"
+    )
+    expect(await Effect.runPromise(AgentSession.renderDataFiles(root, []))).toBe("")
+    const missing = await Effect.runPromise(Effect.flip(AgentSession.renderDataFiles(root, ["absent.ts"])))
+    expect(missing._tag).toBe("smithers-build/AgentSessionError")
+
+    const factory = scripted([{ purpose: "diff", edits: [{ path: "src/gen.ts", contents: "v1\n" }] }])
+    await Effect.runPromise(
+      AgentSession.runAgentDiff(
+        runtimeOf({ sessions: factory, gates: AgentFake.makeScriptedGateRunner([[green]]), dataFiles }),
+        diffPayload()
+      )
+    )
+    const prompt = factory.requests()[0]!.prompt
+    expect(prompt).toContain("=== FILES ===\n\n--- src/a.ts ---\nexport const a = 1\n")
+    expect(prompt.indexOf("=== FILES ===")).toBeGreaterThan(prompt.indexOf("Respond with one JSON object"))
+
+    // Without data files the prompt carries no section at all.
+    const bare = scripted([{ purpose: "diff", edits: [{ path: "src/gen.ts", contents: "v1\n" }] }])
+    await Effect.runPromise(
+      AgentSession.runAgentDiff(
+        runtimeOf({ sessions: bare, gates: AgentFake.makeScriptedGateRunner([[green]]) }),
+        diffPayload()
+      )
+    )
+    expect(bare.requests()[0]!.prompt).not.toContain("=== FILES ===")
+  })
+
   it("refuses a missing required payload input before any session exists", async () => {
     const factory = scripted([])
     const error = await Effect.runPromise(
