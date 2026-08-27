@@ -702,6 +702,58 @@ remain explicit plan refusals. The Docker-container Cargo build stays blocked
 until the declaration supplies its image/command contract. No fake green was
 introduced for those cases.
 
+#### Implementation receipt for api/viem
+
+Implemented viem's two remaining executor boundaries. Overlay consumers now run from a scratch workspace carrying
+all reachable replacements, capture declared outputs from scratch into the real CAS, and atomically materialize only
+those outputs. Git submodule inputs now resolve path patterns from the config file's directory, expand them against
+`.gitmodules`, key on stage-0 gitlink SHAs, require clean matching worktrees, and check out only missing/empty paths
+under an implied network sandbox. The real e2e clone was reset clean after the proofs and retained `node_modules`.
+
+| Owned symbol | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| `Overlay` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/NodeLaneExecution.test.ts --coverage.enabled=false` | replacement changes output; source byte-identical; warm hit; deleted outDir restored; replacement edit re-keyed; two-overlay conflict refused |
+| `Overlay` (viem) | `[x]` | from `~/artsy-e2e/viem`: `PATH=/opt/homebrew/bin:$PATH node /Users/williamcory/flows-api/viem/packages/build-cli/src/main.js '//src:buildCjs'` | `5 targets: 0 hit, 5 ran, 0 failed`; warm run: private `Shell.Build hit`; `_cjs/node/trustedSetups.js` uses `__dirname`, proving `trustedSetups_cjs.ts` was compiled |
+| `Git.Submodules` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/GitSubmoduleExecution.test.ts --coverage.enabled=false` | root-config path law and `vendor/*` expansion; `{network:true}` plan; missing checkout materialized; warm hit; deleted checkout restored; gitlink repin changed key; dirty/divergent worktrees refused |
+| `Git.Submodule` | `[x]` | same | `//vendor/one` planned as the indexed root path with its gitlink SHA |
+| scratch/CAS bridge | `[x]` | `pnpm -C packages/build-cli exec vitest run test/PackageTree.test.ts --coverage.enabled=false` | real `node_modules` linked as host state; scratch artifacts captured into the real CAS |
+
+| Repository | Load / graph / plan | Execute / refusal set | Result |
+| --- | --- | --- | --- |
+| viem | `PATH=/opt/homebrew/bin:$PATH bash /Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/viem viem` | `//src:buildCjs`, `//:size`, `//:typeCheck`, `SMTHRS_SHARD=1/3 //test:test` in `~/artsy-e2e/viem` | `ok`, `warnings:[]`, 76 labels, 0 NotImplemented, 56 typed refusals; CJS and typeCheck green; size reached size-limit's forge postinstall red; shard's four Anvil services became ready then vitest reached its own no-network red |
+
+`//:typeCheck` crossed `//contracts:libs` (`ran 959ms`), `//contracts:artifacts`, typed-artifact generation,
+and finished root `tsc -b` green: `9 targets: 0 hit, 9 ran, 0 failed`. The submodule plan expands the viem glob to
+the seven indexed `contracts/lib/*` paths and prints `sandbox: { network: true }`; no literal glob becomes an outDir.
+`//:size` crossed both ESM and overlaid CJS builds, then size-limit invoked its own dependency-status install and
+reported the host PATH's incompatible `forge` (`unrecognized subcommand 'build'`). The selected test shard planned a
+real vitest argv and `shards: 3`; all four Anvil forks reached readiness before vitest reported denied external RPC
+fetches under the target's declared no-network sandbox.
+
+Final package proof:
+
+| Check | Exact command | Result |
+| --- | --- | --- |
+| targets suite | `pnpm -C packages/targets exec vitest run --coverage.enabled=false` | 39 files, 735 passed |
+| build-cli suite | `pnpm -C packages/build-cli exec vitest run --coverage.enabled=false` | 43 files, 714 passed, 1 skipped |
+| type checks | `pnpm -C packages/{targets,build-cli} exec tsc --noEmit -p tsconfig.json` | both green |
+| format | package-local `pnpm exec dprint check` in targets and build-cli | both green; root has no `dprint` command |
+| lint | `pnpm -C packages/build-cli exec eslint src/OverlayExec.ts src/GitSubmoduleExec.ts src/PackageExec.ts src/PackageTree.ts --max-warnings=0` | green |
+
+Spec conflicts: none. The viem comments and both declarations agree on config-rooted paths, gitlink authority,
+checkout-on-absence, and consumer-scoped overlays. The requested `reference/` shelf is absent in this worktree; the
+implementation followed the repository's existing `PackageTree.scratchCopy`, write-set portal guard, output-manifest
+capture, CAS verification, and atomic materialization prior art.
+
+Shared-file hunks: `PackageExec.ts` (`visit` overlay/submodule planning and key material, `captureBuild`,
+`runWithOverlays`, `runBuild`, Shell/submodule dispatch, plan sandbox rendering); `PackageTree.ts` (`scratchCopy`,
+`captureOutDir`, `captureFile`). New focused modules are `OverlayExec.ts` and `GitSubmoduleExec.ts`; focused coverage
+is in `NodeLaneExecution.test.ts`, `GitSubmoduleExecution.test.ts`, and `PackageTree.test.ts`.
+
+Not done by design: viem's upstream lint/format verdicts were left unchanged; `//:size` remains honestly red on the
+host PATH's forge used by size-limit's nested install; the core shard remains honestly red when its setup fetches
+external RPCs under a no-network test sandbox. `Npm.Downstream` retains its existing isolated-checkout refusal.
+
 #### Review pass over lane api/gaps
 
 Six defects found by re-reading the lane diff against the `~/artsy` corpus and
@@ -729,3 +781,33 @@ missing JSDoc blocks in `GithubTarget.ts`, one unnecessary assertion in
 | type checks | `pnpm -C packages/{targets,build-cli} exec tsc --noEmit -p tsconfig.json` | both green |
 | format | package-local `npx dprint check` | both green |
 | whatsabi bin-form `stdout` after the hoist | `cd ~/artsy-e2e/whatsabi && node <tree>/packages/build-cli/src/main.js '//src:generated'` | `ok: true`, `//src:generated Generate ran`, clone status unchanged |
+
+### Lane api/viem 2026-08-27
+
+| Owned symbol | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| `Overlay` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/NodeLaneExecution.test.ts --coverage.enabled=false`; from `~/artsy-e2e/viem`, `PATH=/opt/homebrew/bin:$PATH node /Users/williamcory/flows-api/viem/packages/build-cli/src/main.js '//src:buildCjs'` | fixture proves replacement output, byte-identical source, hit, CAS restore, re-key, conflict refusal; viem CJS `5 targets: 0 hit, 5 ran, 0 failed`, warm build hit, emitted file uses CJS-only `__dirname` |
+| `Git.Submodules` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/GitSubmoduleExecution.test.ts --coverage.enabled=false` | config-root path law, glob expansion, `{network:true}`, gitlink keying, missing checkout, hit/restore, dirty and divergent typed refusals |
+| `Git.Submodule` | `[x]` | same | root-anchored direct path planned and keyed on its stage-0 gitlink SHA |
+| scratch/CAS bridge | `[x]` | `pnpm -C packages/build-cli exec vitest run test/PackageTree.test.ts --coverage.enabled=false` | `node_modules` remains host state; scratch outputs enter the real CAS and materialize atomically |
+
+| Repository | Load / graph / plan sweep | Execute / refusal proof | Result |
+| --- | --- | --- | --- |
+| viem | `PATH=/opt/homebrew/bin:$PATH bash /Users/williamcory/flows-api/goals/verify-repos.sh /Users/williamcory/flows-api/viem viem` | e2e `//src:buildCjs`, `//:size`, `//:typeCheck`, and `SMTHRS_SHARD=1/3 //test:test` | 76 labels, `warnings:[]`, 0 NotImplemented, 56 typed refusals; buildCjs and typeCheck green; size reached its forge-postinstall red; four Anvil services ready before the shard's declared no-network RPC red; clone reset clean with node_modules preserved |
+
+Final gates: targets 735/735; build-cli 714 passed + 1 skipped; both package TypeScript and dprint checks green;
+eslint green on `OverlayExec.ts`, `GitSubmoduleExec.ts`, `PackageExec.ts`, and `PackageTree.ts`. `//:typeCheck`
+crossed `//contracts:libs` in 959ms and finished all 9 nodes green. The real submodule plan names the seven indexed
+`contracts/lib/*` paths and prints its implied network sandbox. The selected shard has a real vitest argv and
+`shards: 3`.
+
+Spec conflicts: none. The requested `reference/` shelf is absent; the implementation follows existing
+`PackageTree.scratchCopy`, portal guarding, CAS capture/verification, and atomic materialization. Shared-file hunks:
+`PackageExec.ts` (`visit`, key material, `captureBuild`, overlay build/spawn helpers, submodule/Shell dispatch, sandbox
+plan rendering) and `PackageTree.ts` (`scratchCopy`, source-root/CAS-root capture split). New modules:
+`OverlayExec.ts`, `GitSubmoduleExec.ts`. Tests: `NodeLaneExecution.test.ts`, `GitSubmoduleExecution.test.ts`,
+`PackageTree.test.ts`.
+
+Not done by design: upstream viem lint/format verdicts were left unchanged; size-limit remains honestly red on the
+nested install's incompatible PATH `forge`; the core shard remains honestly red when setup fetches external RPCs
+under its no-network sandbox; `Npm.Downstream` retains its isolated-checkout refusal.

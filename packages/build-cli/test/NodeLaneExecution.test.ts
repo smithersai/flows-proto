@@ -44,7 +44,22 @@ const ci = S.Github.Ci({
   workflows: { test: { on: { pullRequest: true }, run: gate } },
   changes: [".github/workflows/**"]
 })
-const overlay = S.Overlay({ base: literal, replace: { "x.ts": S.file("//input.txt") } })
+const overlayBase = S.Filegroup({ srcs: [S.file("//overlay/base.txt")] })
+const overlay = S.Overlay({ base: overlayBase, replace: { "overlay/base.txt": S.file("//overlay/replacement.txt") } })
+const overlayBuild = S.Shell.Build({
+  command: "mkdir -p overlay-out && cp overlay/base.txt overlay-out/result.txt",
+  data: [overlay],
+  outDirs: ["overlay-out"]
+})
+const overlayConflict = S.Overlay({
+  base: overlayBase,
+  replace: { "overlay/base.txt": S.file("//input.txt") }
+})
+const overlayConflictBuild = S.Shell.Build({
+  command: "mkdir -p conflict-out && cp overlay/base.txt conflict-out/result.txt",
+  data: [overlay, overlayConflict],
+  outDirs: ["conflict-out"]
+})
 const downstream = S.Npm.Downstream({
   repository: "https://example.invalid/repo",
   overrides: { fixture: literal },
@@ -60,7 +75,8 @@ const publishApproval = S.Npm.Publish({
 const pages = S.Github.Pages({ site: literal, secrets: [S.Secret("GITHUB_TOKEN")] })
 const pr = S.Git.Pr({ gates: [gate], secrets: [S.Secret("GITHUB_TOKEN")] })
 export const Package = S.Package({ targets: {
-  ci, copy, cron, digest, digestBuild, downstream, gate, literal, markdown, overlay, pack, pages, pr,
+  ci, copy, cron, digest, digestBuild, downstream, gate, literal, markdown, overlay, overlayBuild,
+  overlayConflictBuild, pack, pages, pr,
   publishApproval, publishMissing, size, version
 } })
 `
@@ -77,6 +93,8 @@ const fixture = async (): Promise<string> => {
   )
   await write(root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
   await write(root, "input.txt", "input")
+  await write(root, "overlay/base.txt", "base")
+  await write(root, "overlay/replacement.txt", "replacement")
   await write(root, "README.md", "```ts\nconst answer: number = 42\n```\n")
   await write(root, "changeset.json", "{}")
   await write(
@@ -190,7 +208,45 @@ describe("Node lane package execution", () => {
     expect((await serve(root, ["//:version"])).exitCode).toBe(0)
   })
 
-  it("keeps Cron inert and gives unsupported virtual/remote runners typed reasons", async () => {
+  it("builds overlay consumers in scratch, caches outputs, and leaves source bytes untouched", async () => {
+    const root = await fixture()
+    const source = NodePath.join(root, "overlay/base.txt")
+    const before = await Fs.readFile(source)
+    const firstPlan = JSON.parse((await serve(root, ["//:overlayBuild", "--plan", "--format", "json"])).output) as {
+      readonly targets: ReadonlyArray<{ readonly label: string; readonly key: string }>
+    }
+    const first = await serve(root, ["//:overlayBuild"])
+    expect(first.exitCode, first.logs).toBe(0)
+    expect(await Fs.readFile(NodePath.join(root, "overlay-out/result.txt"), "utf8")).toBe("replacement")
+    expect(await Fs.readFile(source)).toEqual(before)
+    const second = await serve(root, ["//:overlayBuild"])
+    expect(second.exitCode, second.logs).toBe(0)
+    expect(second.logs).toContain("//:overlayBuild  hit")
+    await Fs.rm(NodePath.join(root, "overlay-out"), { recursive: true })
+    const restored = await serve(root, ["//:overlayBuild"])
+    expect(restored.exitCode, restored.logs).toBe(0)
+    expect(restored.logs).toContain("//:overlayBuild  hit")
+    expect(await Fs.readFile(NodePath.join(root, "overlay-out/result.txt"), "utf8")).toBe("replacement")
+    expect(await Fs.readFile(source)).toEqual(before)
+
+    await write(root, "overlay/replacement.txt", "changed")
+    const nextPlan = JSON.parse(
+      (await serve(root, ["//:overlayBuild", "--plan", "--format", "json"])).output
+    ) as {
+      readonly targets: ReadonlyArray<{ readonly label: string; readonly key: string }>
+    }
+    const keyOf = (plan: typeof firstPlan): string => plan.targets.find((row) => row.label === "//:overlayBuild")!.key
+    expect(keyOf(nextPlan)).not.toBe(keyOf(firstPlan))
+    expect((await serve(root, ["//:overlayBuild"])).exitCode).toBe(0)
+    expect(await Fs.readFile(NodePath.join(root, "overlay-out/result.txt"), "utf8")).toBe("changed")
+    expect(await Fs.readFile(source)).toEqual(before)
+
+    const conflict = await serve(root, ["//:overlayConflictBuild", "--plan"])
+    expect(conflict.exitCode).toBe(0)
+    expect(conflict.output).toContain("Overlay conflict")
+  })
+
+  it("keeps Cron and Overlay values inert and gives unsupported remote runners typed reasons", async () => {
     const root = await fixture()
     const cron = await serve(root, ["//:cron"])
     expect(cron.exitCode).toBe(0)
@@ -202,7 +258,7 @@ describe("Node lane package execution", () => {
     expect((await serve(root, ["//:ci"])).exitCode).toBe(0)
     expect(await Fs.readFile(NodePath.join(root, ".github/workflows/cron-cron.yml"), "utf8"))
       .toContain("cron: \"0 6 * * 1\"")
-    expect((await serve(root, ["//:overlay"])).logs).toContain("consumer-scoped virtual source mount")
+    expect((await serve(root, ["//:overlay"])).exitCode).toBe(0)
     expect((await serve(root, ["//:downstream"])).logs).toContain("isolated remote checkout runner")
   })
 

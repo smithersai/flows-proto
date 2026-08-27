@@ -55,11 +55,14 @@ import { type CacheStore, openCache } from "./Cache.ts"
 import * as Diagnostic from "./Diagnostic.ts"
 import * as DockerExec from "./DockerExec.ts"
 import * as Executor from "./Executor.ts"
+import * as FetchExec from "./FetchExec.ts"
 import * as FoundryExec from "./FoundryExec.ts"
 import * as GitCommit from "./GitCommit.ts"
 import * as GithubRender from "./GithubRender.ts"
+import * as GitSubmoduleExec from "./GitSubmoduleExec.ts"
 import * as GoExec from "./GoExec.ts"
 import * as MemoryBackend from "./MemoryBackend.ts"
+import * as OverlayExec from "./OverlayExec.ts"
 import type * as PackageIndexModule from "./PackageIndex.ts"
 import * as PackageTree from "./PackageTree.ts"
 import * as Planner from "./Planner.ts"
@@ -151,6 +154,7 @@ const implementedRules: ReadonlySet<string> = new Set([
   "Markdown.CodeBlocks",
   "Api.Compat",
   "Size.Budgets",
+  "Fetch",
   "Go.Packages",
   "Go.Test",
   "Go.Binary",
@@ -336,7 +340,7 @@ export type LaneData =
     readonly sourceLabel?: string
     readonly text?: string
   }
-  | { readonly kind: "submodules" }
+  | { readonly kind: "submodules"; readonly plan: GitSubmoduleExec.Plan }
   | { readonly kind: "markdown-code-blocks"; readonly file: string; readonly languages: ReadonlyArray<string> }
   | { readonly kind: "published"; readonly manifestPath: string }
   | { readonly kind: "api-compat" }
@@ -407,6 +411,8 @@ export interface PackageNode extends Planner.PlannedTarget {
   readonly writeSet: ReadonlyArray<string>
   readonly outDirs: ReadonlyArray<string>
   readonly outFiles: ReadonlyArray<string>
+  /** Consumer-scoped source substitutions applied only in a scratch workspace. */
+  readonly overlays: ReadonlyArray<OverlayExec.Replacement>
   readonly emit:
     | ReadonlyArray<{
       readonly path: string
@@ -447,6 +453,7 @@ export interface PlanReport {
     readonly shards?: number | undefined
     /** A cargo target's per-crate commands, when it renders more than one. */
     readonly commands?: ReadonlyArray<ReadonlyArray<string>> | undefined
+    readonly sandbox?: PackageNode["sandbox"]
     readonly refusal?: string | undefined
   }>
 }
@@ -1342,6 +1349,7 @@ const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox
     rule === "Clean" || rule === "Agent.Diff" || rule === "Agent.Pr" || rule === "Git.Commit" ||
     rule === "Npm.Pack" || rule === "Copy" || rule === "Literal" || rule === "Git.Submodules" ||
     rule === "Git.Submodule" || rule === "Changesets.Version" || rule === "Npm.Published" ||
+    rule === "Fetch" ||
     // Every cargo run writes `target/` and, when the workspace pins one, the
     // cargo home the fetch resource delivers.
     (rule.startsWith("Cargo.") && rule !== "Cargo.AppSet" && rule !== "Cargo.Fmt")
@@ -1557,6 +1565,22 @@ const visit = async (
     if (typeof record["env"] === "string") secrets.push(record["env"])
   }
   let sandbox = attrMember(attrs, "sandbox") as PackageNode["sandbox"]
+
+  const overlayResolution = await OverlayExec.resolve({
+    root: context.root,
+    consumer: target,
+    packagePathOf: (candidate) => packagePathOf(context, candidate),
+    labelOf: (candidate) => depLabels.get(candidate) ?? labelOf(context, candidate)
+  })
+  const overlays = overlayResolution.replacements
+  if (overlayResolution.refusal !== undefined) noteRefusal(overlayResolution.refusal)
+
+  if (rule === "Fetch" && refusal === undefined) {
+    const plannedFetch = FetchExec.plan({ packagePath, target })
+    sandbox = plannedFetch.sandbox
+    outFiles.push(...plannedFetch.outFiles)
+    if (plannedFetch.refusal !== undefined) noteRefusal(plannedFetch.refusal)
+  }
 
   const changes = attrMember(attrs, "changes")
   if (Array.isArray(changes)) {
@@ -2176,21 +2200,32 @@ const visit = async (
     case "Git.Submodules":
     case "Git.Submodule": {
       const git = await resolveToken(Shell.toolToken({ _tag: "HostBin", name: "git" } as never))
-      const paths = rule === "Git.Submodules"
-        ? [...(attrs as (typeof GitTarget.SubmodulesAttrs)["Type"]).paths]
-        : [(attrs as (typeof GitTarget.SubmoduleAttrs)["Type"]).path]
+      const submodulePlan = rule === "Git.Submodules"
+        ? await GitSubmoduleExec.plan({
+          root: context.root,
+          packagePath,
+          rule,
+          attrs: attrs as (typeof GitTarget.SubmodulesAttrs)["Type"]
+        })
+        : await GitSubmoduleExec.plan({
+          root: context.root,
+          packagePath,
+          rule,
+          attrs: attrs as (typeof GitTarget.SubmoduleAttrs)["Type"]
+        })
+      if (submodulePlan.refusal !== undefined) noteRefusal(submodulePlan.refusal)
       argv = [
         git,
         "submodule",
         "update",
         "--init",
         "--recursive",
-        "--force",
         "--",
-        ...paths.map((path) => path.startsWith("//") ? path.slice(2) : path)
+        ...submodulePlan.paths
       ]
-      outDirs.push(...paths.map((path) => path.startsWith("//") ? path.slice(2) : Input.resolvePath(packagePath, path)))
-      lane = { kind: "submodules" }
+      outDirs.push(...submodulePlan.paths)
+      sandbox = { network: true }
+      lane = { kind: "submodules", plan: submodulePlan }
       break
     }
     case "Changesets.Version": {
@@ -2465,6 +2500,7 @@ const visit = async (
     rule === "Markdown.CodeBlocks" ||
     rule === "Api.Compat" ||
     rule === "Size.Budgets" ||
+    rule === "Fetch" ||
     rule === "Npm.Downstream" ||
     rule === "Overlay" ||
     (rule === "Changesets.Version" && mode === "check") ||
@@ -2494,6 +2530,10 @@ const visit = async (
       declared: declaredInputs,
       dependencies: dependencyRows,
       toolchain,
+      overlays: overlays.map(({ digest, path, source }) => ({ digest, path, source })),
+      submodules: lane?.kind === "submodules"
+        ? lane.plan.gitlinks.map((link) => ({ path: link.path, sha: link.sha }))
+        : null,
       writeSetState
     },
     layers: [],
@@ -2554,6 +2594,7 @@ const visit = async (
     writeSet,
     outDirs,
     outFiles,
+    overlays,
     emit,
     stdoutPath,
     members,
@@ -3098,14 +3139,21 @@ export const execute = async (
     return true
   }
 
-  const captureBuild = async (node: PackageNode, key: string): Promise<void> => {
+  const captureBuild = async (
+    node: PackageNode,
+    key: string,
+    sourceRoot: string = root
+  ): Promise<BuildOutput> => {
     const manifests: Array<PackageTree.OutDirManifest> = []
     for (const outDir of node.outDirs) {
-      manifests.push(await PackageTree.captureOutDir(root, cacheDirectory, outDir))
+      manifests.push(await PackageTree.captureOutDir(sourceRoot, cacheDirectory, outDir, root))
     }
     const files: Array<PackageTree.FileManifest> = []
-    for (const file of node.outFiles) files.push(await PackageTree.captureFile(root, cacheDirectory, file))
+    for (const file of node.outFiles) {
+      files.push(await PackageTree.captureFile(sourceRoot, cacheDirectory, file, root))
+    }
     await cachePut(node, { kind: "build", manifests, files }, key)
+    return { manifests, files }
   }
 
   /** Captures a very large directory as one CAS tar blob instead of one JSON member per file. */
@@ -3455,6 +3503,72 @@ export const execute = async (
       await PackageTree.releasePortals(portals)
     }
   }
+
+  /** Runs one consumer against a scratch tree carrying its declared overlays. */
+  const runWithOverlays = async (
+    node: PackageNode,
+    signal: AbortSignal | undefined,
+    body: (scratch: string) => Promise<ExecOutcome>
+  ): Promise<ExecOutcome> => {
+    if (node.overlays.length === 0) return body(root)
+    const portals = await PackageTree.snapshotPortals(
+      root,
+      cacheDirectory,
+      (link) => log(`${node.label}  portal left unconfined (target too large): ${link}`)
+    )
+    const scratch = await PackageTree.scratchCopy(root, cacheDirectory)
+    try {
+      await OverlayExec.apply(scratch, node.overlays)
+      const outcome = await body(scratch)
+      const escapedPortals = await PackageTree.revertChangedPortals(portals)
+      if (escapedPortals.length > 0) {
+        return {
+          ok: false,
+          error: `overlay consumer touched the real tree through a symlink (reverted): ${escapedPortals.join(", ")}`
+        }
+      }
+      return outcome
+    } finally {
+      await Fs.rm(scratch, { recursive: true, force: true })
+      await PackageTree.releasePortals(portals)
+    }
+  }
+
+  /** Runs, captures, and materializes a cacheable build, using scratch for overlays. */
+  const runBuild = async (node: PackageNode, signal: AbortSignal | undefined): Promise<Outcome> => {
+    const cached = await cacheGet(node)
+    if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+    if (node.overlays.length === 0) {
+      const spawned = await spawnNode(node, root, signal)
+      if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
+      await captureBuild(node, node.keyPreview)
+      return green("ran")
+    }
+    const ran = await runWithOverlays(node, signal, async (scratch) => {
+      for (const outDir of node.outDirs) {
+        await Fs.rm(NodePath.join(scratch, ...outDir.split("/")), { recursive: true, force: true })
+      }
+      for (const outFile of node.outFiles) {
+        await Fs.rm(NodePath.join(scratch, ...outFile.split("/")), { force: true })
+      }
+      const spawned = await spawnNode(node, scratch, signal)
+      if (!spawned.ok) return spawned
+      const output = await captureBuild(node, node.keyPreview, scratch)
+      for (const manifest of output.manifests) {
+        await PackageTree.materializeManifest(root, cacheDirectory, manifest)
+      }
+      for (const file of output.files) await PackageTree.materializeFile(root, cacheDirectory, file)
+      return { ok: true }
+    })
+    return ran.ok ? green("ran") : fail(ran.error ?? "overlay build failed")
+  }
+
+  /** Spawns a non-build consumer in its overlay scratch tree when required. */
+  const spawnConsumer = (
+    node: PackageNode,
+    signal: AbortSignal | undefined,
+    argv?: ReadonlyArray<string> | undefined
+  ): Promise<ExecOutcome> => runWithOverlays(node, signal, (treeRoot) => spawnNode(node, treeRoot, signal, argv))
 
   const runEmit = async (node: PackageNode): Promise<ExecOutcome> => {
     const entries = node.emit ?? []
@@ -4093,10 +4207,19 @@ export const execute = async (
         }
         case "Shell.Build":
         case "Foundry.Build": {
+          return runBuild(node, signal)
+        }
+        case "Fetch": {
+          if (node.outFiles.length !== 1) return fail("Fetch planned no single output file")
           const cached = await cacheGet(node)
           if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
-          const spawned = await spawnNode(node, root, signal)
-          if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
+          const result = await FetchExec.execute({
+            root,
+            target: node.declaration,
+            outFile: node.outFiles[0]!,
+            signal
+          })
+          log(`${node.label}  fetched ${result.bytes} byte(s)`)
           await captureBuild(node, node.keyPreview)
           return green("ran")
         }
@@ -4132,7 +4255,7 @@ export const execute = async (
               const cached = await cacheGet(shardNode)
               if (cached !== undefined) continue
               allHit = false
-              const spawned = await spawnNode(shardNode, root, signal)
+              const spawned = await spawnConsumer(shardNode, signal)
               if (!spawned.ok) return fail(spawned.error ?? `shard ${suffix} failed`)
               await cachePut(shardNode, { kind: "shell-test-shard", shard, total: node.shards })
             }
@@ -4140,13 +4263,13 @@ export const execute = async (
           }
           const cached = await cacheGet(node)
           if (cached !== undefined) return green("hit")
-          const spawned = await spawnNode(node, root, signal)
+          const spawned = await spawnConsumer(node, signal)
           if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
           await cachePut(node, { kind: "shell-test" })
           return green("ran")
         }
         case "Shell.Run": {
-          const spawned = await spawnNode(node, root, signal)
+          const spawned = await spawnConsumer(node, signal)
           if (!spawned.ok) return fail(spawned.error ?? "tool run failed")
           return green("ran")
         }
@@ -4187,10 +4310,26 @@ export const execute = async (
         }
         case "Git.Submodules":
         case "Git.Submodule": {
+          if (node.lane?.kind !== "submodules") return fail(`${node.rule} planned no gitlinks`)
           const cached = await cacheGet(node)
-          if (cached !== undefined && await restoreBuild(node, cached.output)) return green("hit")
+          if (cached !== undefined) {
+            if (GitSubmoduleExec.isMaterialized(node.lane.plan)) return green("hit")
+            if (await restoreBuild(node, cached.output)) {
+              const problem = await GitSubmoduleExec.verify(root, node.lane.plan)
+              if (problem === undefined) return green("hit")
+              for (const outDir of node.outDirs) {
+                await Fs.rm(NodePath.join(root, ...outDir.split("/")), { recursive: true, force: true })
+              }
+            }
+          }
+          if (GitSubmoduleExec.isMaterialized(node.lane.plan)) {
+            await captureBuild(node, node.keyPreview)
+            return green("ran")
+          }
           const spawned = await spawnNode(node, root, signal)
           if (!spawned.ok) return fail(spawned.error ?? "git submodule update failed")
+          const problem = await GitSubmoduleExec.verify(root, node.lane.plan)
+          if (problem !== undefined) return fail(problem)
           await captureBuild(node, node.keyPreview)
           return green("ran")
         }
@@ -4308,9 +4447,7 @@ export const execute = async (
           return green("ran")
         }
         case "Overlay":
-          return fail(
-            "Overlay execution requires a consumer-scoped virtual source mount; this host runner cannot apply it honestly"
-          )
+          return green("ran")
         case "Npm.Downstream":
           return fail(
             "Npm.Downstream execution requires an isolated remote checkout runner; this host runner cannot apply overrides honestly"
@@ -4838,6 +4975,7 @@ export const run = async (options: RunOptions): Promise<Executor.Summary | PlanR
         ...(node.argv === undefined ? {} : { argv: node.argv }),
         ...(node.shards === 1 ? {} : { shards: node.shards }),
         ...(node.lane?.kind === "cargo" && node.argv === undefined ? { commands: node.lane.commands } : {}),
+        ...(node.sandbox === undefined ? {} : { sandbox: node.sandbox }),
         ...(node.refusal === undefined ? {} : { refusal: node.refusal })
       }))
     }

@@ -129,3 +129,21 @@ describe("captureOutDir heals a tampered CAS blob", () => {
     expect(await PackageTree.verifyManifestBlobs(root, ".flows", first)).toBeUndefined()
   })
 })
+
+describe("scratchCopy keeps installed dependencies as host state", () => {
+  it("links a real node_modules directory instead of copying its contents", async () => {
+    await Fs.mkdir(NodePath.join(root, "node_modules", "fixture"), { recursive: true })
+    await Fs.writeFile(NodePath.join(root, "node_modules", "fixture", "index.js"), "export {}")
+    await Fs.writeFile(NodePath.join(root, "source.ts"), "export const source = true")
+    const scratch = await PackageTree.scratchCopy(root, ".flows")
+    try {
+      expect((await Fs.lstat(NodePath.join(scratch, "node_modules"))).isSymbolicLink()).toBe(true)
+      expect(await Fs.realpath(NodePath.join(scratch, "node_modules"))).toBe(
+        await Fs.realpath(NodePath.join(root, "node_modules"))
+      )
+      expect(await Fs.readFile(NodePath.join(scratch, "source.ts"), "utf8")).toContain("source = true")
+    } finally {
+      await Fs.rm(scratch, { recursive: true, force: true })
+    }
+  })
+})
