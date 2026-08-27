@@ -75,6 +75,10 @@ const RepoPluginEntryFileSchema = z
   .object({ ...entryShape, approval: z.boolean().optional(), agentic: z.boolean().optional() })
   .strict()
 
+/** `path: message`, or just the message for a root-level issue. */
+const issueText = (issue: { readonly path: ReadonlyArray<PropertyKey>; readonly message: string }): string =>
+  issue.path.length === 0 ? issue.message : `${issue.path.join(".")}: ${issue.message}`
+
 const groupRefs = (
   manifest: { readonly groups: ReadonlyArray<{ readonly id: string }>; readonly entries: ReadonlyArray<{ readonly id: string; readonly group: string }> },
   ctx: z.RefinementCtx
@@ -124,7 +128,7 @@ export const parseRepoPlugin = (
 ): { readonly plugin: RepoPlugin } | { readonly issues: ReadonlyArray<string> } => {
   const file = RepoPluginFileSchema.safeParse(value)
   if (!file.success) {
-    return { issues: file.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`) }
+    return { issues: file.error.issues.map(issueText) }
   }
   const normalized = {
     ...file.data,
@@ -132,7 +136,7 @@ export const parseRepoPlugin = (
   }
   const parsed = RepoPluginSchema.safeParse(normalized)
   if (!parsed.success) {
-    return { issues: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`) }
+    return { issues: parsed.error.issues.map(issueText) }
   }
   const known = new Set(workspaces)
   const stray = parsed.data.entries.filter((entry) => !known.has(entry.workspace))

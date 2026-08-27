@@ -5,7 +5,7 @@
  * riding the existing `target.run` flow. Embedded like every card (EMBED
  * LAW); maximizing is the user's act on the card chrome.
  */
-import { Button, EmptyState, StatusPill } from "@smthrs/ui"
+import { Badge, Button, EmptyState, StatusPill } from "@smthrs/ui"
 import type { Card } from "../state/AppState"
 
 export const RepoPluginCardBody = ({
@@ -35,17 +35,24 @@ export const RepoPluginCardBody = ({
                     <li key={entry.id} className="repo-plugin-row" data-plugin-entry={entry.id}>
                       <div className="repo-plugin-row-head">
                         <span className="repo-plugin-row-title">{entry.title}</span>
+                        {/*
+                          * The workspace and the kind are facts, not statuses, so they
+                          * ride Badge. The two flags ride StatusPill on the SHARED
+                          * status vocabulary: it buckets a status string, so a class
+                          * name like "warn" falls through to muted and an entry that
+                          * needs approval would look exactly like one that does not.
+                          */}
                         <span className="repo-plugin-badges">
-                          <StatusPill status="muted" label={entry.workspace} withDot={false} data-badge="workspace" />
-                          <StatusPill status="muted" label={group.kind} withDot={false} data-badge="kind" />
+                          <Badge variant="muted" data-badge="workspace">{entry.workspace}</Badge>
+                          <Badge variant="muted" data-badge="kind">{group.kind}</Badge>
                           <StatusPill
-                            status={entry.approval ? "warn" : "muted"}
+                            status={entry.approval ? "waiting-approval" : "skipped"}
                             label={entry.approval ? "approval" : "no approval"}
                             withDot={false}
                             data-badge="approval"
                           />
                           <StatusPill
-                            status={entry.agentic ? "run" : "muted"}
+                            status={entry.agentic ? "active" : "skipped"}
                             label={entry.agentic ? "agentic" : "non-agentic"}
                             withDot={false}
                             data-badge="agentic"

@@ -87,8 +87,9 @@ export const registerRepoTargetRoutes = (
     }
     const repo = repos.get(repoId)
     if (repo === undefined) return jsonError(404, "repo_not_found", `No open repository with id ${repoId}.`)
-    // The workspace is validated against the detected set; "." (the root) is
-    // the default and the only valid value for a repo with none detected.
+    // The workspace is validated against the detected set and defaults to "."
+    // (the root). A repo with nothing detected has no targets to run, so every
+    // workspace — "." included — is refused there.
     const workspace = stringField(parsed.body, "workspace") ?? "."
     if (!repo.smithers.workspaces.some((entry) => entry.path === workspace)) {
       const detected = repo.smithers.workspaces.map((entry) => entry.path).join(", ")
