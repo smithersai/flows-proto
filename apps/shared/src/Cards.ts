@@ -1,5 +1,12 @@
 import { z } from "zod"
 import { RepoSchema, TargetSchema } from "./LocalApp"
+import {
+  AffectedCardPayloadSchema,
+  CiMatrixCardPayloadSchema,
+  GraphCardPayloadSchema,
+  RunHistoryCardPayloadSchema,
+  RunTimelineCardPayloadSchema
+} from "./TargetGraph"
 
 /*
  * The card wire model, shared by the server boundary (which validates frames off
@@ -488,7 +495,18 @@ export const CardSchema = z.discriminatedUnion("kind", [
     ...cardBaseShape,
     kind: z.literal("repo"),
     payload: z.object({ repo: RepoSchema })
-  })
+  }),
+  /*
+   * The target-graph cards (smithers-shared/TargetGraph): the typed DAG with
+   * plan facts and an optional live run overlay, one run's timeline with its
+   * critical path, the run history with replay, the diff-affected set, and
+   * the generated CI matrix.
+   */
+  z.object({ ...cardBaseShape, kind: z.literal("graph"), payload: GraphCardPayloadSchema }),
+  z.object({ ...cardBaseShape, kind: z.literal("run-timeline"), payload: RunTimelineCardPayloadSchema }),
+  z.object({ ...cardBaseShape, kind: z.literal("run-history"), payload: RunHistoryCardPayloadSchema }),
+  z.object({ ...cardBaseShape, kind: z.literal("affected"), payload: AffectedCardPayloadSchema }),
+  z.object({ ...cardBaseShape, kind: z.literal("ci-matrix"), payload: CiMatrixCardPayloadSchema })
 ])
 export type Card = z.infer<typeof CardSchema>
 
