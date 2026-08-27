@@ -72,8 +72,14 @@ Electrobun 2.0.1 (build.mainProcess: "bun", Bun 1.4.0)
   `electrobun prepare`, implicitly by `dev`/`build`); `tsconfig.json`
   extends its `tsconfig.json`, `vite.config.ts` uses `electrobunViteAliases`,
   `hutch.config.ts` selects pnpm. `.hutch/` and `.cottontail-tmp/` are
-  ignored. `pnpm exec electrobun --help` (not bare `electrobun`, which
-  builds) downloads Hutch on a fresh machine.
+  ignored. `scripts/ensure-devkit.mjs` projects the devkit when it is missing
+  or its version differs from the installed `electrobun`: it runs as
+  `postinstall` (soft: warns without failing `pnpm install`) and ahead of
+  `typecheck`, `check`, `start`, `build`, `build:canary`, the T1 web server
+  and the T2 launcher, so `pnpm install && pnpm --filter smithers-ui typecheck`
+  works in a fresh clone. The first projection on a machine downloads Hutch
+  and the Electrobun release into `~/.hutch` (network required); `pnpm run
+  devkit` runs it by hand.
 
 ## HTTP and WebSocket API
 
