@@ -53,7 +53,7 @@ describe("defineTools", () => {
   it("tags the spec and keeps the sources in declaration order", () => {
     const first = { name: "ledger", flows: [] } as never
     const second = { name: "ui", flows: [] } as never
-    expect(defineTools([first, second])).toEqual({ _tag: "ToolsSpec", sources: [first, second] })
+    expect(defineTools([first, second])).toEqual({ _tag: "ToolsSpec", sources: [first, second], grant: [{ action: "*", resource: "*" }] })
   })
 })
 
