@@ -19,11 +19,10 @@
  *
  * @since 0.1.0
  */
-import * as CronTarget from "@smthrs/targets/CronTarget"
 import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as PackageManager from "@smthrs/targets/PackageManager"
-import * as Runtime from "@smthrs/targets/Runtime"
-import * as Target from "@smthrs/targets/Target"
+import type * as Runtime from "@smthrs/targets/Runtime"
+import type * as Target from "@smthrs/targets/Target"
 import type * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
 import * as NodeCrypto from "node:crypto"
 import * as Fs from "node:fs/promises"
@@ -86,7 +85,6 @@ export const isGithubRenderError = (value: unknown): value is GithubRenderError 
  */
 export interface LabelResolver {
   labelOf(target: Target.AnyTarget): string | undefined
-  targets?(): ReadonlyArray<{ readonly label: string; readonly target: Target.AnyTarget }>
 }
 
 /**
@@ -177,24 +175,23 @@ interface Toolchain {
     | { readonly kind: "node-version"; readonly version: string }
     | { readonly kind: "node-version-file"; readonly file: string }
     | { readonly kind: "bun"; readonly version: string }
+    | { readonly kind: "go"; readonly file: string }
   /** The extra action that installs the package manager itself, if any. */
   readonly managerAction: { readonly uses: string; readonly with?: Readonly<Record<string, string>> } | undefined
   /** The package-manager store directory the cache step saves. */
-  readonly storePath: string
+  readonly storePath: string | undefined
   /** The cache key prefix, `<manager>-store-`. */
-  readonly storePrefix: string
+  readonly storePrefix: string | undefined
   /** The lockfile whose digest keys the store cache. */
-  readonly lockfile: string
+  readonly lockfile: string | undefined
   /** The frozen install command. */
-  readonly install: string
+  readonly install: string | undefined
   /** The argv prefix that runs a workspace-local binary. */
   readonly exec: ReadonlyArray<string>
 }
 
-const runtimeFacts = (
-  runtime: Runtime.Runtime | Runtime.NodeDeclaration | Runtime.BunDeclaration
-): Toolchain["runtime"] => {
-  if (Runtime.isBunDeclaration(runtime)) return { kind: "bun", version: runtime.version }
+const runtimeFacts = (runtime: Runtime.Runtime | Runtime.NodeDeclaration | undefined): Toolchain["runtime"] => {
+  if (runtime === undefined) return { kind: "go", file: "go.mod" }
   if ("name" in runtime && runtime.name === "bun") return { kind: "bun", version: runtime.version }
   if ("name" in runtime && runtime.name === "node") return { kind: "node-version", version: runtime.version }
   // The WORKSPACE.ts NodeDeclaration: an exclusive version | manifest union.
@@ -206,6 +203,20 @@ const runtimeFacts = (
 const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolchain => {
   const runtime = runtimeFacts(workspace.runtime)
   const manager = workspace.packageManager
+  if (manager === undefined) {
+    const go = workspace.toolchains?.find((entry) => entry._tag === "GoToolchain") as
+      | { readonly mod?: { readonly path?: string } }
+      | undefined
+    return {
+      runtime: { kind: "go", file: workspacePath(go?.mod?.path ?? "go.mod") },
+      managerAction: undefined,
+      storePath: undefined,
+      storePrefix: undefined,
+      lockfile: undefined,
+      install: undefined,
+      exec: ["smthrs"]
+    }
+  }
   if (PackageManager.isYarnDeclaration(manager)) {
     return {
       runtime,
@@ -215,22 +226,6 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
       lockfile: workspacePath(manager.lockfile.path),
       install: "yarn install --frozen-lockfile",
       exec: ["yarn", "exec", "smthrs"]
-    }
-  }
-  if (PackageManager.isPnpmDeclaration(manager)) {
-    return {
-      runtime,
-      // The manifest's own packageManager field pins the version when the
-      // declaration does not restate it, so the action reads it from there.
-      managerAction: {
-        uses: "pnpm/action-setup@v4",
-        ...(manager.version === undefined ? {} : { with: { version: manager.version } })
-      },
-      storePath: "~/.pnpm-store",
-      storePrefix: "pnpm-store-",
-      lockfile: workspacePath(manager.lockfile.path),
-      install: "pnpm install --frozen-lockfile",
-      exec: ["pnpm", "exec", "smthrs"]
     }
   }
   switch (manager.name) {
@@ -307,18 +302,26 @@ const renderSetupAction = (
     case "bun":
       // setup-bun installed the runtime above; nothing further to declare.
       break
+    case "go":
+      lines.push("    - uses: actions/setup-go@v6")
+      lines.push("      with:", ...mapping({ "go-version-file": toolchain.runtime.file }, "        "))
+      break
   }
-  lines.push("    - uses: actions/cache@v4")
-  lines.push(
-    "      with:",
-    ...mapping({
-      path: toolchain.storePath,
-      key: `${toolchain.storePrefix}\${{ hashFiles('${toolchain.lockfile}') }}`,
-      "restore-keys": toolchain.storePrefix
-    }, "        ")
-  )
-  lines.push(`    - run: ${scalar(toolchain.install)}`)
-  lines.push("      shell: bash")
+  if (toolchain.storePath !== undefined && toolchain.storePrefix !== undefined && toolchain.lockfile !== undefined) {
+    lines.push("    - uses: actions/cache@v4")
+    lines.push(
+      "      with:",
+      ...mapping({
+        path: toolchain.storePath,
+        key: `${toolchain.storePrefix}\${{ hashFiles('${toolchain.lockfile}') }}`,
+        "restore-keys": toolchain.storePrefix
+      }, "        ")
+    )
+  }
+  if (toolchain.install !== undefined) {
+    lines.push(`    - run: ${scalar(toolchain.install)}`)
+    lines.push("      shell: bash")
+  }
   if (inputs.length > 0) {
     lines.push("    - run: |")
     lines.push("        if [ -n \"${{ inputs.cache-url }}\" ]; then")
@@ -480,9 +483,6 @@ export const render = (options: {
   }
   const attrs = GithubTarget.ciGenAttrsOf(options.ciGen)
   const toolchain = toolchainOf(options.workspace)
-  const workflowDirectory = (attrs.changes ?? [])
-    .map((change) => change.replace(/\/\*\*$/, ""))
-    .find((change) => change === "workflows" || change.endsWith("/workflows")) ?? "workflows"
   const files: Array<RenderedFile> = []
   const names = new Set<string>()
   let setupTarget: Target.AnyTarget | undefined
@@ -539,43 +539,8 @@ export const render = (options: {
       return runLabel
     })
     files.push({
-      path: `${workflowDirectory}/${workflow.name}.yml`,
+      path: `workflows/${workflow.name}.yml`,
       content: renderWorkflow(label, options.packageDir, workflow, runLabels, setup, toolchain)
-    })
-  }
-  // Cron is an inert package-level trigger declaration. A compact or expanded
-  // CI generator in the same graph projects every labeled Cron into a normal
-  // GitHub schedule workflow; no second scheduler or executor path exists.
-  for (const row of options.resolve.targets?.() ?? []) {
-    if (Target.metadata(row.target).target !== "Cron") continue
-    const cron = CronTarget.attrsOf(row.target)
-    const key = row.label.slice(row.label.lastIndexOf(":") + 1)
-    const name = `cron-${key}`
-    if (names.has(name)) {
-      throw new GithubRenderError("duplicate_workflow_name", `Cron ${row.label} collides with workflow ${name}`)
-    }
-    names.add(name)
-    const run = [...(cron.refresh ?? []), ...cron.run]
-    const runLabels = run.map((target) => {
-      const runLabel = options.resolve.labelOf(target)
-      if (runLabel === undefined) {
-        throw new GithubRenderError(
-          "unlabeled_run_target",
-          `a run entry of Cron ${row.label} has no label; list it in a Package map`
-        )
-      }
-      return runLabel
-    })
-    files.push({
-      path: `${workflowDirectory}/${name}.yml`,
-      content: renderWorkflow(
-        label,
-        options.packageDir,
-        GithubTarget.WorkflowAttrs.make({ name, on: { schedule: [cron.schedule] }, run }),
-        runLabels,
-        undefined,
-        toolchain
-      )
     })
   }
   if (setupTarget !== undefined) {

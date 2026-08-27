@@ -439,6 +439,15 @@ export * as Memory from "./MemoryTarget.ts"
  */
 export * as Bundler from "./BundlerTarget.ts"
 
+/** Go toolchain and package rules. */
+export * as Go from "./Go.ts"
+
+/** Late-bound build stamps. */
+export * as Stamp from "./Stamp.ts"
+
+/** Nix dev-shell version authority and tools. */
+export * as Nix from "./Nix.ts"
+
 /**
  * npm-facing workspace declarations: `Npm.NodeModules({ packageJson })`.
  *

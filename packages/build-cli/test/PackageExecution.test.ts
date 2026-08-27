@@ -943,7 +943,7 @@ describe("declaration modules", () => {
       root,
       "PACKAGE.ts",
       `import { Smithers as S } from "@smthrs/targets"
-const test = S.Go.Test({ pkgs: ["./..."] })
+const test = S.Docker.Build({ context: "." })
 export const Package = S.Package({ targets: { test } })
 `
     )
@@ -952,7 +952,7 @@ export const Package = S.Package({ targets: { test } })
     expect(exitCode).toBe(1)
     const text = output + logs
     expect(text).toContain("module_import_failed")
-    expect(text).toContain("reading 'Test'")
+    expect(text).toContain("reading 'Build'")
     expect(text).toContain("this loader exports no such namespace")
     expect(text).toContain("Shell")
     expect(text).toContain("Github")

@@ -365,80 +365,52 @@ Lane E (git/github/memory): S.Git.Commit (gates+agent message), gitHooks --write
   S.Docker.*, S.Nix.*, S.Stamp, build target as tool edge, readiness exec probe) are listed with estimates
   in artsy/FLOWS-GO-READINESS.md.
 
-### Lane `api/node` — whatsabi + viem (2026-08-27)
+### Lane api/go 2026-08-27
 
-Implemented the Node/npm package-mode surface from the verbatim Artsy declarations. The graph now has only the ruled
-edge kinds (`data`, `gates`, `services`); source globs exclude `PACKAGE.ts`/`WORKSPACE.ts` build declarations unless an
-author names one explicitly. Computational file outputs use the existing CAS, including single-file capture/restore.
-Outward rules are never cacheable and fail before effects on an undeclared/missing credential or unsatisfied approval.
+Status: targets 654/654; build-cli 654 passed + 1 skipped; both package `tsc --noEmit` checks green; changed-file eslint and dprint green. The full tapes graph now reaches the foreign `S.Docker.Build` namespace; optimism reaches the foreign `S.Mise` constructor. No file under `~/artsy` was edited.
 
-| Symbol | Status | Proof / honest boundary |
-| --- | --- | --- |
-| `Npm.Pack` | `[x]` | whatsabi tarball created; stable rerun hit; moved tarball restored byte-for-byte from CAS |
-| `Npm.Publish` | `[b]` | typed `NPM_TOKEN` refusal, then approval refusal when a token is present; no package-mode approval store |
-| `Npm.Published` | `[x]` | fetched whatsabi registry baseline with pinned `pacote@21.0.0`; rerun hit and restored declared output |
-| `Npm.Downstream` | `[p][b]` | verbatim viem fixture loads/plans; isolated remote checkout/override runner is not present |
-| `Changesets.Version` | `[x]` | check drift, write, post-write green, cache and write-set confinement fixture |
-| `Changesets.Publish` | `[b]` | typed secret/approval outward gate; no effect performed |
-| `Github.Ci` | `[x]` | lowers to the same `Github.CiGen` object; root-package `.github/workflows/**` drift/write/clean cycle proven |
-| `Github.Release` | `[b]` | typed missing `GITHUB_TOKEN`; approval-required path remains effect-free |
-| `Github.Pages` | `[b]` | site gate ran, then typed missing `GITHUB_TOKEN` refusal |
-| `Git.Pr` | `[b]` | gate-first execution and typed missing `GITHUB_TOKEN` refusal; no PR created |
-| `Git.Submodules` | `[p][b]` | strict constructor and verbatim viem graph proof; viem execution is blocked earlier by chain tooling |
-| `Git.Submodule` | `[p][b]` | strict shared optimism constructor; no owned repo reaches it before the chain-lane boundary |
-| `Cron` | `[x]` | package-level inert execution plus generated `on.schedule` workflow and confined write proof |
-| `Copy` | `[x]` | real whatsabi build copies and fixture green/cache/CAS restore |
-| `Literal` | `[x]` | fixture green/cache/CAS restore |
-| `Overlay` | `[p][b]` | verbatim viem fixture loads/plans; consumer-scoped virtual source mount is unavailable |
-| `Markdown.CodeBlocks` | `[x]` | alias-aware (`ts`/`typescript`, `js`/`javascript`) semantic `tsc` runner; fixture green/hit and whatsabi honest syntax-red |
-| `Api.Compat` | `[x]` | real published/current whatsabi declaration comparison green, then cache hit |
-| `Size.Budgets` | `[x]` | fixture tool green then cache hit |
-| `Files.digest` | `[x]` | CLI fixture green/hit and changed-baseline red; target outputs are digested deterministically |
+| Owned symbol | Status | Exact proof | Output tail |
+| --- | --- | --- | --- |
+| `Workspace.toolchains` and optional Node trio | [x] | `pnpm -C packages/targets exec vitest run test/Go.test.ts --coverage.enabled=false` | `12 passed`; toolchain-only workspace accepted, partial Node trio rejected |
+| `S.Go.Toolchain` | [x] | same | module files, Nix authority, CGO and experiments frozen; excess attrs rejected |
+| `S.Go.bin` / `S.Go.run` | [x]/[p] | `pnpm -C packages/build-cli exec vitest run test/GoExecution.test.ts --coverage.enabled=false` | `3 passed`; Go binary resolved/probed in module cwd; `Go.run` expands to `go run <spec>` in Shell/Generate planning |
+| `S.Go.Test` | [x] | same | real `go test`, warm hit, inside-closure edit reran, outside edit hit |
+| `S.Go.Binary` | [x] | same | real binary captured/restored; warm build hit |
+| `S.Go.Packages` | [x] | same | `go list -json -deps`; closure includes Go/test/cgo/embed files and composes with `Files.difference` |
+| `S.Go.ModDownload` | [p] | `pnpm -C packages/targets exec vitest run test/Go.test.ts --coverage.enabled=false` | strict constructor and `go mod download`/`GOMODCACHE` plan; production network execution deferred with tapes root blocked before planning by Docker |
+| `S.Go.Lint` | [p] | same plus build-cli full suite | pinned `go run golangci-lint@version`; changes uses scratch/write-set bracket; production v2.8.0 run deferred by Docker load blocker |
+| `S.Go.Generate` | [x] | `pnpm -C packages/build-cli exec vitest run test/GoExecution.test.ts --coverage.enabled=false` | real `go generate --write` produced confined output |
+| `S.Go.Fuzz` | [x] | same | real `go test -fuzz ... -fuzztime=1x` green |
+| `S.Go.ldflags` | [p] | targets Go test | shared strip/`-X` declaration renders without resolving stamps |
+| `S.Stamp.version` | [x] | build-cli Go test | tagged `v1.2.3` fixture binary printed `ok v1.2.3` |
+| `S.Stamp.commit` / `commitDate` | [p] | targets Go test + `StampExec.ts` | spawn-time `rev-parse HEAD` / `%cI`; omitted from key material |
+| `S.Stamp.buildTime` / `versionMeta` | [p] | targets Go test + `StampExec.ts` | spawn-time UTC ISO / exact-tag metadata; omitted from key material |
+| secret-valued stamps | [p] | targets Go test + `StampExec.ts` | only env name keys; value read at spawn, absent value becomes empty, never logged |
+| build target as `Reference.Tool` | [x] | build-cli Go test `//:smoke` | `Go.Binary` ran then Shell consumer ran; second invocation `binary hit`, `smoke hit` |
+| `S.Nix.DevShell` / `S.Nix.bin` | [b] | build-cli Go test `//:nixRefusal --plan` | `host binary \"nix\" is not present on PATH`; flake and lock digests remain in tool identity |
+| Go-only GitHub setup | [x] | `pnpm -C packages/build-cli exec vitest run test/GithubRender.test.ts --coverage.enabled=false` | `actions/setup-go@v6`, `go-version-file: go.mod`, no Node/package install |
 
-whatsabi proof used `/Users/williamcory/artsy-e2e/whatsabi` with a frozen clone, dependency install, and only the live
-`PACKAGE.ts` declaration copied in. Live `/Users/williamcory/artsy/whatsabi` was read-only.
+| Repository | Load / graph / plan | Execute / refusal proof | Result |
+| --- | --- | --- | --- |
+| tapes | `cd ~/artsy/tapes && node /Users/williamcory/flows-api/go/packages/build-cli/src/main.js query '//...'` (same for graph) | semantic Go fixture: `pnpm -C packages/build-cli exec vitest run test/GoExecution.test.ts --coverage.enabled=false` | exact new first error: `Cannot read properties of undefined (reading 'Build')` from absent `S.Docker.Build`; all Go/Stamp/toolchains/Nix declarations before it loaded; fixture executes Test/Binary/Generate/Fuzz/tool-edge/stamp/cache/closure/refusal |
+| optimism | `cd ~/artsy/optimism && node /Users/williamcory/flows-api/go/packages/build-cli/src/main.js query '//...'` | Go fixture above | exact first error: `S.Mise is not a function`; no Go/Stamp/toolchains error is reached before the foreign owner |
+| package suites | `pnpm -C packages/targets exec vitest run --coverage.enabled=false`; `pnpm -C packages/build-cli exec vitest run --coverage.enabled=false --maxWorkers=4` | both `tsc --noEmit -p tsconfig.json` | `654 passed`; `654 passed, 1 skipped`; both type checks green |
 
-| whatsabi target set | Status |
-| --- | --- |
-| query + graph `//...` | `[x]` 47 public labels, 47 graph nodes, 102 edges, zero warnings; edge kinds only `data`/`gates` |
-| full plan sweep | `[x]` 54 public/private nodes; zero `NotImplemented`; only typed payload/tool/secret/approval refusals |
-| `build`, `buildCjs`, `buildEsm`, `buildTypes`, `buildDocs`, `typeCheck` | `[x]` green; build outputs also hit CAS |
-| `pack` | `[x]` green, hit, and missing tarball restored from CAS |
-| `apiCompat`, `audit`, `checkSize`, `deadCode`, `src:generated`, `githubCi`, `refreshFixtures`, `clean` | `[x]` green; CI drift/write/clean and Generate check brackets exercised |
-| `checkReadme` | `[b]` executor works and reports five fences; upstream README currently has real TS syntax errors (blocks 2–4) |
-| `recordFixtures`, `test`, provider matrix | `[b]` typed missing `INFURA_API_KEY`; no fake green |
-| `publish`, `release`, `deployDocs`, `pr` | `[b]` typed missing credential and/or approval/gate refusal; no outward effect |
-| `ci`, `preCommit`, `prePush`, `prePublish` | `[b]` aggregate the preceding real red/blocked members |
-| `serveDocs`, `watch` | `[b]` valid long-lived service declarations; not held open during the finite proof run |
-| `commit`, workflow agents, examples | `[p][b]` load/plan; commit/PR/payload actions were not invoked, and examples are not release gates |
+Open questions from tapes `SMITHERS-GO-NOTES.md`, answered:
 
-Viem live loading gets past every Node-owned symbol. Its exact new first boundary is
-`/Users/williamcory/artsy/viem/contracts/PACKAGE.ts:22:29`, `S.Foundry.Build`, owned by lane `api/chain`. A test fixture
-copies `WORKSPACE.ts`, `smithers.d.ts`, and the owned node-only `PACKAGE.ts` files byte-for-byte; query and graph pass,
-exercise the Node constructors, report no warnings, and contain no fourth edge kind.
+1. Loopback was already closed by the prior lane and is reused unchanged.
+2. Yes: Workspace grows a branded, ordered `toolchains` list; the Node trio is all-or-none and optional when that list is non-empty.
+3. Fetch-as-resource is used: `Go.ModDownload` owns network/module cache; offline consumers set `GOPROXY=off GOFLAGS=-mod=readonly`. This follows the readiness spec over the note's conflicting `-mod=mod` sentence; vendoring is not introduced.
+4. Build targets are tool edges. The target is a normal dependency/data edge; the executable path comes from the producer's declared `out` and its captured outDir restores before the consumer.
+5. The graph smoke remains the host triple; release triples are separate keyed binaries. A GitHub matrix API was not invented in this lane.
+6. Docker readiness/init remain lane `api/chain`; no stand-ins were added.
+7. The loader hint remains and now lists `Go`, `Nix`, and `Stamp`; tapes advances to the Docker error.
+8. Secret stamps resolve only at spawn, do not key or log values, and use empty when absent as tapes requested.
 
-Tests: targets full suite 663/663; build-cli full suite 658 passed, 1 skipped; Node lane constructor matrix 21/21;
-Node CLI lane 5/5; viem verbatim fixture 2/2; resolver declaration-glob regression 39/39. Both target and build-cli
-TypeScript checks pass; targets lint/dprint passes; every changed build-cli source passes eslint+dprint. The pre-existing
-full build-cli lint baseline still fails in untouched files on committed `@slop` JSDoc tags plus `main.js` import
-resolution. The requested `reference/bazel` and `reference/opencode` shelves are absent from this worktree.
+Prior art and deviations: the requested `reference/bazel` checkout is absent from this worktree and from the host search, so the implementation follows the design note's Bazel workspace-status split: source/tool/closure facts key, stamp values resolve after keying. It deviates by using direct typed tokens instead of a workspace-status command and by replaying the captured stamped binary on a cache hit. The readiness note's closest shipped siblings were followed for `Shell.execPayload`, sandboxing, CAS capture/restore, services scope, and ImportClosure-style digest keying.
 
-Merge note: `PackageManager.ts` contains the same tiny Pnpm workspace-declaration compatibility hunk expected from
-lane `api/defects` (`{manifest, lockfile, version?, workspaces?, audit?}`; runtime comes from `Workspace`). Deduplicate
-that overlap when lanes merge.
+Coordination: before editing shared declarations, `git -C /Users/williamcory/flows-aomi/cargo-targets diff` was empty. The smallest additive shared hunk therefore introduced a generic symbol-branded `Toolchain.Declaration` accepted by Workspace; later the Rust lane developed a Rust-specific declaration shape independently. Merge should retain the generic brand and have `S.Rust.Toolchain` use it. No `S.Cargo.Fetch` or `S.Cargo.AppSet` hunk was made.
 
-Review pass (2026-08-27, same lane branch): re-ran every headline proof and fixed three findings. (1) The viem fixture
-copies had been dprint-reformatted despite the byte-for-byte claim; they are now literal copies of the `~/artsy/viem`
-files and `packages/build-cli/dprint.json` excludes `test/fixtures/viem-node-spec` (the `force-spec` precedent) so the
-format gate accepts them. (2) Removed a dead `if (cwd === ".") cwd = "."` no-op in the `Npm.Pack` planner.
-(3) Repaired the pre-existing dprint failures in `test/SweepHarness.test.ts` and
-`test/fixtures/sweep-expectations.json` (untouched by this lane; format-only). Re-verified after the fixes: targets
-663/663, build-cli 658 passed + 1 skipped, both `tsc --noEmit` checks, dprint clean in both packages, whatsabi
-query/graph warning-free with only `data`/`gates` edges, a fresh 47-label plan sweep with zero `NotImplemented`,
-plan-time typed refusals for `publish`/`release`/`deployDocs`, `pack` green with cache hit and restored tarball,
-`apiCompat` green over a cache-hit published baseline, `checkReadme` honestly red on the upstream README fences, and
-`testViem` refused with typed missing `INFURA_API_KEY`. One host caveat for reproducing `pack`: the first `pnpm` on
-this machine's PATH is a corepack shim that exits 1 on whatsabi's bare `"packageManager": "pnpm"` field ("No version
-specified"); the real pnpm at `/opt/homebrew/bin/pnpm` (10.10.0) packs it cleanly, so run the e2e proofs with
-`PATH=/opt/homebrew/bin:$PATH`. `Git.Submodules`/`Git.Submodule` plans were additionally probed in a scratch
-workspace (argv `git submodule update --init --recursive --force -- <paths>`, cacheable, `//`-prefix stripped).
+Shared-file hunks for merge: `WorkspaceDeclaration.ts` (`WorkspaceDeclaration`, `WorkspaceOptions`, `knownOptions`, `Workspace` validation/storage); `Reference.ts` (`GoBin`, `GoRun`, `NixBin`, target-tool member of `Tool`); `Smithers.ts` (`Go`, `Stamp`, `Nix` exports); `PackageExec.ts` (rule/tool dispatch only); `PackageTree.ts` (`probeVersion` optional cwd); `GithubRender.ts` (typed Go-only toolchain projection/setup).
+
+Not done: full tapes `//:check`, release binaries, and a zero-NotImplemented tapes plan sweep cannot be selected until lane `api/chain` supplies the Docker constructors used during module evaluation. Optimism cannot pass its first `S.Mise` declaration until that owner lands. The committed fixture is semantic rather than a verbatim transformed copy of tapes, because construct-only Docker substitutes are explicitly forbidden. `Go.ModDownload`, pinned `Go.Lint`, and a production `Go.run(sqlc)` are planned but do not have a real tapes execution receipt under that load blocker.

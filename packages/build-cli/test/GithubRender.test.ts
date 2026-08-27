@@ -461,6 +461,30 @@ describe("triggers", () => {
 })
 
 describe("toolchain variants", () => {
+  it("renders a toolchain-only Go workspace with setup-go and no Node install", () => {
+    const nix = S.Nix.DevShell({ flake: S.file("//flake.nix"), lock: S.file("//flake.lock") })
+    const go = S.Go.Toolchain({ mod: S.file("//go.mod"), sum: S.file("//go.sum"), versions: nix })
+    const workspace = S.Workspace("go", {
+      repository: "git+https://example.invalid/go.git",
+      cache: S.Cache({ directory: ".flows" }),
+      toolchains: [nix, go]
+    })
+    const setup = S.Github.Setup({})
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace,
+      resolve: resolver([[ciGen, "//.github:github"]]),
+      packageDir: ".github"
+    })
+    const action = rendered.files.find((file) => file.path === "actions/setup/action.yml")!
+    expect(action.content).toContain("actions/setup-go@v6")
+    expect(action.content).toContain("go-version-file: go.mod")
+    expect(action.content).not.toContain("setup-node")
+    expect(action.content).not.toContain("pnpm install")
+  })
+
   it("renders the pnpm setup action with the pinned manager and lockfile key", () => {
     const setup = S.Github.Setup({})
     const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [] })

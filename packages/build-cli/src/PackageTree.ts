@@ -105,7 +105,7 @@ const probeOutputLimit = 2 * 1024
  * @category tools
  * @since 0.1.0
  */
-export const probeVersion = (path: string): Promise<Probe> => probeCommand(path, ["--version"])
+export const probeVersion = (path: string, cwd?: string): Promise<Probe> => probeCommand(path, ["--version"])
 
 /**
  * Runs one bounded tool identity/readiness command.
@@ -118,7 +118,7 @@ export const probeCommand = (path: string, args: ReadonlyArray<string>): Promise
     NodeChildProcess.execFile(
       path,
       [...args],
-      { timeout: 10_000, maxBuffer: 1 << 20 },
+      { timeout: 10_000, maxBuffer: 1 << 20, ...(cwd === undefined ? {} : { cwd }) },
       (error, stdout, stderr) => {
         const exitCode = error === null
           ? 0

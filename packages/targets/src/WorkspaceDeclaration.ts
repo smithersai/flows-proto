@@ -20,6 +20,7 @@ import * as Reference from "./Reference.ts"
 import * as RemoteCache from "./RemoteCache.ts"
 import * as Runtime from "./Runtime.ts"
 import * as Target from "./Target.ts"
+import * as Toolchain from "./Toolchain.ts"
 
 /**
  * Schema for the workspace cache declaration.
@@ -205,8 +206,7 @@ export const Flags: typeof makeFlags & Record<string, Reference.FlagRef> = Refer
  * @since 0.1.0
  */
 export const NodeModulesDeclaration = Schema.TaggedStruct("NpmNodeModules", {
-  packageJson: Input.File,
-  workspaces: Schema.optional(Input.File)
+  packageJson: Input.File
 })
 
 /**
@@ -233,14 +233,8 @@ export const isNodeModulesDeclaration: (value: unknown) => value is NodeModulesD
  * @category constructors
  * @since 0.1.0
  */
-export const NodeModules = (options: {
-  readonly packageJson: Input.File
-  readonly workspaces?: Input.File | undefined
-}): NodeModulesDeclaration =>
-  NodeModulesDeclaration.make({
-    packageJson: options.packageJson,
-    ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces })
-  })
+export const NodeModules = (options: { readonly packageJson: Input.File }): NodeModulesDeclaration =>
+  NodeModulesDeclaration.make({ packageJson: options.packageJson })
 
 /**
  * Schema for one sandbox implementation declaration.
@@ -381,12 +375,10 @@ export interface WorkspaceDeclaration {
   readonly name: string
   readonly repository: string
   readonly cache: CacheDeclaration
-  readonly runtime: Runtime.Runtime | Runtime.NodeDeclaration | undefined | Runtime.BunDeclaration
-  readonly packageManager:
-    | PackageManager.PackageManager
-    | PackageManager.YarnDeclaration | undefined | PackageManager.PnpmDeclaration
+  readonly runtime: Runtime.Runtime | Runtime.NodeDeclaration | undefined
+  readonly packageManager: PackageManager.PackageManager | PackageManager.YarnDeclaration | undefined
   readonly nodeModules: NodeModulesDeclaration | undefined
-  readonly toolchains: ReadonlyArray<unknown> | undefined
+  readonly toolchains: ReadonlyArray<Toolchain.Declaration> | undefined
   readonly flags: FlagsDeclaration | undefined
   readonly host: HostDeclaration | undefined
   readonly memory: SmithersCloudDeclaration | undefined
@@ -421,12 +413,10 @@ export const isWorkspaceDeclaration = (value: unknown): value is WorkspaceDeclar
 export interface WorkspaceOptions {
   readonly repository: string
   readonly cache: CacheDeclaration
-  readonly runtime?: Runtime.Runtime | Runtime.NodeDeclaration | undefined | Runtime.BunDeclaration
-  readonly packageManager?:
-    | PackageManager.PackageManager
-    | PackageManager.YarnDeclaration | undefined | PackageManager.PnpmDeclaration
+  readonly runtime?: Runtime.Runtime | Runtime.NodeDeclaration | undefined
+  readonly packageManager?: PackageManager.PackageManager | PackageManager.YarnDeclaration | undefined
   readonly nodeModules?: NodeModulesDeclaration | undefined
-  readonly toolchains?: ReadonlyArray<unknown> | undefined
+  readonly toolchains?: ReadonlyArray<Toolchain.Declaration> | undefined
   readonly flags?: FlagsDeclaration | undefined
   readonly host?: HostDeclaration | undefined
   readonly memory?: SmithersCloudDeclaration | undefined
@@ -493,45 +483,36 @@ export const Workspace = (name: string, options: WorkspaceOptions): WorkspaceDec
   if (!isCacheDeclaration(options.cache)) {
     throw new TypeError("Workspace cache must be an S.Cache declaration")
   }
-  const nodeValues = [options.runtime, options.packageManager, options.nodeModules]
-  const hasAnyNode = nodeValues.some((value) => value !== undefined)
-  const hasAllNode = nodeValues.every((value) => value !== undefined)
-  if (hasAnyNode && !hasAllNode) {
+  const hasNode = options.runtime !== undefined || options.packageManager !== undefined ||
+    options.nodeModules !== undefined
+  const hasToolchains = options.toolchains !== undefined && options.toolchains.length > 0
+  if (!hasNode && !hasToolchains) throw new TypeError("Workspace requires the Node keys or a non-empty toolchains list")
+  if (
+    hasNode &&
+    (options.runtime === undefined || options.packageManager === undefined || options.nodeModules === undefined)
+  ) {
     throw new TypeError("Workspace runtime, packageManager, and nodeModules must be declared together")
   }
-  if (!hasAllNode && (options.toolchains === undefined || options.toolchains.length === 0)) {
-    throw new TypeError("Workspace requires either the Node runtime/packageManager/nodeModules set or toolchains")
-  }
   if (
-    options.runtime !== undefined && !Runtime.isRuntime(options.runtime) &&
-    !Runtime.isNodeDeclaration(options.runtime) &&
-    !Runtime.isBunDeclaration(options.runtime)
+    options.runtime !== undefined && !Runtime.isRuntime(options.runtime) && !Runtime.isNodeDeclaration(options.runtime)
   ) {
     throw new TypeError("Workspace runtime must be an S.Runtime declaration")
   }
   if (
-    options.packageManager !== undefined &&
-    !PackageManager.isPackageManager(options.packageManager) &&
-    !PackageManager.isYarnDeclaration(options.packageManager) &&
-    !PackageManager.isPnpmDeclaration(options.packageManager)
+    options.packageManager !== undefined && !PackageManager.isPackageManager(options.packageManager) &&
+    !PackageManager.isYarnDeclaration(options.packageManager)
   ) {
     throw new TypeError("Workspace packageManager must be an S.PackageManager declaration")
   }
   if (options.nodeModules !== undefined && !isNodeModulesDeclaration(options.nodeModules)) {
     throw new TypeError("Workspace nodeModules must be an S.Npm.NodeModules declaration")
   }
-  if (options.toolchains !== undefined) {
-    if (!Array.isArray(options.toolchains) || options.toolchains.length === 0) {
-      throw new TypeError("Workspace toolchains must be a non-empty array")
-    }
-    for (const toolchain of options.toolchains) {
-      if (
-        typeof toolchain !== "object" || toolchain === null ||
-        typeof (toolchain as { _tag?: unknown })._tag !== "string"
-      ) {
-        throw new TypeError("Workspace toolchains entries must be S.* toolchain declarations")
-      }
-    }
+  if (
+    options.toolchains !== undefined &&
+    (!Array.isArray(options.toolchains) || options.toolchains.length === 0 ||
+      !options.toolchains.every(Toolchain.isDeclaration))
+  ) {
+    throw new TypeError("Workspace toolchains must be a non-empty array of toolchain declarations")
   }
   if (options.flags !== undefined && !isFlagsDeclaration(options.flags)) {
     throw new TypeError("Workspace flags must be an S.Flags declaration")
