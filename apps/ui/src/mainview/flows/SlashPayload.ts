@@ -218,7 +218,11 @@ const GRAMMAR: Readonly<Record<string, (args: string | undefined) => Parsed>> = 
   },
   "admin.grant.confirm": (args) => required("cardId", args, "admin.grant.confirm needs the card id"),
   "admin.grant.cancel": (args) => required("cardId", args, "admin.grant.cancel needs the card id"),
-  "admin.queue.approve": (args) => required("login", args, "admin.queue.approve needs a login")
+  "admin.queue.approve": (args) => required("login", args, "admin.queue.approve needs a login"),
+  "tab.harness": (args) => required("harnessId", args, "tab.harness needs a harness id"),
+  "tab.card": (args) => required("cardId", args, "tab.card needs the card id"),
+  "tab.select": (args) => required("tab", args, "tab.select needs a tab id or a position 1-9"),
+  "tab.close": (args) => optional("tabId", args)
 }
 
 /**

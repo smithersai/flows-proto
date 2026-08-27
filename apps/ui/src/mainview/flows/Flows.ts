@@ -824,6 +824,89 @@ export const baseFlows = (actions: CommandActions): ReadonlyArray<FlowEntry> => 
     summary: "List everything Smithers can do",
     input: NoPayload,
     handler: () => actions.showCommandCatalog()
+  }),
+  /*
+   * The local-app tabs (docs/LOCAL-APP.md "Tabs"): the strip, the `+` menu,
+   * a maximized card's "Open in tab", and Cmd+T / Cmd+W / Cmd+1..9 all
+   * invoke these. Every one is browser mechanics the human clicks, so none
+   * is disclosed to the model; hidden, because the strip is the affordance.
+   */
+  flow({
+    name: "tab.terminal",
+    summary: "Open a terminal tab",
+    hidden: true,
+    userOnly: true,
+    input: NoPayload,
+    handler: () => actions.openTerminalTab()
+  }),
+  flow({
+    name: "tab.harness",
+    summary: "Open a harness tab",
+    hidden: true,
+    userOnly: true,
+    args: "<harnessId>",
+    input: Schema.Struct({ harnessId: Schema.String }),
+    handler: ({ harnessId }) => actions.openHarnessTab(harnessId)
+  }),
+  flow({
+    name: "tab.card",
+    summary: "Open a card in a tab",
+    hidden: true,
+    userOnly: true,
+    args: "<cardId>",
+    input: CardTarget,
+    handler: ({ cardId }) => actions.openCardTab(cardId)
+  }),
+  flow({
+    name: "tab.select",
+    summary: "Select a tab",
+    hidden: true,
+    userOnly: true,
+    args: "<tabId | 1-9>",
+    input: Schema.Struct({ tab: Schema.String }),
+    handler: ({ tab }) => actions.selectTab(tab)
+  }),
+  flow({
+    name: "tab.close",
+    summary: "Close a tab",
+    hidden: true,
+    userOnly: true,
+    args: "[tabId]",
+    input: Schema.Struct({ tabId: Schema.optional(Schema.String) }),
+    handler: ({ tabId }) => actions.closeTab(tabId)
+  }),
+  flow({
+    name: "tab.close.confirm",
+    summary: "Close the tab and stop its process",
+    hidden: true,
+    userOnly: true,
+    input: NoPayload,
+    handler: () => actions.confirmTabClose()
+  }),
+  flow({
+    name: "tab.close.cancel",
+    summary: "Keep the tab open",
+    hidden: true,
+    userOnly: true,
+    input: NoPayload,
+    handler: () => actions.cancelTabClose()
+  }),
+  flow({
+    name: "tab.menu",
+    summary: "Open the new tab menu",
+    hidden: true,
+    userOnly: true,
+    input: NoPayload,
+    handler: () => actions.toggleTabMenu()
+  }),
+  flow({
+    /* The chrome's "Open repository": the native folder dialog, or a typed path. */
+    name: "repo.open",
+    summary: "Open a local repository",
+    hidden: true,
+    userOnly: true,
+    input: NoPayload,
+    handler: () => actions.openLocalRepo()
   })
 ]
 

@@ -103,7 +103,10 @@ export const PERSISTED_COLLECTION_IDS: ReadonlyArray<string> = [
   "app-watched-repos",
 	"app-repo-imports",
   "app-tool-calls",
-  "app-chain-events"
+  "app-chain-events",
+  "app-tabs",
+  "app-harnesses",
+  "app-repos"
 ]
 
 /** The storage keys the gate clears on a mismatch. */

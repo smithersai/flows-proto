@@ -15,6 +15,7 @@ import {
   ChainEventRecordSchema,
   ConnectorOperationSchema,
   DEFAULT_PALETTE,
+  HarnessSchema,
   IdentitySessionSchema,
   initialBillingAccount,
   initialConnectorOperation,
@@ -22,8 +23,12 @@ import {
   initialSession,
   initialWorldDocuments,
   LocalRepositoryConnectorSchema,
+  MAIN_TAB_ID,
+  mainTab,
   MessageSchema,
+  RepoSchema,
   SessionSchema,
+  TabSchema,
   ToastSchema,
   ToolCallRecordSchema,
   TransitionRecordSchema,
@@ -37,12 +42,15 @@ import type {
   Card,
   ChainEventRecord,
   ConnectorOperation,
+  Harness,
   IdentitySession,
   LocalRepositoryConnector,
   Message,
   Palette,
+  Repo,
   RepositoryCapabilityPattern,
   Session,
+  TabRow,
   Toast,
   ToolCallRecord,
   TransitionRecord,
@@ -386,6 +394,10 @@ export interface AppCollections {
   readonly watchedRepos: ReturnType<typeof createWatchedReposCollection>
   readonly toolCalls: ReturnType<typeof createToolCallCollection>
   readonly chainEvents: ReturnType<typeof createChainEventCollection>
+  /* The local-app tab strip and what its `+` menu and repo chip read (docs/LOCAL-APP.md). */
+  readonly tabs: ReturnType<typeof createTabCollection>
+  readonly harnesses: ReturnType<typeof createHarnessCollection>
+  readonly repos: ReturnType<typeof createRepoCollection>
 }
 
 export interface WorldStateSnapshot {
@@ -511,6 +523,31 @@ const createChainEventCollection = (backend: PersistenceBackend) =>
     schema: ChainEventRecordSchema
   })
 
+const createTabCollection = (backend: PersistenceBackend) =>
+  createPersistedCollection(backend, {
+    id: "app-tabs",
+    getKey: (tab: TabRow) => tab.id,
+    schema: TabSchema
+  })
+
+const createHarnessCollection = (backend: PersistenceBackend) =>
+  createPersistedCollection(backend, {
+    id: "app-harnesses",
+    getKey: (harness: Harness) => harness.id,
+    schema: HarnessSchema
+  })
+
+const createRepoCollection = (backend: PersistenceBackend) =>
+  createPersistedCollection(backend, {
+    id: "app-repos",
+    getKey: (repo: Repo) => repo.id,
+    schema: RepoSchema
+  })
+
+/** The strip's order: main first, then creation order. */
+const orderedTabs = (collections: Pick<AppCollections, "tabs">): Array<TabRow> =>
+  [...collections.tabs.values()].sort((left, right) => left.ordinal - right.ordinal)
+
 const seed = async (collections: AppCollections): Promise<void> => {
   await Promise.all([
     collections.sessions.preload(),
@@ -525,7 +562,10 @@ const seed = async (collections: AppCollections): Promise<void> => {
     collections.toasts.preload(),
     collections.watchedRepos.preload(),
     collections.toolCalls.preload(),
-    collections.chainEvents.preload()
+    collections.chainEvents.preload(),
+    collections.tabs.preload(),
+    collections.harnesses.preload(),
+    collections.repos.preload()
   ])
 
   if (collections.sessions.get(SESSION_ID) === undefined) {
@@ -564,6 +604,9 @@ const seed = async (collections: AppCollections): Promise<void> => {
   }
   if (collections.billingAccounts.get("billing") === undefined) {
     await collections.billingAccounts.insert(initialBillingAccount()).isPersisted.promise
+  }
+  if (collections.tabs.get(MAIN_TAB_ID) === undefined) {
+    await collections.tabs.insert(mainTab()).isPersisted.promise
   }
 }
 
@@ -672,7 +715,10 @@ export const createAppStore = async (
         { id: "app-toasts", schema: ToastSchema },
         { id: "app-watched-repos", schema: WatchedReposSchema },
         { id: "app-tool-calls", schema: ToolCallRecordSchema },
-        { id: "app-chain-events", schema: ChainEventRecordSchema }
+        { id: "app-chain-events", schema: ChainEventRecordSchema },
+        { id: "app-tabs", schema: TabSchema },
+        { id: "app-harnesses", schema: HarnessSchema },
+        { id: "app-repos", schema: RepoSchema }
       ]
     })
     resolvedBackend = { ...resolvedBackend, storage: transactional.storage }
@@ -690,7 +736,10 @@ export const createAppStore = async (
     toasts: createToastCollection(resolvedBackend),
     watchedRepos: createWatchedReposCollection(resolvedBackend),
     toolCalls: createToolCallCollection(resolvedBackend),
-    chainEvents: createChainEventCollection(resolvedBackend)
+    chainEvents: createChainEventCollection(resolvedBackend),
+    tabs: createTabCollection(resolvedBackend),
+    harnesses: createHarnessCollection(resolvedBackend),
+    repos: createRepoCollection(resolvedBackend)
   }
 
   await seed(collections)
@@ -749,7 +798,10 @@ export const createAppStore = async (
         collections.toasts.utils.acceptMutations(transaction),
         collections.watchedRepos.utils.acceptMutations(transaction),
         collections.toolCalls.utils.acceptMutations(transaction),
-        collections.chainEvents.utils.acceptMutations(transaction)
+        collections.chainEvents.utils.acceptMutations(transaction),
+        collections.tabs.utils.acceptMutations(transaction),
+        collections.harnesses.utils.acceptMutations(transaction),
+        collections.repos.utils.acceptMutations(transaction)
       ])
     /*
      * The one atomic commit point per logical transition: inside the batch
@@ -1719,6 +1771,101 @@ export const createAppStore = async (
           })
           break
         }
+
+        /*
+         * The local-app tabs (docs/LOCAL-APP.md "Tabs"): main is seeded and
+         * never inserted or removed; every other tab takes the next place
+         * in the strip and becomes the active one as it opens.
+         */
+        case "tab.opened": {
+          if (transition.tab.kind === "main" || collections.tabs.get(transition.tab.id) !== undefined) return
+          let highest = 0
+          for (const tab of collections.tabs.values()) highest = Math.max(highest, tab.ordinal)
+          collections.tabs.insert({ ...transition.tab, ordinal: highest + 1 })
+          collections.sessions.update(SESSION_ID, (draft) => {
+            draft.activeTabId = transition.tab.id
+            draft.tabMenuOpen = false
+            draft.revision = revision
+          })
+          break
+        }
+
+        case "tab.selected":
+          if (collections.tabs.get(transition.id) === undefined) return
+          collections.sessions.update(SESSION_ID, (draft) => {
+            draft.activeTabId = transition.id
+            draft.revision = revision
+          })
+          break
+
+        case "tab.close.asked": {
+          const asked = transition.id === null ? undefined : collections.tabs.get(transition.id)
+          if (transition.id !== null && (asked === undefined || asked.kind === "main")) return
+          collections.sessions.update(SESSION_ID, (draft) => {
+            draft.pendingTabCloseId = transition.id
+            draft.revision = revision
+          })
+          break
+        }
+
+        case "tab.closed": {
+          const closing = collections.tabs.get(transition.id)
+          if (closing === undefined || closing.kind === "main") return
+          // The tab to the left takes over when the closed tab was active.
+          const ordered = orderedTabs(collections)
+          const index = ordered.findIndex((candidate) => candidate.id === closing.id)
+          const fallback = ordered[index - 1]?.id ?? MAIN_TAB_ID
+          collections.tabs.delete(closing.id)
+          collections.sessions.update(SESSION_ID, (draft) => {
+            if ((draft.activeTabId ?? MAIN_TAB_ID) === closing.id) draft.activeTabId = fallback
+            if (draft.pendingTabCloseId === closing.id) draft.pendingTabCloseId = null
+            draft.revision = revision
+          })
+          break
+        }
+
+        case "tab.menu.toggled":
+          collections.sessions.update(SESSION_ID, (draft) => {
+            draft.tabMenuOpen = transition.open
+            draft.revision = revision
+          })
+          break
+
+        case "pty.exited": {
+          for (const tab of collections.tabs.values()) {
+            if ((tab.kind === "terminal" || tab.kind === "harness") && tab.sessionId === transition.sessionId) {
+              collections.tabs.update(tab.id, (draft) => {
+                if (draft.kind === "terminal" || draft.kind === "harness") draft.exitCode = transition.code
+              })
+            }
+          }
+          collections.sessions.update(SESSION_ID, (draft) => {
+            draft.revision = revision
+          })
+          break
+        }
+
+        case "harnesses.loaded": {
+          const stale = [...collections.harnesses.keys()]
+          if (stale.length > 0) collections.harnesses.delete(stale)
+          if (transition.harnesses.length > 0) {
+            collections.harnesses.insert(transition.harnesses.map((harness) => ({ ...harness })))
+          }
+          collections.sessions.update(SESSION_ID, (draft) => {
+            draft.revision = revision
+          })
+          break
+        }
+
+        case "repos.loaded": {
+          const stale = [...collections.repos.keys()]
+          if (stale.length > 0) collections.repos.delete(stale)
+          if (transition.repos.length > 0) collections.repos.insert(transition.repos.map((repo) => ({ ...repo })))
+          collections.sessions.update(SESSION_ID, (draft) => {
+            draft.revision = revision
+          })
+          break
+        }
       }
 
       collections.transitions.insert({
@@ -1784,6 +1931,30 @@ export const createAppStore = async (
   // that is gone. They never survive a restart.
   for (const key of [...collections.toasts.keys()]) {
     await dispatch({ type: "toast.dismissed", actor: "system", id: key }).isPersisted.promise
+  }
+
+  /*
+   * Boot reconciliation for the tabs: a terminal or harness tab names a PTY
+   * session of the server that is gone with the last launch, and a card tab
+   * whose card was cleared has nothing to show. Both close, through the
+   * dispatcher, so the strip never opens onto a dead process. The selected
+   * tab falls back to main when it no longer exists, and neither the `+`
+   * menu nor a pending close question survives a restart (a question is
+   * not state).
+   */
+  for (const tab of orderedTabs(collections)) {
+    const stale = tab.kind === "terminal" || tab.kind === "harness" ||
+      (tab.kind === "card" && collections.cards.get(tab.cardId) === undefined)
+    if (stale) await dispatch({ type: "tab.closed", actor: "system", id: tab.id }).isPersisted.promise
+  }
+  if (collections.tabs.get(collections.sessions.get(SESSION_ID)?.activeTabId ?? MAIN_TAB_ID) === undefined) {
+    await dispatch({ type: "tab.selected", actor: "system", id: MAIN_TAB_ID }).isPersisted.promise
+  }
+  if (collections.sessions.get(SESSION_ID)?.tabMenuOpen === true) {
+    await dispatch({ type: "tab.menu.toggled", actor: "system", open: false }).isPersisted.promise
+  }
+  if (collections.sessions.get(SESSION_ID)?.pendingTabCloseId != null) {
+    await dispatch({ type: "tab.close.asked", actor: "system", id: null }).isPersisted.promise
   }
 
   /*
