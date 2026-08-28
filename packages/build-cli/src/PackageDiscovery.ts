@@ -127,17 +127,19 @@ const pruned = (walk: Walk, child: string): boolean =>
  * `.smithers/` directory as a nested workspace and prune it from the walk.
  */
 const nestedWorkspace = async (walk: Walk, child: string): Promise<boolean> => {
-  for (const relative of ["WORKSPACE.ts", ".smithers/WORKSPACE.ts"]) {
-    if (`${child}/${relative}` === walk.workspaceFile) continue
-    try {
-      const stats = await Fs.lstat(NodePath.join(walk.root, child, relative))
-      if (stats.isFile() || stats.isSymbolicLink()) return true
-    } catch {
-      // Absent is the common case; admission errors surface when that nested
-      // workspace is selected directly.
-    }
-  }
-  return false
+  const probes = ["WORKSPACE.ts", ".smithers/WORKSPACE.ts"]
+    .filter((relative) => `${child}/${relative}` !== walk.workspaceFile)
+    .map(async (relative) => {
+      try {
+        const stats = await Fs.lstat(NodePath.join(walk.root, child, relative))
+        return stats.isFile() || stats.isSymbolicLink()
+      } catch {
+        // Absent is the common case; admission errors surface when that
+        // nested workspace is selected directly.
+        return false
+      }
+    })
+  return (await Promise.all(probes)).some((found) => found)
 }
 
 const walkDirectory = async (walk: Walk, relative: string): Promise<void> => {
@@ -160,6 +162,13 @@ const walkDirectory = async (walk: Walk, relative: string): Promise<void> => {
   if (walk.entries > limits.entries) {
     throw new PackageError("inventory_limit_exceeded", `discovery exceeds its entry limit of ${limits.entries}`)
   }
+  // Classify this listing without I/O, then descend into every child
+  // directory concurrently. The walk is latency-bound on per-directory stat
+  // calls rather than CPU-bound, so a serial descent costs seconds on a
+  // workspace with thousands of directories. Concurrency cannot change the
+  // inventory: `walk.found` is sorted by the caller, so discovery order never
+  // escapes this function.
+  const directories: Array<string> = []
   for (const child of entries) {
     walk.signal?.throwIfAborted()
     if (child.name === ".git" || child.name === "node_modules") continue
@@ -181,10 +190,11 @@ const walkDirectory = async (walk: Walk, relative: string): Promise<void> => {
       walk.found.push(childRelative)
       continue
     }
-    if (child.isDirectory() && !(await nestedWorkspace(walk, childRelative))) {
-      await walkDirectory(walk, childRelative)
-    }
+    if (child.isDirectory()) directories.push(childRelative)
   }
+  await Promise.all(directories.map(async (childRelative) => {
+    if (!(await nestedWorkspace(walk, childRelative))) await walkDirectory(walk, childRelative)
+  }))
 }
 
 /** Admits one declaration file: regular, contained, and never a symlink. */

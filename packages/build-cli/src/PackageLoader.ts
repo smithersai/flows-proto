@@ -406,6 +406,9 @@ const graphDigest = async (discovery: Discovery, scannedFiles: ReadonlyArray<str
 
 const loads = new Map<string, Promise<LoadedGraph>>()
 
+/** One probed cache directory per workspace descriptor, per process. */
+const probes = new Map<string, Promise<string | undefined>>()
+
 const validatePackageModule = (namespace: unknown, file: string): Package.PackageValue => {
   if (typeof namespace !== "object" || namespace === null) {
     throw new PackageError("module_import_failed", "PACKAGE.ts did not evaluate to a module namespace", { path: file })
@@ -552,18 +555,35 @@ export const load = async (discovery: Discovery): Promise<LoadedGraph> => {
  * full load reports the real diagnostic. The evaluated namespace is
  * discarded — target identity always comes from the one real load.
  *
+ * ## Why this is not a second evaluation
+ *
+ * {@link load} imports the same WORKSPACE.ts again through its generated
+ * entry module, which reads like duplicated work and is not: both imports name
+ * the same file URL, so the ESM module registry evaluates the closure once and
+ * hands the second import the same namespace. That is also what keeps target
+ * identity intact — one module instance, one label per target — so the two
+ * imports must stay addressed by URL rather than one of them reading the file
+ * some cheaper way. What the probe does own is its own resolve and transform
+ * pass, which the memo below collapses to one per workspace descriptor.
+ *
  * @category loading
  * @since 0.1.0
  */
-export const probeCacheDirectory = async (root: string, workspaceFile: string): Promise<string | undefined> => {
-  try {
-    const namespace = await tsImport(pathToFileURL(NodePath.join(root, workspaceFile)).href, {
-      parentURL: import.meta.url,
-      tsconfig: false
-    })
-    const workspace = validateWorkspaceModule(namespace, workspaceFile)
-    return workspace.cache.directory
-  } catch {
-    return undefined
-  }
+export const probeCacheDirectory = (root: string, workspaceFile: string): Promise<string | undefined> => {
+  const key = `${root}\0${workspaceFile}`
+  const existing = probes.get(key)
+  if (existing !== undefined) return existing
+  const probed = (async (): Promise<string | undefined> => {
+    try {
+      const namespace = await tsImport(pathToFileURL(NodePath.join(root, workspaceFile)).href, {
+        parentURL: import.meta.url,
+        tsconfig: false
+      })
+      return validateWorkspaceModule(namespace, workspaceFile).cache.directory
+    } catch {
+      return undefined
+    }
+  })()
+  probes.set(key, probed)
+  return probed
 }
