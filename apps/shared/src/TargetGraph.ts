@@ -386,12 +386,21 @@ export const criticalPath = (
       }
     }
   }
+  /*
+   * The root is the node with the longest total. Totals tie whenever a
+   * consumer adds no wall time of its own (an all-hit run), so a tie goes to
+   * the node nothing in the run depends on: the target that was asked for,
+   * which is where a Bazel-style critical path ends.
+   */
+  const dependedOn = new Set<string>()
+  for (const [from, list] of deps) if (duration.has(from)) for (const to of list) dependedOn.add(to)
   let root: string | undefined
   let rootTotal = -1
   for (const node of nodes) {
     solve(node.label)
     const total = best.get(node.label)!.total
-    if (total > rootTotal) {
+    const winsTie = total === rootTotal && root !== undefined && dependedOn.has(root) && !dependedOn.has(node.label)
+    if (total > rootTotal || winsTie) {
       rootTotal = total
       root = node.label
     }
