@@ -24,7 +24,7 @@ export const CiMatrixCardBody = ({ card }: { readonly card: Extract<Card, { kind
           <h3 className="ci-matrix-workflow-name">
             {workflow.name} <code className="graph-drawer-mono">{workflow.path}</code>
           </h3>
-          <table className="ci-matrix-jobs">
+          <table className="ci-matrix-jobs" aria-label="Workflow jobs">
             <thead>
               <tr>
                 <th scope="col">Job</th>

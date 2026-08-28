@@ -29,7 +29,7 @@ export const RunHistoryCardBody = ({
   }
   if (runs.length === 0) return <EmptyState description="No runs recorded for this repository yet." />
   return (
-    <table className="run-history-table" data-testid={`run-history-${repoId}`}>
+    <table className="run-history-table" aria-label="Recorded target runs" data-testid={`run-history-${repoId}`}>
       <thead>
         <tr>
           <th scope="col">Run</th>
