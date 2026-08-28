@@ -72,6 +72,16 @@ test("the whole target-graph flow against the real backend", async ({ page }) =>
   page.once("dialog", (dialog) => void dialog.accept(FORCE_E2E))
   await page.getByTestId("chrome-open-repo").click()
   await expect(card(page, "repo")).toBeVisible({ timeout: SLOW })
+  /*
+   * Opening a repository auto-loads its targets, which spawns the loader.
+   * Wait for that to land before asking for the graph: a human watches the
+   * repo finish opening, and issuing both at once makes two loader processes
+   * fight for the same cores, which is a property of this spec rather than
+   * of the product.
+   */
+  const targets = card(page, "targets")
+  await expect(targets).toBeVisible({ timeout: SLOW })
+  await expect.poll(() => targets.locator("[data-target-row]").count(), { timeout: SLOW }).toBeGreaterThan(0)
 
   // 1. The typed DAG, loaded by the real loader from the real declarations.
   await command(page, "/target.graph")
@@ -122,6 +132,17 @@ test("the whole target-graph flow against the real backend", async ({ page }) =>
     .poll(async () => graph.locator(".graph-node[data-run-status]").count(), { timeout: SLOW })
     .toBeGreaterThan(0)
 
+  /*
+   * Let the run FINISH before replaying it. A human replays a finished run,
+   * and a card opened mid-flight is fed from two sources at once: the replay
+   * fold at its cursor, and the live fold repainting the same card as the
+   * remaining frames land. Waiting here keeps the scrubber assertions below
+   * about time travel rather than about that race.
+   */
+  await expect
+    .poll(async () => runCard.locator(".target-run-card").getAttribute("data-run-status"), { timeout: SLOW })
+    .toMatch(/^(done|failed)$/)
+
   // 4. History: the run it just executed is recorded, on disk, in this repo.
   await expect.poll(() => existsSync(RUNS_DIR), { timeout: SLOW }).toBe(true)
   await command(page, "/target.history")
@@ -147,19 +168,28 @@ test("the whole target-graph flow against the real backend", async ({ page }) =>
   const min = await scrubber.getAttribute("min")
   const max = await scrubber.getAttribute("max")
   /*
-   * `fill` on a range already dispatches input and change, which is the pair
-   * the card de-duplicates into one scrub. Dispatching another `input` after
-   * it re-reads a value React may have re-rendered underneath, so the extra
-   * event replays a stale cursor — drive the slider only through `fill`.
+   * The scrubber is a CONTROLLED React range. Playwright's `fill` writes the
+   * DOM value directly, which leaves React's internal value tracker stale, so
+   * the second drag of a session can be swallowed as "no change". Go through
+   * the prototype setter React itself patches, then dispatch the `input` the
+   * card listens on — the standard way to drive a controlled input.
    */
-  await scrubber.fill(String(min))
+  const drag = async (value: string): Promise<void> => {
+    await scrubber.evaluate((element, next) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set
+      setter?.call(element, next)
+      element.dispatchEvent(new Event("input", { bubbles: true }))
+    }, value)
+  }
+
+  await drag(String(min))
   /*
    * At the first instant of the run, fewer nodes had reported than at the
    * end. A scrubber that changed nothing would be a slider over a still.
    */
   await expect.poll(() => timelineRows.count(), { timeout: 30_000 }).toBeLessThan(settledRows)
   /* And travelling back to the end restores every row the run produced. */
-  await scrubber.fill(String(max))
+  await drag(String(max))
   await expect.poll(() => timelineRows.count(), { timeout: 30_000 }).toBe(settledRows)
 
   // 7. Affected: a real edit to a real file, read through the real git diff.

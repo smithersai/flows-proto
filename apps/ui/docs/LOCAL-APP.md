@@ -749,6 +749,18 @@ Nothing was renamed and no field became required.
 backend) are complementary: the first is deterministic and runs anywhere, the
 second is the honest proof and skips where `~/artsy-e2e/force` is absent.
 
+### Known wrinkle the E2E exposed (not fixed here)
+
+Selecting a run for replay while that run is still streaming feeds ONE card
+from two sources: `selectRun` fills the timeline from the recording at its
+cursor, and the live fold's `paintRun` then repaints the same card's `nodes`
+with live timings while leaving the replay's `cursor` and `extent` in place.
+The scrubber then appears to "lose" rows, because it re-derives from a
+recording that ends earlier than what the live fold had painted. The real spec
+waits for the run to settle before replaying it, which is what a human does.
+A fix belongs in the UI lane: either refuse to replay an unsettled run, or
+have `paintRun` skip a card that carries a replay cursor.
+
 **Not covered by the E2E:** the Electrobun shell. Tier T1 is headless Chromium
 against the local origin, so the native window chrome and the OS folder picker
 are not exercised — the repository is opened through the `window.prompt`
