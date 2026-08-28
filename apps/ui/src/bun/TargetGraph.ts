@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
-import { dirname, join, relative, sep } from "node:path"
+import { existsSync } from "node:fs"
+import { readdir, stat } from "node:fs/promises"
+import { join } from "node:path"
 import type { GraphEdge, GraphNode, TargetGraphResponse } from "smithers-shared/TargetGraph"
 import { splitLabel } from "smithers-shared/LocalApp"
 import type { NodeSidecar } from "./Node"
@@ -80,36 +81,45 @@ export const foldPlan = (nodes: ReadonlyArray<GraphNode>, envelopes: ReadonlyArr
   return nodes.map((node) => plans.has(node.label) ? { ...node, plan: plans.get(node.label) } : { ...node })
 }
 
-const declarationSet = (repo: string): { readonly digest: string; readonly sources: ReadonlyMap<string, GraphNode["source"]> } => {
-  const hash = createHash("sha256")
-  const files: Array<string> = []
-  const walk = (dir: string): void => {
+const SKIPPED_DIRS = [".git", ".flows", "node_modules", "dist", "build"]
+const DECLARATION_FILES = ["PACKAGE.ts", "WORKSPACE.ts", "BUILD.ts"]
+
+/*
+ * Fingerprints the workspace's declarations, ASYNCHRONOUSLY.
+ *
+ * This runs on every graph/affected/ci request - it is what makes a graph go
+ * stale the instant a declaration is edited - so it walks the whole source
+ * tree. Done with the synchronous fs calls it measured 160-190ms of blocked
+ * event loop per request on ~/artsy/force, during which the server answered
+ * nothing and no frame of a streaming run reached a live overlay. Sibling
+ * directories are walked concurrently, and the digest is fed in sorted path
+ * order so it stays stable whatever order the filesystem and the scheduler
+ * answer in.
+ */
+const declarationDigest = async (repo: string): Promise<string> => {
+  const found: Array<{ readonly path: string; readonly mtimeMs: number; readonly size: number }> = []
+  const walk = async (dir: string): Promise<void> => {
     let entries: Array<import("node:fs").Dirent>
-    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const entry of entries) {
-      if (entry.isDirectory() && ![".git", ".flows", "node_modules", "dist", "build"].includes(entry.name)) walk(join(dir, entry.name))
-      else if (entry.isFile() && ["PACKAGE.ts", "WORKSPACE.ts", "BUILD.ts"].includes(entry.name)) {
-        files.push(join(dir, entry.name))
+    try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+    await Promise.all(entries.map(async (entry) => {
+      if (entry.isDirectory()) {
+        if (!SKIPPED_DIRS.includes(entry.name)) await walk(join(dir, entry.name))
+        return
       }
-    }
+      if (!entry.isFile() || !DECLARATION_FILES.includes(entry.name)) return
+      const path = join(dir, entry.name)
+      try {
+        const info = await stat(path)
+        found.push({ path, mtimeMs: info.mtimeMs, size: info.size })
+      } catch { /* A declaration that vanished mid-walk is simply not in the graph. */ }
+    }))
   }
-  walk(repo)
-  const sources = new Map<string, GraphNode["source"]>()
-  for (const path of files.sort()) {
-    let contents: string
-    try { contents = readFileSync(path, "utf8") } catch { continue }
-    const file = relative(repo, path).split(sep).join("/")
-    hash.update(file).update("\0").update(contents).update("\0")
-    if (path.endsWith("PACKAGE.ts") || path.endsWith("BUILD.ts")) {
-      const packageDir = dirname(file) === "." ? "" : dirname(file)
-      for (const match of contents.matchAll(/^[\t ]*(?:export[\t ]+)?const[\t ]+([A-Za-z_$][\w$]*)[\t ]*=/gm)) {
-        const before = contents.slice(0, match.index)
-        const line = before.split("\n").length
-        sources.set(`//${packageDir}:${match[1]}`, { file, line })
-      }
-    }
+  await walk(repo)
+  const hash = createHash("sha256")
+  for (const entry of found.sort((left, right) => left.path.localeCompare(right.path))) {
+    hash.update(entry.path.slice(repo.length)).update(String(entry.mtimeMs)).update(String(entry.size))
   }
-  return { digest: hash.digest("hex"), sources }
+  return hash.digest("hex")
 }
 
 interface CachedGraph { readonly digest: string; readonly response: TargetGraphResponse }
@@ -150,8 +160,7 @@ const runJson = async (options: TargetGraphOptions, args: ReadonlyArray<string>)
 
 export const queryTargetGraph = async (options: TargetGraphOptions): Promise<TargetGraphResponse> => {
   const started = Date.now()
-  const declarations = declarationSet(options.repo)
-  const digest = declarations.digest
+  const digest = await declarationDigest(options.repo)
   let base = graphCache.get(options.repo)
   if (base === undefined || base.digest !== digest) {
     const [envelope, targetResult] = await Promise.all([
@@ -166,17 +175,13 @@ export const queryTargetGraph = async (options: TargetGraphOptions): Promise<Tar
     const merged = new Map(rows.map((row) => [row.label, row]))
     for (const target of targetResult.targets) merged.set(target.label, { label: target.label, target: target.target, kinds: target.kinds })
     const parsed = parseTextGraph(body.graph, [...merged.values()])
-    const nodes = parsed.nodes.map((node) => {
-      const source = declarations.sources.get(node.label)
-      return source === undefined ? node : { ...node, source }
-    })
     const generatedAt = new Date().toISOString()
     /*
      * `digest` is the field a card compares to decide whether its cached
      * graph went stale after a declaration edit; it has to reach the UI, not
      * just this cache, or the documented staleness check can never fire.
      */
-    base = { digest, response: { repoId: options.repoId, nodes, edges: parsed.edges, warnings: targetResult.warnings, generatedAt, digest, durationMs: Date.now() - started } }
+    base = { digest, response: { repoId: options.repoId, ...parsed, warnings: targetResult.warnings, generatedAt, digest, durationMs: Date.now() - started } }
     graphCache.set(options.repo, base)
   }
   let nodes = base.response.nodes.map((node) => ({ ...node, kinds: [...node.kinds], ...(node.plan === undefined ? {} : { plan: { ...node.plan } }) }))
