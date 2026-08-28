@@ -60,11 +60,23 @@ const capLogs = (events: Array<TargetRunEvent>): { events: Array<TargetRunEvent>
 
 export const createTargetRunHistory = (): TargetRunHistory => {
   const runs = new Map<string, StoredRun>()
-  const loadedRepos = new Set<string>()
+  /*
+   * One load per repository, INCLUDING the one still in flight: two requests
+   * for the same repo can land together, and answering the second from the
+   * half-loaded map shows an empty history and 404s a replay for runs that
+   * are on disk.
+   */
+  const loading = new Map<string, Promise<void>>()
 
-  const loadRepo = async (repoId: string, repo: string): Promise<void> => {
-    if (loadedRepos.has(repo)) return
-    loadedRepos.add(repo)
+  const loadRepo = (repoId: string, repo: string): Promise<void> => {
+    const inFlight = loading.get(repo)
+    if (inFlight !== undefined) return inFlight
+    const promise = readRepo(repoId, repo)
+    loading.set(repo, promise)
+    return promise
+  }
+
+  const readRepo = async (repoId: string, repo: string): Promise<void> => {
     const dir = runsDir(repo)
     let names: Array<string>
     try { names = await readdir(dir) } catch { return }
@@ -109,7 +121,8 @@ export const createTargetRunHistory = (): TargetRunHistory => {
       const path = join(dir, `${run.runId}.jsonl`)
       await writeFile(path, encode({ type: "record", record }))
       runs.set(run.runId, { record, events: [], path, queue: Promise.resolve(), logChars: 0 })
-      loadedRepos.add(run.repo)
+      /* The run just written is in `runs`; nothing on disk is still unseen. */
+      if (!loading.has(run.repo)) loading.set(run.repo, Promise.resolve())
     },
     event: (run, event) => {
       const stored = runs.get(run.runId)

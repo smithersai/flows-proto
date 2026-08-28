@@ -388,7 +388,21 @@ export const createTargetGraphController = (
     if ("error" in answer) return answer.error
     const replay = answer as RunReplayResponse
     replayEvents.set(runId, replay.events)
-    const endCursor = replay.run.endedAt ?? Math.max(...replay.events.map((event) => ("at" in event ? event.at : 0)), replay.run.startedAt)
+    /*
+     * The end of a run that never recorded `endedAt` is its last timed frame.
+     * A fold, never `Math.max(...events)`: a chatty run retains ~10^6 tiny
+     * log frames under the store's cap, and spreading a million arguments
+     * overflows the call stack — selecting such a run crashed the controller
+     * instead of opening its timeline.
+     */
+    let endCursor = replay.run.startedAt
+    if (replay.run.endedAt === undefined) {
+      for (const event of replay.events) {
+        if ("at" in event && event.at > endCursor) endCursor = event.at
+      }
+    } else {
+      endCursor = replay.run.endedAt
+    }
     const state = replayAtCursor(replay.events, endCursor)
     patch(runHistoryCardId(repoId), "run-history", (card) => ({ payload: { ...card.payload, selected: runId } }))
     upsert({

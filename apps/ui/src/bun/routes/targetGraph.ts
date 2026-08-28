@@ -81,9 +81,10 @@ export const registerTargetGraphRoutes = (
       queryTargetGraph({ repoId, repo: repo.path, node: await options.node, ...(options.cli === undefined ? {} : { cli: options.cli }) }),
       changedFiles(repo.path)
     ])
+    const declarations = await declarationInputs(repo.path, repo.smithers.declarationFiles)
     return json(computeAffected({
       repoId, base: changes.base, changedFiles: changes.files, nodes: graph.nodes, edges: graph.edges,
-      declarations: declarationInputs(repo.path, repo.smithers.declarationFiles), durationMs: Date.now() - started
+      declarations, durationMs: Date.now() - started
     }))
   })
 

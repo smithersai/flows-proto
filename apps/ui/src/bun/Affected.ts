@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { join, posix } from "node:path"
 import { reachable } from "smithers-shared/TargetGraph"
 import type { AffectedResponse, GraphEdge, GraphNode } from "smithers-shared/TargetGraph"
@@ -13,11 +13,25 @@ const normalizePattern = (packageDir: string, pattern: string): string => {
 }
 
 /** Best-effort static extraction of S.file/S.glob inputs and local data references. */
-export const declarationInputs = (repo: string, files: ReadonlyArray<string>): DeclaredInputs => {
+export const declarationInputs = async (repo: string, files: ReadonlyArray<string>): Promise<DeclaredInputs> => {
+  /*
+   * This runs inside the affected route's handler, so the reads are async:
+   * a monorepo-scale declaration set read with readFileSync is one unbroken
+   * block of the server's event loop (AffectedBlocking.test.ts holds a 10ms
+   * heartbeat across it). Reads go in modest batches — fast, and the loop
+   * breathes between files.
+   */
+  const sources = new Map<string, string>()
+  const BATCH = 64
+  for (let offset = 0; offset < files.length; offset += BATCH) {
+    await Promise.all(files.slice(offset, offset + BATCH).map(async (file) => {
+      try { sources.set(file, await readFile(join(repo, file), "utf8")) } catch { /* An unreadable declaration contributes nothing. */ }
+    }))
+  }
   const result = new Map<string, Array<DeclaredInput>>()
   for (const file of files) {
-    let source: string
-    try { source = readFileSync(join(repo, file), "utf8") } catch { continue }
+    const source = sources.get(file)
+    if (source === undefined) continue
     const packageDir = posix.dirname(file) === "." ? "" : posix.dirname(file)
     const definitions = new Map<string, string>()
     const starts = [...source.matchAll(/^const\s+([A-Za-z_$][\w$]*)\s*=/gm)]
