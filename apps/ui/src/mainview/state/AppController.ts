@@ -19,6 +19,9 @@ import { createTabsController } from "./controller/tabs"
 import type { TabsController } from "./controller/tabs"
 import { createTargetsController } from "./controller/targets"
 import type { TargetsController } from "./controller/targets"
+import { createTargetGraphController } from "./controller/targetGraph"
+import type { TargetGraphController } from "./controller/targetGraph"
+import { createTargetGraphDevFixtures } from "../dev/fixtureRunStream"
 import { createTurnController } from "./controller/turns"
 import { createWorkflowPumpController } from "./controller/workflow-pump"
 import { createWorkflowController } from "./controller/workflows"
@@ -125,6 +128,15 @@ export interface AppController {
   readonly openRepo: TargetsController["openRepo"]
   readonly runTarget: TargetsController["runTarget"]
   readonly openTarget: TargetsController["openTarget"]
+  /* The target-graph cards (docs/LOCAL-APP.md "Cards: target graph"); see controller/targetGraph.ts. */
+  readonly showGraph: TargetGraphController["showGraph"]
+  readonly showRunTimeline: TargetGraphController["showTimeline"]
+  readonly showRunHistory: TargetGraphController["showHistory"]
+  readonly selectRunReplay: TargetGraphController["selectRun"]
+  readonly scrubRunReplay: TargetGraphController["scrubRun"]
+  readonly showAffected: TargetGraphController["showAffected"]
+  readonly showCiMatrix: TargetGraphController["showCi"]
+  readonly openTargetSource: TargetGraphController["openSource"]
   /* The admin dev-tools panel + debug reads (§2b/§2d; admin registry only). */
   readonly toggleDevtools: () => void
   /** Report what drives a turn (admin /debug.backend; DESIGN.md §14). */
@@ -395,11 +407,17 @@ export const createAppController = (
   ctx.onDispose(pty.dispose)
   const targetRuns = createTargetRunClient({ socketUrl: pageSocketUrl })
   ctx.onDispose(targetRuns.dispose)
+  const targetGraph = createTargetGraphController(ctx, {
+    nextOrdinal: nextTranscriptOrdinal,
+    runs: targetRuns,
+    devFixtures: createTargetGraphDevFixtures()
+  })
   const { openRepo, runTarget, openTarget, installBridge } = createTargetsController(ctx, {
     nextOrdinal: nextTranscriptOrdinal,
     loadRepos,
     runs: targetRuns,
-    surfaceCommandFailure
+    surfaceCommandFailure,
+    onRunStarted: targetGraph.noteRunStarted
   })
   ctx.openRepo = openRepo
 
@@ -624,6 +642,14 @@ export const createAppController = (
     openRepo,
     runTarget,
     openTarget,
+    showGraph: targetGraph.showGraph,
+    showRunTimeline: targetGraph.showTimeline,
+    showRunHistory: targetGraph.showHistory,
+    selectRunReplay: targetGraph.selectRun,
+    scrubRunReplay: targetGraph.scrubRun,
+    showAffected: targetGraph.showAffected,
+    showCiMatrix: targetGraph.showCi,
+    openTargetSource: targetGraph.openSource,
     toggleDevtools,
     toggleSurfacesMenu,
     toggleConnectMenu,
@@ -800,6 +826,14 @@ export const createAppController = (
     openRepo,
     runTarget,
     openTarget,
+    showGraph: targetGraph.showGraph,
+    showRunTimeline: targetGraph.showTimeline,
+    showRunHistory: targetGraph.showHistory,
+    selectRunReplay: targetGraph.selectRun,
+    scrubRunReplay: targetGraph.scrubRun,
+    showAffected: targetGraph.showAffected,
+    showCiMatrix: targetGraph.showCi,
+    openTargetSource: targetGraph.openSource,
     toggleDevtools,
     toggleSurfacesMenu,
     toggleConnectMenu,

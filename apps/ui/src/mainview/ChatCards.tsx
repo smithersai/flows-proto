@@ -21,13 +21,18 @@ import { Check, ExternalLink, GitPullRequest, HardDrive, Maximize2, Minimize2, P
 import { useState } from "react"
 import type { KeyboardEvent } from "react"
 import { BranchesCardBody } from "./cards/BranchesCard"
+import { AffectedCardBody } from "./cards/AffectedCard"
+import { CiMatrixCardBody } from "./cards/CiMatrixCard"
 import { EnvCardBody } from "./cards/EnvCard"
 import { FileCardBody, FileListCardBody } from "./cards/FileCards"
+import { GraphCardBody } from "./cards/GraphCard"
 import { IssueCardBody, IssueListCardBody } from "./cards/IssueCards"
 import { KeysCardBody } from "./cards/KeysCard"
 import { LandingCardBody, LandingListCardBody } from "./cards/LandingCards"
 import { NotificationsCardBody } from "./cards/NotificationsCard"
 import { RepoImportCardBody } from "./cards/RepoImportCard"
+import { RunHistoryCardBody } from "./cards/RunHistoryCard"
+import { RunTimelineCardBody } from "./cards/RunTimelineCard"
 import { HtmlCardBody, RepoCardBody, TargetRunCardBody, TargetsCardBody } from "./cards/TargetCards"
 import { ThemePickerCardBody } from "./cards/ThemePickerCard"
 import type { Card, WorldDocument } from "./state/AppState"
@@ -119,6 +124,11 @@ const pillStatus = (card: Card): string => {
   /* Lane L3 (docs/LOCAL-APP.md "Cards"): the payload's own status leads. */
   if (card.kind === "targets") return card.payload.status
   if (card.kind === "target-run") return card.payload.status
+  /* The target-graph cards' payloads carry their own read status the same way. */
+  if (card.kind === "graph" || card.kind === "run-history" || card.kind === "affected" || card.kind === "ci-matrix") {
+    return card.payload.status
+  }
+  if (card.kind === "run-timeline") return card.payload.status
   if (card.kind === "html" || card.kind === "repo") return "done"
   if (card.status === "acted") return "done"
   if (card.kind !== "status") return "pending"
@@ -1116,6 +1126,11 @@ export function CardView({
           {card.kind === "targets" ? <TargetsCardBody card={card} /> : null}
           {card.kind === "html" ? <HtmlCardBody card={card} /> : null}
           {card.kind === "target-run" ? <TargetRunCardBody card={card} /> : null}
+          {card.kind === "graph" ? <GraphCardBody card={card} onRunCommand={onRunCommand} /> : null}
+          {card.kind === "run-timeline" ? <RunTimelineCardBody card={card} onRunCommand={onRunCommand} /> : null}
+          {card.kind === "run-history" ? <RunHistoryCardBody card={card} onRunCommand={onRunCommand} /> : null}
+          {card.kind === "affected" ? <AffectedCardBody card={card} onRunCommand={onRunCommand} /> : null}
+          {card.kind === "ci-matrix" ? <CiMatrixCardBody card={card} /> : null}
         </div>
       </section>
     </>

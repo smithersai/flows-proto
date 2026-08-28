@@ -34,6 +34,8 @@ export interface TargetsControllerDependencies {
   readonly loadRepos: () => Promise<void>
   readonly runs: TargetRunClient
   readonly surfaceCommandFailure: (name: string, outcome: { readonly status: "executed" | "unknown-command" } | { readonly status: "failed"; readonly error: string }) => void
+  /** A run's start, announced so a graph card of the same repo can overlay it (controller/targetGraph.ts). */
+  readonly onRunStarted?: (repoId: string, runId: string, label: string) => void
 }
 
 export const repoCardId = (repoId: string): string => `repo-${repoId}`
@@ -60,7 +62,7 @@ export const createTargetsController = (
   dependencies: TargetsControllerDependencies
 ): TargetsController => {
   const { store, baseUrl } = ctx
-  const { nextOrdinal, loadRepos, runs, surfaceCommandFailure } = dependencies
+  const { nextOrdinal, loadRepos, runs, surfaceCommandFailure, onRunStarted } = dependencies
 
   const upsert = (card: Card): void => {
     store.dispatch({ type: "card.upsert", actor: ctx.commandActor, card })
@@ -266,6 +268,7 @@ export const createTargetsController = (
       ordinal: nextOrdinal(),
       payload: { runId, repoId, label, status: "running", exitCode: null, output: "" }
     })
+    onRunStarted?.(repoId, runId, label)
     const append = (card: Extract<Card, { kind: "target-run" }>, data: string): string => {
       const joined = card.payload.output + data
       return joined.length > MAX_OUTPUT_CHARS ? joined.slice(joined.length - MAX_OUTPUT_CHARS) : joined
@@ -282,6 +285,8 @@ export const createTargetsController = (
         }))
         return
       }
+      /* The structured graph frames (started/node/summary) are the targetGraph controller's, not this card's. */
+      if (frame.type !== "exit") return
       const failed = frame.code !== 0
       patch(id, "target-run", (card) => ({
         payload: { ...card.payload, status: failed ? "failed" : "done", exitCode: frame.code },

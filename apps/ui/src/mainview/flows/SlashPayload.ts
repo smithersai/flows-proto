@@ -232,7 +232,52 @@ const GRAMMAR: Readonly<Record<string, (args: string | undefined) => Parsed>> = 
   "tab.select": (args) => required("tab", args, "tab.select needs a tab id or a position 1-9"),
   "tab.close": (args) => optional("tabId", args),
   "target.run": (args) => targetRef("target.run", args),
-  "target.open": (args) => targetRef("target.open", args)
+  "target.open": (args) => targetRef("target.open", args),
+  /*
+   * The target-graph commands (docs/LOCAL-APP.md "Cards: target graph"). The
+   * repo id may go unnamed — the controller resolves the one open repository
+   * — so a lone `//…` token is the LABEL, anything else the repo id.
+   */
+  "target.graph": (args) => {
+    const tokens = tokensOf(args)
+    if (tokens.length === 0) return ok({})
+    if (tokens.length === 1) {
+      const [only] = tokens
+      return only !== undefined && only.startsWith("//") ? ok({ label: only }) : ok({ repoId: only })
+    }
+    const [repoId, ...rest] = tokens
+    return ok({ repoId, label: rest.join(" ") })
+  },
+  "target.timeline": (args) => {
+    const tokens = tokensOf(args)
+    if (tokens.length > 2) return no("target.timeline takes a run id and optionally a repository id")
+    const [first, second] = tokens
+    if (first === undefined) return ok({})
+    return second === undefined ? ok({ runId: first }) : ok({ repoId: first, runId: second })
+  },
+  "target.history": (args) => optional("repoId", args),
+  "target.affected": (args) => optional("repoId", args),
+  "target.ci": (args) => optional("repoId", args),
+  "target.runs.select": (args) => {
+    const tokens = tokensOf(args)
+    if (tokens.length > 2) return no("target.runs.select takes a run id and optionally a repository id")
+    const [first, second] = tokens
+    if (first === undefined) return no("target.runs.select needs a run id")
+    return second === undefined ? ok({ runId: first }) : ok({ repoId: first, runId: second })
+  },
+  "target.run.scrub": (args) => {
+    const [runId, cursorRaw] = tokensOf(args)
+    const cursor = Number(cursorRaw)
+    if (runId === undefined || cursorRaw === undefined || !Number.isFinite(cursor)) {
+      return no("target.run.scrub needs a run id and a cursor (epoch ms)")
+    }
+    return ok({ runId, cursor })
+  },
+  "target.source.open": (args) => {
+    const [repoId, file] = tokensOf(args)
+    if (repoId === undefined || file === undefined) return no("target.source.open needs a repository id and a file")
+    return ok({ repoId, file })
+  }
 }
 
 /**

@@ -422,7 +422,16 @@ describe("command registry bindings", () => {
       "tab.menu",
       "repo.open",
       "target.run",
-      "target.open"
+      "target.open",
+      // The target-graph cards (docs/LOCAL-APP.md "Cards: target graph").
+      "target.graph",
+      "target.timeline",
+      "target.history",
+      "target.runs.select",
+      "target.run.scrub",
+      "target.affected",
+      "target.ci",
+      "target.source.open"
     ])
 
     expect((await controller.commands.run("connect")).status).toBe("executed")

@@ -234,7 +234,13 @@ export const GraphCardPayloadSchema = z.object({
   /** Focused label: the UI highlights deps()/rdeps() and opens the detail drawer. */
   focus: z.string().optional(),
   /** When set, the DAG overlays this run's node statuses. */
-  runId: z.string().optional()
+  runId: z.string().optional(),
+  /*
+   * The overlay's live state (additive, ui/ui lane): per-node timings as
+   * `node` frames arrive, and the run's summary once it lands. Absent until
+   * the first frame; replay (the history scrubber) fills it the same way.
+   */
+  run: z.object({ nodes: z.array(NodeTimingSchema), summary: RunSummarySchema.optional() }).optional()
 })
 export type GraphCardPayload = z.infer<typeof GraphCardPayloadSchema>
 
@@ -246,7 +252,11 @@ export const RunTimelineCardPayloadSchema = z.object({
   nodes: z.array(NodeTimingSchema),
   summary: RunSummarySchema.optional(),
   /** Replay position (epoch ms) when scrubbing a recorded run; absent = live. */
-  cursor: z.number().optional()
+  cursor: z.number().optional(),
+  /** The full run's time extent (additive, ui/ui lane): the scrubber's range, stable across cursors. */
+  extent: z.object({ start: z.number(), end: z.number() }).optional(),
+  /* Per-node stdout/stderr text from attributed frames (additive, ui/ui lane). */
+  logs: z.record(z.string(), z.string()).optional()
 })
 export type RunTimelineCardPayload = z.infer<typeof RunTimelineCardPayloadSchema>
 

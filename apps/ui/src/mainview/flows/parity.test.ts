@@ -61,6 +61,8 @@ const PRESENTATION_ONLY = [
   "setCopied", // copy feedback flash; the clipboard write routes via onCopy
   "toggleConnectMenu", // opens the composer's connect origins menu; every entry inside dispatches its own command
   "setSelectedPath", // world card doc selection: which note the embedded editor shows — local presentation state
+  "onDismissDrawer(", // graph card detail drawer close: local presentation state (which node is focused)
+  "setOpenLog(", // run timeline log panel: which row's log is open — local presentation state
   "onRunCommand(", // delegated: App.tsx binds it to the registry's runCommand/runCommandArgs
   // C-1 (wave 13): these two are NOT local state — calling either dispatches
   // runCommand("surfaces"). The old "local presentation state" reason here is
@@ -173,6 +175,16 @@ describe("launch-law parity: every affordance is a command", () => {
       "../cards/RepoImportCard.tsx": 1,
       /* The /theme picker: nine swatches, one shared handler through onRunCommand. */
       "../cards/ThemePickerCard.tsx": 1,
+      /*
+       * The target-graph cards: the graph drawer's close/copy/open/run acts
+       * (4), the timeline row's log toggle (1), the history row's replay
+       * select and the affected row's show-in-graph (1 each, both
+       * onRunCommand).
+       */
+      "../cards/GraphCard.tsx": 4,
+      "../cards/RunTimelineCard.tsx": 1,
+      "../cards/RunHistoryCard.tsx": 1,
+      "../cards/AffectedCard.tsx": 1,
       /*
        * The local-app chrome (docs/LOCAL-APP.md "Tabs"): the strip's select
        * and close per tab, the `+` trigger, its backdrop, the Terminal row,

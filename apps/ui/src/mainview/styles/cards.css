@@ -799,3 +799,416 @@
 .smithers-card[data-maximized="true"] .smithers-card-body pre {
 	max-height: none;
 }
+
+/* The target-graph cards (docs/LOCAL-APP.md "Cards: target graph"). */
+.graph-card,
+.run-timeline-card,
+.affected-card,
+.ci-matrix-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+.graph-card-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	font-size: 0.8125rem;
+}
+.graph-card-search {
+	flex: 1;
+	min-width: 8rem;
+	padding: 0.25rem 0.5rem;
+	border: 1px solid var(--border, #e4ddcf);
+	border-radius: 8px;
+	background: var(--surface, #fff);
+	color: var(--text, inherit);
+	font: inherit;
+}
+.graph-card-private-toggle {
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+	color: var(--muted-foreground, #6b6457);
+	white-space: nowrap;
+}
+.graph-card-counts {
+	color: var(--muted-foreground, #6b6457);
+	white-space: nowrap;
+}
+.graph-card-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem 0.75rem;
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	font-size: 0.75rem;
+	color: var(--muted-foreground, #6b6457);
+}
+.graph-card-legend li {
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+.graph-card-canvas-row {
+	display: flex;
+	gap: 0.5rem;
+	min-height: 22rem;
+}
+.graph-card-canvas {
+	position: relative;
+	flex: 1;
+	min-width: 0;
+	height: 26rem;
+	border: 1px solid var(--border, #e4ddcf);
+	border-radius: 10px;
+	overflow: hidden;
+}
+.smithers-card[data-maximized="true"] .graph-card-canvas-row,
+.smithers-card[data-maximized="true"] .graph-card-canvas {
+	flex: 1;
+	height: auto;
+	min-height: 0;
+}
+.smithers-card[data-maximized="true"] .graph-card {
+	height: calc(100% - 0.5rem);
+}
+.graph-node {
+	width: 240px;
+	height: 84px;
+	font-size: 0.75rem;
+}
+.graph-node-handle {
+	opacity: 0;
+	width: 6px;
+	height: 6px;
+}
+.graph-node-footer {
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+	flex-wrap: wrap;
+	padding: 0 0.5rem 0.375rem;
+}
+.graph-node-run {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+.graph-node-duration {
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+	color: var(--muted-foreground, #6b6457);
+}
+/* Node color by rule family (data-rule-family) and run status (data-run-status). */
+.graph-node[data-rule-family="Shell"] {
+	border-left: 3px solid var(--success, #207770);
+}
+.graph-node[data-rule-family="Agent"] {
+	border-left: 3px solid var(--accent, #b8a98a);
+}
+.graph-node[data-rule-family="Go"] {
+	border-left: 3px solid var(--info, #3a6ea5);
+}
+.graph-node[data-rule-family="Docker"] {
+	border-left: 3px solid var(--warning, #826601);
+}
+.graph-node[data-rule-family="Github"] {
+	border-left: 3px solid var(--muted-foreground, #6b6457);
+}
+.graph-node[data-private="true"] {
+	opacity: 0.45;
+}
+.graph-node[data-focus="faded"] {
+	opacity: 0.25;
+}
+.graph-node[data-focus="highlighted"] {
+	outline: 2px solid var(--accent, #b8a98a);
+	border-radius: 10px;
+}
+.graph-node[data-focus="root"] {
+	outline: 2px solid var(--ring, #b8a98a);
+	border-radius: 10px;
+}
+.graph-node[data-run-status="failed"],
+.graph-node[data-run-status="refused"] {
+	border-left-color: var(--danger, #ba3f3b);
+}
+.graph-node[data-run-status="hit"],
+.graph-node[data-run-status="ran"] {
+	border-left-color: var(--success, #207770);
+}
+.graph-node[data-run-status="running"] {
+	border-left-color: var(--warning, #826601);
+}
+.graph-node[data-critical="true"] {
+	box-shadow: 0 0 0 2px var(--warning-border, var(--warning, #826601));
+}
+.graph-edge[data-critical="true"],
+.react-flow__edge:has(.graph-edge) {
+	stroke-linecap: round;
+}
+.graph-card-minimap {
+	border: 1px solid var(--border, #e4ddcf);
+	border-radius: 8px;
+}
+.graph-drawer {
+	width: 19rem;
+	flex-shrink: 0;
+	overflow-y: auto;
+	border: 1px solid var(--border, #e4ddcf);
+	border-radius: 10px;
+	padding: 0.625rem;
+	font-size: 0.8125rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+	background: var(--surface, #fff);
+}
+.graph-drawer-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+.graph-drawer-label {
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+	font-weight: 600;
+	word-break: break-all;
+}
+.graph-drawer-fact {
+	display: flex;
+	gap: 0.5rem;
+	align-items: baseline;
+}
+.graph-drawer-fact-name {
+	flex-shrink: 0;
+	width: 4.5rem;
+	color: var(--muted-foreground, #6b6457);
+	font-size: 0.75rem;
+}
+.graph-drawer-fact-value {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+.graph-drawer-mono {
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+	font-size: 0.75rem;
+	word-break: break-all;
+}
+.graph-drawer-argv {
+	display: block;
+	max-height: 5rem;
+	overflow-y: auto;
+}
+.graph-drawer-refusal {
+	margin: 0;
+	padding: 0.375rem 0.5rem;
+	border-radius: 8px;
+	background: var(--danger-soft, color-mix(in srgb, var(--danger, #ba3f3b) 10%, transparent));
+	color: var(--danger, #ba3f3b);
+}
+.graph-drawer-actions {
+	margin-top: auto;
+	display: flex;
+	gap: 0.5rem;
+}
+/* The run timeline (Gantt). */
+.run-timeline-meta {
+	margin: 0;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-size: 0.8125rem;
+}
+.run-timeline-totals {
+	display: flex;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+}
+.run-timeline-rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+}
+.run-timeline-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	width: 100%;
+	padding: 0.125rem 0.25rem;
+	font-size: 0.75rem;
+	border-radius: 6px;
+}
+.run-timeline-row[data-critical="true"] {
+	background: var(--warning-soft, color-mix(in srgb, var(--warning, #826601) 12%, transparent));
+}
+.run-timeline-row[data-open="true"] {
+	outline: 1px solid var(--ring, #b8a98a);
+}
+.run-timeline-row-label {
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+	width: 16rem;
+	flex-shrink: 0;
+	text-align: left;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.run-timeline-track {
+	position: relative;
+	flex: 1;
+	height: 0.625rem;
+	background: var(--accent-soft, color-mix(in srgb, var(--accent, #b8a98a) 14%, transparent));
+	border-radius: 4px;
+}
+.run-timeline-bar {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	border-radius: 4px;
+	background: var(--success, #207770);
+	min-width: 0;
+}
+.run-timeline-row[data-status="running"] .run-timeline-bar {
+	background: var(--warning, #826601);
+}
+.run-timeline-row[data-status="failed"] .run-timeline-bar,
+.run-timeline-row[data-status="refused"] .run-timeline-bar {
+	background: var(--danger, #ba3f3b);
+}
+.run-timeline-row[data-status="pending"] .run-timeline-bar,
+.run-timeline-row[data-status="skipped"] .run-timeline-bar,
+.run-timeline-row[data-status="cancelled"] .run-timeline-bar {
+	background: var(--muted-foreground, #6b6457);
+}
+.run-timeline-bar[data-zero-width="true"] {
+	width: 2px !important;
+	border-radius: 1px;
+}
+.run-timeline-duration {
+	width: 3.5rem;
+	flex-shrink: 0;
+	text-align: right;
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+	color: var(--muted-foreground, #6b6457);
+}
+.run-timeline-scrubber {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-size: 0.75rem;
+	color: var(--muted-foreground, #6b6457);
+}
+.run-timeline-scrubber input {
+	flex: 1;
+}
+.run-timeline-log {
+	margin: 0;
+	max-height: 12rem;
+	overflow-y: auto;
+	padding: 0.5rem;
+	border: 1px solid var(--border, #e4ddcf);
+	border-radius: 8px;
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+	font-size: 0.75rem;
+	white-space: pre-wrap;
+}
+/* The run history table. */
+.run-history-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.8125rem;
+}
+.run-history-table th {
+	text-align: left;
+	font-size: 0.75rem;
+	color: var(--muted-foreground, #6b6457);
+	font-weight: 600;
+	padding: 0.25rem 0.5rem 0.25rem 0;
+}
+.run-history-table td {
+	padding: 0.25rem 0.5rem 0.25rem 0;
+	border-top: 1px solid var(--border, #e4ddcf);
+}
+.run-history-table tr[data-selected="true"] td {
+	background: var(--accent-soft, color-mix(in srgb, var(--accent, #b8a98a) 14%, transparent));
+}
+.run-history-select {
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+/* The affected card. */
+.affected-card-files,
+.affected-card-labels {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	font-size: 0.8125rem;
+}
+.affected-card-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+.affected-card-reason {
+	flex: 1;
+	min-width: 0;
+	color: var(--muted-foreground, #6b6457);
+	font-size: 0.75rem;
+}
+/* The CI matrix card. */
+.ci-matrix-workflow {
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+	margin-bottom: 0.75rem;
+}
+.ci-matrix-workflow-name {
+	margin: 0;
+	font-size: 0.8125rem;
+	display: flex;
+	gap: 0.5rem;
+	align-items: baseline;
+}
+.ci-matrix-jobs {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.8125rem;
+}
+.ci-matrix-jobs th {
+	text-align: left;
+	font-size: 0.75rem;
+	color: var(--muted-foreground, #6b6457);
+	font-weight: 600;
+	padding: 0.25rem 0.5rem 0.25rem 0;
+}
+.ci-matrix-jobs td {
+	padding: 0.25rem 0.5rem 0.25rem 0;
+	border-top: 1px solid var(--border, #e4ddcf);
+	vertical-align: top;
+}
+.ci-matrix-target {
+	display: block;
+}
+.ci-matrix-yaml summary {
+	cursor: pointer;
+	font-size: 0.75rem;
+	color: var(--muted-foreground, #6b6457);
+}
+.ci-matrix-yaml pre {
+	margin: 0.25rem 0 0;
+	max-height: 14rem;
+	overflow: auto;
+	padding: 0.5rem;
+	border: 1px solid var(--border, #e4ddcf);
+	border-radius: 8px;
+	font-size: 0.75rem;
+}

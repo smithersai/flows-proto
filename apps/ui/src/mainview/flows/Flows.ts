@@ -933,6 +933,82 @@ export const baseFlows = (actions: CommandActions): ReadonlyArray<FlowEntry> => 
     args: "<repoId> <label>",
     input: TargetRef,
     handler: ({ repoId, label }) => actions.openTarget(repoId, label)
+  }),
+  /*
+   * The target-graph cards (docs/LOCAL-APP.md "Cards: target graph"): "show
+   * graph" / "graph //src:lint" opens the typed DAG (focused when a label is
+   * named), "timeline"/"history" the run views (a history row replays into
+   * both the timeline and the graph overlay), "affected" the diff set, "show
+   * ci" the generated matrix. The repo id may go unnamed when exactly one
+   * repository is open — the controller resolves it.
+   */
+  flow({
+    name: "target.graph",
+    summary: "Show the target graph",
+    args: "[repoId] [label]",
+    input: Schema.Struct({ repoId: Schema.optional(Schema.String), label: Schema.optional(Schema.String) }),
+    handler: ({ repoId, label }) => actions.showGraph(repoId, label)
+  }),
+  flow({
+    name: "target.timeline",
+    summary: "Show one target run's timeline",
+    args: "[repoId] <runId>",
+    input: Schema.Struct({ repoId: Schema.optional(Schema.String), runId: Schema.optional(Schema.String) }),
+    handler: ({ repoId, runId }) => actions.showRunTimeline(repoId, runId)
+  }),
+  flow({
+    name: "target.history",
+    summary: "Show the repository's target run history",
+    args: "[repoId]",
+    input: Schema.Struct({ repoId: Schema.optional(Schema.String) }),
+    handler: ({ repoId }) => actions.showRunHistory(repoId)
+  }),
+  flow({
+    name: "target.runs.select",
+    summary: "Replay a recorded run into the timeline and the graph",
+    hidden: true,
+    args: "[repoId] <runId>",
+    input: Schema.Struct({ repoId: Schema.optional(Schema.String), runId: Schema.String }),
+    handler: ({ repoId, runId }) => actions.selectRunReplay(repoId, runId)
+  }),
+  flow({
+    /* The replay scrubber: the slider's own act (time travel), user-triggered only. */
+    name: "target.run.scrub",
+    summary: "Replay a recorded run up to a cursor",
+    hidden: true,
+    userOnly: true,
+    args: "<runId> <cursor>",
+    input: Schema.Struct({ runId: Schema.String, cursor: Schema.Number }),
+    handler: ({ runId, cursor }) => actions.scrubRunReplay(runId, cursor)
+  }),
+  flow({
+    name: "target.affected",
+    summary: "Show what the working-tree diff affects",
+    args: "[repoId]",
+    input: Schema.Struct({ repoId: Schema.optional(Schema.String) }),
+    handler: ({ repoId }) => actions.showAffected(repoId)
+  }),
+  flow({
+    name: "target.ci",
+    summary: "Show the CI matrix the target graph implies",
+    args: "[repoId]",
+    input: Schema.Struct({ repoId: Schema.optional(Schema.String) }),
+    handler: ({ repoId }) => actions.showCiMatrix(repoId)
+  }),
+  flow({
+    /* The graph drawer's "open" affordance for a declaration site. */
+    name: "target.source.open",
+    summary: "Open a target's declaration source",
+    hidden: true,
+    userOnly: true,
+    args: "<repoId> <file[:line]>",
+    input: Schema.Struct({ repoId: Schema.String, file: Schema.String }),
+    handler: ({ repoId, file }) => {
+      const split = /^(.*):(\d+)$/.exec(file)
+      return split === null
+        ? actions.openTargetSource(repoId, file)
+        : actions.openTargetSource(repoId, split[1] ?? file, Number(split[2]))
+    }
   })
 ]
 
