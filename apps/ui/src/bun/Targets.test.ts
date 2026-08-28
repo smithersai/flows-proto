@@ -157,7 +157,9 @@ describe("createTargetRunner", () => {
     const stderr = own.filter((entry) => entry.frame.type === "stderr").map((entry) => (entry.frame as { data: string }).data).join("")
     expect(stdout).toBe(`ran //src:lint in ${dir}\n`)
     expect(stderr).toBe("progress line\n")
-    expect(own[own.length - 1]?.frame).toMatchObject({ type: "exit", code: 3 })
+    /* Every published frame carries the run-local seq replay orders by. */
+    expect(own.map((entry) => (entry.frame as { seq?: number }).seq)).toEqual(own.map((_entry, index) => index))
+    expect(own[own.length - 1]?.frame).toMatchObject({ type: "exit", code: 3, seq: own.length - 1 })
     expect(own.map((entry) => entry.frame.seq)).toEqual(own.map((_, index) => index))
     expect(runner.get(run.runId)).toMatchObject({ status: "failed", exitCode: 3 })
     expect(runner.attach("nope")).toBe(false)

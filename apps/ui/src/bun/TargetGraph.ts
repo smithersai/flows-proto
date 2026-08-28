@@ -171,6 +171,11 @@ export const queryTargetGraph = async (options: TargetGraphOptions): Promise<Tar
       return source === undefined ? node : { ...node, source }
     })
     const generatedAt = new Date().toISOString()
+    /*
+     * `digest` is the field a card compares to decide whether its cached
+     * graph went stale after a declaration edit; it has to reach the UI, not
+     * just this cache, or the documented staleness check can never fire.
+     */
     base = { digest, response: { repoId: options.repoId, nodes, edges: parsed.edges, warnings: targetResult.warnings, generatedAt, digest, durationMs: Date.now() - started } }
     graphCache.set(options.repo, base)
   }

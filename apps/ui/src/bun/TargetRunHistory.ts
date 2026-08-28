@@ -8,9 +8,11 @@ type HistoryLine = { readonly type: "record"; readonly record: RunRecord } | { r
 
 interface StoredRun {
   record: RunRecord
-  readonly events: Array<TargetRunEvent>
+  events: Array<TargetRunEvent>
   readonly path: string
   queue: Promise<void>
+  /** Retained stdout/stderr characters, kept under MAX_RETAINED_LOG_CHARS. */
+  logChars: number
 }
 
 export interface TargetRunHistory {
@@ -20,8 +22,41 @@ export interface TargetRunHistory {
   readonly replay: (runId: string, repos?: ReadonlyArray<{ readonly id: string; readonly path: string }>) => Promise<RunReplayResponse | undefined>
 }
 
+/*
+ * The in-memory cap on one run's retained stdout/stderr. The .jsonl journal on
+ * disk keeps every byte; this bounds the heap, because `runs` holds every run
+ * of the process and a chatty node emits megabytes. The TAIL is what a human
+ * reads, so eviction drops the OLDEST log frames and never a structured frame
+ * (started/node/summary/exit/error), which the timeline and overlay need whole.
+ */
+export const MAX_RETAINED_LOG_CHARS = 1_000_000
+
 const runsDir = (repo: string): string => join(repo, ".flows", "ui", "runs")
 const encode = (line: HistoryLine): string => `${JSON.stringify(line)}\n`
+
+const logChars = (event: TargetRunEvent): number =>
+  event.type === "stdout" || event.type === "stderr" ? event.data.length : 0
+
+/**
+ * Drops the OLDEST log frames until the retained tail fits the cap. Structured
+ * frames survive whatever the volume: the timeline, the overlay and the
+ * critical path are derived from them, so evicting one would silently change
+ * what a replay shows. Returns the events kept and their character count.
+ */
+const capLogs = (events: Array<TargetRunEvent>): { events: Array<TargetRunEvent>; logChars: number } => {
+  let total = events.reduce((sum, event) => sum + logChars(event), 0)
+  if (total <= MAX_RETAINED_LOG_CHARS) return { events, logChars: total }
+  const kept: Array<TargetRunEvent> = []
+  for (const event of events) {
+    const size = logChars(event)
+    if (size > 0 && total > MAX_RETAINED_LOG_CHARS) {
+      total -= size
+      continue
+    }
+    kept.push(event)
+  }
+  return { events: kept, logChars: total }
+}
 
 export const createTargetRunHistory = (): TargetRunHistory => {
   const runs = new Map<string, StoredRun>()
@@ -57,7 +92,9 @@ export const createTargetRunHistory = (): TargetRunHistory => {
       // as failed instead of leaving it "running" forever.
       if (record !== undefined) {
         if (record.status === "pending" || record.status === "running") record = { ...record, status: "failed" }
-        runs.set(record.runId, { record, events, path, queue: Promise.resolve() })
+        /* A journal on disk can be arbitrarily large; the heap copy is capped. */
+        const capped = capLogs(events)
+        runs.set(record.runId, { record, events: capped.events, path, queue: Promise.resolve(), logChars: capped.logChars })
       }
     }))
   }
@@ -71,13 +108,19 @@ export const createTargetRunHistory = (): TargetRunHistory => {
       }
       const path = join(dir, `${run.runId}.jsonl`)
       await writeFile(path, encode({ type: "record", record }))
-      runs.set(run.runId, { record, events: [], path, queue: Promise.resolve() })
+      runs.set(run.runId, { record, events: [], path, queue: Promise.resolve(), logChars: 0 })
       loadedRepos.add(run.repo)
     },
     event: (run, event) => {
       const stored = runs.get(run.runId)
       if (stored === undefined) return
       stored.events.push(event)
+      stored.logChars += logChars(event)
+      if (stored.logChars > MAX_RETAINED_LOG_CHARS) {
+        const capped = capLogs(stored.events)
+        stored.events = capped.events
+        stored.logChars = capped.logChars
+      }
       if (event.type === "started") stored.record = { ...stored.record, status: "running" }
       else if (event.type === "summary") stored.record = { ...stored.record, summary: event.summary }
       else if (event.type === "exit") stored.record = {
