@@ -145,16 +145,21 @@ test("the whole target-graph flow against the real backend", async ({ page }) =>
   await expect(scrubber).toBeVisible()
   const settledRows = await timelineRows.count()
   const min = await scrubber.getAttribute("min")
+  const max = await scrubber.getAttribute("max")
+  /*
+   * `fill` on a range already dispatches input and change, which is the pair
+   * the card de-duplicates into one scrub. Dispatching another `input` after
+   * it re-reads a value React may have re-rendered underneath, so the extra
+   * event replays a stale cursor — drive the slider only through `fill`.
+   */
   await scrubber.fill(String(min))
-  await scrubber.dispatchEvent("input")
   /*
    * At the first instant of the run, fewer nodes had reported than at the
    * end. A scrubber that changed nothing would be a slider over a still.
    */
   await expect.poll(() => timelineRows.count(), { timeout: 30_000 }).toBeLessThan(settledRows)
-  const max = await scrubber.getAttribute("max")
+  /* And travelling back to the end restores every row the run produced. */
   await scrubber.fill(String(max))
-  await scrubber.dispatchEvent("input")
   await expect.poll(() => timelineRows.count(), { timeout: 30_000 }).toBe(settledRows)
 
   // 7. Affected: a real edit to a real file, read through the real git diff.

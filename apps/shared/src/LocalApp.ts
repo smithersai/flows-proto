@@ -83,7 +83,6 @@ export type TargetsQueryResponse = z.infer<typeof TargetsQueryResponseSchema>
 /** `POST /api/targets/run` */
 export const TargetRunResponseSchema = z.object({ runId: z.string() })
 
-/** One frame on the WS topic `target-run:<runId>`. */
 /*
  * The run-local frame number the backend stamps on every frame it records
  * (smithers-shared/TargetGraph `TargetRunEvent.seq`): 0-based, gap-free, and
@@ -98,6 +97,7 @@ export const TargetRunResponseSchema = z.object({ runId: z.string() })
  */
 const frameSeq = { seq: z.number().int().nonnegative().optional() }
 
+/** One frame on the WS topic `target-run:<runId>`. */
 export const TargetRunFrameSchema = z.discriminatedUnion("type", [
   /* `label` attributes the chunk to one graph node when the backend can. */
   z.object({ type: z.literal("stdout"), data: z.string(), label: z.string().optional(), ...frameSeq }),
