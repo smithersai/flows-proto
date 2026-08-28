@@ -191,9 +191,8 @@ describe("the chat commands dispatch the target-graph cards", () => {
     if (timeline?.kind !== "run-timeline") throw new Error("expected a run-timeline card")
     expect(timeline.payload.cursor).toBe(RUN_END)
     expect(timeline.payload.summary?.total).toBe(timeline.payload.nodes.length)
-    /* Time travel paints the graph overlay too. */
-    const graphAfter = cardOf(store, "graph-force")
-    expect(graphAfter).toBeUndefined()
+    /* No graph card was opened in this test, so replay has none to paint — and invents none. */
+    expect(cardOf(store, "graph-force")).toBeUndefined()
   })
 
   test("the scrubber replays deterministically into the timeline and the graph overlay", async () => {
@@ -212,6 +211,15 @@ describe("the chat commands dispatch the target-graph cards", () => {
     expect(timeline.payload.nodes.length).toBe(expected.nodes.length)
     expect(timeline.payload.nodes.length).toBeLessThan(EVENTS.filter((e) => e.type === "node").length)
     expect(timeline.payload.summary).toBeUndefined()
+    /*
+     * Time travel gates the LOGS too. stdout frames carry no `at` of their own,
+     * so a fold that only checks the timed frames would hand a half-replayed
+     * run every log line the whole run ever printed.
+     */
+    expect(Object.keys(timeline.payload.logs ?? {}).length).toBe(Object.keys(expected.logs).length)
+    expect(Object.keys(timeline.payload.logs ?? {}).length).toBeLessThan(
+      Object.keys(replayAtCursor(EVENTS, RUN_END).logs).length
+    )
 
     const graph = cardOf(store, "graph-force")
     if (graph?.kind !== "graph") throw new Error("expected a graph card")
@@ -259,5 +267,50 @@ describe("the chat commands dispatch the target-graph cards", () => {
     } finally {
       globalThis.fetch = real
     }
+  })
+})
+
+/*
+ * The replay fold is the whole of time travel: the cards, the overlay and the
+ * scrubber all read it, so it is worth pinning on its own.
+ */
+describe("the replay fold gates every frame on the cursor", () => {
+  test("untimed stdout frames inherit the clock of the last timed frame", () => {
+    const first = EVENTS.find((event) => event.type === "node")
+    if (first?.type !== "node") throw new Error("expected a node frame")
+    const early = replayAtCursor(EVENTS, first.at)
+    const whole = replayAtCursor(EVENTS, RUN_END)
+    /* One node has been announced; nothing has printed yet. */
+    expect(early.nodes.length).toBe(1)
+    expect(Object.keys(early.logs)).toEqual([])
+    expect(Object.keys(whole.logs).length).toBeGreaterThan(1)
+    expect(whole.nodes.length).toBeGreaterThan(1)
+  })
+
+  test("a log line appears exactly at the cursor that reaches it, and not before", () => {
+    const printed = EVENTS.findIndex((event) => event.type === "stdout")
+    expect(printed).toBeGreaterThan(0)
+    const label = EVENTS[printed]?.type === "stdout" ? (EVENTS[printed] as { label?: string }).label : undefined
+    expect(label).toBeDefined()
+    /* The stdout frame follows its node's settled frame, so that frame's `at` is its clock. */
+    const timed = EVENTS.slice(0, printed).reverse().find((event) => "at" in event)
+    if (timed === undefined || !("at" in timed)) throw new Error("expected a timed frame before the first stdout")
+    expect(replayAtCursor(EVENTS, timed.at - 1).logs[label!]).toBeUndefined()
+    expect(replayAtCursor(EVENTS, timed.at).logs[label!]).toContain(label!)
+  })
+
+  test("the fold is monotone: a later cursor never drops what an earlier one had", () => {
+    const cursors = [RUN_BASE, RUN_BASE + (RUN_END - RUN_BASE) / 3, RUN_BASE + (RUN_END - RUN_BASE) / 2, RUN_END]
+    let previousNodes = -1
+    let previousLogs = -1
+    for (const cursor of cursors) {
+      const state = replayAtCursor(EVENTS, cursor)
+      expect(state.nodes.length).toBeGreaterThanOrEqual(previousNodes)
+      expect(Object.keys(state.logs).length).toBeGreaterThanOrEqual(previousLogs)
+      previousNodes = state.nodes.length
+      previousLogs = Object.keys(state.logs).length
+    }
+    expect(replayAtCursor(EVENTS, RUN_END).summary).toBeDefined()
+    expect(replayAtCursor(EVENTS, RUN_BASE).summary).toBeUndefined()
   })
 })

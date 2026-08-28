@@ -70,6 +70,14 @@ export const runHistoryCardId = (repoId: string): string => `run-history-${repoI
 export const affectedCardId = (repoId: string): string => `affected-${repoId}`
 export const ciMatrixCardId = (repoId: string): string => `ci-${repoId}`
 
+/*
+ * A per-node log tail cap, matching controller/targets.ts: these logs ride in
+ * a card payload, and card payloads are persisted, so a chatty node must not
+ * grow the store without bound. The TAIL is what a human reads.
+ */
+const MAX_LOG_CHARS = 200_000
+const capLog = (text: string): string => (text.length > MAX_LOG_CHARS ? text.slice(text.length - MAX_LOG_CHARS) : text)
+
 /** The replay fold: every recorded frame up to the cursor, as timeline/overlay state. */
 export const replayAtCursor = (
   events: ReadonlyArray<TargetRunEvent>,
@@ -78,14 +86,21 @@ export const replayAtCursor = (
   const nodes = new Map<string, NodeTiming>()
   const logs: Record<string, string> = {}
   let summary: RunSummary | undefined
+  /*
+   * stdout/stderr (and exit/error) frames carry no `at` of their own. They are
+   * recorded IN ORDER, so an untimed frame happened at the clock of the last
+   * timed frame before it — without that carry the cursor would gate the node
+   * frames but let every log line through, and scrubbing to the start of a run
+   * would show output the run had not produced yet.
+   */
+  let clock = Number.NEGATIVE_INFINITY
   for (const event of events) {
-    /* stdout/stderr are attributed, not timed; exit/error frames carry no `at` at all. */
-    const at = "at" in event ? event.at : undefined
-    if (at !== undefined && at > cursor) continue
+    if ("at" in event) clock = event.at
+    if (clock > cursor) continue
     if (event.type === "node") nodes.set(event.node.label, event.node)
     else if (event.type === "summary") summary = event.summary
     else if ((event.type === "stdout" || event.type === "stderr") && event.label !== undefined) {
-      logs[event.label] = (logs[event.label] ?? "") + event.data
+      logs[event.label] = capLog((logs[event.label] ?? "") + event.data)
     }
   }
   return { nodes: [...nodes.values()], summary, logs }
@@ -99,7 +114,7 @@ export const foldRunFrame = (
   if (frame.type === "node") state.nodes.set(frame.node.label, frame.node)
   else if (frame.type === "summary") state.summary = frame.summary
   else if ((frame.type === "stdout" || frame.type === "stderr") && "label" in frame && frame.label !== undefined) {
-    state.logs.set(frame.label, (state.logs.get(frame.label) ?? "") + frame.data)
+    state.logs.set(frame.label, capLog((state.logs.get(frame.label) ?? "") + frame.data))
   }
 }
 
@@ -194,26 +209,38 @@ export const createTargetGraphController = (
     }
   }
 
-  /** Attach one run's frames into the overlay and (when open) its timeline card. */
+  /*
+   * Attach one run's frames into the overlay and (when open) its timeline card.
+   *
+   * The attachment has to be RELEASED when the run exits. TargetRunClient keeps
+   * a topic subscribed while any listener is registered and re-announces
+   * `target-run.attach` for every live topic after a reconnect, so a listener
+   * left on a finished run makes the app re-attach to dead runs forever. The
+   * accumulated fold outlives the attachment on purpose: a timeline card opened
+   * after the run settled still paints from it.
+   */
+  const detachers = new Map<string, () => void>()
+  const releaseRun = (runId: string): void => {
+    const detach = detachers.get(runId)
+    if (detach === undefined) return
+    detachers.delete(runId)
+    detach()
+  }
   const watchRun = (repoId: string, runId: string, label: string): void => {
     if (liveRuns.has(runId)) return
     liveRuns.set(runId, { nodes: new Map(), summary: undefined, logs: new Map() })
-    if (devFixtures !== undefined) {
-      devFixtures.streamRun(runId, label, (frame) => {
-        const fold = liveRuns.get(runId)
-        if (fold === undefined) return
-        foldRunFrame(fold, frame)
-        paintRun(repoId, runId)
-      })
-      return
-    }
-    runs.attach(runId, (frame) => {
+    const onFrame = (frame: TargetRunFrame): void => {
       const fold = liveRuns.get(runId)
       if (fold === undefined) return
       foldRunFrame(fold, frame)
       paintRun(repoId, runId)
-    })
+      if (frame.type === "exit") releaseRun(runId)
+    }
+    detachers.set(runId, devFixtures !== undefined ? devFixtures.streamRun(runId, label, onFrame) : runs.attach(runId, onFrame))
   }
+  ctx.onDispose(() => {
+    for (const runId of [...detachers.keys()]) releaseRun(runId)
+  })
 
   const showGraph: TargetGraphController["showGraph"] = async (repoIdArg, label) => {
     const repoId = resolveRepoId(repoIdArg)
@@ -277,6 +304,8 @@ export const createTargetGraphController = (
       payload: { repoId, runId: runIdArg, label: runIdArg, status: "running", nodes: [] }
     })
     watchRun(repoId, runIdArg, runIdArg)
+    /* A run the overlay has been folding since it started is already known; paint it now rather than waiting for the next frame (a settled run has none). */
+    paintRun(repoId, runIdArg)
   }
 
   const showHistory: TargetGraphController["showHistory"] = async (repoIdArg) => {

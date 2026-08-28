@@ -57,10 +57,61 @@ describe("the fixture graph's layout", () => {
     expect(laidOut.edges.length).toBe(94)
   })
 
+  /*
+   * The captured force graph happens to declare no private helpers, so
+   * asserting the collapse against it alone proves nothing (82 === 82). Graft
+   * one on: a private helper between two real nodes is exactly the shape the
+   * toggle exists for.
+   */
+  const WITH_PRIVATE: TargetGraphResponse = {
+    ...GRAPH,
+    nodes: [
+      ...GRAPH.nodes,
+      {
+        label: "//src:__private_Overlay_4",
+        package: "//src",
+        name: "__private_Overlay_4",
+        rule: "Shell.Run",
+        kinds: [],
+        private: true
+      }
+    ],
+    edges: [
+      ...GRAPH.edges,
+      { from: "//src:typeCheck", to: "//src:__private_Overlay_4", kind: "deps" },
+      { from: "//src:__private_Overlay_4", to: "//src:srcs", kind: "data" }
+    ]
+  }
+
   test("private nodes drop out (with their edges) until asked for", () => {
-    const withPrivate = layoutTargetGraph(GRAPH, { showPrivate: true })
-    const without = layoutTargetGraph(GRAPH, { showPrivate: false })
-    expect(without.nodes.length).toBe(withPrivate.nodes.filter((node) => !node.data.node.private).length)
+    const shown = layoutTargetGraph(WITH_PRIVATE, { showPrivate: true })
+    expect(shown.nodes.length).toBe(83)
+    expect(shown.edges.length).toBe(96)
+    expect(shown.nodes.find((node) => node.id === "//src:__private_Overlay_4")?.data.node.private).toBe(true)
+
+    const hidden = layoutTargetGraph(WITH_PRIVATE, { showPrivate: false })
+    expect(hidden.nodes.map((node) => node.id)).not.toContain("//src:__private_Overlay_4")
+    expect(hidden.nodes.length).toBe(82)
+    /* Both edges through the helper go with it — an edge to a node off the canvas is a dangling line. */
+    expect(hidden.edges.length).toBe(94)
+    expect(hidden.edges.some((edge) => edge.id.includes("__private_"))).toBe(false)
+  })
+
+  test("a private node renders dimmed when the toggle asks for it", () => {
+    const host = render(card({ graph: WITH_PRIVATE }))
+    expect(host.querySelector("[data-label=\"//src:__private_Overlay_4\"]")).toBeNull()
+    const toggle = host.querySelector(".graph-card-private-toggle input") as HTMLInputElement | null
+    expect(toggle).not.toBeNull()
+    flushSync(() => toggle?.click())
+    const helper = host.querySelector("[data-label=\"//src:__private_Overlay_4\"]")
+    expect(helper?.getAttribute("data-private")).toBe("true")
+  })
+
+  test("the deps edge kind draws thin and solid", () => {
+    const laidOut = layoutTargetGraph(WITH_PRIVATE, { showPrivate: true })
+    const deps = laidOut.edges.find((edge) => edge.data?.kind === "deps")
+    expect(deps?.style?.strokeWidth).toBe(1)
+    expect(deps?.style?.strokeDasharray).toBeUndefined()
   })
 
   test("focus highlights deps() ∪ rdeps() and fades the rest", () => {

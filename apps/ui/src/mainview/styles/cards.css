@@ -892,10 +892,18 @@
 .smithers-card[data-maximized="true"] .graph-card {
 	height: calc(100% - 0.5rem);
 }
+/*
+ * Every node carries the family/status stripe, not just the families named
+ * below: the run overlay repaints `border-left-color`, and a colour alone
+ * paints nothing on a node whose border-left has no width. The workspace has
+ * far more rule families (Suite, Alias, Filegroup, Generate, ...) than the
+ * handful worth their own hue, and all of them must show a run status.
+ */
 .graph-node {
 	width: 240px;
 	height: 84px;
 	font-size: 0.75rem;
+	border-left: 3px solid var(--border, #e4ddcf);
 }
 .graph-node-handle {
 	opacity: 0;
