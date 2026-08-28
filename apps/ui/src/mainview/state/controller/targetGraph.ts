@@ -19,7 +19,6 @@ import type {
   RunHistoryResponse,
   RunReplayResponse,
   RunSummary,
-  TargetGraphResponse,
   TargetRunEvent
 } from "smithers-shared/TargetGraph"
 import {
@@ -38,6 +37,8 @@ import type { ControllerContext } from "./context"
 export interface TargetGraphController {
   /** `show graph` / `graph <label>`: the DAG card, optionally focused on one label. */
   readonly showGraph: (repoId: string | undefined, label?: string) => Promise<string | void>
+  /** The drawer's focus: pin the graph card on one label, or clear it when the label goes unnamed. */
+  readonly focusGraph: (repoId: string | undefined, label?: string) => string | void
   /** `timeline [runId]`: one run's Gantt card, streamed live when the run is live. */
   readonly showTimeline: (repoId: string | undefined, runId?: string) => Promise<string | void>
   /** `history`: the recorded runs table. */
@@ -78,7 +79,8 @@ export const replayAtCursor = (
   const logs: Record<string, string> = {}
   let summary: RunSummary | undefined
   for (const event of events) {
-    const at = event.type === "stdout" || event.type === "stderr" ? undefined : event.at
+    /* stdout/stderr are attributed, not timed; exit/error frames carry no `at` at all. */
+    const at = "at" in event ? event.at : undefined
     if (at !== undefined && at > cursor) continue
     if (event.type === "node") nodes.set(event.node.label, event.node)
     else if (event.type === "summary") summary = event.summary
@@ -245,6 +247,22 @@ export const createTargetGraphController = (
     patch(id, "graph", (card) => ({ payload: { ...card.payload, status: "done", graph: answer }, status: "acted" }))
   }
 
+  /*
+   * The drawer opens on the card payload's focus, so dismissing it has to
+   * clear that focus — local component state alone would let the drawer
+   * spring back on the next render of a `graph //src:lint` card.
+   */
+  const focusGraph: TargetGraphController["focusGraph"] = (repoIdArg, label) => {
+    const repoId = resolveRepoId(repoIdArg)
+    if (typeof repoId !== "string") return repoId.error
+    const id = graphCardId(repoId)
+    if (store.collections.cards.get(id)?.kind !== "graph") return "There is no graph card open to focus."
+    patch(id, "graph", (card) => {
+      const { focus: _cleared, ...rest } = card.payload
+      return { payload: label === undefined || label === "" ? rest : { ...rest, focus: label } }
+    })
+  }
+
   const showTimeline: TargetGraphController["showTimeline"] = async (repoIdArg, runIdArg) => {
     const repoId = resolveRepoId(repoIdArg)
     if (typeof repoId !== "string") return repoId.error
@@ -349,15 +367,24 @@ export const createTargetGraphController = (
     const card = store.collections.cards.get(cardId)
     if (card === undefined || card.kind !== "run-timeline") return
     const repoId = card.payload.repoId
-    patch(cardId, "run-timeline", (current) => ({
-      payload: {
-        ...current.payload,
-        nodes: state.nodes,
-        ...(state.summary === undefined ? {} : { summary: state.summary }),
-        cursor,
-        logs: state.logs
+    /*
+     * Time travel replaces the fold, it does not merge into it: a cursor
+     * BEFORE the summary frame has no summary, so spreading the old payload
+     * would leave the finished run's totals and critical path painted over a
+     * half-replayed run.
+     */
+    patch(cardId, "run-timeline", (current) => {
+      const { summary: _dropped, ...rest } = current.payload
+      return {
+        payload: {
+          ...rest,
+          nodes: state.nodes,
+          ...(state.summary === undefined ? {} : { summary: state.summary }),
+          cursor,
+          logs: state.logs
+        }
       }
-    }))
+    })
     if (store.collections.cards.get(graphCardId(repoId))?.kind === "graph") {
       patch(graphCardId(repoId), "graph", (current) => ({
         payload: {
@@ -441,14 +468,17 @@ export const createTargetGraphController = (
     const answer = await post(
       "/api/targets/open-source",
       { repoId, file, ...(line === undefined ? {} : { line }) },
-      { safeParse: (value: unknown) => ({ success: true, data: value }) },
+      { safeParse: (value: unknown) => ({ success: true, data: value as Record<string, unknown> }) },
       "The open-source route answered an unexpected shape."
     )
-    if ("error" in answer) return `Could not open the declaration: ${answer.error}`
+    if (answer !== null && "error" in answer && typeof answer.error === "string") {
+      return `Could not open the declaration: ${answer.error}`
+    }
   }
 
   return {
     showGraph,
+    focusGraph,
     showTimeline,
     showHistory,
     selectRun,

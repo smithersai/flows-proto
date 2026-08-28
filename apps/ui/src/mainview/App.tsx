@@ -48,6 +48,7 @@ import { ChromeBar } from "./tabs/ChromeBar"
 import { TabBodies } from "./tabs/TabBodies"
 import { timeLabel } from "./Timestamps"
 import { ToastStack } from "./ToastStack"
+import { useCardRows } from "./state/useCardRows"
 
 const systemNoteLabel = (message: Message): string => {
   if (message.statusDetail !== undefined) return `Turn interrupted — ${message.statusDetail}`
@@ -706,7 +707,7 @@ function App() {
     }))
   )
   const { data: worldDocumentRows } = useLiveQuery(collections.worldDocuments)
-  const { data: cardRows } = useLiveQuery(collections.cards)
+  const cardRows = useCardRows(collections.cards)
   const { data: identityRows } = useLiveQuery(collections.identitySessions)
   const { data: billingRows } = useLiveQuery(collections.billingAccounts)
   const { data: toastRows } = useLiveQuery((q) =>

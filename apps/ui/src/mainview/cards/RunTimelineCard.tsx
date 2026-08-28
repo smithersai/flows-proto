@@ -8,7 +8,7 @@
  * replays the recorded events into this card and the graph overlay.
  */
 import { Button, EmptyState, KpiStat, StatusPill } from "@smthrs/ui"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import type { NodeTiming } from "smithers-shared/TargetGraph"
 import { timeLabel } from "../Timestamps"
 import type { Card } from "../state/AppState"
@@ -50,6 +50,18 @@ export const RunTimelineCardBody = ({
 }) => {
   const { runId, label, status, nodes, summary, cursor, logs, extent } = card.payload
   const [openLog, setOpenLog] = useState<string | undefined>(undefined)
+  /*
+   * The scrubber dispatches on both `input` (every drag tick) and `change`
+   * (the release), because a range emits both and only `input` is delivered
+   * headlessly. Time travel is idempotent, so the only thing to suppress is
+   * the consecutive duplicate the pair produces: one cursor, one command.
+   */
+  const lastScrub = useRef<string | undefined>(undefined)
+  const scrub = (raw: string): void => {
+    if (raw === lastScrub.current) return
+    lastScrub.current = raw
+    onRunCommand("target.run.scrub", `${runId} ${raw}`)
+  }
   const axis = extent ?? timelineExtent(nodes)
   const critical = new Set(summary?.criticalPath ?? [])
   const rows = [...nodes].sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0) || a.label.localeCompare(b.label))
@@ -121,7 +133,9 @@ export const RunTimelineCardBody = ({
               value={cursor}
               aria-label="Replay cursor"
               data-testid={`run-timeline-scrubber-${runId}`}
-              onChange={(event) => onRunCommand("target.run.scrub", `${runId} ${event.target.value}`)}
+              data-flow="target.run.scrub"
+              onInput={(event) => scrub((event.target as HTMLInputElement).value)}
+              onChange={(event) => scrub(event.target.value)}
             />
           </label>
         ) :

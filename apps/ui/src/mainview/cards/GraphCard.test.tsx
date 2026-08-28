@@ -178,6 +178,33 @@ describe("the graph card over the fixture", () => {
     expect(ran).toEqual(["target.run force //src:lint"])
   })
 
+  /*
+   * A payload focus (the `graph //src:lint` card) outlives the component's
+   * own selection, so dismissing the drawer has to clear it through the
+   * command — otherwise the drawer springs straight back open.
+   */
+  test("dismissing the drawer of a payload-focused card clears the focus through the command", () => {
+    const ran: Array<string> = []
+    const host = render(card({ focus: "//src:lint" }), (name, args) => ran.push(`${name} ${args ?? ""}`))
+    expect(host.querySelector("[data-testid=\"graph-drawer-//src:lint\"]")).not.toBeNull()
+    const close = host.querySelector(".graph-drawer-header [data-flow=\"target.graph.focus\"]") as HTMLElement | null
+    expect(close).not.toBeNull()
+    flushSync(() => close?.click())
+    expect(ran).toEqual(["target.graph.focus force"])
+  })
+
+  test("dismissing a click-selected drawer stays local — no focus command", () => {
+    const ran: Array<string> = []
+    const host = render(card({}), (name, args) => ran.push(`${name} ${args ?? ""}`))
+    flushSync(() => {
+      host.querySelector("[data-label=\"//src:lint\"]")?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    const close = host.querySelector(".graph-drawer-header [data-flow=\"target.graph.focus\"]") as HTMLElement | null
+    flushSync(() => close?.click())
+    expect(ran).toEqual([])
+    expect(host.querySelector("[data-testid=\"graph-drawer-//src:lint\"]")).toBeNull()
+  })
+
   test("the overlay paints node statuses, durations and hit badges from run frames", () => {
     const host = render(
       card({

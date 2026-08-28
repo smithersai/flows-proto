@@ -223,7 +223,13 @@ export const GraphNodeDrawer = ({
     <aside className="graph-drawer" data-testid={`graph-drawer-${node.label}`} aria-label={`${node.label} details`}>
       <header className="graph-drawer-header">
         <span className="graph-drawer-label">{node.label}</span>
-        <Button variant="ghost" size="icon" aria-label="Close details" onClick={() => onDismissDrawer()}>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-flow="target.graph.focus"
+          aria-label="Close the graph focus details"
+          onClick={() => onDismissDrawer()}
+        >
           ×
         </Button>
       </header>
@@ -430,7 +436,11 @@ export const GraphCardBody = ({
               repoId={card.payload.repoId}
               timing={timings.get(drawerNode.label)}
               onRunCommand={onRunCommand}
-              onDismissDrawer={() => setSelected(undefined)}
+              onDismissDrawer={() => {
+                setSelected(undefined)
+                /* A payload focus outlives local state, so clearing it is the command's job. */
+                if (focus !== undefined) onRunCommand("target.graph.focus", card.payload.repoId)
+              }}
             />
           ) :
           null}

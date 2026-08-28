@@ -175,32 +175,39 @@ const FIXTURE_RUN_ROOT = "//:prePush"
 export const createTargetGraphDevFixtures = (): TargetGraphDevFixtures | undefined => {
   if (!targetGraphFixturesEnabled()) return undefined
   const recorded = new Map<string, RunReplayResponse>()
+  /*
+   * The one standing recording the history card lists. It has to BE a
+   * recording, not just a row: a history that offers a run the replay route
+   * then refuses is exactly the dead end the card must never render.
+   */
+  const standingRecording = (repoId: string): RunReplayResponse => {
+    const live = recorded.get(FIXTURE_RUN_ID)
+    if (live !== undefined) return live
+    const graph = fixtureTargetGraph(repoId)
+    const events = fixtureRunEvents(graph, {
+      runId: FIXTURE_RUN_ID,
+      root: FIXTURE_RUN_ROOT,
+      base: FIXTURE_RUN_BASE
+    })
+    const summary = events.find((event): event is Extract<TargetRunEvent, { type: "summary" }> =>
+      event.type === "summary"
+    )?.summary
+    const run: RunRecord = {
+      runId: FIXTURE_RUN_ID,
+      repoId,
+      label: FIXTURE_RUN_ROOT,
+      labels: fixtureRunLabels(graph, FIXTURE_RUN_ROOT),
+      status: summary?.ok === false ? "failed" : "done",
+      startedAt: FIXTURE_RUN_BASE,
+      ...(summary === undefined ? {} : { endedAt: FIXTURE_RUN_BASE + summary.durationMs, summary }),
+      exitCode: summary?.ok === false ? 1 : 0
+    }
+    return { run, events: [...events] }
+  }
   return {
     graph: (repoId) => fixtureTargetGraph(repoId),
-    history: (repoId) => {
-      const replay = recorded.get(FIXTURE_RUN_ID)
-      const events = replay?.events ?? fixtureRunEvents(fixtureTargetGraph(repoId), {
-        runId: FIXTURE_RUN_ID,
-        root: FIXTURE_RUN_ROOT,
-        base: FIXTURE_RUN_BASE
-      })
-      const summary = events.find((event): event is Extract<TargetRunEvent, { type: "summary" }> =>
-        event.type === "summary"
-      )?.summary
-      const run: RunRecord = {
-        runId: FIXTURE_RUN_ID,
-        repoId,
-        label: FIXTURE_RUN_ROOT,
-        labels: fixtureRunLabels(fixtureTargetGraph(repoId), FIXTURE_RUN_ROOT),
-        status: "done",
-        startedAt: FIXTURE_RUN_BASE,
-        endedAt: summary !== undefined ? FIXTURE_RUN_BASE + summary.durationMs : undefined,
-        exitCode: 0,
-        ...(summary === undefined ? {} : { summary })
-      }
-      return { runs: [run] }
-    },
-    replay: (runId) => recorded.get(runId),
+    history: (repoId) => ({ runs: [standingRecording(repoId).run] }),
+    replay: (runId) => (runId === FIXTURE_RUN_ID ? standingRecording("fixture") : recorded.get(runId)),
     affected: (repoId) => ({
       repoId,
       base: "origin/main",

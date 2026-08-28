@@ -248,6 +248,17 @@ const GRAMMAR: Readonly<Record<string, (args: string | undefined) => Parsed>> = 
     const [repoId, ...rest] = tokens
     return ok({ repoId, label: rest.join(" ") })
   },
+  /* Same shape as target.graph: a lone `//…` token is the label to pin, none clears the focus. */
+  "target.graph.focus": (args) => {
+    const tokens = tokensOf(args)
+    if (tokens.length === 0) return ok({})
+    if (tokens.length === 1) {
+      const [only] = tokens
+      return only !== undefined && only.startsWith("//") ? ok({ label: only }) : ok({ repoId: only })
+    }
+    const [repoId, ...rest] = tokens
+    return ok({ repoId, label: rest.join(" ") })
+  },
   "target.timeline": (args) => {
     const tokens = tokensOf(args)
     if (tokens.length > 2) return no("target.timeline takes a run id and optionally a repository id")

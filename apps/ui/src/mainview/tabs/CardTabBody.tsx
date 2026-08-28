@@ -1,6 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db"
 import { CardView } from "../ChatCards"
 import { useController } from "../ControllerContext"
+import { useCardRows } from "../state/useCardRows"
 
 /*
  * A card tab's body (docs/LOCAL-APP.md "Cards"): the SAME card component
@@ -12,7 +13,7 @@ import { useController } from "../ControllerContext"
 export function CardTabBody({ cardId }: { readonly cardId: string }) {
   const controller = useController()
   const { collections } = controller.store
-  const { data: cardRows } = useLiveQuery(collections.cards)
+  const cardRows = useCardRows(collections.cards)
   const { data: worldDocumentRows } = useLiveQuery(collections.worldDocuments)
   const { data: sessionRows } = useLiveQuery((q) =>
     q.from({ session: collections.sessions }).select(({ session }) => ({

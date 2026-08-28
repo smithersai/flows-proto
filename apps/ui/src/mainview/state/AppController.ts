@@ -130,6 +130,7 @@ export interface AppController {
   readonly openTarget: TargetsController["openTarget"]
   /* The target-graph cards (docs/LOCAL-APP.md "Cards: target graph"); see controller/targetGraph.ts. */
   readonly showGraph: TargetGraphController["showGraph"]
+  readonly focusGraphNode: TargetGraphController["focusGraph"]
   readonly showRunTimeline: TargetGraphController["showTimeline"]
   readonly showRunHistory: TargetGraphController["showHistory"]
   readonly selectRunReplay: TargetGraphController["selectRun"]
@@ -643,6 +644,7 @@ export const createAppController = (
     runTarget,
     openTarget,
     showGraph: targetGraph.showGraph,
+    focusGraphNode: targetGraph.focusGraph,
     showRunTimeline: targetGraph.showTimeline,
     showRunHistory: targetGraph.showHistory,
     selectRunReplay: targetGraph.selectRun,
@@ -827,6 +829,7 @@ export const createAppController = (
     runTarget,
     openTarget,
     showGraph: targetGraph.showGraph,
+    focusGraphNode: targetGraph.focusGraph,
     showRunTimeline: targetGraph.showTimeline,
     showRunHistory: targetGraph.showHistory,
     selectRunReplay: targetGraph.selectRun,

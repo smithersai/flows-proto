@@ -856,7 +856,12 @@
 	gap: 0.5rem;
 	min-height: 22rem;
 }
-.graph-card-canvas {
+/*
+ * The canvas is the graph's whole stage, so it names its own height ahead of
+ * the shared .sui-canvas default (hence the .graph-card prefix: one more
+ * class, so the cascade order between the two stylesheets cannot decide it).
+ */
+.graph-card .graph-card-canvas {
 	position: relative;
 	flex: 1;
 	min-width: 0;
@@ -864,6 +869,19 @@
 	border: 1px solid var(--border, #e4ddcf);
 	border-radius: 10px;
 	overflow: hidden;
+}
+/*
+ * React Flow lays its panes out absolutely and asks for `height: 100%`, which
+ * resolves to ZERO whenever the canvas's own height is indefinite — the graph
+ * then renders 82 invisible nodes in a 0px pane. Filling the (relative)
+ * canvas by inset makes the pane's box independent of how the canvas got its
+ * height. e2e/playwright/target-graph.spec.ts guards this.
+ */
+.graph-card .graph-card-canvas .react-flow {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
 }
 .smithers-card[data-maximized="true"] .graph-card-canvas-row,
 .smithers-card[data-maximized="true"] .graph-card-canvas {

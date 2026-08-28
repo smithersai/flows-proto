@@ -126,15 +126,26 @@ describe("the run timeline card", () => {
     expect(scrubber?.min).toBe("1000")
     expect(scrubber?.max).toBe("8900")
     expect(scrubber?.value).toBe("4000")
-    flushSync(() => {
-      if (scrubber) {
-        // React's onChange reads the native setter's value off the input event.
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set
-        setter?.call(scrubber, "5200")
+    const drag = (to: string): void => {
+      flushSync(() => {
+        if (scrubber === null) return
+        // Bypass React's value tracker the way a real drag does, then emit
+        // the pair a range emits: `input` per tick, `change` on release.
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(scrubber, to)
         scrubber.dispatchEvent(new Event("input", { bubbles: true }))
-      }
-    })
+        scrubber.dispatchEvent(new Event("change", { bubbles: true }))
+      })
+    }
+    drag("5200")
+    // One cursor, one command: the release's duplicate is suppressed.
     expect(ran).toEqual(["target.run.scrub run-1 5200"])
+    drag("6100")
+    drag("5200")
+    expect(ran).toEqual([
+      "target.run.scrub run-1 5200",
+      "target.run.scrub run-1 6100",
+      "target.run.scrub run-1 5200"
+    ])
   })
 
   test("no rows yet is an honest empty state, not a green one", () => {

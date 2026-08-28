@@ -950,6 +950,16 @@ export const baseFlows = (actions: CommandActions): ReadonlyArray<FlowEntry> => 
     handler: ({ repoId, label }) => actions.showGraph(repoId, label)
   }),
   flow({
+    /* The graph drawer's focus: pin one label, or clear the focus when none is named. */
+    name: "target.graph.focus",
+    summary: "Focus the target graph on one label, or clear the focus details",
+    hidden: true,
+    userOnly: true,
+    args: "<repoId> [label]",
+    input: Schema.Struct({ repoId: Schema.optional(Schema.String), label: Schema.optional(Schema.String) }),
+    handler: ({ repoId, label }) => actions.focusGraphNode(repoId, label)
+  }),
+  flow({
     name: "target.timeline",
     summary: "Show one target run's timeline",
     args: "[repoId] <runId>",
