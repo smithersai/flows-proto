@@ -52,7 +52,13 @@ export const createTargetRunHistory = (): TargetRunHistory => {
           }
         } catch { /* A partial final line after a crash is ignored. */ }
       }
-      if (record !== undefined) runs.set(record.runId, { record, events, path, queue: Promise.resolve() })
+      // A record that never settled belongs to a run that died with the
+      // previous process; after a restart it can never finish, so report it
+      // as failed instead of leaving it "running" forever.
+      if (record !== undefined) {
+        if (record.status === "pending" || record.status === "running") record = { ...record, status: "failed" }
+        runs.set(record.runId, { record, events, path, queue: Promise.resolve() })
+      }
     }))
   }
 

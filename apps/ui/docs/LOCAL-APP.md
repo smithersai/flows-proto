@@ -563,7 +563,8 @@ repository/target seam without changing the raw run protocol:
   `.flows/ui/runs/<runId>.jsonl`. `POST /api/targets/runs` returns records newest
   first; `POST /api/targets/runs/replay` reloads the record and complete event
   sequence. Repository directories are indexed lazily, so history survives an
-  app restart.
+  app restart; a record that never settled (the process died mid-run) reloads
+  as `failed` instead of staying `running` forever.
 - `POST /api/targets/affected` combines `git status --porcelain`, `git diff
   --name-only HEAD`, plan inputs when exposed, statically recoverable `S.file`
   and `S.glob` declaration inputs, and reverse graph reachability. Its `signal`
@@ -589,7 +590,7 @@ schemas and pure `reachable`/`criticalPath` helpers remain in `TargetGraph.ts`.
 | History + replay | pass | `curl -X POST :47427/api/targets/runs …`; `curl -X POST :47427/api/targets/runs/replay …` | newest run `done`, exit 0; replay has 4 node events followed by summary/exit |
 | Affected | pass | create `src/.ui-affected-proof.ts` in the e2e clone, call `/api/targets/affected`, then remove it | direct `//src:srcs`; transitive `//src:typeCheck`; signal and static-analysis limit returned |
 | CI preview | pass | `curl -X POST :47427/api/targets/ci -d '{"repoId":"92c143080bff"}'` | scratch-rendered `ci`, `danger`, `review`; jobs point to `//:prePush`, `//src:deadCode`, `//.github:danger`, `//:prReview`, etc. |
-| Unit/route suites | pass | `pnpm -C apps/shared test && pnpm -C apps/ui test` | shared `44 pass`; UI `876 pass`, `0 fail` |
+| Unit/route suites | pass | `pnpm -C apps/shared test && pnpm -C apps/ui test` | shared `44 pass`; UI `877 pass`, `0 fail` |
 | Typecheck | external lock | `node apps/ui/scripts/ensure-devkit.mjs && pnpm -C apps/ui typecheck` | devkit projection waited on another process's build lock; direct `tsc` has no target-backend diagnostics after fixes, but reports missing Electrobun devkit plus existing UI-lane/card and `packages/core/Flow.ts` errors |
 
 Shared-file hunks are deliberately small: additive schemas in

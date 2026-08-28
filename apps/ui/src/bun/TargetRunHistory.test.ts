@@ -24,3 +24,21 @@ test("run history persists and reloads ordered events", async () => {
   expect(replay?.run.summary?.criticalPath).toEqual(["//:test"])
   await rm(repo, { recursive: true, force: true })
 })
+
+test("a run interrupted by a restart reloads as failed, not stuck running", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "smithers-history-"))
+  const run: TargetRun = { runId: "run-2", repoId: "repo-1", repo, label: "//:test", labels: ["//:test"], status: "running", exitCode: null, startedAt: 100 }
+  const history = createTargetRunHistory()
+  await history.start(run)
+  history.event(run, { type: "started", runId: run.runId, label: run.label, labels: [...run.labels], at: 100 })
+  await history.list("repo-1", repo) // flush the event queue; no exit frame follows (crash)
+
+  const reloaded = createTargetRunHistory()
+  const listed = await reloaded.list("repo-1", repo)
+  expect(listed).toHaveLength(1)
+  expect(listed[0]).toMatchObject({ runId: "run-2", status: "failed" })
+  const replay = await reloaded.replay("run-2")
+  expect(replay?.run.status).toBe("failed")
+  expect(replay?.events.map((event) => event.type)).toEqual(["started"])
+  await rm(repo, { recursive: true, force: true })
+})
