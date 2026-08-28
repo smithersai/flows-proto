@@ -36,7 +36,7 @@ export const GraphNodeSchema = z.object({
     .object({
       mode: z.enum(["execute", "check", "write"]).optional(),
       cacheable: z.boolean().optional(),
-      /** Key preview (hex prefix); never a secret. */
+      /** The node's cache key as the planner prints it (64 hex chars, or a shorter preview); never a secret. */
       key: z.string().optional(),
       /** Typed refusal at plan time (host bin absent, approval required, missing input, NotImplemented). */
       refusal: z.string().optional(),
@@ -68,6 +68,12 @@ export const TargetGraphResponseSchema = z.object({
   warnings: z.array(z.string()),
   /** ISO timestamp of the load; the UI shows staleness. */
   generatedAt: z.string(),
+  /**
+   * Digest of the declaration set the graph was loaded from (every
+   * PACKAGE.ts/WORKSPACE.ts path + content hash). A card compares it to
+   * decide whether a cached graph is stale after an edit.
+   */
+  digest: z.string().optional(),
   durationMs: z.number()
 })
 export type TargetGraphResponse = z.infer<typeof TargetGraphResponseSchema>
@@ -84,6 +90,12 @@ export const NodeTimingSchema = z.object({
   /** Epoch ms; absent until the node starts / settles. */
   startedAt: z.number().optional(),
   endedAt: z.number().optional(),
+  /**
+   * Wall time of the node. The backend always sets it when it knows the
+   * node settled (`hit` rows are 0 or the executor's reported time) and it
+   * equals `endedAt - startedAt` whenever both timestamps are present;
+   * `criticalPath` reads only this field.
+   */
   durationMs: z.number().optional(),
   key: z.string().optional(),
   /** Refusal or failure text, first line. */
@@ -112,14 +124,29 @@ export type RunSummary = z.infer<typeof RunSummarySchema>
  * structured ones the graph overlay and the timeline consume. `stdout` and
  * `stderr` frames carry `label` when the backend can attribute the chunk.
  */
+/**
+ * `seq` is the run-local monotonic frame number the backend assigns to every
+ * frame it records (0-based, gap-free). Replay orders by `seq`, never by
+ * `at`, so two frames in one millisecond stay ordered; it is optional only
+ * for frames produced before the backend recorded them.
+ */
+const frameSeq = { seq: z.number().int().nonnegative().optional() }
+
 export const TargetRunEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("stdout"), data: z.string(), label: z.string().optional() }),
-  z.object({ type: z.literal("stderr"), data: z.string(), label: z.string().optional() }),
-  z.object({ type: z.literal("exit"), code: z.number().nullable() }),
-  z.object({ type: z.literal("error"), message: z.string() }),
-  z.object({ type: z.literal("started"), runId: z.string(), label: z.string(), at: z.number(), labels: z.array(z.string()) }),
-  z.object({ type: z.literal("node"), node: NodeTimingSchema, at: z.number() }),
-  z.object({ type: z.literal("summary"), summary: RunSummarySchema, at: z.number() })
+  z.object({ type: z.literal("stdout"), data: z.string(), label: z.string().optional(), ...frameSeq }),
+  z.object({ type: z.literal("stderr"), data: z.string(), label: z.string().optional(), ...frameSeq }),
+  z.object({ type: z.literal("exit"), code: z.number().nullable(), ...frameSeq }),
+  z.object({ type: z.literal("error"), message: z.string(), ...frameSeq }),
+  z.object({
+    type: z.literal("started"),
+    runId: z.string(),
+    label: z.string(),
+    at: z.number(),
+    labels: z.array(z.string()),
+    ...frameSeq
+  }),
+  z.object({ type: z.literal("node"), node: NodeTimingSchema, at: z.number(), ...frameSeq }),
+  z.object({ type: z.literal("summary"), summary: RunSummarySchema, at: z.number(), ...frameSeq })
 ])
 export type TargetRunEvent = z.infer<typeof TargetRunEventSchema>
 
@@ -256,7 +283,12 @@ export const TARGET_GRAPH_ROUTES = {
   ci: "/api/targets/ci"
 } as const
 
-/** Labels reachable from `label` along the given direction (deps = outgoing, rdeps = incoming). */
+/**
+ * Labels reachable from `label` along the given direction (deps = outgoing,
+ * rdeps = incoming). The start label is not in the set unless a cycle
+ * returns to it; an unknown label and a leaf both yield the empty set, so
+ * a caller that must tell them apart checks `nodes` first.
+ */
 export const reachable = (
   edges: ReadonlyArray<GraphEdge>,
   label: string,
@@ -327,7 +359,7 @@ export const criticalPath = (
           continue
         }
         const total = known?.total ?? 0
-        if (total > frame.longest || (frame.via === undefined && total === frame.longest && total > 0)) {
+        if (total > frame.longest || (frame.via === undefined && total === frame.longest)) {
           frame.longest = total
           frame.via = dep
         }
