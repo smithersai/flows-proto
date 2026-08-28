@@ -358,9 +358,10 @@ export const criticalPath = (
           frames.push({ label: dep, deps: deps.get(dep) ?? [], index: 0, longest: 0, via: undefined })
           continue
         }
-        const total = known?.total ?? 0
-        if (total > frame.longest || (frame.via === undefined && total === frame.longest)) {
-          frame.longest = total
+        // A dep still in `visiting` is a back edge: it contributes 0 and can
+        // never be `via`, or the path walk below would loop through the cycle.
+        if (known !== undefined && (known.total > frame.longest || (frame.via === undefined && known.total === frame.longest))) {
+          frame.longest = known.total
           frame.via = dep
         }
         frame.index += 1
@@ -382,8 +383,10 @@ export const criticalPath = (
     }
   }
   const path: Array<string> = []
+  const seen = new Set<string>()
   let cursor = root
-  while (cursor !== undefined) {
+  while (cursor !== undefined && !seen.has(cursor)) {
+    seen.add(cursor)
     path.push(cursor)
     cursor = best.get(cursor)?.via
   }
