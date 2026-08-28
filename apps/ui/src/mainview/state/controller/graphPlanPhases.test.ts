@@ -79,7 +79,7 @@ const boot = async () => {
   const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
   const controller = createAppController(
     store,
-    { available: false, pickLocalRepository: async () => ({ status: "error", code: "x", message: "native only" }) } as NativeRepositories,
+    { available: false, pickLocalRepository: async () => ({ status: "error", code: "native-required", message: "native only" }) } as NativeRepositories,
     { available: false, startTurn: async () => ({ status: "error", message: "unavailable" }), cancelTurn: async () => {}, subscribe: () => () => {} } as NativeAgent
   )
   store.dispatch({
@@ -134,7 +134,7 @@ test("a graph route that fails still fails the card: the plan cannot rescue it",
     new Response(JSON.stringify({ error: { message: "The loader exited 1." } }), {
       status: 500,
       headers: { "content-type": "application/json" }
-    })) as typeof fetch
+    })) as unknown as typeof fetch
   restore = () => { globalThis.fetch = real }
   const { store, controller } = await boot()
   await controller.commands.run("target.graph")

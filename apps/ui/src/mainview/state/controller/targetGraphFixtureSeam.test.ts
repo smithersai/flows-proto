@@ -58,7 +58,7 @@ const boot = async () => {
   const store = await createAppStore({ kind: "localStorage", storage: memoryStorage() })
   const controller = createAppController(
     store,
-    { available: false, pickLocalRepository: async () => ({ status: "error", code: "x", message: "native only" }) } as NativeRepositories,
+    { available: false, pickLocalRepository: async () => ({ status: "error", code: "native-required", message: "native only" }) } as NativeRepositories,
     { available: false, startTurn: async () => ({ status: "error", message: "unavailable" }), cancelTurn: async () => {}, subscribe: () => () => {} } as NativeAgent
   )
   store.dispatch({
