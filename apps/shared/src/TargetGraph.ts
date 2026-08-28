@@ -304,29 +304,46 @@ export const criticalPath = (
   }
   const best = new Map<string, { total: number; via: string | undefined }>()
   const visiting = new Set<string>()
-  const solve = (label: string): number => {
-    const known = best.get(label)
-    if (known !== undefined) return known.total
-    if (visiting.has(label)) return 0
-    visiting.add(label)
-    let via: string | undefined
-    let longest = 0
-    for (const dep of deps.get(label) ?? []) {
-      const total = solve(dep)
-      if (total > longest || (via === undefined && total === longest && total > 0)) {
-        longest = total
-        via = dep
+  /*
+   * Iterative post-order walk: recursion over graph depth overflows the call
+   * stack on monorepo-scale chains (~50k frames). Each frame mirrors one
+   * recursive call: deps are consumed in declaration order, a dep already in
+   * `visiting` contributes 0 (cycle truncation) and is never memoized as such.
+   */
+  const solve = (rootLabel: string): void => {
+    if (best.has(rootLabel)) return
+    visiting.add(rootLabel)
+    const frames: Array<{ label: string; deps: Array<string>; index: number; longest: number; via: string | undefined }> = [
+      { label: rootLabel, deps: deps.get(rootLabel) ?? [], index: 0, longest: 0, via: undefined }
+    ]
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1]!
+      if (frame.index < frame.deps.length) {
+        const dep = frame.deps[frame.index]!
+        const known = best.get(dep)
+        if (known === undefined && !visiting.has(dep)) {
+          visiting.add(dep)
+          frames.push({ label: dep, deps: deps.get(dep) ?? [], index: 0, longest: 0, via: undefined })
+          continue
+        }
+        const total = known?.total ?? 0
+        if (total > frame.longest || (frame.via === undefined && total === frame.longest && total > 0)) {
+          frame.longest = total
+          frame.via = dep
+        }
+        frame.index += 1
+      } else {
+        frames.pop()
+        visiting.delete(frame.label)
+        best.set(frame.label, { total: frame.longest + (duration.get(frame.label) ?? 0), via: frame.via })
       }
     }
-    visiting.delete(label)
-    const total = longest + (duration.get(label) ?? 0)
-    best.set(label, { total, via })
-    return total
   }
   let root: string | undefined
   let rootTotal = -1
   for (const node of nodes) {
-    const total = solve(node.label)
+    solve(node.label)
+    const total = best.get(node.label)!.total
     if (total > rootTotal) {
       rootTotal = total
       root = node.label

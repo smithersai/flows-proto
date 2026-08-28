@@ -606,6 +606,18 @@ describe("criticalPath", () => {
     expect(criticalPath(nodes, edges)).toHaveLength(3000)
   })
 
+  test("a chain deeper than the call stack still resolves, end to end", () => {
+    // Recursion dies near 50k frames; a monorepo-scale chain must not crash
+    // the helper the backend and the replay scrubber both call.
+    const depth = 60_000
+    const nodes = Array.from({ length: depth }, (_, index) => timing(`n${index}`, 1))
+    const edges = Array.from({ length: depth - 1 }, (_, index) => dep(`n${index}`, `n${index + 1}`))
+    const path = criticalPath(nodes, edges)
+    expect(path).toHaveLength(depth)
+    expect(path[0]).toBe(`n${depth - 1}`)
+    expect(path[depth - 1]).toBe("n0")
+  })
+
   test("the force graph's typeCheck run reports the chain the plan implies", () => {
     const nodes = [
       timing("//src:typeCheck", 4900),
