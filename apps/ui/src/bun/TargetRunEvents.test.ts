@@ -5,7 +5,7 @@ describe("run stdout parser", () => {
   test("parses every status, reasons, keys, summary, and ignores interleaved stderr", () => {
     const parser = createRunStdoutParser({ startedAt: 1_000, edges: [{ from: "//:root", to: "//:dep", kind: "data" }] })
     expect(parser.push("stdout", "//:dep  pending\n//:dep  running key=abc\n", 1_100)).toHaveLength(2)
-    expect(parser.push("stderr", "//:noise failed 2ms\n", 1_101)).toEqual([])
+    expect(parser.push("stderr", "compiler chatter\n", 1_101)).toEqual([])
     const events = parser.push("stdout", [
       "//:dep hit 20ms key=abc",
       "//:root ran 50ms",

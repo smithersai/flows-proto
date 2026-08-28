@@ -99,6 +99,11 @@ All bodies and responses are JSON unless noted. Errors:
 | POST | `/api/targets/query` | `{ repoId }` | `{ targets: Target[], warnings: string[], durationMs }` |
 | POST | `/api/targets/run` | `{ repoId, label }` | `{ runId }` then frames on WS topic `target-run:<runId>` |
 | POST | `/api/targets/cancel` | `{ runId }` | `{ ok }` |
+| POST | `/api/targets/graph` | `{ repoId, plan?, labels? }` | `TargetGraphResponse` |
+| POST | `/api/targets/runs` | `{ repoId }` | `RunHistoryResponse` (newest first) |
+| POST | `/api/targets/runs/replay` | `{ runId }` | `RunReplayResponse` |
+| POST | `/api/targets/affected` | `{ repoId }` | `AffectedResponse` |
+| POST | `/api/targets/ci` | `{ repoId }` | `CiMatrixResponse` |
 | POST | `/api/pty` | `{ kind: "terminal" \| "harness", cwd, cols, rows, harnessId? }` (`cwd: "~"` means `$HOME`; the server expands it) | `{ sessionId }` |
 | POST | `/api/pty/:id/resize` | `{ cols, rows }` | `{ ok }` |
 | DELETE | `/api/pty/:id` | | `{ ok }` |
@@ -536,3 +541,63 @@ reports `home`, `node` and `sandbox.enforced: true`; `/api/harnesses` lists
 the checkout sits on a detached HEAD); `POST /api/targets/query` answers 82
 targets with no warnings; `POST /api/pty` (`terminal`, `cwd: "~"`) opens a
 session listed `alive: true` at `$HOME` and `DELETE` empties the list.
+
+## Targets: graph and runs
+
+The target graph backend (lane `ui/backend`, 2026-08-27) extends the existing
+repository/target seam without changing the raw run protocol:
+
+- `POST /api/targets/graph` accepts `{ repoId, plan?, labels? }`. It parses the
+  text `graph` field returned by `smthrs graph '//...' --format json`, merges
+  query rule/kind rows, and optionally folds `--plan --format json` facts into
+  nodes. The parsed base graph is cached by repository and invalidated by a
+  digest of declaration-file mtimes and sizes; `generatedAt` identifies the
+  cached load.
+- `/api/targets/run` still emits stdout/stderr/error/exit frames on
+  `target-run:<runId>`, and additionally emits `started`, `node`, and `summary`
+  `TargetRunEvent` frames. Status lines are parsed from either output stream
+  because the current CLI writes progress to stderr. Raw chunks beginning with
+  a label carry that label. Summary critical paths use the graph edges and the
+  settled node durations.
+- Every run and ordered event is append-only JSONL under
+  `.flows/ui/runs/<runId>.jsonl`. `POST /api/targets/runs` returns records newest
+  first; `POST /api/targets/runs/replay` reloads the record and complete event
+  sequence. Repository directories are indexed lazily, so history survives an
+  app restart.
+- `POST /api/targets/affected` combines `git status --porcelain`, `git diff
+  --name-only HEAD`, plan inputs when exposed, statically recoverable `S.file`
+  and `S.glob` declaration inputs, and reverse graph reachability. Its `signal`
+  and `limits` fields state that arbitrary computed TypeScript inputs remain a
+  blind spot unless the CLI plan exposes them.
+- `POST /api/targets/ci` finds `Github.CiGen` graph nodes, copies the declaration
+  module closure into a temporary git repository, runs the target with
+  `--write` there, and parses the generated workflow YAML. Each workflow says
+  `source: "scratch-render"`; if scratch rendering fails, the endpoint returns
+  owned on-disk workflow YAML with `source: "on-disk"` and a warning.
+
+The shared contract gained only additive optional fields: `GraphNode.plan.inputs`,
+`AffectedResponse.signal`/`limits`, and CI workflow `source` plus response
+`warnings`. Route constants are exported by `AgentApiRoutes.ts`; all graph
+schemas and pure `reachable`/`criticalPath` helpers remain in `TargetGraph.ts`.
+
+### Backend lane proof (2026-08-27)
+
+| Feature | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| Force graph + plan | pass | `curl -X POST :47427/api/targets/graph -d '{"repoId":"92c143080bff","plan":true,"labels":["//src:typeCheck"]}'` | `nodes: 82`, `edges: 94`; `Shell.Test`, mode `execute`, cacheable, key `83972035…`, argv `…/tsc` |
+| Structured run | pass | `POST /api/targets/run` for `//src:typeCheck` in `~/artsy-e2e/force`, subscribe and attach to `target-run:<runId>` | `schema ran 2ms`, `srcs ran 1ms`, `relayArtifacts hit 3400ms`, `typeCheck hit 5ms`; summary `4 total / 2 hit / 2 ran`, critical path `schema → relayArtifacts → typeCheck` |
+| History + replay | pass | `curl -X POST :47427/api/targets/runs …`; `curl -X POST :47427/api/targets/runs/replay …` | newest run `done`, exit 0; replay has 4 node events followed by summary/exit |
+| Affected | pass | create `src/.ui-affected-proof.ts` in the e2e clone, call `/api/targets/affected`, then remove it | direct `//src:srcs`; transitive `//src:typeCheck`; signal and static-analysis limit returned |
+| CI preview | pass | `curl -X POST :47427/api/targets/ci -d '{"repoId":"92c143080bff"}'` | scratch-rendered `ci`, `danger`, `review`; jobs point to `//:prePush`, `//src:deadCode`, `//.github:danger`, `//:prReview`, etc. |
+| Unit/route suites | pass | `pnpm -C apps/shared test && pnpm -C apps/ui test` | shared `44 pass`; UI `876 pass`, `0 fail` |
+| Typecheck | external lock | `node apps/ui/scripts/ensure-devkit.mjs && pnpm -C apps/ui typecheck` | devkit projection waited on another process's build lock; direct `tsc` has no target-backend diagnostics after fixes, but reports missing Electrobun devkit plus existing UI-lane/card and `packages/core/Flow.ts` errors |
+
+Shared-file hunks are deliberately small: additive schemas in
+`apps/shared/src/TargetGraph.ts`, raw-frame label support in
+`apps/shared/src/LocalApp.ts`, five route constants in
+`apps/shared/src/AgentApiRoutes.ts`, one registration/import pair in
+`apps/ui/src/bun/server.ts`, and this section. No files under
+`apps/ui/src/mainview`, `packages/build-cli`, or `packages/targets` were
+changed. The only incomplete proof is a green devkit-backed typecheck while
+the external Electrobun build lock is held; backend tests and direct compiler
+diagnostics are otherwise clean.

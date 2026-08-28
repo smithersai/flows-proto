@@ -189,6 +189,7 @@ export const CiMatrixResponseSchema = z.object({
       )
     })
   ),
+  warnings: z.array(z.string()).optional(),
   durationMs: z.number()
 })
 export type CiMatrixResponse = z.infer<typeof CiMatrixResponseSchema>

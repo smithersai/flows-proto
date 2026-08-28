@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { join, posix, relative } from "node:path"
+import { join, posix } from "node:path"
 import { reachable } from "smithers-shared/TargetGraph"
 import type { AffectedResponse, GraphEdge, GraphNode } from "smithers-shared/TargetGraph"
 

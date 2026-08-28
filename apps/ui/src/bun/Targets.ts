@@ -190,7 +190,7 @@ export const createRunStdoutParser = (options: {
   readonly edges?: ReadonlyArray<GraphEdge>
   readonly startedAt: number
 }): RunStdoutParser => {
-  let stdout = ""
+  const buffers: Record<"stdout" | "stderr", string> = { stdout: "", stderr: "" }
   const nodes = new Map<string, NodeTiming>()
   let lastSummary: RunSummary | undefined
   const parseSummary = (line: string, at: number): TargetRunEvent | undefined => {
@@ -262,19 +262,18 @@ export const createRunStdoutParser = (options: {
     return [{ type: "node", node, at }]
   }
   const push: RunStdoutParser["push"] = (type, data, at = Date.now()) => {
-    if (type === "stderr") return []
-    stdout += data
-    const lines = stdout.split(/\r?\n/)
-    stdout = lines.pop() ?? ""
+    buffers[type] += data
+    const lines = buffers[type].split(/\r?\n/)
+    buffers[type] = lines.pop() ?? ""
     return lines.flatMap((line) => parseLine(line, at))
   }
   return {
     push,
     finish: (at = Date.now()) => {
-      if (stdout === "") return []
-      const line = stdout
-      stdout = ""
-      return parseLine(line, at)
+      const lines = [buffers.stdout, buffers.stderr].filter(Boolean)
+      buffers.stdout = ""
+      buffers.stderr = ""
+      return lines.flatMap((line) => parseLine(line, at))
     },
     timings: () => [...nodes.values()],
     summary: () => lastSummary

@@ -1,7 +1,7 @@
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { basename, dirname, join, relative } from "node:path"
+import { basename, dirname, join, relative, resolve } from "node:path"
 import type { CiMatrixResponse } from "smithers-shared/TargetGraph"
 import type { NodeSidecar } from "./Node"
 import { resolveBuildCli } from "./Targets"
@@ -76,30 +76,48 @@ export const renderCiMatrix = async (options: {
   readonly cli?: string
 }): Promise<CiMatrixResponse> => {
   const started = Date.now()
+  const warnings: Array<string> = []
   if (options.node === null || options.labels.length === 0) {
-    return { repoId: options.repoId, workflows: await readWorkflows(options.repo, "on-disk"), durationMs: Date.now() - started }
+    return { repoId: options.repoId, workflows: await readWorkflows(options.repo, "on-disk"), warnings, durationMs: Date.now() - started }
   }
   const scratch = await mkdtemp(join(tmpdir(), "smithers-ci-preview-"))
   try {
     const files = new Set([...options.declarationFiles, "WORKSPACE.ts", ".smithers/WORKSPACE.ts", "smithers.d.ts", "package.json", "pnpm-workspace.yaml"])
-    for (const file of files) {
+    const queue = [...files]
+    for (let index = 0; index < queue.length; index++) {
+      const file = queue[index]!
       const source = join(options.repo, file)
       if (!existsSync(source)) continue
       const destination = join(scratch, file)
       await mkdir(dirname(destination), { recursive: true })
       await copyFile(source, destination)
+      if (!/\.[cm]?[jt]sx?$/.test(file)) continue
+      const contents = await readFile(source, "utf8")
+      for (const match of contents.matchAll(/(?:from\s+|import\s*)["'](\.{1,2}\/[^"']+)["']/g)) {
+        const requested = resolve(dirname(source), match[1]!)
+        const candidate = existsSync(requested) ? requested : /\.js$/.test(requested) && existsSync(requested.replace(/\.js$/, ".ts")) ? requested.replace(/\.js$/, ".ts") : undefined
+        if (candidate === undefined || !candidate.startsWith(options.repo + "/")) continue
+        const imported = relative(options.repo, candidate)
+        if (!files.has(imported)) { files.add(imported); queue.push(imported) }
+      }
     }
     const nodeModules = join(options.repo, "node_modules")
     if (existsSync(nodeModules)) await symlink(nodeModules, join(scratch, "node_modules"), "dir")
+    const gitEnv = { ...(Bun.env as Record<string, string | undefined>), GIT_AUTHOR_NAME: "Smithers Preview", GIT_AUTHOR_EMAIL: "preview@localhost", GIT_COMMITTER_NAME: "Smithers Preview", GIT_COMMITTER_EMAIL: "preview@localhost" }
+    for (const args of [["init"], ["add", "."], ["commit", "-m", "CI preview baseline"]]) {
+      const child = Bun.spawn(["git", ...args], { cwd: scratch, env: gitEnv, stdout: "ignore", stderr: "ignore", stdin: "ignore" })
+      await child.exited
+    }
     const cli = options.cli ?? resolveBuildCli()
     for (const label of options.labels) {
       const child = Bun.spawn([options.node.path, cli, label, "--write"], { cwd: scratch, stdout: "pipe", stderr: "pipe", stdin: "ignore" })
-      await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      if (code !== 0) warnings.push(`${label} scratch render exited ${code}: ${(stderr || stdout).trim().slice(0, 1000)}`)
     }
     const rendered = await readWorkflows(scratch, "scratch-render")
-    if (rendered.length > 0) return { repoId: options.repoId, workflows: rendered, durationMs: Date.now() - started }
+    if (rendered.length > 0) return { repoId: options.repoId, workflows: rendered, warnings, durationMs: Date.now() - started }
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-  return { repoId: options.repoId, workflows: await readWorkflows(options.repo, "on-disk"), durationMs: Date.now() - started }
+  return { repoId: options.repoId, workflows: await readWorkflows(options.repo, "on-disk"), warnings, durationMs: Date.now() - started }
 }
