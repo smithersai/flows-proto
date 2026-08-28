@@ -42,3 +42,16 @@ test("a run interrupted by a restart reloads as failed, not stuck running", asyn
   expect(replay?.events.map((event) => event.type)).toEqual(["started"])
   await rm(repo, { recursive: true, force: true })
 })
+
+test("replay orders every frame by its run-local sequence", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "smithers-history-"))
+  const run: TargetRun = { runId: "run-seq", repoId: "repo-1", repo, label: "//:test", labels: ["//:test"], status: "running", exitCode: null, startedAt: 100 }
+  const history = createTargetRunHistory()
+  await history.start(run)
+  history.event(run, { type: "started", runId: run.runId, label: run.label, labels: [...run.labels], at: 100, seq: 0 })
+  history.event(run, { type: "exit", code: 0, seq: 2 })
+  history.event(run, { type: "stdout", data: "hello", seq: 1 })
+  const replay = await history.replay(run.runId)
+  expect(replay?.events.map((event) => event.seq)).toEqual([0, 1, 2])
+  await rm(repo, { recursive: true, force: true })
+})

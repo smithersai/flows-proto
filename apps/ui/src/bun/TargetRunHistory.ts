@@ -100,7 +100,10 @@ export const createTargetRunHistory = (): TargetRunHistory => {
       const stored = runs.get(runId)
       if (stored === undefined) return undefined
       await stored.queue
-      return { run: stored.record, events: [...stored.events] }
+      const events = stored.events.map((event, index) => ({ event, index }))
+        .sort((a, b) => (a.event.seq ?? a.index) - (b.event.seq ?? b.index) || a.index - b.index)
+        .map(({ event }) => event)
+      return { run: stored.record, events }
     }
   }
 }

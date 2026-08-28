@@ -405,13 +405,14 @@ describe("the five card payloads", () => {
 })
 
 describe("TARGET_GRAPH_ROUTES", () => {
-  test("names the five routes LOCAL-APP.md documents", () => {
+  test("names the six routes LOCAL-APP.md documents", () => {
     expect(TARGET_GRAPH_ROUTES).toEqual({
       graph: "/api/targets/graph",
       runs: "/api/targets/runs",
       replay: "/api/targets/runs/replay",
       affected: "/api/targets/affected",
-      ci: "/api/targets/ci"
+      ci: "/api/targets/ci",
+      openSource: "/api/targets/open-source"
     })
   })
 })

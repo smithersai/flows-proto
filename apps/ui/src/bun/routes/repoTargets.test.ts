@@ -114,7 +114,7 @@ describe("/api/targets/*", () => {
     const { runId } = (await started.json()) as { runId: string }
 
     const socket = new WebSocket(`${server.origin.replace("http", "ws")}/ws`)
-    const frames: Array<{ type: string; data?: string; code?: number | null }> = []
+    const frames: Array<{ type: string; data?: string; code?: number | null; seq?: number }> = []
     const finished = new Promise<void>((resolve) => {
       socket.onmessage = (event) => {
         const parsed = TargetRunMessageSchema.safeParse(JSON.parse(String(event.data)))
@@ -132,7 +132,8 @@ describe("/api/targets/*", () => {
     socket.close()
     expect(frames.filter((frame) => frame.type === "stdout").map((frame) => frame.data).join("")).toBe("ran //:fails\n")
     expect(frames.filter((frame) => frame.type === "stderr").map((frame) => frame.data).join("")).toBe("done\n")
-    expect(frames[frames.length - 1]).toEqual({ type: "exit", code: 2 })
+    expect(frames[frames.length - 1]).toMatchObject({ type: "exit", code: 2 })
+    expect(frames.map((frame) => frame.seq)).toEqual(frames.map((_, index) => index))
 
     expect(await (await post("/api/targets/cancel", { runId })).json()).toEqual({ ok: false })
     expect((await post("/api/targets/cancel", { runId: "nope" })).status).toBe(404)

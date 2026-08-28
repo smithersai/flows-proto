@@ -264,6 +264,12 @@ describe("the chat commands dispatch the target-graph cards", () => {
       expect(card.payload.status).toBe("failed")
       expect(card.status).toBe("error")
       expect(card.payload.graph).toBeUndefined()
+      await controller.commands.run("target.history")
+      const history = cardOf(store, "run-history-force")
+      if (history?.kind !== "run-history") throw new Error("expected a run-history card")
+      expect(history.payload.status).toBe("failed")
+      expect(history.status).toBe("error")
+      expect(history.payload.error).toContain("boom")
     } finally {
       globalThis.fetch = real
     }

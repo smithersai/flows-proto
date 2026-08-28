@@ -20,6 +20,19 @@ describe("run stdout parser", () => {
     expect(nodes.map((node) => node.status)).toEqual(["hit", "ran", "failed", "skipped", "refused", "cancelled"])
     expect(nodes.find((node) => node.status === "failed")?.reason).toBe("compiler exploded")
     expect(events.find((event) => event.type === "summary" && event.summary.total === 6)).toBeDefined()
+    for (const node of nodes) {
+      expect(node.durationMs).toBeDefined()
+      expect(node.durationMs).toBe((node.endedAt ?? 0) - (node.startedAt ?? 0))
+    }
+  })
+
+  test("settled rows without an executor duration still get an exact wall duration", () => {
+    const parser = createRunStdoutParser({ startedAt: 1_000 })
+    parser.push("stdout", "//:test running\n", 1_100)
+    const event = parser.push("stdout", "//:test ran\n", 1_175)[0]
+    expect(event?.type).toBe("node")
+    if (event?.type !== "node") throw new Error("expected node event")
+    expect(event.node).toMatchObject({ startedAt: 1_100, endedAt: 1_175, durationMs: 75 })
   })
 
   test("computes the critical path from graph edges and fixture timings", () => {

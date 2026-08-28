@@ -152,4 +152,9 @@ describe("the run timeline card", () => {
     const host = render(card({ nodes: [] }))
     expect(host.textContent).toContain("No node timings yet")
   })
+
+  test("a failed run renders the stream error text", () => {
+    const host = render(card({ status: "failed", nodes: [], error: "loader disappeared" }))
+    expect(host.querySelector("[role=alert]")?.textContent).toContain("loader disappeared")
+  })
 })

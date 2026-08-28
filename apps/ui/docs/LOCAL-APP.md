@@ -99,6 +99,11 @@ All bodies and responses are JSON unless noted. Errors:
 | POST | `/api/targets/query` | `{ repoId }` | `{ targets: Target[], warnings: string[], durationMs }` |
 | POST | `/api/targets/run` | `{ repoId, label }` | `{ runId }` then frames on WS topic `target-run:<runId>` |
 | POST | `/api/targets/cancel` | `{ runId }` | `{ ok }` |
+| POST | `/api/targets/graph` | `{ repoId, plan?, labels? }` | `TargetGraphResponse` |
+| POST | `/api/targets/runs` | `{ repoId }` | `RunHistoryResponse` (newest first) |
+| POST | `/api/targets/runs/replay` | `{ runId }` | `RunReplayResponse` |
+| POST | `/api/targets/affected` | `{ repoId }` | `AffectedResponse` |
+| POST | `/api/targets/ci` | `{ repoId }` | `CiMatrixResponse` |
 | POST | `/api/pty` | `{ kind: "terminal" \| "harness", cwd, cols, rows, harnessId? }` (`cwd: "~"` means `$HOME`; the server expands it) | `{ sessionId }` |
 | POST | `/api/pty/:id/resize` | `{ cols, rows }` | `{ ok }` |
 | DELETE | `/api/pty/:id` | | `{ ok }` |
@@ -537,6 +542,73 @@ the checkout sits on a detached HEAD); `POST /api/targets/query` answers 82
 targets with no warnings; `POST /api/pty` (`terminal`, `cwd: "~"`) opens a
 session listed `alive: true` at `$HOME` and `DELETE` empties the list.
 
+## Targets: graph and runs
+
+The target graph backend (lane `ui/backend`, 2026-08-27) extends the existing
+repository/target seam without changing the raw run protocol:
+
+- `POST /api/targets/graph` accepts `{ repoId, plan?, labels? }`. It parses the
+  text `graph` field returned by `smthrs graph '//...' --format json`, merges
+  query rule/kind rows, and optionally folds `--plan --format json` facts into
+  nodes. The parsed base graph is cached by repository and invalidated by the
+  response's SHA-256 `digest` of sorted declaration paths plus contents (not
+  metadata); `generatedAt` identifies the cached load. Declaration constants
+  also populate each graph node's relative `source.file` and exact line.
+- `/api/targets/run` still emits stdout/stderr/error/exit frames on
+  `target-run:<runId>`, and additionally emits `started`, `node`, and `summary`
+  `TargetRunEvent` frames. Every emitted and recorded frame carries a run-local,
+  zero-based, gap-free `seq`; replay sorts by `seq`. Status lines are parsed from either output stream
+  because the current CLI writes progress to stderr. Raw chunks beginning with
+  a label carry that label. Summary critical paths use the graph edges and the
+  settled node durations. Every settled node has `durationMs`, exactly
+  `endedAt - startedAt` whenever both timestamps are present.
+- Every run and ordered event is append-only JSONL under
+  `.flows/ui/runs/<runId>.jsonl`. `POST /api/targets/runs` returns records newest
+  first; `POST /api/targets/runs/replay` reloads the record and complete event
+  sequence. Repository directories are indexed lazily, so history survives an
+  app restart; a record that never settled (the process died mid-run) reloads
+  as `failed` instead of staying `running` forever.
+- `POST /api/targets/affected` combines `git status --porcelain`, `git diff
+  --name-only HEAD`, plan inputs when exposed, statically recoverable `S.file`
+  and `S.glob` declaration inputs, and reverse graph reachability. Its `signal`
+  and `limits` fields state that arbitrary computed TypeScript inputs remain a
+  blind spot unless the CLI plan exposes them.
+- `POST /api/targets/ci` finds `Github.CiGen` graph nodes, copies the declaration
+  module closure into a temporary git repository, runs the target with
+  `--write` there, and parses the generated workflow YAML. Each workflow says
+  `source: "scratch-render"`; if scratch rendering fails, the endpoint returns
+  owned on-disk workflow YAML with `source: "on-disk"` and a warning.
+- `POST /api/targets/open-source` accepts `{ repoId, file, line? }`, confines
+  the path to the open repository's detected declaration set, and returns the
+  canonical path and line for the UI's declaration-site affordance.
+
+The shared contract changes are additive: optional `TargetGraphResponse.digest`,
+frame `seq`, `GraphNode.plan.inputs`, affected `signal`/`limits`, CI workflow
+`source`/response `warnings`, and history/timeline card error text. Route
+constants are exported by `AgentApiRoutes.ts`; all graph schemas and pure
+`reachable`/`criticalPath` helpers remain in `TargetGraph.ts`.
+
+### Backend lane proof (2026-08-27)
+
+| Feature | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| Force graph + plan | pass | `curl -X POST :47427/api/targets/graph -d '{"repoId":"92c143080bff","plan":true,"labels":["//src:typeCheck"]}'` | `nodes: 82`, `edges: 94`; `Shell.Test`, mode `execute`, cacheable, key `83972035…`, argv `…/tsc` |
+| Structured run | pass | `POST /api/targets/run` for `//src:typeCheck` in `~/artsy-e2e/force`, subscribe and attach to `target-run:<runId>` | `schema ran 2ms`, `srcs ran 1ms`, `relayArtifacts hit 3400ms`, `typeCheck hit 5ms`; summary `4 total / 2 hit / 2 ran`, critical path `schema → relayArtifacts → typeCheck` |
+| History + replay | pass | `curl -X POST :47427/api/targets/runs …`; `curl -X POST :47427/api/targets/runs/replay …` | newest run `done`, exit 0; replay has 4 node events followed by summary/exit |
+| Affected | pass | create `src/.ui-affected-proof.ts` in the e2e clone, call `/api/targets/affected`, then remove it | direct `//src:srcs`; transitive `//src:typeCheck`; signal and static-analysis limit returned |
+| CI preview | pass | `curl -X POST :47427/api/targets/ci -d '{"repoId":"92c143080bff"}'` | scratch-rendered `ci`, `danger`, `review`; jobs point to `//:prePush`, `//src:deadCode`, `//.github:danger`, `//:prReview`, etc. |
+| Unit/route suites | pass | `pnpm -C apps/shared test && pnpm -C apps/ui test` | shared `44 pass`; UI `877 pass`, `0 fail` |
+| Typecheck | external lock | `node apps/ui/scripts/ensure-devkit.mjs && pnpm -C apps/ui typecheck` | devkit projection waited on another process's build lock; direct `tsc` has no target-backend diagnostics after fixes, but reports missing Electrobun devkit plus existing UI-lane/card and `packages/core/Flow.ts` errors |
+
+Shared-file hunks are deliberately small: additive schemas in
+`apps/shared/src/TargetGraph.ts`, raw-frame label support in
+`apps/shared/src/LocalApp.ts`, five route constants in
+`apps/shared/src/AgentApiRoutes.ts`, one registration/import pair in
+`apps/ui/src/bun/server.ts`, and this section. No files under
+`apps/ui/src/mainview`, `packages/build-cli`, or `packages/targets` were
+changed. The only incomplete proof is a green devkit-backed typecheck while
+the external Electrobun build lock is held; backend tests and direct compiler
+diagnostics are otherwise clean.
 ## Cards: target graph (2026-08-27, lane `ui/ui`)
 
 The five target-graph cards. The contract is
@@ -565,6 +637,28 @@ thick edge chain. Absent until the first `node` frame.
 declaration-site affordance. The overlay reads the `started` / `node` /
 `summary` frames on the existing `target-run:<runId>` topic; `stdout` /
 `stderr` frames carrying a `label` are attributed to that node's log panel.
+All of these live/replay frames may carry `seq`; current backends always do.
+History and timeline cards retain backend/stream error text. An `error` or
+non-zero/null `exit` before a summary settles the timeline as `failed`, never
+leaves it running, and replay exposes that failure only once the cursor reaches
+the corresponding frame.
+
+### Integration proof (2026-08-27, lane `ui/integrate`)
+
+The production path was exercised with the fixture flag off, using the plain
+Bun server plus the built Vite mainview because that is the Electrobun shell's
+same local HTTP/WS boundary.
+
+| Feature | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| Force graph card + declaration | pass | `curl -sS -X POST :47427/api/targets/graph -d '{"repoId":"92c143080bff","plan":true,"labels":["//src:typeCheck"]}'` and real Chromium `/target.graph 92c143080bff //src:typeCheck` | `82 targets · 94 edges`; digest `87c04b89…`; `src/PACKAGE.ts:166`; mode `execute`, cacheable, `tsc` argv |
+| Live overlay + timeline | pass | real Chromium `/target.run 85605a15569d //src:typeCheck`, then `/target.history 85605a15569d` and select latest | run `done`; `seq 0…12`; 4 settled nodes; overlay painted; timeline 4 rows; summary `4 ran`, critical path `schema → relayArtifacts → typeCheck` |
+| History → replay scrubber | pass | `curl -sS -X POST :47427/api/targets/runs/replay -d '{"runId":"08dde5ca-b7b1-4d99-8a71-a824175d0654"}'` plus the history row and scrubber in Chromium | replay `done`; ordered types `started … summary, stdout, exit`; scrubber extent `1787883930536…1787883937696` |
+| Affected after a file edit | pass | add `src/.ui-integration-proof.ts` only in `~/artsy-e2e/force`; `curl -sS -X POST :47427/api/targets/affected -d '{"repoId":"85605a15569d"}'`; remove the proof file | changed file listed; direct `//src:srcs`; transitive `//src:typeCheck` |
+| CI matrix card | pass | `curl -sS -X POST :47427/api/targets/ci -d '{"repoId":"92c143080bff"}'` and Chromium `/target.ci 92c143080bff` | 3 scratch-rendered workflows: `ci` (5 jobs), `danger` (1), `review` (1) |
+| Shared/UI suites | pass | `pnpm -C apps/shared test && pnpm -C apps/ui test` | shared `104 pass, 0 fail`; UI `935 pass, 0 fail` |
+| UI typecheck | pass | `pnpm -C apps/ui typecheck` | exit 0; no `App.tsx`/`CardTabBody.tsx` card-union errors |
+| Requested plain compiler probe | known devkit diagnostic only | `npx tsc --noEmit -p apps/ui/tsconfig.json` | TS 7 reports inherited `.hutch/devkit/tsconfig.json` `baseUrl` removal (`TS5102`); the project-pinned TypeScript command above is green |
 
 ### Commands (`flows/Flows.ts`)
 

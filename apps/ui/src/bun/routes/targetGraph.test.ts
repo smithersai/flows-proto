@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, stat, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AffectedResponseSchema, CiMatrixResponseSchema, RunHistoryResponseSchema, RunReplayResponseSchema, TargetGraphResponseSchema } from "smithers-shared/TargetGraph"
@@ -58,7 +58,28 @@ describe("POST /api/targets/graph", () => {
     expect(graph.nodes).toHaveLength(3)
     expect(graph.edges).toEqual([{ from: "//:lint", to: "//:srcs", kind: "data" }])
     expect(graph.nodes[0]?.plan).toMatchObject({ mode: "execute", key: "abc" })
+    expect(graph.digest).toMatch(/^[a-f0-9]{64}$/)
+    expect(graph.nodes.find((node) => node.label === "//:lint")?.source).toEqual({ file: "PACKAGE.ts", line: 3 })
     expect((await post("/api/targets/graph", { repoId: "missing" })).status).toBe(404)
+  })
+
+  test("the declaration digest changes when contents change at identical size and mtime", async () => {
+    const declaration = join(repo, "PACKAGE.ts")
+    const before = await stat(declaration)
+    const first = TargetGraphResponseSchema.parse(await (await post("/api/targets/graph", { repoId })).json())
+    const contents = await Bun.file(declaration).text()
+    await writeFile(declaration, contents.replace("const lint", "const lInt"))
+    await utimes(declaration, before.atime, before.mtime)
+    const second = TargetGraphResponseSchema.parse(await (await post("/api/targets/graph", { repoId })).json())
+    expect(second.digest).not.toBe(first.digest)
+    await writeFile(declaration, contents)
+  })
+
+  test("open-source resolves only declaration files inside the open repository", async () => {
+    const opened = await post("/api/targets/open-source", { repoId, file: "PACKAGE.ts", line: 3 })
+    expect(opened.status).toBe(200)
+    expect(await opened.json()).toEqual({ path: join(repo, "PACKAGE.ts"), line: 3 })
+    expect((await post("/api/targets/open-source", { repoId, file: "../etc/passwd" })).status).toBe(400)
   })
 
   test("affected and CI routes return computed repository facts", async () => {
@@ -78,5 +99,6 @@ describe("POST /api/targets/graph", () => {
     expect(history.runs[0]).toMatchObject({ runId, status: "done" })
     const replay = RunReplayResponseSchema.parse(await (await post("/api/targets/runs/replay", { runId })).json())
     expect(replay.events.map((event) => event.type)).toEqual(["started", "stdout", "node", "node", "summary", "exit"])
+    expect(replay.events.map((event) => event.seq)).toEqual(replay.events.map((_, index) => index))
   })
 })

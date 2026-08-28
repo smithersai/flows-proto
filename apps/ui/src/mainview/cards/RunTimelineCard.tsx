@@ -48,7 +48,7 @@ export const RunTimelineCardBody = ({
   readonly card: Extract<Card, { kind: "run-timeline" }>
   readonly onRunCommand: (name: string, args?: string) => void
 }) => {
-  const { runId, label, status, nodes, summary, cursor, logs, extent } = card.payload
+  const { runId, label, status, nodes, summary, cursor, logs, extent, error } = card.payload
   const [openLog, setOpenLog] = useState<string | undefined>(undefined)
   /*
    * The scrubber dispatches on both `input` (every drag tick) and `change`
@@ -71,6 +71,7 @@ export const RunTimelineCardBody = ({
       <p className="run-timeline-meta">
         <span className="targets-card-label">{label}</span> <StatusPill status={status} />
       </p>
+      {status === "failed" && error !== undefined ? <p className="sui-approval-error" role="alert">{error}</p> : null}
       {summary !== undefined ?
         (
           <div className="run-timeline-totals" data-testid={`run-timeline-totals-${runId}`}>

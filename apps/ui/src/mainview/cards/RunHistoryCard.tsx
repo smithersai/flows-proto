@@ -18,12 +18,12 @@ export const RunHistoryCardBody = ({
   readonly card: Extract<Card, { kind: "run-history" }>
   readonly onRunCommand: (name: string, args?: string) => void
 }) => {
-  const { repoId, status, runs, selected } = card.payload
+  const { repoId, status, runs, selected, error } = card.payload
   if (status === "pending") return <p className="smithers-card-note">Loading run history…</p>
   if (status === "failed") {
     return (
       <p className="sui-approval-error" role="alert">
-        The run history did not load.
+        {error ?? "The run history did not load."}
       </p>
     )
   }

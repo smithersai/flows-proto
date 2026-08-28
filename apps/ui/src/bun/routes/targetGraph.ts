@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises"
+import { isAbsolute, relative, resolve } from "node:path"
 import type { NodeSidecar } from "../Node"
 import type { RepoStore } from "../Repos"
 import { json, jsonError, readJson } from "../routes"
@@ -100,6 +102,29 @@ export const registerTargetGraphRoutes = (
       declarationFiles: repo.smithers.declarationFiles,
       ...(options.cli === undefined ? {} : { cli: options.cli })
     }))
+  })
+
+  server.router.add("POST", "/api/targets/open-source", async ({ request }) => {
+    const parsed = await readJson(request)
+    if ("error" in parsed) return parsed.error
+    const repoId = stringField(parsed.body, "repoId")
+    const file = stringField(parsed.body, "file")
+    const rawLine = field(parsed.body, "line")
+    if (repoId === undefined || file === undefined || (rawLine !== undefined && (!Number.isInteger(rawLine) || (rawLine as number) < 1))) {
+      return jsonError(400, "invalid_request", "Body must be { repoId, file, line? } with a positive line number.")
+    }
+    const repo = options.repos.get(repoId)
+    if (repo === undefined) return jsonError(404, "repo_not_found", `No open repository with id ${repoId}.`)
+    const candidate = resolve(repo.path, file)
+    const rel = relative(repo.path, candidate)
+    if (rel.startsWith("..") || isAbsolute(rel)) return jsonError(400, "invalid_source", "The declaration must be inside the open repository.")
+    const allowed = new Set(repo.smithers.declarationFiles.map((entry) => resolve(repo.path, entry)))
+    let canonical: string
+    try { canonical = await realpath(candidate) } catch { return jsonError(404, "source_not_found", `No declaration exists at ${file}.`) }
+    if (!allowed.has(candidate) || relative(repo.path, canonical).startsWith("..")) {
+      return jsonError(400, "invalid_source", "The source must be one of the repository's declaration files.")
+    }
+    return json({ path: canonical, ...(rawLine === undefined ? {} : { line: rawLine as number }) })
   })
 
   return { stop: () => {} }

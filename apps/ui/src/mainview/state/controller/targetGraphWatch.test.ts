@@ -110,6 +110,18 @@ describe("the run overlay's attachment", () => {
     expect(runs.live.size).toBe(0)
   })
 
+  test("a run that errors before a summary settles the timeline as failed", async () => {
+    const { store, controller, runs } = await harness()
+    controller.noteRunStarted("force", "run-1", "//src:typeCheck")
+    await controller.showTimeline("force", "run-1")
+    runs.emit("run-1", { type: "error", message: "loader disappeared" })
+    runs.emit("run-1", { type: "exit", code: null })
+    const timeline = store.collections.cards.get("run-timeline-run-1")
+    if (timeline?.kind !== "run-timeline") throw new Error("expected a run-timeline card")
+    expect(timeline.payload.status).toBe("failed")
+    expect(timeline.payload.error).toBe("loader disappeared")
+  })
+
   test("disposing the controller releases every attachment it still holds", async () => {
     const { controller, runs, dispose } = await harness()
     controller.noteRunStarted("force", "run-1", "//src:typeCheck")

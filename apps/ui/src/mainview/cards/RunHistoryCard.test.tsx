@@ -94,4 +94,9 @@ describe("the run history card", () => {
     expect(render(card({ status: "pending", runs: [] })).textContent).toContain("Loading run history…")
     expect(render(card({ runs: [] })).textContent).toContain("No runs recorded")
   })
+
+  test("a failed history renders the backend error text", () => {
+    expect(render(card({ status: "failed", runs: [], error: "history store is unreadable" })).textContent)
+      .toContain("history store is unreadable")
+  })
 })

@@ -86,14 +86,14 @@ export const TargetRunResponseSchema = z.object({ runId: z.string() })
 /** One frame on the WS topic `target-run:<runId>`. */
 export const TargetRunFrameSchema = z.discriminatedUnion("type", [
   /* `label` attributes the chunk to one graph node when the backend can. */
-  z.object({ type: z.literal("stdout"), data: z.string(), label: z.string().optional() }),
-  z.object({ type: z.literal("stderr"), data: z.string(), label: z.string().optional() }),
-  z.object({ type: z.literal("exit"), code: z.number().nullable() }),
-  z.object({ type: z.literal("error"), message: z.string() }),
+  z.object({ type: z.literal("stdout"), data: z.string(), label: z.string().optional(), seq: z.number().int().nonnegative().optional() }),
+  z.object({ type: z.literal("stderr"), data: z.string(), label: z.string().optional(), seq: z.number().int().nonnegative().optional() }),
+  z.object({ type: z.literal("exit"), code: z.number().nullable(), seq: z.number().int().nonnegative().optional() }),
+  z.object({ type: z.literal("error"), message: z.string(), seq: z.number().int().nonnegative().optional() }),
   /* The structured run frames (smithers-shared/TargetGraph TargetRunEvent). */
-  z.object({ type: z.literal("started"), runId: z.string(), label: z.string(), at: z.number(), labels: z.array(z.string()) }),
-  z.object({ type: z.literal("node"), node: NodeTimingSchema, at: z.number() }),
-  z.object({ type: z.literal("summary"), summary: RunSummarySchema, at: z.number() })
+  z.object({ type: z.literal("started"), runId: z.string(), label: z.string(), at: z.number(), labels: z.array(z.string()), seq: z.number().int().nonnegative().optional() }),
+  z.object({ type: z.literal("node"), node: NodeTimingSchema, at: z.number(), seq: z.number().int().nonnegative().optional() }),
+  z.object({ type: z.literal("summary"), summary: RunSummarySchema, at: z.number(), seq: z.number().int().nonnegative().optional() })
 ])
 export type TargetRunFrame = z.infer<typeof TargetRunFrameSchema>
 

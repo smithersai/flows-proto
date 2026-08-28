@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
-import { existsSync, readdirSync, statSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { dirname, join, relative, sep } from "node:path"
 import type { GraphEdge, GraphNode, TargetGraphResponse } from "smithers-shared/TargetGraph"
 import { splitLabel } from "smithers-shared/LocalApp"
 import type { NodeSidecar } from "./Node"
@@ -80,22 +80,36 @@ export const foldPlan = (nodes: ReadonlyArray<GraphNode>, envelopes: ReadonlyArr
   return nodes.map((node) => plans.has(node.label) ? { ...node, plan: plans.get(node.label) } : { ...node })
 }
 
-const declarationDigest = (repo: string): string => {
+const declarationSet = (repo: string): { readonly digest: string; readonly sources: ReadonlyMap<string, GraphNode["source"]> } => {
   const hash = createHash("sha256")
+  const files: Array<string> = []
   const walk = (dir: string): void => {
     let entries: Array<import("node:fs").Dirent>
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       if (entry.isDirectory() && ![".git", ".flows", "node_modules", "dist", "build"].includes(entry.name)) walk(join(dir, entry.name))
       else if (entry.isFile() && ["PACKAGE.ts", "WORKSPACE.ts", "BUILD.ts"].includes(entry.name)) {
-        const path = join(dir, entry.name)
-        const stat = statSync(path)
-        hash.update(path.slice(repo.length)).update(String(stat.mtimeMs)).update(String(stat.size))
+        files.push(join(dir, entry.name))
       }
     }
   }
   walk(repo)
-  return hash.digest("hex")
+  const sources = new Map<string, GraphNode["source"]>()
+  for (const path of files.sort()) {
+    let contents: string
+    try { contents = readFileSync(path, "utf8") } catch { continue }
+    const file = relative(repo, path).split(sep).join("/")
+    hash.update(file).update("\0").update(contents).update("\0")
+    if (path.endsWith("PACKAGE.ts") || path.endsWith("BUILD.ts")) {
+      const packageDir = dirname(file) === "." ? "" : dirname(file)
+      for (const match of contents.matchAll(/^[\t ]*(?:export[\t ]+)?const[\t ]+([A-Za-z_$][\w$]*)[\t ]*=/gm)) {
+        const before = contents.slice(0, match.index)
+        const line = before.split("\n").length
+        sources.set(`//${packageDir}:${match[1]}`, { file, line })
+      }
+    }
+  }
+  return { digest: hash.digest("hex"), sources }
 }
 
 interface CachedGraph { readonly digest: string; readonly response: TargetGraphResponse }
@@ -136,7 +150,8 @@ const runJson = async (options: TargetGraphOptions, args: ReadonlyArray<string>)
 
 export const queryTargetGraph = async (options: TargetGraphOptions): Promise<TargetGraphResponse> => {
   const started = Date.now()
-  const digest = declarationDigest(options.repo)
+  const declarations = declarationSet(options.repo)
+  const digest = declarations.digest
   let base = graphCache.get(options.repo)
   if (base === undefined || base.digest !== digest) {
     const [envelope, targetResult] = await Promise.all([
@@ -151,8 +166,12 @@ export const queryTargetGraph = async (options: TargetGraphOptions): Promise<Tar
     const merged = new Map(rows.map((row) => [row.label, row]))
     for (const target of targetResult.targets) merged.set(target.label, { label: target.label, target: target.target, kinds: target.kinds })
     const parsed = parseTextGraph(body.graph, [...merged.values()])
+    const nodes = parsed.nodes.map((node) => {
+      const source = declarations.sources.get(node.label)
+      return source === undefined ? node : { ...node, source }
+    })
     const generatedAt = new Date().toISOString()
-    base = { digest, response: { repoId: options.repoId, ...parsed, warnings: targetResult.warnings, generatedAt, durationMs: Date.now() - started } }
+    base = { digest, response: { repoId: options.repoId, nodes, edges: parsed.edges, warnings: targetResult.warnings, generatedAt, digest, durationMs: Date.now() - started } }
     graphCache.set(options.repo, base)
   }
   let nodes = base.response.nodes.map((node) => ({ ...node, kinds: [...node.kinds], ...(node.plan === undefined ? {} : { plan: { ...node.plan } }) }))

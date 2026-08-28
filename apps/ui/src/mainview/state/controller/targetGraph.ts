@@ -82,10 +82,11 @@ const capLog = (text: string): string => (text.length > MAX_LOG_CHARS ? text.sli
 export const replayAtCursor = (
   events: ReadonlyArray<TargetRunEvent>,
   cursor: number
-): { readonly nodes: Array<NodeTiming>; readonly summary: RunSummary | undefined; readonly logs: Record<string, string> } => {
+): { readonly nodes: Array<NodeTiming>; readonly summary: RunSummary | undefined; readonly logs: Record<string, string>; readonly error: string | undefined } => {
   const nodes = new Map<string, NodeTiming>()
   const logs: Record<string, string> = {}
   let summary: RunSummary | undefined
+  let error: string | undefined
   /*
    * stdout/stderr (and exit/error) frames carry no `at` of their own. They are
    * recorded IN ORDER, so an untimed frame happened at the clock of the last
@@ -99,20 +100,24 @@ export const replayAtCursor = (
     if (clock > cursor) continue
     if (event.type === "node") nodes.set(event.node.label, event.node)
     else if (event.type === "summary") summary = event.summary
+    else if (event.type === "error") error = event.message
+    else if (event.type === "exit" && event.code !== 0 && error === undefined) error = event.code === null ? "The run ended without an exit code." : `The run exited ${event.code}.`
     else if ((event.type === "stdout" || event.type === "stderr") && event.label !== undefined) {
       logs[event.label] = capLog((logs[event.label] ?? "") + event.data)
     }
   }
-  return { nodes: [...nodes.values()], summary, logs }
+  return { nodes: [...nodes.values()], summary, logs, error }
 }
 
 /** A live frame folds into the same per-run state the replay fold produces. */
 export const foldRunFrame = (
-  state: { nodes: Map<string, NodeTiming>; summary: RunSummary | undefined; logs: Map<string, string> },
+  state: { nodes: Map<string, NodeTiming>; summary: RunSummary | undefined; logs: Map<string, string>; error?: string },
   frame: TargetRunFrame
 ): void => {
   if (frame.type === "node") state.nodes.set(frame.node.label, frame.node)
   else if (frame.type === "summary") state.summary = frame.summary
+  else if (frame.type === "error") state.error = frame.message
+  else if (frame.type === "exit" && frame.code !== 0 && state.error === undefined) state.error = frame.code === null ? "The run ended without an exit code." : `The run exited ${frame.code}.`
   else if ((frame.type === "stdout" || frame.type === "stderr") && "label" in frame && frame.label !== undefined) {
     state.logs.set(frame.label, capLog((state.logs.get(frame.label) ?? "") + frame.data))
   }
@@ -127,7 +132,7 @@ export const createTargetGraphController = (
   /** Recorded/replayed events per runId, for the scrubber. */
   const replayEvents = new Map<string, ReadonlyArray<TargetRunEvent>>()
   /** Live folds per runId, shared by the graph overlay and the timeline card. */
-  const liveRuns = new Map<string, { nodes: Map<string, NodeTiming>; summary: RunSummary | undefined; logs: Map<string, string> }>()
+  const liveRuns = new Map<string, { nodes: Map<string, NodeTiming>; summary: RunSummary | undefined; logs: Map<string, string>; error?: string }>()
 
   const upsert = (card: Card): void => {
     store.dispatch({ type: "card.upsert", actor: ctx.commandActor, card })
@@ -200,10 +205,11 @@ export const createTargetGraphController = (
       patch(timelineId, "run-timeline", (card) => ({
         payload: {
           ...card.payload,
-          status: summary !== undefined ? (summary.ok ? "done" : "failed") : "running",
+          status: fold.error !== undefined ? "failed" : summary !== undefined ? (summary.ok ? "done" : "failed") : "running",
           nodes,
           ...(summary === undefined ? {} : { summary }),
-          logs: Object.fromEntries(fold.logs)
+          logs: Object.fromEntries(fold.logs),
+          ...(fold.error === undefined ? {} : { error: fold.error })
         }
       }))
     }
@@ -330,7 +336,7 @@ export const createTargetGraphController = (
         "The runs route answered an unexpected shape."
       )
     if ("error" in answer) {
-      patch(id, "run-history", (card) => ({ payload: { ...card.payload, status: "failed" }, status: "error" }))
+      patch(id, "run-history", (card) => ({ payload: { ...card.payload, status: "failed", error: answer.error }, status: "error" }))
       return answer.error
     }
     patch(id, "run-history", (card) => ({
@@ -371,6 +377,7 @@ export const createTargetGraphController = (
         status: replay.run.status,
         nodes: state.nodes,
         ...(state.summary === undefined ? {} : { summary: state.summary }),
+        ...(state.error === undefined ? {} : { error: state.error }),
         cursor: endCursor,
         extent: { start: replay.run.startedAt, end: endCursor },
         logs: state.logs
@@ -403,12 +410,13 @@ export const createTargetGraphController = (
      * half-replayed run.
      */
     patch(cardId, "run-timeline", (current) => {
-      const { summary: _dropped, ...rest } = current.payload
+      const { summary: _dropped, error: _oldError, ...rest } = current.payload
       return {
         payload: {
           ...rest,
           nodes: state.nodes,
           ...(state.summary === undefined ? {} : { summary: state.summary }),
+          ...(state.error === undefined ? {} : { error: state.error }),
           cursor,
           logs: state.logs
         }
@@ -495,7 +503,7 @@ export const createTargetGraphController = (
 
   const openSource: TargetGraphController["openSource"] = async (repoId, file, line) => {
     const answer = await post(
-      "/api/targets/open-source",
+      TARGET_GRAPH_ROUTES.openSource,
       { repoId, file, ...(line === undefined ? {} : { line }) },
       { safeParse: (value: unknown) => ({ success: true, data: value as Record<string, unknown> }) },
       "The open-source route answered an unexpected shape."

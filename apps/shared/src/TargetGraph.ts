@@ -256,7 +256,9 @@ export const RunTimelineCardPayloadSchema = z.object({
   /** The full run's time extent (additive, ui/ui lane): the scrubber's range, stable across cursors. */
   extent: z.object({ start: z.number(), end: z.number() }).optional(),
   /* Per-node stdout/stderr text from attributed frames (additive, ui/ui lane). */
-  logs: z.record(z.string(), z.string()).optional()
+  logs: z.record(z.string(), z.string()).optional(),
+  /** Stream/process failure text; a failed card renders this verbatim. */
+  error: z.string().optional()
 })
 export type RunTimelineCardPayload = z.infer<typeof RunTimelineCardPayloadSchema>
 
@@ -264,7 +266,8 @@ export const RunHistoryCardPayloadSchema = z.object({
   repoId: z.string(),
   status: z.enum(["pending", "done", "failed"]),
   runs: z.array(RunRecordSchema),
-  selected: z.string().optional()
+  selected: z.string().optional(),
+  error: z.string().optional()
 })
 export type RunHistoryCardPayload = z.infer<typeof RunHistoryCardPayloadSchema>
 
@@ -290,7 +293,8 @@ export const TARGET_GRAPH_ROUTES = {
   runs: "/api/targets/runs",
   replay: "/api/targets/runs/replay",
   affected: "/api/targets/affected",
-  ci: "/api/targets/ci"
+  ci: "/api/targets/ci",
+  openSource: "/api/targets/open-source"
 } as const
 
 /**
