@@ -697,3 +697,59 @@ height and that nodes land on the canvas.
 
 Screenshots: `apps/ui/docs/screenshots/` (`graph-card`, `graph-card-drawer`,
 `run-timeline-card`, `run-history-card`, `affected-card`, `ci-matrix-card`).
+
+## Target graph: coverage, integration and end-to-end (2026-08-27, lane `ui/tests`)
+
+This lane added no routes, frames or cards. It added the proof for the ones
+`ui/backend` and `ui/ui` shipped, and fixed the defects that proof found.
+
+### Contract corrections (additive only)
+
+| Field | Was | Now |
+| --- | --- | --- |
+| `TargetRunEvent.seq` | declared, never assigned | stamped by `createTargetRunner` on every frame it emits: run-local, 0-based, gap-free |
+| `TargetRunFrame.seq` (`LocalApp.ts`) | absent from the schema | declared optional on all seven variants — a zod object strips what it does not declare, so the key was deleted off every frame in flight |
+| `TargetGraphResponse.digest` | computed for the backend cache, dropped before the response | returned, so a card can compare it and see a graph go stale after a declaration edit |
+
+Nothing was renamed and no field became required.
+
+### Behaviour corrections
+
+- **The run store is bounded.** `TargetRunHistory` retained every stdout /
+  stderr frame in memory for the life of the process and never evicted a run.
+  It now keeps at most `MAX_RETAINED_LOG_CHARS` (1 MiB) of log tail per run,
+  evicting the oldest log frames and never a structured frame. The
+  `.flows/ui/runs/<runId>.jsonl` journal still holds every byte.
+- **The graph route no longer blocks the event loop.** `queryTargetGraph`
+  fingerprints the workspace's declarations on every call (that is what makes
+  a graph go stale on edit). The walk was `readdirSync`/`statSync`: 160-190 ms
+  of blocked loop per request measured on `~/artsy/force`, paid by
+  `/api/targets/graph`, `/api/targets/affected` and `/api/targets/ci`, during
+  which the server answered nothing and no run frame reached a live overlay.
+  It is now async with concurrent siblings, and hashes in sorted path order so
+  the digest no longer depends on filesystem or scheduler ordering.
+
+### Test tiers this lane added
+
+| Tier | File | What it proves |
+| --- | --- | --- |
+| Unit | `src/bun/TargetRunContract.test.ts` | `seq`, `digest`, the run-store bound |
+| Unit | `src/bun/TargetGraphBlocking.test.ts` | a 10 ms heartbeat is never missed by >60 ms across a graph query |
+| Unit | `src/bun/TargetRunParsing.branches.test.ts` | labels with dashes/slashes, private helpers, refusal text with colons, all-zero summaries, interleaved stderr, cycles and self-loops |
+| Unit | `src/bun/TargetRunHistory.branches.test.ts` | the journal round-trips through disk into a fresh store; a crashed run reloads as `failed` |
+| Unit | `src/bun/CiMatrix.branches.test.ts` | scratch render vs on-disk fallback, the import closure, an import that escapes the repo |
+| Unit | `src/mainview/state/TargetRunClient.test.ts` | the WS transport against a REAL `Bun.serve` socket: subscription sharing, release, reconnect, dispose |
+| Unit | `src/mainview/state/controller/replayCursor.test.ts` | the replay fold at both boundaries — no summary before the summary frame |
+| Unit | `src/mainview/state/controller/targetGraph.failures.test.ts` | no repo, two repos, 500s, wrong shapes, throwing transports |
+| Unit | `src/mainview/cards/GraphDrawerFacts.test.tsx`, `RunCardBranches.test.tsx` | every optional plan fact; the pending/failed/empty states |
+| Integration | `src/bun/TargetGraph.integration.test.ts` | the product's server over real HTTP, spawning the real loader: `~/artsy/force` answers 82 nodes / 94 edges; a real `//src:typeCheck` run in `~/artsy-e2e/force` yields `node` frames and a `summary` whose critical path ends at the target asked for; history and replay round-trip through a SECOND server over the same disk |
+| E2E (T1) | `e2e/playwright/target-graph.real.spec.ts` | the whole flow against the real backend with the fixture flag OFF |
+
+`target-graph.spec.ts` (fixture seam) and `target-graph.real.spec.ts` (real
+backend) are complementary: the first is deterministic and runs anywhere, the
+second is the honest proof and skips where `~/artsy-e2e/force` is absent.
+
+**Not covered by the E2E:** the Electrobun shell. Tier T1 is headless Chromium
+against the local origin, so the native window chrome and the OS folder picker
+are not exercised — the repository is opened through the `window.prompt`
+fallback. See `e2e/playwright/native/` for the tier that does drive the shell.

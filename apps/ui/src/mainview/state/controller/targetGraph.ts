@@ -267,9 +267,23 @@ export const createTargetGraphController = (
       patch(id, "graph", (card) => ({ payload: { ...card.payload, status: "done", graph }, status: "acted" }))
       return
     }
+    /*
+     * Two phases, deliberately.
+     *
+     * The DAG and the plan facts used to be ONE request, and `plan: true`
+     * with no label plans `//...` — every target in the workspace. On the
+     * real force checkout that is ~4.7s for the graph against ~15.9s for
+     * graph+plan, and under the load of a real session (the auto-loaded
+     * targets card querying the loader at the same time) it crosses the
+     * boundedFetch deadline and the card dies with `seam timeout` showing
+     * NOTHING — a DAG that was ready in seconds, thrown away for facts only
+     * the drawer reads. So: paint the graph as soon as it lands, then patch
+     * the plan facts in. The card's final state is unchanged.
+     */
+    const labels = label === undefined ? {} : { labels: [label] }
     const answer = await post(
       TARGET_GRAPH_ROUTES.graph,
-      { repoId, plan: true, ...(label === undefined ? {} : { labels: [label] }) },
+      { repoId, ...labels },
       TargetGraphResponseSchema,
       "The graph route answered an unexpected shape."
     )
@@ -278,6 +292,20 @@ export const createTargetGraphController = (
       return answer.error
     }
     patch(id, "graph", (card) => ({ payload: { ...card.payload, status: "done", graph: answer }, status: "acted" }))
+
+    const planned = await post(
+      TARGET_GRAPH_ROUTES.graph,
+      { repoId, plan: true, ...labels },
+      TargetGraphResponseSchema,
+      "The graph route answered an unexpected shape."
+    )
+    /*
+     * A plan that fails leaves the painted graph exactly as it is. The drawer
+     * shows the facts it has and omits the ones it does not, which it already
+     * does for every node the planner refuses.
+     */
+    if ("error" in planned) return
+    patch(id, "graph", (card) => ({ payload: { ...card.payload, status: "done", graph: planned }, status: "acted" }))
   }
 
   /*
