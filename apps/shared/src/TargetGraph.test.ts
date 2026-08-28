@@ -550,11 +550,15 @@ describe("criticalPath", () => {
       .toEqual(["x", "root"])
   })
 
-  test("a run whose durations are all zero or missing collapses to the first node, not the longest chain", () => {
-    // Documented consequence of "nodes without timings count as 0": with no
-    // wall time anywhere there is no longest chain to report.
-    expect(criticalPath([timing("a", 0), timing("b", 0), timing("c", 0)], [dep("a", "b"), dep("b", "c")])).toEqual(["a"])
-    expect(criticalPath([timing("a"), timing("b"), timing("c")], [dep("a", "b"), dep("b", "c")])).toEqual(["a"])
+  test("a run whose durations are all zero or missing still reports the dependency chain, root last", () => {
+    // An all-cache-hit run has no wall time anywhere, but the UI highlights
+    // the chain, so a zero-cost chain stays on the path (contract 0e717461d).
+    expect(criticalPath([timing("a", 0), timing("b", 0), timing("c", 0)], [dep("a", "b"), dep("b", "c")])).toEqual([
+      "c",
+      "b",
+      "a"
+    ])
+    expect(criticalPath([timing("a"), timing("b"), timing("c")], [dep("a", "b"), dep("b", "c")])).toEqual(["c", "b", "a"])
   })
 
   test("a node with a duration but no dependency still wins over a slower-total sibling chain", () => {
