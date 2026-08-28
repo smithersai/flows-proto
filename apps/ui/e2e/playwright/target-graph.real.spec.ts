@@ -105,8 +105,10 @@ test("the whole target-graph flow against the real backend", async ({ page }) =>
   const drawerText = await drawer.textContent()
   expect(drawerText).toContain("//src")
 
-  // 3. Run the target for real; the overlay paints as the frames arrive.
-  await command(page, "/target.run //src:typeCheck")
+  // 3. Run the target for real, from the drawer's own Run button — the
+  //    affordance a human actually clicks, which carries the repository id
+  //    that a typed /target.run has no way to name.
+  await drawer.locator("[data-flow=\"target.run\"]").click()
   const runCard = card(page, "target-run")
   await expect(runCard).toBeVisible({ timeout: SLOW })
   /* The graph card picks the run up and shows its status legend. */

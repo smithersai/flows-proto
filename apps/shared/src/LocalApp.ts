@@ -84,16 +84,30 @@ export type TargetsQueryResponse = z.infer<typeof TargetsQueryResponseSchema>
 export const TargetRunResponseSchema = z.object({ runId: z.string() })
 
 /** One frame on the WS topic `target-run:<runId>`. */
+/*
+ * The run-local frame number the backend stamps on every frame it records
+ * (smithers-shared/TargetGraph `TargetRunEvent.seq`): 0-based, gap-free, and
+ * the ONLY total order replay has, because stdout/stderr/exit/error frames
+ * carry no `at` of their own.
+ *
+ * It has to be declared HERE too, not only on TargetRunEvent. This is the
+ * schema the client parses every WebSocket frame with, and a zod object
+ * strips what it does not declare — so while it was absent the ordering key
+ * was silently deleted off every frame in flight. Optional, because frames
+ * recorded before the backend numbered them have none.
+ */
+const frameSeq = { seq: z.number().int().nonnegative().optional() }
+
 export const TargetRunFrameSchema = z.discriminatedUnion("type", [
   /* `label` attributes the chunk to one graph node when the backend can. */
-  z.object({ type: z.literal("stdout"), data: z.string(), label: z.string().optional(), seq: z.number().int().nonnegative().optional() }),
-  z.object({ type: z.literal("stderr"), data: z.string(), label: z.string().optional(), seq: z.number().int().nonnegative().optional() }),
-  z.object({ type: z.literal("exit"), code: z.number().nullable(), seq: z.number().int().nonnegative().optional() }),
-  z.object({ type: z.literal("error"), message: z.string(), seq: z.number().int().nonnegative().optional() }),
+  z.object({ type: z.literal("stdout"), data: z.string(), label: z.string().optional(), ...frameSeq }),
+  z.object({ type: z.literal("stderr"), data: z.string(), label: z.string().optional(), ...frameSeq }),
+  z.object({ type: z.literal("exit"), code: z.number().nullable(), ...frameSeq }),
+  z.object({ type: z.literal("error"), message: z.string(), ...frameSeq }),
   /* The structured run frames (smithers-shared/TargetGraph TargetRunEvent). */
-  z.object({ type: z.literal("started"), runId: z.string(), label: z.string(), at: z.number(), labels: z.array(z.string()), seq: z.number().int().nonnegative().optional() }),
-  z.object({ type: z.literal("node"), node: NodeTimingSchema, at: z.number(), seq: z.number().int().nonnegative().optional() }),
-  z.object({ type: z.literal("summary"), summary: RunSummarySchema, at: z.number(), seq: z.number().int().nonnegative().optional() })
+  z.object({ type: z.literal("started"), runId: z.string(), label: z.string(), at: z.number(), labels: z.array(z.string()), ...frameSeq }),
+  z.object({ type: z.literal("node"), node: NodeTimingSchema, at: z.number(), ...frameSeq }),
+  z.object({ type: z.literal("summary"), summary: RunSummarySchema, at: z.number(), ...frameSeq })
 ])
 export type TargetRunFrame = z.infer<typeof TargetRunFrameSchema>
 

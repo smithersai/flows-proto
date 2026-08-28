@@ -122,7 +122,7 @@ test("a chatty run does not grow the in-memory run store without bound", async (
     startedAt: Date.now(), status: "running", exitCode: null
   }
   await history.start(run)
-  history.event(run, { type: "started", runId: run.runId, label: run.label, labels: run.labels, at: Date.now() })
+  history.event(run, { type: "started", runId: run.runId, label: run.label, labels: [...run.labels], at: Date.now() })
   /*
    * Every stdout frame was retained in memory for the life of the process,
    * and the runs map never evicts, so one noisy `tsc` run pinned its whole

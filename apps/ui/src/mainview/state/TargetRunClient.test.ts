@@ -213,3 +213,24 @@ test("a socket that never connects errors, closes and retries until the backend 
   await until(() => frames.length >= 1)
   client.dispose()
 })
+
+test("the run-local seq survives the transport's parse", async () => {
+  const server = start()
+  const client = createTargetRunClient({ socketUrl: () => server.url })
+  const frames: Array<TargetRunFrame> = []
+  client.attach("run-1", (frame) => frames.push(frame))
+  await until(() => server.seen.length >= 2)
+
+  /*
+   * The backend stamps every frame with a run-local `seq`, which the contract
+   * names as replay's ONLY total order — stdout/stderr/exit/error frames have
+   * no `at`. The client parses each frame through TargetRunFrameSchema, and a
+   * zod object strips what it does not declare, so a schema without `seq`
+   * silently deletes the ordering key off every frame in flight.
+   */
+  server.publish("run-1", { type: "stdout", data: "one", seq: 7 })
+  server.publish("run-1", { type: "exit", code: 0, seq: 8 })
+  await until(() => frames.length >= 2)
+  expect(frames.map((frame) => (frame as { seq?: number }).seq)).toEqual([7, 8])
+  client.dispose()
+})

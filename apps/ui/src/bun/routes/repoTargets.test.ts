@@ -132,7 +132,9 @@ describe("/api/targets/*", () => {
     socket.close()
     expect(frames.filter((frame) => frame.type === "stdout").map((frame) => frame.data).join("")).toBe("ran //:fails\n")
     expect(frames.filter((frame) => frame.type === "stderr").map((frame) => frame.data).join("")).toBe("done\n")
-    expect(frames[frames.length - 1]).toMatchObject({ type: "exit", code: 2 })
+    /* The run-local seq the contract orders replay by reaches the client. */
+    expect(frames.map((frame) => (frame as { seq?: number }).seq)).toEqual(frames.map((_frame, index) => index))
+    expect(frames[frames.length - 1]).toMatchObject({ type: "exit", code: 2, seq: frames.length - 1 })
     expect(frames.map((frame) => frame.seq)).toEqual(frames.map((_, index) => index))
 
     expect(await (await post("/api/targets/cancel", { runId })).json()).toEqual({ ok: false })

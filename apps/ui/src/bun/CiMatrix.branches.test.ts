@@ -56,7 +56,7 @@ test("with no Node sidecar the preview reads the workflows already on disk", asy
    */
   const result = await renderCiMatrix({ repoId: "force", repo, labels: ["//.github:github"], node: null, declarationFiles: [] })
   expect(result.workflows.map((entry) => entry.source)).toEqual(["on-disk"])
-  expect(result.warnings).toEqual([])
+  expect(result.warnings ?? []).toEqual([])
   expect(result.durationMs).toBeGreaterThanOrEqual(0)
 
   const ci = result.workflows[0]!
@@ -98,9 +98,9 @@ test("a CiGen label whose scratch render fails warns and shows what is on disk",
     node: { path: process.execPath, version: "v22.19.0" }
   })
   /* A failed render is reported, never swallowed into a green preview. */
-  expect(result.warnings.length).toBe(1)
-  expect(result.warnings[0]).toContain("//.github:github scratch render exited 1")
-  expect(result.warnings[0]).toContain("could not resolve")
+  expect(result.warnings ?? []).toHaveLength(1)
+  expect((result.warnings ?? [])[0]).toContain("//.github:github scratch render exited 1")
+  expect((result.warnings ?? [])[0]).toContain("could not resolve")
   /* The scratch produced nothing, so the on-disk workflows are what is shown. */
   expect(result.workflows.map((entry) => entry.source)).toEqual(["on-disk"])
 })
@@ -131,7 +131,7 @@ writeFileSync(".github/workflows/generated.yml", \`name: generated\\njobs:\\n  b
     repoId: "force", repo, labels: ["//.github:github"], declarationFiles: ["PACKAGE.ts"], cli,
     node: { path: process.execPath, version: "v22.19.0" }
   })
-  expect(result.warnings).toEqual([])
+  expect(result.warnings ?? []).toEqual([])
   expect(result.workflows.map((entry) => entry.source)).toEqual(["scratch-render"])
   const generated = result.workflows[0]!
   expect(generated.name).toBe("generated")
