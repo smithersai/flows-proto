@@ -1,3 +1,14 @@
+/**
+ * A durable clock completion delivered while the waiting cell is arming it.
+ *
+ * The wait runs inside the cell call's action region. That nested suspension
+ * used to wait for its enclosing action to settle before it could park, while
+ * the enclosing action could not settle until the wait returned. The clock
+ * wake was queued behind a round that therefore never ended. The durable-engine
+ * cases in `DurableWait.test.ts` pin that coordinator deadlock. This fast case
+ * pins the integration between the standard wait flow, its durable clock, and
+ * a completion delivered at the clock-arming boundary.
+ */
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto"
 import * as Capability from "@smthrs/capability/Capability"
 import { FlowEngine } from "@smthrs/engine"
@@ -10,10 +21,7 @@ import { Node } from "@smthrs/plan"
 import * as Registry from "@smthrs/registry/Registry"
 import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Schema, Scope, Stream } from "effect"
 import type * as Crypto from "effect/Crypto"
-import { appendFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-;(globalThis as any).__dbg = (message: string) => appendFileSync("/tmp/wake-dbg.log", message + "\n")
-setInterval(() => appendFileSync("/tmp/wake-dbg.log", "heartbeat\n"), 2000).unref()
 import * as Agent from "../src/Agent.ts"
 import type * as FlowEngineLike from "../src/FlowEngineLike.ts"
 import * as Seat from "../src/Seat.ts"
@@ -36,7 +44,7 @@ const recorded = (cells: ReadonlyArray<string>): Model.Model => {
   return Model.make({
     stream: () =>
       Stream.suspend(() => {
-        const source = cells[index++] ?? cells.at(-1) ?? "return { intent: \"complete\", output: \"done\" }"
+        const source = cells[index++] ?? cells.at(-1) ?? `ctx.done("done")`
         return Stream.fromIterable([
           ModelEvent.ModelEvent.TextStart({ type: "text-start", id: `cell-${index}` }),
           ModelEvent.ModelEvent.TextDelta({
@@ -51,19 +59,19 @@ const recorded = (cells: ReadonlyArray<string>): Model.Model => {
   })
 }
 
-type Outcome =
-  | { readonly _tag: "completed"; readonly value: unknown }
+type Outcome<A> =
+  | { readonly _tag: "completed"; readonly value: A }
   | { readonly _tag: "failed"; readonly error: unknown }
   | { readonly _tag: "suspended" }
 
-const classify = (exit: Exit.Exit<unknown, unknown>): Outcome =>
+const classify = <A>(exit: Exit.Exit<A, unknown>): Outcome<A> =>
   Exit.isSuccess(exit)
     ? { _tag: "completed", value: exit.value }
     : Cause.hasInterruptsOnly(exit.cause)
     ? { _tag: "suspended" }
     : { _tag: "failed", error: Cause.squash(exit.cause) }
 
-const driveFlow = EngineFlow.make("agent/test/wake-repro", {
+const driveFlow = EngineFlow.make("agent/test/durable-clock-wake", {
   payload: {},
   success: Schema.Unknown,
   error: Schema.Unknown,
@@ -72,11 +80,11 @@ const driveFlow = EngineFlow.make("agent/test/wake-repro", {
 
 const drive = <A, E>(
   body: Effect.Effect<A, E, Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance>
-): Promise<Outcome> =>
+): Promise<Outcome<A>> =>
   Effect.gen(function*() {
     const engine = yield* FlowRuntime.FlowRuntime
     const scope = yield* Effect.scope
-    const settled = Deferred.makeUnsafe<Outcome>()
+    const settled = Deferred.makeUnsafe<Outcome<A>>()
     yield* engine.register(driveFlow, () =>
       Effect.onExit(body, (exit) => Effect.asVoid(Deferred.succeed(settled, classify(exit))))).pipe(
         Scope.provide(scope)
@@ -85,19 +93,12 @@ const drive = <A, E>(
     return yield* Deferred.await(settled)
   }).pipe(Effect.provide(Layer.merge(FlowEngine.layerMemory, NodeCrypto.layer)), Effect.scoped, Effect.runPromise)
 
-const collect = (options: {
-  readonly cells: ReadonlyArray<string>
-  readonly flows: ReadonlyArray<Parameters<typeof Agent.Agent.prototype extends never ? never : never>> | undefined
-}) => options
-
-describe("wake repro", () => {
-  it("resumes a cell that waited on a durable clock", async () => {
+describe("a durable wait nested inside a cell action", () => {
+  it("returns the wait result when the clock completes during arming", async () => {
     const outcome = await drive(
       Effect.gen(function*() {
         const engine = yield* FlowRuntime.FlowRuntime
         const services = yield* Effect.context<Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance>()
-        // A scripted clock: arming returns immediately and the deferred is
-        // completed on a forked fiber, so the awaiting flow parks first.
         const scripted = FlowRuntime.FlowRuntime.of({
           ...engine,
           scheduleClock: (flow, opts) =>
@@ -117,7 +118,7 @@ describe("wake repro", () => {
             id: "anthropic:test-model",
             model: recorded([
               `const waited = await ctx.call("wait", { seconds: 61 })
-return { intent: "complete", output: String(waited.waitedSeconds) }`
+ctx.done(String(waited.waitedSeconds))`
             ]),
             route,
             contextWindowTokens: 0
@@ -138,10 +139,13 @@ return { intent: "complete", output: String(waited.waitedSeconds) }`
         return collected
       }).pipe(Effect.provide(Agent.layer))
     )
-    // eslint-disable-next-line no-console
-    console.log("OUTCOME", outcome._tag, outcome._tag === "failed" ? outcome.error : "")
-    expect(outcome._tag).toBe("completed")
+    expect(outcome._tag, outcome._tag === "failed" ? String(outcome.error) : undefined).toBe("completed")
+    if (outcome._tag !== "completed") return
+    const settled = outcome.value.find((event) => event._tag === "cell-call-settled")
+    expect(settled?._tag === "cell-call-settled" ? settled.result.value : undefined).toEqual({ waitedSeconds: 61 })
+    const resolved = outcome.value.find((event) => event._tag === "resolved")
+    expect(resolved?._tag === "resolved" ? resolved.message.content : []).toEqual([
+      { type: "text", text: "61" }
+    ])
   }, 30_000)
 })
-
-void collect
