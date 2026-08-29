@@ -166,7 +166,6 @@ export const queryTargets = async (options: TargetsQueryOptions): Promise<Target
     warnings.push("No Node.js >= 22.19 was found for the smthrs loader (SMITHERS_NODE, PATH, nvm, homebrew).")
     return { targets: [], warnings, durationMs: Date.now() - started }
   }
-  const node = options.node
   if (!existsSync(cli)) {
     warnings.push(`The smthrs loader is missing at ${cli} (set SMITHERS_BUILD_CLI).`)
     return { targets: [], warnings, durationMs: Date.now() - started }
