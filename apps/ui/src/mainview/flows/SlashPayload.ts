@@ -124,6 +124,7 @@ const GRAMMAR: Readonly<Record<string, (args: string | undefined) => Parsed>> = 
     return ok({ access })
   },
   "connector.downgrade": (args) => required("connectorId", args, "connector.downgrade needs the connector id"),
+  "connector.remove.ask": (args) => required("connectorId", args, "connector.remove.ask needs the connector id"),
   "connector.remove": (args) => required("connectorId", args, "connector.remove needs the connector id"),
   "world.select": (args) => required("documentId", args, "world.select needs the document id"),
   "world.delete": (args) => required("documentId", args, "world.delete needs the document id"),
