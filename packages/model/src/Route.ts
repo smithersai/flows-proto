@@ -17,6 +17,7 @@ import * as Model from "./Model.ts"
 import { ModelError } from "./ModelError.ts"
 import type { ModelEvent } from "./ModelEvent.ts"
 import { type ModelRequest, ModelRequest as ModelRequestSchema } from "./ModelRequest.ts"
+import * as OpenAIChatCompletions from "./OpenAIChatCompletions.ts"
 import * as OpenAIResponses from "./OpenAIResponses.ts"
 import type * as Protocol from "./Protocol.ts"
 import * as RequestExecutor from "./RequestExecutor.ts"
@@ -307,6 +308,39 @@ export const openai = (
     make({
       id: "openai",
       protocol: OpenAIResponses.protocol,
+      endpoint,
+      auth: Auth.bearer(input.apiKey),
+      framing: Framing.sse
+    }))
+
+/**
+ * Creates a route for any endpoint that speaks the OpenAI Chat Completions
+ * wire shape: Ollama, Gemini's OpenAI-compatibility layer, and most other
+ * self-hosted or third-party "OpenAI-compatible" servers, none of which
+ * implement api.openai.com's newer Responses API that {@link openai} targets.
+ *
+ * `apiKey` may be a non-empty placeholder for a server that does not check
+ * it (Ollama ignores its `Authorization` header entirely) — {@link Auth.bearer}
+ * only rejects an empty credential.
+ *
+ * @since 0.1.0
+ * @category constructors
+ */
+export const openaiCompatible = (
+  input: { readonly id: string; readonly baseUrl: string; readonly apiKey: Auth.Redacted<string> }
+): Result.Result<
+  Route<
+    OpenAIChatCompletions.Body,
+    string,
+    Parameters<typeof OpenAIChatCompletions.protocol.stream.step>[1],
+    ReturnType<typeof OpenAIChatCompletions.protocol.stream.initial>
+  >,
+  ModelError
+> =>
+  Result.map(Endpoint.make({ url: input.baseUrl, path: "/chat/completions" }), (endpoint) =>
+    make({
+      id: input.id,
+      protocol: OpenAIChatCompletions.protocol,
       endpoint,
       auth: Auth.bearer(input.apiKey),
       framing: Framing.sse
