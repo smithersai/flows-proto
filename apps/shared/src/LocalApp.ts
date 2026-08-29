@@ -194,7 +194,7 @@ export type PtySession = z.infer<typeof PtySessionSchema>
  */
 export const TARGET_KINDS = ["build", "test", "lint", "run", "docs"] as const
 
-export const TargetSchema = z.object({
+export const TargetDefinitionSchema = z.object({
   label: z.string(),
   target: z.string(),
   kinds: z.array(z.string()),
@@ -203,6 +203,14 @@ export const TargetSchema = z.object({
   /** The detected workspace the loader ran in ("." for the repo root). */
   workspace: z.string()
 })
+export type TargetDefinition = z.infer<typeof TargetDefinitionSchema>
+
+/*
+ * The browser receives an opaque id minted by the local repository authority.
+ * Optional keeps previously persisted target cards readable; a legacy row has
+ * no runnable capability until the repository is queried again.
+ */
+export const TargetSchema = TargetDefinitionSchema.extend({ id: z.string().min(1).optional() })
 export type Target = z.infer<typeof TargetSchema>
 
 /** `POST /api/targets/query` */

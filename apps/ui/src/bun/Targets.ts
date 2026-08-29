@@ -7,7 +7,7 @@
 import { existsSync, realpathSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import type { RepoWorkspace, Target } from "smithers-shared/LocalApp"
+import type { RepoWorkspace, TargetDefinition } from "smithers-shared/LocalApp"
 import { splitLabel } from "smithers-shared/LocalApp"
 import { criticalPath } from "smithers-shared/TargetGraph"
 import type { GraphEdge, NodeTiming, RunSummary, TargetRunEvent } from "smithers-shared/TargetGraph"
@@ -69,7 +69,7 @@ const isTargetRow = (value: unknown): value is { label: string; target?: unknown
  * tagged with the workspace the loader ran in, or an error message when the
  * text is not that shape.
  */
-export const mapTargets = (stdout: string, workspace: string): { readonly targets: Array<Target> } | { readonly error: string } => {
+export const mapTargets = (stdout: string, workspace: string): { readonly targets: Array<TargetDefinition> } | { readonly error: string } => {
   let parsed: unknown
   try {
     parsed = JSON.parse(stdout)
@@ -94,7 +94,7 @@ export const mapTargets = (stdout: string, workspace: string): { readonly target
 }
 
 export interface TargetsQueryResult {
-  readonly targets: Array<Target>
+  readonly targets: Array<TargetDefinition>
   readonly warnings: Array<string>
   readonly durationMs: number
 }
@@ -120,7 +120,7 @@ export const workspaceCwd = (repo: string, workspace: string): string =>
 const queryWorkspace = async (
   options: TargetsQueryOptions & { readonly node: NodeSidecar; readonly cli: string },
   workspace: string
-): Promise<{ readonly targets: Array<Target>; readonly warnings: Array<string> }> => {
+): Promise<{ readonly targets: Array<TargetDefinition>; readonly warnings: Array<string> }> => {
   const warnings: Array<string> = []
   const cwd = workspaceCwd(options.repo, workspace)
   const wrapped = wrapSandbox(
@@ -178,7 +178,7 @@ export const queryTargets = async (options: TargetsQueryOptions): Promise<Target
   const settled = await Promise.all(
     workspaces.map(async (workspace) => ({ workspace, ...(await queryWorkspace({ ...options, node, cli }, workspace)) }))
   )
-  const targets: Array<Target> = []
+  const targets: Array<TargetDefinition> = []
   for (const result of settled) {
     targets.push(...result.targets)
     for (const warning of result.warnings) warnings.push(lone ? warning : `[${result.workspace}] ${warning}`)
@@ -208,6 +208,14 @@ export interface TargetRunnerOptions {
   readonly autoStartMs?: number
   readonly log?: (line: string) => void
   readonly onEvent?: (run: TargetRun, event: TargetRunEvent) => void
+  /** Maximum pending/running children; default 4. */
+  readonly maxActiveRuns?: number
+  /** Maximum retained run handles; settled handles are evicted oldest-first. */
+  readonly maxRetainedRuns?: number
+}
+
+export class TargetRunCapacityError extends Error {
+  readonly code = "target_run_capacity"
 }
 
 export interface TargetRunner {
@@ -369,6 +377,8 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
     nextSeq: number
   }
   const runs = new Map<string, Live>()
+  const maxActiveRuns = options.maxActiveRuns ?? 4
+  const maxRetainedRuns = options.maxRetainedRuns ?? 64
 
   /*
    * Every frame the backend records is stamped with a run-local monotonic
@@ -463,6 +473,17 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
 
   return {
     start: ({ repoId, repo, workspace, label, node, edges = [] }) => {
+      const active = [...runs.values()].filter((live) => live.run.status === "pending" || live.run.status === "running")
+      if (active.length >= maxActiveRuns) {
+        throw new TargetRunCapacityError(`At most ${maxActiveRuns} target runs may execute at once.`)
+      }
+      while (runs.size >= maxRetainedRuns) {
+        const settled = [...runs].find(([, live]) => live.run.status !== "pending" && live.run.status !== "running")
+        if (settled === undefined) {
+          throw new TargetRunCapacityError(`At most ${maxRetainedRuns} target runs may be retained.`)
+        }
+        runs.delete(settled[0])
+      }
       const startedAt = Date.now()
       const labels = label.split(/\s+/).filter((part) => part.startsWith("//"))
       const run: TargetRun = { runId: crypto.randomUUID(), repoId, repo, workspace, label, labels, startedAt, status: "pending", exitCode: null }

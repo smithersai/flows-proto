@@ -453,8 +453,9 @@ export const CardSchema = z.discriminatedUnion("kind", [
   }),
   /*
    * The local app's repository cards (apps/ui/docs/LOCAL-APP.md "Cards"):
-   * the opened repository, its loaded targets, the agent-authored (or
-   * template) HTML panel, and one streamed target run.
+   * the opened repository, its trusted typed target list, and one streamed
+   * target run. The legacy html variant remains decodable for existing rows,
+   * but the product no longer creates executable model-authored panels.
    */
   z.object({
     ...cardBaseShape,
@@ -465,7 +466,7 @@ export const CardSchema = z.discriminatedUnion("kind", [
       status: z.enum(["pending", "done", "failed"]),
       targets: z.array(TargetSchema),
       warnings: z.array(z.string()),
-      /** The row the panel's `open` bridge message pointed at; the list highlights it. */
+      /** The row an explicit target.open flow pointed at; the list highlights it. */
       highlighted: z.string().optional()
     })
   }),
