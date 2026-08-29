@@ -861,3 +861,12 @@ and `configPaths` reads `git config -z` so a submodule name or path carrying whi
 Not done by design: upstream viem lint/format verdicts were left unchanged; size-limit remains honestly red on the
 nested install's incompatible PATH `forge`; the core shard remains honestly red when setup fetches external RPCs
 under its no-network sandbox; `Npm.Downstream` retains its isolated-checkout refusal.
+
+### Lane le/aomi-mono 2026-08-28
+
+| Owned symbol | Status | Exact proof command | Output tail |
+| --- | --- | --- | --- |
+| `S.LocalRepository` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/MultiRepo.test.ts --coverage.enabled=false` | declared repositories are opaque discovery boundaries; undeclared nested workspaces and invalid repository roots refuse with typed diagnostics |
+| `S.Repo.Target` | `[x]` | same; fallback-fixture CLI proof recorded in `goals/le/aomi-mono-REPORT.md` | child kinds and `-repo->` graph edge resolve; plan delegates to the child label; execution runs in the child workspace and the clean repeat hits cache |
+| Workspace `repos` key | `[x]` | same | the parent declaration loads, declared child workspaces are validated before discovery, and broad globs stay outside the child boundaries |
+| extended `S.Github.Workflow` | `[x]` | `pnpm -C packages/build-cli exec vitest run test/GithubRender.test.ts --coverage.enabled=false`; `pnpm -C packages/targets exec vitest run test/GithubTarget.test.ts --coverage.enabled=false` | env, environment, jobName, runsOn, permissions, concurrency, typed workflow-dispatch inputs, and raw steps validate and render against the workflow goldens |
