@@ -176,8 +176,11 @@ verdict ("no WORKSPACE.ts", "WORKSPACE.ts does not import smthrs").
 
 ## Targets: load and run
 
-- Loader = the existing CLI `packages/build-cli/src/main.js`, resolved from
-  the flows checkout relative to `apps/ui` (`SMITHERS_BUILD_CLI` overrides).
+- Loader = the existing CLI `packages/build-cli/src/main.js`, the nearest one
+  above the running main-process file (`SMITHERS_BUILD_CLI` overrides). The
+  walk matters under `electrobun dev`, where the file runs from inside
+  `apps/ui/build/<target>/<App>.app` and a fixed relative hop stays in the
+  bundle.
 - Query: `node <cli> query '//...' --format json` with `cwd` = repo root. The
   output `targets[]` maps 1:1 onto `Target` (split `label` into `package` and
   `name`). Loader errors become `warnings[]` and an empty list, never a 500.

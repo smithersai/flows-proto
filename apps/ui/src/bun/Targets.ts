@@ -6,7 +6,7 @@
  */
 import { existsSync, realpathSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { resolve } from "node:path"
+import { dirname, resolve } from "node:path"
 import type { Target } from "smithers-shared/LocalApp"
 import { splitLabel } from "smithers-shared/LocalApp"
 import { criticalPath } from "smithers-shared/TargetGraph"
@@ -19,16 +19,30 @@ import type { SandboxHost, SandboxPaths } from "./Sandbox"
 export const QUERY_TIMEOUT_MS = 120_000
 
 /**
- * The build-cli entry: SMITHERS_BUILD_CLI, else packages/build-cli/src/main.js
- * resolved from apps/ui (this file lives in apps/ui/src/bun).
+ * The build-cli entry: SMITHERS_BUILD_CLI, else the nearest
+ * packages/build-cli/src/main.js above this file. In the source tree that is
+ * four levels up (apps/ui/src/bun); under `electrobun dev` and in a built
+ * bundle this file runs from apps/ui/build/<target>/<App>.app/..., so the
+ * walk keeps climbing until it leaves the bundle and reaches the checkout.
+ * When nothing exists on disk, the four-level path is returned so the
+ * missing-loader warning names where it was expected.
  */
 export const resolveBuildCli = (
   env: Readonly<Record<string, string | undefined>> = Bun.env,
-  fromDir: string = import.meta.dir
+  fromDir: string = import.meta.dir,
+  exists: (path: string) => boolean = existsSync
 ): string => {
   const explicit = env.SMITHERS_BUILD_CLI?.trim()
   if (explicit !== undefined && explicit !== "") return resolve(explicit)
-  return resolve(fromDir, "..", "..", "..", "..", "packages", "build-cli", "src", "main.js")
+  const fallback = resolve(fromDir, "..", "..", "..", "..", "packages", "build-cli", "src", "main.js")
+  let dir = resolve(fromDir)
+  while (true) {
+    const candidate = resolve(dir, "packages", "build-cli", "src", "main.js")
+    if (exists(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) return fallback
+    dir = parent
+  }
 }
 
 /**

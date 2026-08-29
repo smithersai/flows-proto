@@ -62,7 +62,14 @@ describe("mapTargets", () => {
 describe("resolveBuildCli and sandbox paths", () => {
   test("SMITHERS_BUILD_CLI wins, else packages/build-cli/src/main.js from the checkout", () => {
     expect(resolveBuildCli({ SMITHERS_BUILD_CLI: "/x/main.js" }, "/ignored")).toBe("/x/main.js")
-    expect(resolveBuildCli({}, "/repo/apps/ui/src/bun")).toBe("/repo/packages/build-cli/src/main.js")
+    expect(resolveBuildCli({}, "/repo/apps/ui/src/bun", () => false)).toBe("/repo/packages/build-cli/src/main.js")
+  })
+
+  test("from inside an Electrobun bundle the loader is the nearest one above the bundle", () => {
+    const checkout = "/repo/packages/build-cli/src/main.js"
+    const bundled = "/repo/apps/ui/build/dev-macos-arm64/Smithers-dev.app/Contents/Resources/app/bun"
+    expect(resolveBuildCli({}, bundled, (path) => path === checkout)).toBe(checkout)
+    expect(resolveBuildCli({}, "/repo/apps/ui/src/bun", (path) => path === checkout)).toBe(checkout)
   })
 
   test("the loader policy gets the repository, home, and a real temp dir", () => {
