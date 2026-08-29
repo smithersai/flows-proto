@@ -243,6 +243,9 @@ export const make = (): Effect.Effect<
   Effect.gen(function*() {
     const engine = yield* FlowRuntime.FlowRuntime
     const scope = yield* Effect.scope
+    // Captured once so the service methods stay `R = never`: a Context.Service
+    // record cannot carry requirements, and the step-key derivation inside
+    // `engine.register` needs a Crypto in strict type environments.
     const crypto = yield* Crypto.Crypto
     const journals = new Map<string, Array<JournalEntryLike>>()
     const executions = new Map<string, ExecutionMeta>()
@@ -277,38 +280,42 @@ export const make = (): Effect.Effect<
     }
 
     const register = (spec: FlowSpec): Effect.Effect<Subject> =>
-      Effect.gen(function*() {
-        const flow: Subject = Flow.make(spec.name, {
-          payload: { value: Schema.Unknown },
-          success: Schema.Unknown,
-          error: Schema.Unknown,
-          // The registration below supplies this flow's behavior: the engine
-          // runs the registered execute and never interprets the plan-time
-          // body `Flow.make` requires, so the declaration carries the
-          // smallest honest body.
-          body: () => Node.succeed(undefined)
-        })
-        yield* engine.register(flow, (payload, executionId) =>
-          Effect.suspend(() => {
-            const journal = journalFor(executionId)
-            return Effect.gen(function*() {
-              const instance = yield* FlowRuntime.FlowInstance
-              return yield* Effect.onExit(
-                Effect.gen(function*() {
-                  let input: unknown = payload.value
-                  for (const step of spec.steps) {
-                    input = step.kind === "step"
-                      ? yield* stepActivity(journal, step, input)
-                      : yield* raceStep(journal, step, input)
-                  }
-                  return input
-                }),
-                (exit) => settle(executionId, attemptToExecutionResult(executionId, instance, exit))
-              )
-            })
-          }).pipe(Effect.provide(layerWebCrypto))).pipe(Scope.provide(scope))
-        return flow
-      }).pipe(Effect.provideService(Crypto.Crypto, crypto))
+      Effect.provideService(
+        Effect.gen(function*() {
+          const flow: Subject = Flow.make(spec.name, {
+            payload: { value: Schema.Unknown },
+            success: Schema.Unknown,
+            error: Schema.Unknown,
+            // The registration below supplies this flow's behavior: the engine
+            // runs the registered execute and never interprets the plan-time
+            // body `Flow.make` requires, so the declaration carries the
+            // smallest honest body.
+            body: () => Node.succeed(undefined)
+          })
+          yield* engine.register(flow, (payload, executionId) =>
+            Effect.suspend(() => {
+              const journal = journalFor(executionId)
+              return Effect.gen(function*() {
+                const instance = yield* FlowRuntime.FlowInstance
+                return yield* Effect.onExit(
+                  Effect.gen(function*() {
+                    let input: unknown = payload.value
+                    for (const step of spec.steps) {
+                      input = step.kind === "step"
+                        ? yield* stepActivity(journal, step, input)
+                        : yield* raceStep(journal, step, input)
+                    }
+                    return input
+                  }),
+                  (exit) => settle(executionId, attemptToExecutionResult(executionId, instance, exit))
+                )
+              })
+            })).pipe(Scope.provide(scope))
+          return flow
+        }),
+        Crypto.Crypto,
+        crypto
+      )
 
     const requireMeta = (executionId: string): Effect.Effect<ExecutionMeta, EngineUnavailableError> =>
       Effect.suspend(() => {
@@ -455,8 +462,8 @@ export const make = (): Effect.Effect<
 export const layer = (): Layer.Layer<
   EngineSubjectService,
   never,
-  FlowRuntime.FlowRuntime
-> => Layer.effect(EngineSubjectTag)(make()).pipe(Layer.provide(layerWebCrypto))
+  FlowRuntime.FlowRuntime | Crypto.Crypto
+> => Layer.effect(EngineSubjectTag)(make())
 
 /**
  * Web Crypto as the engine's `Crypto`, so `layerMemory` stays a
@@ -483,5 +490,6 @@ const layerWebCrypto: Layer.Layer<Crypto.Crypto> = Layer.succeed(Crypto.Crypto)(
  * @since 0.0.0
  */
 export const layerMemory: Layer.Layer<EngineSubjectService> = layer().pipe(
-  Layer.provide(FlowEngine.layerMemory)
+  Layer.provide(FlowEngine.layerMemory),
+  Layer.provideMerge(layerWebCrypto)
 )
