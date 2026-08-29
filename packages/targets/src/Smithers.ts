@@ -188,25 +188,6 @@ export {
 } from "./KnownFile.ts"
 /** @category targets @since 0.1.0 */
 export { GithubCiGen } from "./GithubCiGen.ts"
-/** @category targets @since 0.1.0 */
-export { GithubAutomation } from "./GithubAutomation.ts"
-/** @category errors @since 0.1.0 */
-export { AutomationDeclarationError, UntrustedJobError } from "./GithubAutomation.ts"
-/**
- * The automation job vocabulary: `agent`, `verb`, and `script` constructors
- * plus the untrusted-input constants a declaration reads.
- *
- * @category namespace exports
- * @since 0.1.0
- */
-export * as Automation from "./GithubAutomation.ts"
-/**
- * The YAML rendering primitives generated workflows share.
- *
- * @category namespace exports
- * @since 0.1.0
- */
-export * as GithubYaml from "./GithubYaml.ts"
 /** @category actions @since 0.1.0 */
 /** @category parsing @since 0.1.0 */
 export * as GithubWorkflow from "./GithubWorkflow.ts"

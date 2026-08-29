@@ -1,12 +1,11 @@
 /**
  * Journal schema migrations.
  *
- * The journal owns the event table, the checkpoint table, and the
- * `SqlConsensus` lease table. Run and attempt state migrate from
- * `@smthrs/run-store`, the step cache from `@smthrs/step-cache`, and the
- * durable deferred/clock tables from `@smthrs/engine-store`; an application
- * composes those sets with this one through `@smthrs/database`'s
- * `Migrations.layer`.
+ * The journal owns exactly one table family, `flows_journal_events`. Run and
+ * attempt state migrate from `@smthrs/run-store`, the step cache from
+ * `@smthrs/step-cache`, and the durable deferred/clock tables from
+ * `@smthrs/engine-store`; an application composes those sets with this one
+ * through `@smthrs/database`'s `Migrations.layer`.
  *
  * Derived contracts: `docs/specs/Concepts/Journal Queue.md` and
  * `docs/specs/Concepts/Journal Split.md`.
@@ -17,7 +16,6 @@ import * as DatabaseMigrations from "@smthrs/database/Migrations"
 import * as Layer from "effect/Layer"
 import initial from "./migrations/0001_initial.ts"
 import checkpoints from "./migrations/0002_checkpoints.ts"
-import consensus from "./migrations/0003_consensus.ts"
 
 /**
  * The journal's namespaced migration set, for composition with the other
@@ -32,8 +30,7 @@ export const set: DatabaseMigrations.MigrationSet = {
   idOffset: 0,
   migrations: {
     "0001_initial": initial,
-    "0002_checkpoints": checkpoints,
-    "0003_consensus": consensus
+    "0002_checkpoints": checkpoints
   }
 }
 

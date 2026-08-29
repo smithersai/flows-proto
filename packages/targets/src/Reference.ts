@@ -149,13 +149,107 @@ export const RuntimeNpx = Schema.TaggedStruct("RuntimeNpx", {
 export type RuntimeNpx = typeof RuntimeNpx.Type
 
 /**
+ * Schema for a tool whose version authority is the workspace's mise config.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const MiseBin = Schema.TaggedStruct("MiseBin", {
+  name: Schema.NonEmptyString
+})
+
+/**
+ * A tool whose version authority is the workspace's mise config.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type MiseBin = typeof MiseBin.Type
+
+/**
+ * Schema for the selected Go toolchain binary.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const GoBin = Schema.TaggedStruct("GoBin", {})
+/**
+ * A selected Go toolchain binary reference.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type GoBin = typeof GoBin.Type
+/**
+ * Schema for a versioned one-shot Go tool reference.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const GoRun = Schema.TaggedStruct("GoRun", { spec: Schema.NonEmptyString })
+/**
+ * A versioned one-shot Go tool reference.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type GoRun = typeof GoRun.Type
+/**
+ * Schema for a binary supplied by a Nix development shell.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const NixBin = Schema.TaggedStruct("NixBin", { name: Schema.NonEmptyString })
+/**
+ * A binary supplied by a Nix development shell.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export type NixBin = typeof NixBin.Type
+const targetTypeId = Symbol.for("smithers-build/Target")
+/**
+ * Structural view admitted when a build target is used as a tool.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface TargetTool {
+  readonly _tag: string
+}
+/**
+ * Schema for a build target used as an executable tool edge.
+ *
+ * @category schemas
+ * @since 0.1.0
+ */
+export const TargetTool = Schema.declare<TargetTool>((value): value is TargetTool =>
+  (typeof value === "object" && value !== null || typeof value === "function") &&
+  typeof (value as { readonly _tag?: unknown })._tag === "string" &&
+  Object.getOwnPropertyDescriptor(value, targetTypeId)?.value !== undefined
+)
+
+/**
  * Schema for every executable tool reference an attrs `bin` or `using` slot
  * accepts.
  *
  * @category schemas
  * @since 0.1.0
  */
-export const Tool = Schema.Union([NodeModuleBin, HostBin, PackageManagerBin, RuntimeBin, RuntimeNpx, CargoBin])
+export const Tool = Schema.Union([
+  NodeModuleBin,
+  HostBin,
+  PackageManagerBin,
+  RuntimeBin,
+  RuntimeNpx,
+  MiseBin,
+  GoBin,
+  GoRun,
+  NixBin,
+  TargetTool,
+  CargoBin
+])
 
 /**
  * Every executable tool reference.
@@ -228,6 +322,37 @@ export const runtimeBin: RuntimeBin = Object.freeze(RuntimeBin.make({}))
  */
 export const runtimeNpx = (spec: string): RuntimeNpx =>
   Object.freeze(RuntimeNpx.make({ spec: boundedName(spec, "Runtime.npx spec") }))
+
+/**
+ * References one binary pinned by the workspace's `S.Mise` config.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const miseBin = (name: string): MiseBin =>
+  Object.freeze(MiseBin.make({ name: boundedName(name, "Mise.bin name") }))
+
+/**
+ * References the selected Go toolchain binary.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const goBin: GoBin = Object.freeze(GoBin.make({}))
+/**
+ * References a versioned one-shot Go tool.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const goRun = (spec: string): GoRun => Object.freeze(GoRun.make({ spec: boundedName(spec, "Go.run spec") }))
+/**
+ * References a binary supplied by a Nix development shell.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const nixBin = (name: string): NixBin => Object.freeze(NixBin.make({ name: boundedName(name, "Nix.bin name") }))
 
 /**
  * Schema for a declared symlink emit value, `S.symlink(path)`.
@@ -334,6 +459,30 @@ export const AgentRef = Schema.TaggedStruct("AgentRef", {
  * @since 0.1.0
  */
 export type AgentRef = typeof AgentRef.Type
+
+/** Inline agent declarations accepted anywhere an agent selector is used.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const InlineAgent = Schema.Union([
+  Schema.TaggedStruct("AgentClaudeCode", { model: Schema.NonEmptyString }),
+  Schema.TaggedStruct("AgentCodex", { model: Schema.NonEmptyString }),
+  Schema.TaggedStruct("AgentPool", { agents: Schema.Array(Schema.NonEmptyString) })
+])
+
+/** A workspace agent reference or an inline declaration.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export const AgentSelection = Schema.Union([AgentRef, InlineAgent])
+/** A workspace agent reference or an inline declaration.
+ *
+ * @category targets
+ * @since 0.1.0
+ */
+export type AgentSelection = typeof AgentSelection.Type
 
 /**
  * Schema for a flag reference, `S.Flags.<name>`.

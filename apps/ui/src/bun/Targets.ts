@@ -249,6 +249,32 @@ export const createRunStdoutParser = (options: {
   const buffers: Record<"stdout" | "stderr", string> = { stdout: "", stderr: "" }
   const nodes = new Map<string, NodeTiming>()
   let lastSummary: RunSummary | undefined
+  const timing = (row: {
+    readonly label: string
+    readonly status: NodeTiming["status"]
+    readonly at: number
+    readonly startedAt?: number
+    readonly endedAt?: number
+    readonly durationMs?: number
+    readonly key?: string
+    readonly reason?: string
+  }): NodeTiming => {
+    const prior = nodes.get(row.label)
+    const settled = !["pending", "running"].includes(row.status)
+    const endedAt = settled ? row.endedAt ?? row.at : undefined
+    const startedAt = row.startedAt ?? prior?.startedAt ?? (
+      settled ? (endedAt ?? row.at) - (row.durationMs ?? 0) : row.status === "running" ? row.at : undefined
+    )
+    return {
+      label: row.label,
+      status: row.status,
+      ...(startedAt === undefined ? {} : { startedAt }),
+      ...(endedAt === undefined ? {} : { endedAt }),
+      ...(settled ? { durationMs: endedAt! - startedAt! } : {}),
+      ...(row.key === undefined ? {} : { key: row.key }),
+      ...(row.reason === undefined ? {} : { reason: row.reason })
+    }
+  }
   const parseSummary = (line: string, at: number): TargetRunEvent | undefined => {
     const head = /^\s*(\d+)\s+targets?:\s*(.*)$/i.exec(line)
     if (head === null) return undefined
@@ -278,15 +304,16 @@ export const createRunStdoutParser = (options: {
       if (typeof row.label !== "string" || typeof row.status !== "string") continue
       if (!["pending", "running", "hit", "ran", "failed", "skipped", "refused", "cancelled"].includes(row.status)) continue
       const ms = typeof row.durationMs === "number" ? row.durationMs : undefined
-      const node: NodeTiming = {
+      const node = timing({
         label: row.label,
         status: row.status as NodeTiming["status"],
-        ...(typeof row.startedAt === "number" ? { startedAt: row.startedAt } : ms === undefined ? {} : { startedAt: at - ms }),
-        ...(typeof row.endedAt === "number" ? { endedAt: row.endedAt } : row.status === "running" || row.status === "pending" ? {} : { endedAt: at }),
+        at,
+        ...(typeof row.startedAt === "number" ? { startedAt: row.startedAt } : {}),
+        ...(typeof row.endedAt === "number" ? { endedAt: row.endedAt } : {}),
         ...(ms === undefined ? {} : { durationMs: ms }),
         ...(typeof row.key === "string" ? { key: row.key } : {}),
         ...(typeof row.reason === "string" ? { reason: row.reason } : {})
-      }
+      })
       nodes.set(node.label, node)
       events.push({ type: "node", node, at })
     }
@@ -304,16 +331,7 @@ export const createRunStdoutParser = (options: {
     const detail = match[5]?.trim()
     const key = /(?:^|\s)key[=:]\s*([^\s]+)/i.exec(detail ?? "")?.[1]
     const reason = (status === "failed" || status === "refused" || status === "skipped") && detail !== undefined ? detail : undefined
-    const prior = nodes.get(match[1]!)
-    const settled = !["pending", "running"].includes(status)
-    const node: NodeTiming = {
-      label: match[1]!, status,
-      ...(prior?.startedAt !== undefined ? { startedAt: prior.startedAt } : status === "pending" ? {} : { startedAt: ms === undefined ? at : at - ms }),
-      ...(settled ? { endedAt: at } : {}),
-      ...(ms === undefined ? {} : { durationMs: ms }),
-      ...(key === undefined ? {} : { key }),
-      ...(reason === undefined ? {} : { reason })
-    }
+    const node = timing({ label: match[1]!, status, at, ...(ms === undefined ? {} : { durationMs: ms }), ...(key === undefined ? {} : { key }), ...(reason === undefined ? {} : { reason }) })
     nodes.set(node.label, node)
     return [{ type: "node", node, at }]
   }
@@ -348,8 +366,7 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
     readonly edges: ReadonlyArray<GraphEdge>
     readonly parser: RunStdoutParser
     summaryEmitted: boolean
-    /* The run-local frame counter the contract's `seq` names (0-based, gap-free). */
-    seq: number
+    nextSeq: number
   }
   const runs = new Map<string, Live>()
 
@@ -362,9 +379,10 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
    */
   const emit = (run: TargetRun, frame: TargetRunEvent): void => {
     const live = runs.get(run.runId)
-    const stamped = live === undefined ? frame : { ...frame, seq: live.seq++ } as TargetRunEvent
-    options.publish(runTopic(run.runId), { type: "target-run", runId: run.runId, frame: stamped })
-    options.onEvent?.(run, stamped)
+    const sequenced = { ...frame, seq: live?.nextSeq ?? 0 } as TargetRunEvent
+    if (live !== undefined) live.nextSeq += 1
+    options.publish(runTopic(run.runId), { type: "target-run", runId: run.runId, frame: sequenced })
+    options.onEvent?.(run, sequenced)
   }
 
   const pump = async (stream: ReadableStream<Uint8Array>, live: Live, type: "stdout" | "stderr"): Promise<void> => {
@@ -448,7 +466,7 @@ export const createTargetRunner = (options: TargetRunnerOptions): TargetRunner =
       const startedAt = Date.now()
       const labels = label.split(/\s+/).filter((part) => part.startsWith("//"))
       const run: TargetRun = { runId: crypto.randomUUID(), repoId, repo, workspace, label, labels, startedAt, status: "pending", exitCode: null }
-      const live: Live = { run, node, edges, parser: createRunStdoutParser({ edges, startedAt }), child: undefined, timer: undefined, summaryEmitted: false, seq: 0 }
+      const live: Live = { run, node, edges, parser: createRunStdoutParser({ edges, startedAt }), child: undefined, timer: undefined, summaryEmitted: false, nextSeq: 0 }
       runs.set(run.runId, live)
       live.timer = setTimeout(() => spawn(live), options.autoStartMs ?? 1000)
       return run

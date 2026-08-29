@@ -14,7 +14,7 @@
  */
 import type { Card } from "../AppState"
 import { resolveTargetRepo } from "../RepoContext"
-import { notReadyYet, readErrorMessage } from "./SeamContext"
+import { readErrorMessage } from "./SeamContext"
 import type { SeamContext } from "./SeamContext"
 
 export interface IssuesSeam {
@@ -144,7 +144,7 @@ export const createIssuesSeam = (ctx: SeamContext): IssuesSeam => {
     }/issues?state=${filter}`
   }
 
-  const notImported = (repo: string): string => notReadyYet(repo)
+  const notImported = (repo: string): string => `${repo} isn't imported yet — run /repos.import ${repo} first`
 
   const upsert = (card: Card): void => {
     ctx.dispatch({ type: "card.upsert", actor: ctx.actor(), card })
@@ -180,7 +180,7 @@ export const createIssuesSeam = (ctx: SeamContext): IssuesSeam => {
       id: `issues-${repo}`,
       kind: "issue-list",
       title: `Issues · ${repo}`,
-      body: "Read from GitHub while repository preparation completes.",
+      body: `Read from GitHub — import for full features: /repos.import ${repo}`,
       status: "active",
       createdAt: Date.now(),
       ordinal: ctx.nextOrdinal(),
@@ -202,9 +202,9 @@ export const createIssuesSeam = (ctx: SeamContext): IssuesSeam => {
       // githubRepoMetadata.ts), so the detail cannot degrade; state that.
       if (issueResponse.status === 404) {
         return (
-          `Issue #${number} in ${repo} answered 404. Only the issue list can read ` +
-          `from GitHub while ${repo} is still being prepared — issue detail waits ` +
-          "for that to finish."
+          `Issue #${number} in ${repo} answered 404. If ${repo} isn't imported, ` +
+          `only the issue list can read from GitHub — issue detail needs the ` +
+          `import: run /repos.import ${repo}`
         )
       }
       return readErrorMessage(

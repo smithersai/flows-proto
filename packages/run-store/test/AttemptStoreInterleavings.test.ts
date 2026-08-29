@@ -1,23 +1,17 @@
 import { describe, expect, it } from "@effect/vitest"
-import * as DatabaseMigrations from "@smthrs/database/Migrations"
 import * as TestDatabase from "@smthrs/database/test/TestDatabase"
-import * as JournalMigrations from "@smthrs/journal/Migrations"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
 import { Effect, Layer, Option } from "effect"
 import * as AttemptStore from "../src/AttemptStore.ts"
 import * as Migrations from "../src/Migrations.ts"
 import type { OwnerId } from "../src/Ownership.ts"
 import * as RunStore from "../src/RunStore.ts"
 
-const migrationsLayer = Layer.effectDiscard(DatabaseMigrations.run([JournalMigrations.set, Migrations.set]))
-
 const ownerA: OwnerId = { hostId: "attempt-host", pid: 1, nonce: "old-owner" }
 const ownerB: OwnerId = { hostId: "attempt-host", pid: 2, nonce: "new-owner" }
 const id: AttemptStore.AttemptId = { runId: "interleaving-run", stepKeyDigest: "step", attempt: 0 }
 
 const layer = Layer.mergeAll(RunStore.layer, AttemptStore.layer).pipe(
-  Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" })),
-  Layer.provide(Layer.provideMerge(migrationsLayer, TestDatabase.layer))
+  Layer.provide(Layer.provideMerge(Migrations.layer, TestDatabase.layer))
 )
 
 const migrated = <A, E>(

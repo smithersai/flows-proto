@@ -224,12 +224,8 @@ export const resolveAgents = (
   agents: AgentTarget.AgentsDeclaration | undefined,
   ref: AgentTarget.AgentSelector | undefined
 ): ReadonlyArray<ConcreteAgent> => {
-  if (ref !== undefined && ref._tag === "AgentClaudeCode") {
-    return [{ name: ref.model, engine: "claude", model: ref.model }]
-  }
-  if (ref !== undefined && ref._tag === "AgentCodex") {
-    return [{ name: ref.model, engine: "codex", model: ref.model }]
-  }
+  if (ref?._tag === "AgentClaudeCode") return [{ name: `inline:${ref.model}`, engine: "claude", model: ref.model }]
+  if (ref?._tag === "AgentCodex") return [{ name: `inline:${ref.model}`, engine: "codex", model: ref.model }]
   if (agents === undefined) {
     throw new Error("the workspace declares no S.Agents; agent targets cannot resolve a session")
   }

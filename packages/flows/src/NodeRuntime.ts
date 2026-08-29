@@ -22,7 +22,7 @@ import { DurableEngineState, EngineStore, OwnerIdentity } from "@smthrs/engine-s
 import * as Migrations from "@smthrs/engine-store/Migrations"
 import type * as StepBoundary from "@smthrs/engine-store/StepBoundary"
 import type * as WorkspaceSandbox from "@smthrs/engine-store/WorkspaceSandbox"
-import { SqlConsensus, SqlJournal } from "@smthrs/journal"
+import { SqlJournal } from "@smthrs/journal"
 import { Workspace } from "@smthrs/kernel"
 import { AttemptStore, type Ownership, RunStore } from "@smthrs/run-store"
 import { CacheStore } from "@smthrs/step-cache"
@@ -92,22 +92,16 @@ export const storage = (filename: string) => {
   const validatedFilename = Schema.decodeUnknownSync(Schema.NonEmptyString)(filename)
   const root = dirname(validatedFilename)
   const database = Layer.provideMerge(Migrations.layer, databaseLayer(validatedFilename))
-  const consensus = SqlConsensus.layer
-  const journal = SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(
-    Layer.provideMerge(consensus)
-  )
   return Layer.mergeAll(
-    RunStore.layerWith.pipe(Layer.provideMerge(consensus)),
+    SqlJournal.layer({ capacity: 1024, overflow: "reject" }),
+    RunStore.layer,
     AttemptStore.layer,
     CacheStore.layer,
     DurableEngineState.layer,
     OwnerIdentity.layer,
     Workspace.layer(root),
     ArtifactStore.layerFileSystem({ directory: join(root, ".flows/objects") })
-  ).pipe(
-    Layer.provideMerge(journal),
-    Layer.provideMerge(database)
-  )
+  ).pipe(Layer.provideMerge(database))
 }
 
 const composition = <

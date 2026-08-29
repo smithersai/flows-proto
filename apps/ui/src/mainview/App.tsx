@@ -36,7 +36,10 @@ import { CardView } from "./ChatCards"
 import { ConnectorsSurface } from "./ConnectorsSurface"
 import { useController } from "./ControllerContext"
 import { DevtoolsPanel } from "./DevtoolsPanel"
-import { stampFlows, stampTestIds } from "./FlowStamp"
+import { composeRefs, stampFlows, stampTestIds } from "./FlowStamp"
+
+/** The Playwright contract's handle on the composer textarea (LOCAL-APP.md); spread past the prop type's excess check. */
+const COMPOSER_INPUT_TEST_ID: Record<string, string> = { "data-testid": "composer-input" }
 import { tabOutOf } from "./FocusRing"
 import { RichMarkdown } from "./RichMarkdown"
 import type { Card, Message, Suggestion as SuggestionBinding } from "./state/AppState"
@@ -627,16 +630,16 @@ function Composer({
       }
       <div
         className="composer-flow-stamp"
-        ref={(node) => {
+        ref={composeRefs(
           stampFlows([
             [".sui-chat-composer-send", "send"],
             [".sui-chat-composer-stop", "chat.stop"]
-          ])(node)
+          ]),
           stampTestIds([
             [".sui-chat-composer-input", "composer-input"],
             [".sui-chat-composer-send", "composer-send"]
-          ])(node)
-        }}
+          ])
+        )}
       >
         <ChatComposer
           className="smithers-composer"
@@ -648,7 +651,7 @@ function Composer({
           onStop={() => controller.runCommand("chat.stop")}
           placeholder={placeholder}
           lifecycleStatus={typing ? "submitted" : "ready"}
-          textareaProps={{ autoFocus, onKeyDown: onComposerKeyDown }}
+          textareaProps={{ autoFocus, onKeyDown: onComposerKeyDown, ...COMPOSER_INPUT_TEST_ID }}
           actions={
             <div className="composer-actions">
               <ComposerConnect
@@ -750,20 +753,7 @@ function App() {
    * and dead sign-in flows — so the state names itself up front, once,
    * derived like the rest (never stored, gone the moment a seam answers).
    */
-  const authMessage: Message | undefined = identity?.state === "signed-out"
-    ? {
-      id: "auth-state",
-      role: "smithers",
-      text: `Smithers is a design-partner preview — sign in with GitHub to continue.\n\n${
-        identity.scopesPlain ??
-          "The identity service isn't configured on this deployment, so sign-in may not work yet."
-      }`,
-      status: "complete",
-      action: { flow: "auth.sign-in", label: "Sign in with GitHub" },
-      createdAt: 0,
-      ordinal: 0
-    }
-    : identity?.state === "signed-in" && !identity.allowlisted
+  const authMessage: Message | undefined = identity?.state === "signed-in" && !identity.allowlisted
     ? {
       id: "auth-state",
       role: "smithers",
@@ -811,9 +801,7 @@ function App() {
   const watched = watchedRows[0]
   const needsSelection = identity?.state === "signed-in" && identity.allowlisted &&
     (watched === undefined || watched.selected === null)
-  const suggestions: ReadonlyArray<SuggestionBinding> = identity?.state === "signed-out"
-    ? [{ id: "sign-in", label: "Sign in with GitHub", flow: "auth.sign-in", emphasis: "primary" }]
-    : needsSelection
+  const suggestions: ReadonlyArray<SuggestionBinding> = needsSelection
     ? [{ id: "choose-repos", label: "Choose repos to watch", flow: "repos.watch", emphasis: "primary" }]
     : []
   // A Vite dev build unlocks the admin chrome (devtools, reset) with no
@@ -1099,11 +1087,7 @@ function App() {
               surfacesTriggerRef={surfacesTriggerRef}
               connectTriggerRef={connectTriggerRef}
               autoFocus={authMessage === undefined}
-              placeholder={identity?.state === "signed-out"
-                ? "Sign in with GitHub first — it's the one step needed…"
-                : identity?.state === "signed-in" && !identity.allowlisted
-                ? "Request access to open the chat…"
-                : "Ask Smithers to work on something…"}
+              placeholder="Ask Smithers to work on something…"
             />
           </div>
 

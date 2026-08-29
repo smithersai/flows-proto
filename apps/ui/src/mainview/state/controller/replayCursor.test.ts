@@ -99,7 +99,7 @@ test("a cursor past the end is the same as the end", () => {
 
 test("an empty recording folds to an empty state at any cursor", () => {
   for (const cursor of [Number.NEGATIVE_INFINITY, 0, BASE, Number.POSITIVE_INFINITY]) {
-    expect(replayAtCursor([], cursor)).toEqual({ nodes: [], summary: undefined, logs: {} })
+    expect(replayAtCursor([], cursor)).toEqual({ nodes: [], summary: undefined, logs: {}, error: undefined })
   }
 })
 

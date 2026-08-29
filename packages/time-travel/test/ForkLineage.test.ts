@@ -55,13 +55,7 @@ describe("fork lineage", () => {
           SELECT run_id FROM ancestry
         `
           return { rows: rows.map((row) => row.run_id), child: child.runId, grandchild: grandchild.runId }
-        }).pipe(
-          Effect.provide(
-            SqlJournal.layer({ capacity: 32, overflow: "reject" }).pipe(Layer.provideMerge(Migrations.layer))
-          ),
-          Effect.provide(TestDatabase.layer),
-          Effect.scoped
-        )
+        }).pipe(Effect.provide(TestDatabase.layer), Effect.scoped)
       )
 
       expect(ancestry.rows).toEqual([ancestry.grandchild, ancestry.child, "root"])
@@ -77,13 +71,7 @@ describe("fork lineage", () => {
           yield* seed("root")
           const child = yield* store.createFork("root", { lineageId: "root/root", seq: 0 })
           return yield* runs.get(child.runId)
-        }).pipe(
-          Effect.provide(
-            SqlJournal.layer({ capacity: 32, overflow: "reject" }).pipe(Layer.provideMerge(Migrations.layer))
-          ),
-          Effect.provide(TestDatabase.layer),
-          Effect.scoped
-        )
+        }).pipe(Effect.provide(TestDatabase.layer), Effect.scoped)
       )
 
       expect(row.parentRunId).toBe("root")
@@ -131,6 +119,7 @@ describe("fork lineage", () => {
         const database = Layer.provideMerge(DurableWriter.layer(), NodeDatabase.layer({ filename }))
         const migrated = Layer.provideMerge(TimeTravelMigrations.layer, database)
         const persistence = Layer.mergeAll(
+          SqlJournal.layer({ capacity: 32, overflow: "reject" }),
           RunStore.layer,
           CacheStore.layer,
           SqlTimeTravelStore.layer,
@@ -138,10 +127,7 @@ describe("fork lineage", () => {
             workspaceAdd: () => Effect.void,
             workspaceForget: () => Effect.void
           }))
-        ).pipe(
-          Layer.provideMerge(SqlJournal.layer({ capacity: 32, overflow: "reject" })),
-          Layer.provideMerge(migrated)
-        )
+        ).pipe(Layer.provideMerge(migrated))
         return TimeTravel.layer.pipe(Layer.provideMerge(persistence))
       }
       try {

@@ -1,7 +1,5 @@
 import { DurableWriter } from "@smthrs/database"
 import * as TestDatabase from "@smthrs/database/test/TestDatabase"
-import { Journal } from "@smthrs/journal/Journal"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -12,9 +10,6 @@ import { describeContract, type Harness, type HarnessContext } from "./contract/
 import { withCrypto } from "./Sha256.ts"
 
 const migratedDatabase = Layer.provideMerge(Migrations.layer, TestDatabase.layer)
-const journalDatabase = SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(
-  Layer.provideMerge(migratedDatabase)
-)
 
 const sqlHarness: Harness = {
   label: "sql",
@@ -23,58 +18,35 @@ const sqlHarness: Harness = {
       Effect.gen(function*() {
         const sql = yield* Effect.service(SqlClient.SqlClient)
         const writer = yield* DurableWriter.DurableWriter
-        const journal = yield* Journal
         const state = yield* DurableEngineState.make
         const context: HarnessContext = {
           state,
           restart: DurableEngineState.make.pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
-            Effect.provideService(DurableWriter.DurableWriter, writer),
-            Effect.provideService(Journal, journal)
+            Effect.provideService(DurableWriter.DurableWriter, writer)
           ),
           seedRun: (runId, owner, status = "running", heartbeatAtMs = owner === null ? null : 0) =>
-            Effect.gen(function*() {
-              yield* sql`
-                INSERT INTO flows_runs (
-                  run_id,
-                  status,
-                  created_at_ms,
-                  owner_host_id,
-                  owner_pid,
-                  owner_nonce,
-                  heartbeat_at_ms,
-                  state_json
-                ) VALUES (
-                  ${runId},
-                  ${status},
-                  0,
-                  ${owner?.hostId ?? null},
-                  ${owner?.pid ?? null},
-                  ${owner?.nonce ?? null},
-                  ${heartbeatAtMs},
-                  '{}'
-                )
-              `
-              if (owner !== null) {
-                yield* sql`
-                  INSERT INTO flows_consensus_leases (
-                    run_id,
-                    owner_host_id,
-                    owner_pid,
-                    owner_nonce,
-                    granted_at_ms,
-                    heartbeat_at_ms
-                  ) VALUES (
-                    ${runId},
-                    ${owner.hostId},
-                    ${owner.pid},
-                    ${owner.nonce},
-                    ${heartbeatAtMs},
-                    ${heartbeatAtMs}
-                  )
-                `
-              }
-            }).pipe(Effect.orDie, Effect.asVoid),
+            sql`
+              INSERT INTO flows_runs (
+                run_id,
+                status,
+                created_at_ms,
+                owner_host_id,
+                owner_pid,
+                owner_nonce,
+                heartbeat_at_ms,
+                state_json
+              ) VALUES (
+                ${runId},
+                ${status},
+                0,
+                ${owner?.hostId ?? null},
+                ${owner?.pid ?? null},
+                ${owner?.nonce ?? null},
+                ${heartbeatAtMs},
+                '{}'
+              )
+            `.pipe(Effect.orDie, Effect.asVoid),
           setCancelRequested: (runId, requestedAtMs) =>
             sql`
               UPDATE flows_runs
@@ -94,7 +66,7 @@ const sqlHarness: Harness = {
             `.pipe(Effect.orDie, Effect.asVoid)
         }
         return yield* body(context)
-      }).pipe(Effect.provide(journalDatabase)) as Effect.Effect<never>
+      }).pipe(Effect.provide(migratedDatabase)) as Effect.Effect<never>
     )
 }
 

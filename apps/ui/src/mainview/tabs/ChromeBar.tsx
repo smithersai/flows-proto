@@ -23,7 +23,9 @@ export function ChromeBar() {
   )
   const { data: harnessRows } = useLiveQuery(collections.harnesses)
   const { data: repoRows } = useLiveQuery(collections.repos)
+  const { data: identityRows } = useLiveQuery(collections.identitySessions)
   const session = sessionRows[0]
+  const identity = identityRows[0]
   const activeTabId = session?.activeTabId ?? MAIN_TAB_ID
   const menuOpen = session?.tabMenuOpen === true
   const available = harnessRows.filter((harness) => harness.status !== "unavailable")
@@ -151,15 +153,18 @@ export function ChromeBar() {
         >
           Open repository
         </button>
-        <button
-          type="button"
-          className="chrome-action"
-          data-flow="auth.sign-in"
-          data-testid="chrome-sign-in"
-          onClick={() => controller.runCommand("auth.sign-in")}
-        >
-          Sign in with GitHub
-        </button>
+        {/* Sign-in is an option, never a gate (docs/LOCAL-APP.md); the door closes once signed in. */}
+        {identity?.state === "signed-in" ? null : (
+          <button
+            type="button"
+            className="chrome-action"
+            data-flow="auth.sign-in"
+            data-testid="chrome-sign-in"
+            onClick={() => controller.runCommand("auth.sign-in")}
+          >
+            Sign in with GitHub
+          </button>
+        )}
       </div>
     </div>
   )

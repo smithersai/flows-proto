@@ -11,8 +11,6 @@
  * @since 0.1.0
  */
 import { DatabaseError, DurableWriter } from "@smthrs/database/DurableWriter"
-import { Journal, JournalError } from "@smthrs/journal/Journal"
-import * as JournalEvent from "@smthrs/journal/JournalEvent"
 import type { OwnerId } from "@smthrs/run-store/Ownership"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
@@ -582,10 +580,6 @@ const WaitingDatabaseRow = Schema.Struct({
 
 type WaitingDatabaseRow = typeof WaitingDatabaseRow.Type
 
-interface WaitingUpdateRow extends WaitingDatabaseRow {
-  readonly status: string
-}
-
 const decodeWaitingRow = (input: unknown): Effect.Effect<WaitingRow> =>
   Schema.decodeUnknownEffect(WaitingDatabaseRow)(input).pipe(
     Effect.orDie,
@@ -706,18 +700,9 @@ const decodeClockRow = (input: unknown): Effect.Effect<ClockRow> =>
  * @category constructors
  * @slop
  */
-export const make: Effect.Effect<
-  Service,
-  never,
-  Journal | DurableWriter | SqlClient.SqlClient
-> = Effect.gen(function*() {
+export const make: Effect.Effect<Service, never, DurableWriter | SqlClient.SqlClient> = Effect.gen(function*() {
   const sql = yield* Effect.service(SqlClient.SqlClient)
   const writer = yield* DurableWriter
-  // The journal is a declared requirement, never an optional lookup:
-  // `park` and `wake` write fold-owned waiting columns, and a row write
-  // without its event is a hole in the fold contract
-  // (`docs/specs/Concepts/Run State Fold.md`).
-  const journal = yield* Journal
 
   // Engine-store-owned storage created outside the journal migration
   // (issues #40/#41/#79/#81). The statements, their rationale, and
@@ -754,58 +739,6 @@ export const make: Effect.Effect<
         AND execution_id = ${address.executionId}
         AND clock_name = ${address.clockName}
     `
-
-  const isJournalFenceLost = (cause: unknown): cause is JournalError =>
-    Schema.is(JournalError)(cause) && cause.code === "fence_lost"
-
-  /**
-   * Runs a waiting-column write and the `flows.run.transitioned` append
-   * describing it inside ONE write transaction (`Journal.transact`). A
-   * `fence_lost` raised by a fenced `park`'s append reports the same
-   * outcome the row-level owner fence does; any other refused append fails
-   * the row write with it (`docs/specs/Concepts/Run State Fold.md`).
-   */
-  const writeRunFold = <A extends ParkOutcome | WakeOutcome, E, R>(
-    effect: Effect.Effect<A, E, R>,
-    fenceLost: A
-  ): Effect.Effect<A, never, R> =>
-    journal.transact(effect).pipe(
-      Effect.catchIf(isJournalFenceLost, () => Effect.succeed(fenceLost)),
-      Effect.orDie
-    )
-
-  /**
-   * A park or wake changes only the waiting columns, so its entry carries
-   * only the `waiting` payload: no `status` and no lifecycle timestamp. A
-   * cancel can race a park — `RunDriver.cancelOwned` transitions the run
-   * terminal and then wakes it in one transaction — and an entry that
-   * re-asserted the run's status with a fresh clock read would re-stamp
-   * `finished_at_ms` past the value the row holds, breaking the fold
-   * invariant (`docs/specs/Concepts/Run State Fold.md`, round 3).
-   */
-  const recordWaitingEvent = (
-    runId: string,
-    waiting: WaitingRow | null,
-    owner?: OwnerId | undefined
-  ): Effect.Effect<void, unknown> =>
-    journal.emitDurable(
-      new JournalEvent.Input({
-        runId: runId as JournalEvent.RunId,
-        sourceId: "flows/engine-store/waiting" as JournalEvent.SourceId,
-        eventType: "flows.run.transitioned",
-        payload: {
-          waiting: waiting === null
-            ? null
-            : {
-              reason: waiting.reason,
-              wakeAt: waiting.wakeAt,
-              token: waiting.token
-            }
-        },
-        meta: { lineageId: `${runId}/root` }
-      }),
-      owner
-    ).pipe(Effect.asVoid)
 
   const deferred: Service["deferred"] = Effect.fn("DurableEngineState.deferred")((address) =>
     selectDeferred(address).pipe(
@@ -1068,10 +1001,9 @@ export const make: Effect.Effect<
   )
 
   const selectWaiting = (runId: string) =>
-    sql<WaitingUpdateRow>`
+    sql<WaitingDatabaseRow>`
       SELECT
         run_id AS "runId",
-        status,
         waiting_reason AS "waitingReason",
         waiting_wake_at_ms AS "waitingWakeAtMs",
         waiting_token AS "waitingToken"
@@ -1081,9 +1013,9 @@ export const make: Effect.Effect<
     `
 
   const park: Service["park"] = Effect.fn("DurableEngineState.park")((runId, waiting, owner) =>
-    writeRunFold(
+    writer.write(
       Effect.gen(function*() {
-        const updated = yield* sql<WaitingUpdateRow>`
+        const updated = yield* sql<WaitingDatabaseRow>`
           UPDATE flows_runs
           SET
             waiting_reason = ${waiting.reason},
@@ -1095,7 +1027,6 @@ export const make: Effect.Effect<
             AND owner_nonce = ${owner.nonce}
           RETURNING
             run_id AS "runId",
-            status,
             waiting_reason AS "waitingReason",
             waiting_wake_at_ms AS "waitingWakeAtMs",
             waiting_token AS "waitingToken"
@@ -1103,16 +1034,13 @@ export const make: Effect.Effect<
         if (updated[0] === undefined) {
           return { _tag: "NotFound" as const }
         }
-        const row = yield* decodeWaitingRow(updated[0])
-        yield* recordWaitingEvent(runId, row, owner)
-        return { _tag: "Parked" as const, row }
-      }),
-      { _tag: "NotFound" as const }
-    )
+        return { _tag: "Parked" as const, row: yield* decodeWaitingRow(updated[0]) }
+      })
+    ).pipe(Effect.orDie)
   )
 
   const wake: Service["wake"] = Effect.fn("DurableEngineState.wake")((runId) =>
-    writeRunFold(
+    writer.write(
       Effect.gen(function*() {
         const before = yield* selectWaiting(runId)
         if (before[0] === undefined) {
@@ -1131,11 +1059,9 @@ export const make: Effect.Effect<
           WHERE run_id = ${runId}
             AND waiting_reason IS NOT NULL
         `
-        yield* recordWaitingEvent(runId, null)
         return { _tag: "Woken" as const, row }
-      }),
-      { _tag: "NotFound" as const }
-    )
+      })
+    ).pipe(Effect.orDie)
   )
 
   const waiting: Service["waiting"] = Effect.fn("DurableEngineState.waiting")((runId) =>
@@ -1430,23 +1356,14 @@ export const make: Effect.Effect<
 /**
  * Provides database-backed durable engine state.
  *
- * Requires `Journal` in context, exactly as the `RunStore` and
- * `AttemptStore` SQL layers do: `park` and `wake` are fold writes — they
- * append `flows.run.transitioned` with the waiting payload in the same
- * transaction as the column update — and the requirement is declared in the
- * layer type so a composition that would silently skip the append does not
- * typecheck (`docs/specs/Concepts/Run State Fold.md`). The in-memory
- * {@link layerMemory} composes without a journal.
- *
  * @since 0.1.0
  * @category layers
  * @slop
  */
-export const layer: Layer.Layer<DurableEngineState, never, Journal | DurableWriter | SqlClient.SqlClient> = Layer
-  .effect(
-    DurableEngineState,
-    make
-  )
+export const layer: Layer.Layer<DurableEngineState, never, DurableWriter | SqlClient.SqlClient> = Layer.effect(
+  DurableEngineState,
+  make
+)
 
 /**
  * A run's ownership view as the in-memory implementation needs it for the

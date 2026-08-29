@@ -215,12 +215,7 @@ describe("non-retryable verdict durability across resume", () => {
               payload: {},
               discard: true
             }).pipe(Effect.forkChild({ startImmediately: true }))
-            const store = yield* RunStore.RunStore
-            for (let polls = 0; polls < 10; polls++) {
-              const row = yield* store.get("non-retryable-run")
-              if (row.status === "failed") break
-              yield* Effect.yieldNow
-            }
+            yield* Effect.yieldNow
           }))
           const store = yield* RunStore.RunStore
           return {

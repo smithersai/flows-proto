@@ -81,7 +81,6 @@
   "dependencies": {
     "@smthrs/canonical": "0.1.0",
     "@smthrs/database": "0.1.0",
-    "@smthrs/journal": "0.1.0",
     "effect": "4.0.0-rc.108"
   },
   "devDependencies": {

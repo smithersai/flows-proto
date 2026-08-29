@@ -1846,26 +1846,25 @@ export const createAppStore = async (
         }
 
         /*
-         * The harness and repo tables are replaced wholesale on every load.
-         * TanStack DB refuses a delete followed by an insert of the same key
-         * inside one mutation, so a key present on both sides is updated in
-         * place; only the keys that left are deleted and only the new ones
-         * inserted.
+         * A reload replaces the list: rows the server still names update in
+         * place, new rows insert, the rest delete. One transaction cannot
+         * delete and re-insert the same key ("Unhandled mutation combination:
+         * delete-insert"), so a wholesale clear-then-insert threw on every
+         * reload whose list overlapped the last one.
          */
+
         case "harnesses.loaded": {
-          const incoming = new Map<string, Harness>(transition.harnesses.map((harness) => [harness.id, { ...harness }]))
-          const stale = [...collections.harnesses.keys()].filter((key) => !incoming.has(key))
+          const next = new Set<string>(transition.harnesses.map((harness) => harness.id))
+          const stale = [...collections.harnesses.keys()].filter((id) => !next.has(id))
           if (stale.length > 0) collections.harnesses.delete(stale)
-          const fresh: Array<Harness> = []
-          for (const [id, harness] of incoming) {
-            if (collections.harnesses.get(id) === undefined) fresh.push(harness)
+          for (const harness of transition.harnesses) {
+            if (collections.harnesses.get(harness.id) === undefined) collections.harnesses.insert({ ...harness })
             else {
-              collections.harnesses.update(id, (draft) => {
+              collections.harnesses.update(harness.id, (draft) => {
                 Object.assign(draft, harness)
               })
             }
           }
-          if (fresh.length > 0) collections.harnesses.insert(fresh)
           collections.sessions.update(SESSION_ID, (draft) => {
             draft.revision = revision
           })
@@ -1873,19 +1872,17 @@ export const createAppStore = async (
         }
 
         case "repos.loaded": {
-          const incoming = new Map<string, Repo>(transition.repos.map((repo) => [repo.id, { ...repo }]))
-          const stale = [...collections.repos.keys()].filter((key) => !incoming.has(key))
+          const next = new Set(transition.repos.map((repo) => repo.id))
+          const stale = [...collections.repos.keys()].filter((id) => !next.has(id))
           if (stale.length > 0) collections.repos.delete(stale)
-          const fresh: Array<Repo> = []
-          for (const [id, repo] of incoming) {
-            if (collections.repos.get(id) === undefined) fresh.push(repo)
+          for (const repo of transition.repos) {
+            if (collections.repos.get(repo.id) === undefined) collections.repos.insert({ ...repo })
             else {
-              collections.repos.update(id, (draft) => {
+              collections.repos.update(repo.id, (draft) => {
                 Object.assign(draft, repo)
               })
             }
           }
-          if (fresh.length > 0) collections.repos.insert(fresh)
           collections.sessions.update(SESSION_ID, (draft) => {
             draft.revision = revision
           })

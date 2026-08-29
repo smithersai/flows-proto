@@ -874,6 +874,8 @@ export const PrAttrs = Schema.Struct({
   data: Attr.Data,
   changes: Schema.Array(Schema.NonEmptyString),
   gates: Attr.Gates,
+  secrets: Schema.optional(Attr.Secrets),
+  sandbox: Schema.optional(Attr.Sandbox),
   approval: Schema.optional(Attr.Approval),
   maxRounds: Schema.optional(Schema.Number.check(
     Schema.isGreaterThanOrEqualTo(1),

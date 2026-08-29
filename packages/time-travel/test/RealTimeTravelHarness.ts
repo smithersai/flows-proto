@@ -18,7 +18,6 @@ import type { OwnerId } from "@smthrs/run-store/Ownership"
 import * as RunStore from "@smthrs/run-store/RunStore"
 import * as CacheStore from "@smthrs/step-cache/CacheStore"
 import type * as Crypto from "effect/Crypto"
-import type * as Crypto from "effect/Crypto"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
@@ -67,14 +66,12 @@ export const realLayer = (filename: string) => {
   const database = Layer.provideMerge(DurableWriter.layer(), NodeDatabase.layer({ filename }))
   const migrated = Layer.provideMerge(Migrations.layer, database)
   const persistence = Layer.mergeAll(
+    SqlJournal.layer({ capacity: 128, overflow: "reject" }),
     RunStore.layer,
     CacheStore.layer,
     SqlTimeTravelStore.layer,
     NodeJj.layer
-  ).pipe(
-    Layer.provideMerge(SqlJournal.layer({ capacity: 128, overflow: "reject" })),
-    Layer.provideMerge(migrated)
-  )
+  ).pipe(Layer.provideMerge(migrated))
   return TimeTravel.layer.pipe(Layer.provideMerge(persistence))
 }
 
@@ -99,15 +96,13 @@ export const realEngineLayer = (filename: string, hostId: string) => {
   const database = Layer.provideMerge(DurableWriter.layer(), NodeDatabase.layer({ filename }))
   const migrated = Layer.provideMerge(Migrations.layer, database)
   const stores = Layer.mergeAll(
+    SqlJournal.layer({ capacity: 128, overflow: "reject" }),
     RunStore.layer,
     AttemptStore.layer,
     CacheStore.layer,
     DurableEngineState.layer,
     SqlTimeTravelStore.layer
-  ).pipe(
-    Layer.provideMerge(SqlJournal.layer({ capacity: 128, overflow: "reject" })),
-    Layer.provideMerge(migrated)
-  )
+  ).pipe(Layer.provideMerge(migrated))
   const hostAndArtifacts = Layer.provideMerge(
     ArtifactStore.layerFileSystem({ directory: join(dirname(filename), "artifacts") }),
     NodeFileSystem.layer
@@ -171,7 +166,7 @@ const flowWiring = <ROut>(
   implementation: Layer.Layer<
     ROut,
     never,
-    Crypto.Crypto | Action.Implementations | FlowRuntime.FlowRuntime | Crypto.Crypto
+    Crypto.Crypto | Action.Implementations | FlowRuntime.FlowRuntime
   >
 ) =>
   implementation.pipe(

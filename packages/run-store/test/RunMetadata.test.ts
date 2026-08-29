@@ -1,9 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { DurableWriter } from "@smthrs/database/DurableWriter"
-import * as DatabaseMigrations from "@smthrs/database/Migrations"
 import * as TestDatabase from "@smthrs/database/test/TestDatabase"
-import * as JournalMigrations from "@smthrs/journal/Migrations"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
 import { Effect, Layer } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import type * as Statement from "effect/unstable/sql/Statement"
@@ -11,14 +8,11 @@ import * as Migrations from "../src/Migrations.ts"
 import type { OwnerId } from "../src/Ownership.ts"
 import * as RunStore from "../src/RunStore.ts"
 
-const migrationsLayer = Layer.effectDiscard(DatabaseMigrations.run([JournalMigrations.set, Migrations.set]))
-const databaseLayer = Layer.provideMerge(migrationsLayer, TestDatabase.layer)
-
 const owner: OwnerId = { hostId: "host", pid: 1, nonce: "n" }
 
 const layer = Layer.provideMerge(
   RunStore.layer,
-  SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(Layer.provideMerge(databaseLayer))
+  Layer.provideMerge(Migrations.layer, TestDatabase.layer)
 )
 
 const effect = <E>(
@@ -238,16 +232,14 @@ describe("requestCancel distinguishes an absent row from a cleared column (B10)"
     match: string,
     nth: number,
     interfere: (base: SqlClient.SqlClient) => Effect.Effect<unknown, unknown>
-  ) => {
-    const interleavedDatabase = Layer.provideMerge(
-      interleaving(match, nth, interfere),
-      databaseLayer
-    )
-    return Layer.provideMerge(
+  ) =>
+    Layer.provideMerge(
       RunStore.layer,
-      SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(Layer.provideMerge(interleavedDatabase))
+      Layer.provideMerge(
+        interleaving(match, nth, interfere),
+        Layer.provideMerge(Migrations.layer, TestDatabase.layer)
+      )
     )
-  }
 
   it.effect("re-records the cancellation when the column is cleared under it", () =>
     Effect.gen(function*() {
@@ -278,44 +270,40 @@ describe("requestCancel distinguishes an absent row from a cleared column (B10)"
       Effect.provide(
         Layer.provideMerge(
           RunStore.layer,
-          SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(
-            Layer.provideMerge(
-              Layer.provideMerge(
-                Layer.effect(
-                  SqlClient.SqlClient,
-                  Effect.gen(function*() {
-                    const base = yield* Effect.service(SqlClient.SqlClient)
-                    let updates = 0
-                    return new Proxy(base, {
-                      apply(target, thisArgument, argumentsList) {
-                        const statement = Reflect.apply(
-                          target,
-                          thisArgument,
-                          argumentsList
-                        ) as Statement.Statement<unknown>
-                        if (typeof statement.compile !== "function") return statement
-                        const [query] = statement.compile()
-                        if (query.includes("SELECT cancel_requested_at_ms")) {
-                          return Effect.andThen(
-                            base`UPDATE flows_runs SET cancel_requested_at_ms = NULL WHERE run_id = 'run'`,
-                            statement
-                          )
-                        }
-                        if (query.includes("SET cancel_requested_at_ms")) {
-                          updates += 1
-                          // The third UPDATE is the re-record after the SELECT.
-                          if (updates === 3) {
-                            return Effect.andThen(base`DELETE FROM flows_runs WHERE run_id = 'run'`, statement)
-                          }
-                        }
-                        return statement
+          Layer.provideMerge(
+            Layer.effect(
+              SqlClient.SqlClient,
+              Effect.gen(function*() {
+                const base = yield* Effect.service(SqlClient.SqlClient)
+                let updates = 0
+                return new Proxy(base, {
+                  apply(target, thisArgument, argumentsList) {
+                    const statement = Reflect.apply(
+                      target,
+                      thisArgument,
+                      argumentsList
+                    ) as Statement.Statement<unknown>
+                    if (typeof statement.compile !== "function") return statement
+                    const [query] = statement.compile()
+                    if (query.includes("SELECT cancel_requested_at_ms")) {
+                      return Effect.andThen(
+                        base`UPDATE flows_runs SET cancel_requested_at_ms = NULL WHERE run_id = 'run'`,
+                        statement
+                      )
+                    }
+                    if (query.includes("SET cancel_requested_at_ms")) {
+                      updates += 1
+                      // The third UPDATE is the re-record after the SELECT.
+                      if (updates === 3) {
+                        return Effect.andThen(base`DELETE FROM flows_runs WHERE run_id = 'run'`, statement)
                       }
-                    }) as SqlClient.SqlClient
-                  })
-                ),
-                databaseLayer
-              )
-            )
+                    }
+                    return statement
+                  }
+                }) as SqlClient.SqlClient
+              })
+            ),
+            Layer.provideMerge(Migrations.layer, TestDatabase.layer)
           )
         )
       ),

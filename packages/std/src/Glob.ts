@@ -3,7 +3,6 @@
  *
  * It has the same two peer implementations as `grep` and corresponds to
  * `rg --files -g`: `*`, `**`, `?`, and brace alternatives are supported;
- * leading `/` anchors at the search root and `?` consumes one UTF-8 byte;
  * results are path sorted; hidden files are opt-in; ignore files are disabled;
  * and the fixed skip-directory convention still permits an explicitly named
  * skipped directory as the root.

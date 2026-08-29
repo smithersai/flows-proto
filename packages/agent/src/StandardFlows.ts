@@ -220,7 +220,7 @@ export const waitFlow = Flow.make({
  * @since 0.1.0
  */
 export const clock = (
-  services: Context.Context<Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto>
+  services: Context.Context<Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance>
 ): FlowBinding.Source =>
   FlowBinding.source("engine/clock", [
     FlowBinding.provide(

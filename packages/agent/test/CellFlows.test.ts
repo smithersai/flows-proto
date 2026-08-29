@@ -543,9 +543,7 @@ ctx.done(kept.key)`
   it("waits through the engine's durable clock as an ordinary flow", async () => {
     const outcome = await drive(
       Effect.gen(function*() {
-        const services = yield* Effect.context<
-          Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
-        >()
+        const services = yield* Effect.context<Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance>()
         return yield* collect({
           flows: [StandardFlows.clock(services)],
           cells: [
@@ -572,9 +570,7 @@ ctx.done(String(waited.waitedSeconds))`
     const outcome = await drive(
       Effect.gen(function*() {
         const engine = yield* FlowRuntime.FlowRuntime
-        const services = yield* Effect.context<
-          Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
-        >()
+        const services = yield* Effect.context<Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance>()
         const immediateClock = FlowRuntime.FlowRuntime.of({
           ...engine,
           scheduleClock: (flow, options) =>

@@ -701,7 +701,7 @@ export const readText = async (
       throw new Error(`${what} changed while it was being read: ${path}`)
     }
     try {
-      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(buffer.subarray(0, total))
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total))
     } catch {
       throw new Error(`${what} is not valid UTF-8: ${path}`)
     }

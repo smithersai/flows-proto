@@ -13,9 +13,7 @@
  *
  * @since 0.1.0
  */
-import type { DurableWriter } from "@smthrs/database/DurableWriter"
-import { Journal, JournalError } from "@smthrs/journal/Journal"
-import * as JournalEvent from "@smthrs/journal/JournalEvent"
+import { DatabaseError, DurableWriter } from "@smthrs/database/DurableWriter"
 import type { OwnerId } from "@smthrs/journal/OwnerId"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
@@ -384,19 +382,6 @@ const ownsRunningRun = (row: RunFenceRow, owner: OwnerId): boolean =>
 
 const sameOptional = (actual: string | null, expected: string | null): boolean => actual === expected
 
-const hasCauseCode = (cause: unknown, expected: string): boolean => {
-  const seen = new Set<unknown>()
-  let current = cause
-  while (typeof current === "object" && current !== null && !seen.has(current)) {
-    seen.add(current)
-    if ("code" in current && current.code === expected) {
-      return true
-    }
-    current = "cause" in current ? current.cause : undefined
-  }
-  return false
-}
-
 const sameAttempt = (
   row: AttemptRow,
   attempt: Attempt,
@@ -418,19 +403,16 @@ const mapPersistenceError = (cause: unknown): AttemptStoreError => {
   if (Schema.is(AttemptStoreError)(cause)) {
     return cause
   }
-  const constraint = hasCauseCode(cause, "constraint") ||
-    (SqlError.isSqlError(cause) &&
-      (cause.reason instanceof SqlError.ConstraintError || cause.reason instanceof SqlError.UniqueViolation))
+  const constraint = Schema.is(DatabaseError)(cause)
+    ? cause.code === "constraint"
+    : SqlError.isSqlError(cause) &&
+      (cause.reason instanceof SqlError.ConstraintError || cause.reason instanceof SqlError.UniqueViolation)
   return error(
     constraint ? "constraint" : "persistence_failed",
     "attempt persistence failed",
     cause
   )
 }
-
-/* v8 ignore next -- this narrows the journal's tagged fence error for the shared write adapter. */
-const isJournalFenceLost = (cause: unknown): cause is JournalError =>
-  Schema.is(JournalError)(cause) && cause.code === "fence_lost"
 
 const decodeRow = (input: unknown): Effect.Effect<Attempt, AttemptStoreError> =>
   Schema.decodeUnknownEffect(AttemptRow)(input).pipe(
@@ -467,14 +449,11 @@ const decodeRow = (input: unknown): Effect.Effect<Attempt, AttemptStoreError> =>
  */
 export const makeWith = (
   options: Options = {}
-): Effect.Effect<Service, AttemptStoreError, Journal | DurableWriter | SqlClient.SqlClient> =>
+): Effect.Effect<Service, AttemptStoreError, DurableWriter | SqlClient.SqlClient> =>
   Effect.gen(function*() {
     const sql = yield* Effect.service(SqlClient.SqlClient)
-    // The journal is a declared requirement, never an optional lookup: every
-    // attempt write appends the `flows.attempt.*` event describing it, and a
-    // row write without its event is a hole in the fold contract
-    // (`docs/specs/Concepts/Run State Fold.md`).
-    const journal = yield* Journal
+    const writer = yield* DurableWriter
+
     const inProgressStates = options.inProgressStates ?? defaultInProgressStates
     const maxCheckpointBytes = options.maxCheckpointBytes ?? defaultMaxCheckpointBytes
     const upsert = options.putMode === "upsert"
@@ -489,57 +468,6 @@ export const makeWith = (
     }
     const encodeCheckpoint = encodeCheckpointWith(maxCheckpointBytes, encodeOptional)
     const inProgress = sql.in("state", inProgressStates as Array<string>)
-
-    /**
-     * Runs an attempt row write and the `flows.attempt.*` append describing
-     * it inside ONE write transaction (`Journal.transact`). A `fence_lost`
-     * raised by the append's owner guard reports the same `FenceLost`
-     * outcome the row-level fence subquery does; any other refused append
-     * fails the row write with it, surfaced as `persistence_failed`
-     * (`docs/specs/Concepts/Run State Fold.md`).
-     */
-    const writeAttempt = <A extends PutResult | HeartbeatResult | FinishResult | PatchResult, E, R>(
-      effect: Effect.Effect<A, E, R>,
-      fenceLost: A
-    ): Effect.Effect<A, AttemptStoreError, R> =>
-      journal.transact(effect).pipe(
-        /* v8 ignore next -- a lost attempt fence requires the strategy to disagree with the row it mirrors; callers assert the FenceLost outcome through the row fence. */
-        Effect.catchIf(isJournalFenceLost, () => Effect.succeed(fenceLost)),
-        Effect.mapError(mapPersistenceError)
-      )
-
-    const recordAttemptEvent = (
-      runId: string,
-      owner: OwnerId,
-      eventType:
-        | "flows.attempt.put"
-        | "flows.attempt.checkpointed"
-        | "flows.attempt.finished"
-        | "flows.attempt.patched",
-      payload: Record<string, unknown>
-    ): Effect.Effect<void, unknown> =>
-      journal.emitDurable(
-        new JournalEvent.Input({
-          runId: runId as JournalEvent.RunId,
-          sourceId: "flows/run-store/attempt" as JournalEvent.SourceId,
-          eventType,
-          payload,
-          meta: { lineageId: `${runId}/root` }
-        }),
-        owner
-      ).pipe(Effect.asVoid)
-
-    const putPayload = (attempt: Attempt): Record<string, unknown> => ({
-      stepKeyDigest: attempt.stepKeyDigest,
-      attempt: attempt.attempt,
-      state: attempt.state,
-      startedAtMs: attempt.startedAtMs,
-      ...(attempt.finishedAtMs === undefined ? {} : { finishedAtMs: attempt.finishedAtMs }),
-      ...(attempt.checkpoint === undefined ? {} : { checkpoint: attempt.checkpoint }),
-      ...(attempt.error === undefined ? {} : { error: attempt.error }),
-      ...(attempt.outcome === undefined ? {} : { outcome: attempt.outcome }),
-      meta: attempt.meta
-    })
 
     const put: Service["put"] = Effect.fn("AttemptStore.put")((attempt, owner) =>
       Effect.gen(function*() {
@@ -564,7 +492,7 @@ export const makeWith = (
         const attemptError = yield* encodeOptional(attempt.error, "error")
         const outcome = yield* encodeOptional(attempt.outcome, "outcome")
         const meta = yield* encode(attempt.meta, "meta")
-        return yield* writeAttempt(
+        return yield* writer.write(
           Effect.gen(function*() {
             const inserted = yield* sql<{ readonly attempt: number }>`
             INSERT INTO flows_attempts (
@@ -587,7 +515,6 @@ export const makeWith = (
             RETURNING attempt
           `
             if (inserted.length > 0) {
-              yield* recordAttemptEvent(attempt.runId, owner, "flows.attempt.put", putPayload(attempt))
               return { _tag: "Inserted" } as const
             }
 
@@ -617,7 +544,6 @@ export const makeWith = (
               RETURNING attempt
             `
               if (replaced.length > 0) {
-                yield* recordAttemptEvent(attempt.runId, owner, "flows.attempt.put", putPayload(attempt))
                 return { _tag: "Upserted" } as const
               }
             }
@@ -648,9 +574,8 @@ export const makeWith = (
             return sameAttempt(rows[0]!, attempt, checkpoint, attemptError, outcome, meta)
               ? { _tag: "ExistingSame" } as const
               : { _tag: "Conflict" } as const
-          }),
-          { _tag: "FenceLost" } as const
-        )
+          })
+        ).pipe(Effect.mapError(mapPersistenceError))
       })
     )
 
@@ -687,7 +612,7 @@ export const makeWith = (
           return yield* Effect.fail(error("invalid_attempt", "nowMs must be a non-negative safe integer"))
         }
         const checkpoint = yield* encodeCheckpoint(checkpointValue)
-        return yield* writeAttempt(
+        return yield* writer.write(
           Effect.gen(function*() {
             const updated = yield* sql<{ readonly attempt: number }>`
             UPDATE flows_attempts
@@ -709,13 +634,6 @@ export const makeWith = (
             RETURNING attempt
           `
             if (updated.length > 0) {
-              if (checkpointValue !== undefined) {
-                yield* recordAttemptEvent(runId, owner, "flows.attempt.checkpointed", {
-                  stepKeyDigest,
-                  attempt,
-                  checkpoint: checkpointValue
-                })
-              }
               return { _tag: "Updated" } as const
             }
             const found = yield* sql<Pick<AttemptRow, "state">>`
@@ -732,9 +650,8 @@ export const makeWith = (
             return runRows.length === 0 || !ownsRunningRun(runRows[0]!, owner)
               ? { _tag: "FenceLost" } as const
               : { _tag: "StateChanged" } as const
-          }),
-          { _tag: "FenceLost" } as const
-        )
+          })
+        ).pipe(Effect.mapError(mapPersistenceError))
       })
     )
 
@@ -757,7 +674,7 @@ export const makeWith = (
         const attemptError = yield* encodeOptional(attempt.error, "error")
         const outcome = yield* encodeOptional(attempt.outcome, "outcome")
         const meta = yield* encodeOptional(attempt.meta, "meta")
-        return yield* writeAttempt(
+        return yield* writer.write(
           Effect.gen(function*() {
             const updated = yield* sql<{ readonly attempt: number }>`
             UPDATE flows_attempts
@@ -782,15 +699,6 @@ export const makeWith = (
             RETURNING attempt
           `
             if (updated.length > 0) {
-              yield* recordAttemptEvent(attempt.runId, owner, "flows.attempt.finished", {
-                stepKeyDigest: attempt.stepKeyDigest,
-                attempt: attempt.attempt,
-                state: attempt.state,
-                finishedAtMs: attempt.finishedAtMs,
-                ...(attempt.error === undefined ? {} : { error: attempt.error }),
-                ...(attempt.outcome === undefined ? {} : { outcome: attempt.outcome }),
-                ...(attempt.meta === undefined ? {} : { meta: attempt.meta })
-              })
               return { _tag: "Finished" } as const
             }
             const found = yield* sql<Pick<AttemptRow, "state">>`
@@ -809,9 +717,8 @@ export const makeWith = (
             return runRows.length === 0 || !ownsRunningRun(runRows[0]!, owner)
               ? { _tag: "FenceLost" } as const
               : { _tag: "StateChanged" } as const
-          }),
-          { _tag: "FenceLost" } as const
-        )
+          })
+        ).pipe(Effect.mapError(mapPersistenceError))
       })
     )
 
@@ -827,7 +734,7 @@ export const makeWith = (
         const attemptError = yield* encodeOptional(fields.error, "error")
         const outcome = yield* encodeOptional(fields.outcome, "outcome")
         const meta = yield* encodeOptional(fields.meta, "meta")
-        return yield* writeAttempt(
+        return yield* writer.write(
           Effect.gen(function*() {
             // Unlike `heartbeat`/`finish` there is no state predicate: a patch
             // may touch a terminal row (evidence quarantine does), so the run
@@ -854,21 +761,6 @@ export const makeWith = (
             RETURNING attempt
           `
             if (updated.length > 0) {
-              if (
-                fields.checkpoint !== undefined ||
-                fields.error !== undefined ||
-                fields.outcome !== undefined ||
-                fields.meta !== undefined
-              ) {
-                yield* recordAttemptEvent(id.runId, owner, "flows.attempt.patched", {
-                  stepKeyDigest: id.stepKeyDigest,
-                  attempt: id.attempt,
-                  ...(fields.checkpoint === undefined ? {} : { checkpoint: fields.checkpoint }),
-                  ...(fields.error === undefined ? {} : { error: fields.error }),
-                  ...(fields.outcome === undefined ? {} : { outcome: fields.outcome }),
-                  ...(fields.meta === undefined ? {} : { meta: fields.meta })
-                })
-              }
               return { _tag: "Patched" } as const
             }
             const found = yield* sql<Pick<AttemptRow, "state">>`
@@ -878,9 +770,8 @@ export const makeWith = (
             return found.length === 0
               ? { _tag: "NotFound" } as const
               : { _tag: "FenceLost" } as const
-          }),
-          { _tag: "FenceLost" } as const
-        )
+          })
+        ).pipe(Effect.mapError(mapPersistenceError))
       })
     )
 
@@ -893,9 +784,7 @@ export const makeWith = (
  * @category constructors
  * @since 0.1.0
  */
-export const make: Effect.Effect<Service, never, Journal | DurableWriter | SqlClient.SqlClient> = Effect.orDie(
-  makeWith()
-)
+export const make: Effect.Effect<Service, never, DurableWriter | SqlClient.SqlClient> = Effect.orDie(makeWith())
 
 /**
  * Creates an attempt store from an implementation.
@@ -927,28 +816,20 @@ export const layerNoop = (overrides: Partial<Service> = {}): Layer.Layer<Attempt
 /**
  * Provides the SQL-backed attempt store.
  *
- * Both SQL layers require `Journal` in context, declared in the layer type:
- * composing one without a journal fails to typecheck, so a missing journal
- * can never silently skip a `flows.attempt.*` append
- * (`docs/specs/Concepts/Run State Fold.md`). Only {@link layerNoop} composes
- * without one.
- *
  * @category layers
  * @since 0.1.0
  */
-export const layer: Layer.Layer<AttemptStore, never, Journal | DurableWriter | SqlClient.SqlClient> = Layer.effect(
-  AttemptStore
-)(make)
+export const layer: Layer.Layer<AttemptStore, never, DurableWriter | SqlClient.SqlClient> = Layer.effect(AttemptStore)(
+  make
+)
 
 /**
  * Provides the SQL-backed attempt store under an explicit policy.
- *
- * Requires `Journal` in context exactly as {@link layer} does.
  *
  * @category layers
  * @since 0.1.0
  */
 export const layerWith = (
   options: Options
-): Layer.Layer<AttemptStore, AttemptStoreError, Journal | DurableWriter | SqlClient.SqlClient> =>
+): Layer.Layer<AttemptStore, AttemptStoreError, DurableWriter | SqlClient.SqlClient> =>
   Layer.effect(AttemptStore)(makeWith(options))

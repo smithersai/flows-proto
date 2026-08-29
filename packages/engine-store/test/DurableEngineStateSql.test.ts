@@ -1,7 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { DurableWriter } from "@smthrs/database"
 import * as TestDatabase from "@smthrs/database/test/TestDatabase"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
 import { type Ownership } from "@smthrs/run-store"
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
@@ -20,9 +19,6 @@ const owner: Ownership.OwnerId = {
 }
 
 const migratedDatabase = Layer.provideMerge(Migrations.layer, TestDatabase.layer)
-const journalDatabase = SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(
-  Layer.provideMerge(migratedDatabase)
-)
 
 const insertOwnedRun = (runId: string) =>
   Effect.gen(function*() {
@@ -82,7 +78,7 @@ describe("SQL DurableEngineState", () => {
             row: Option.getOrThrow(yield* first.deferred(address)),
             completed: yield* second.completedDeferreds(address.flowName)
           }
-        }).pipe(Effect.provide(journalDatabase))
+        }).pipe(Effect.provide(migratedDatabase))
       )
 
       expect(result.outcomes.map((outcome) => outcome._tag).sort()).toEqual([
@@ -135,7 +131,7 @@ describe("SQL DurableEngineState", () => {
             row: Option.getOrThrow(yield* first.clock(clock)),
             due: yield* first.dueClocks(Number.MAX_SAFE_INTEGER)
           }
-        }).pipe(Effect.provide(journalDatabase))
+        }).pipe(Effect.provide(migratedDatabase))
       )
 
       expect(result.scheduled._tag).toBe("Scheduled")
@@ -179,7 +175,7 @@ describe("SQL DurableEngineState", () => {
           const pruned = yield* survivors("survivors-run", "digest-a")
           const otherKey = yield* survivors("survivors-run", "digest-b")
           return { fresh, pruned, otherKey }
-        }).pipe(Effect.provide(journalDatabase))
+        }).pipe(Effect.provide(migratedDatabase))
       )
 
       expect(Option.isNone(result.fresh)).toBe(true)
@@ -198,7 +194,7 @@ describe("SQL DurableEngineState", () => {
           WHERE type = 'index' AND tbl_name = 'flows_runs'
         `
           return indexes.map((row) => row.name)
-        }).pipe(Effect.provide(journalDatabase))
+        }).pipe(Effect.provide(migratedDatabase))
       )
 
       expect(result).toContain("flows_runs_stale_running_idx")

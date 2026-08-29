@@ -366,12 +366,10 @@ describe("fork boundary assessment", () => {
       const migrated = Layer.provideMerge(Migrations.layer, TestDatabase.layer)
       const services = Layer.mergeAll(
         RunStore.layer,
+        SqlJournal.layer({ capacity: 32, overflow: "reject" }),
         CacheStore.layer,
         SqlTimeTravelStore.layer
-      ).pipe(
-        Layer.provideMerge(SqlJournal.layer({ capacity: 32, overflow: "reject" })),
-        Layer.provideMerge(migrated)
-      )
+      ).pipe(Layer.provideMerge(migrated))
 
       const result = yield* (
         Effect.scoped(

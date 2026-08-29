@@ -129,8 +129,7 @@ export const makeVault = (options: { readonly read?: Read | undefined } = {}): V
   const mint = (secret: Secret.Secret): string => {
     const existing = byEnv.get(secret.env)
     if (existing !== undefined) return existing
-    const nonce = Array.from(randomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join("")
-    const placeholder = `${placeholderPrefix}${nonce}`
+    const placeholder = `${placeholderPrefix}${randomBytes(32).toString("hex")}`
     byEnv.set(secret.env, placeholder)
     byPlaceholder.set(placeholder, secret.env)
     return placeholder

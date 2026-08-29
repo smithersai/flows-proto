@@ -46,12 +46,10 @@ const fakeEngine = {} as unknown as FlowRuntime.FlowRuntime["Service"]
 const migratedDatabase = Layer.provideMerge(Migrations.layer, TestDatabase.layer)
 
 const services = Layer.mergeAll(
+  SqlJournal.layer({ capacity: 1024, overflow: "reject" }),
   RunStore.layer,
   DurableEngineState.layer
-).pipe(
-  Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" })),
-  Layer.provideMerge(migratedDatabase)
-)
+).pipe(Layer.provideMerge(migratedDatabase))
 
 const parentInstance = (executionId: string) => ({ executionId } as FlowRuntime.FlowInstance["Service"])
 

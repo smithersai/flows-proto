@@ -160,58 +160,6 @@ export const redact = (value: unknown, options?: Options): unknown => {
 }
 
 /**
- * Event-type namespaces whose entries bypass the write-path redactor.
- *
- * A fold namespace moves executable state into journal events: the fold's
- * materialized row is rebuilt from the event payload and served back into the
- * executable path, so redacting the event corrupts the rebuilt state exactly
- * the way redacting `flows_runs.state_json` would (issue #72). `flows.cache.*`
- * carries cached step results served verbatim on a hit — the step-cache fold,
- * `docs/specs/Concepts/Step Cache Fold.md`. `flows.run.*` and
- * `flows.attempt.*` carry the run/attempt fold's inputs — run state JSON,
- * waiting payloads, and attempt checkpoints rebuilt into `flows_runs` and
- * `flows_attempts` rows (`docs/specs/Concepts/Journal Consensus.md`); every
- * event in those two namespaces is a fold input, so the namespaces are listed
- * whole.
- *
- * Matching is by prefix, so a full event-type string works as an exact entry.
- * The deferred/clock fold (`docs/specs/Concepts/Deferred Clock Fold.md`) needs
- * that: `flows.engine.` also carries many non-fold records (attempt-started,
- * run-decision, ...), so the fold lists its five input types exactly and the
- * namespace itself is never listed. The policy lives here rather than on the
- * producing entry because redaction is a security control — a producer-set
- * flag would let any caller exempt its own entries, while this list keeps the
- * bypass auditable in one place.
- *
- * The accepted consequences are the module doc's: hygiene for values that must
- * never persist stays the caller-schema `Redacted` rule, and export/display
- * surfaces scrub at render time.
- *
- * @since 0.1.0
- * @category constants
- */
-export const verbatimNamespaces: ReadonlyArray<string> = [
-  "flows.cache.",
-  "flows.engine.deferred-completed",
-  "flows.engine.clock-scheduled",
-  "flows.engine.clock-completed",
-  "flows.engine.deferred-snapshot",
-  "flows.engine.clock-snapshot",
-  "flows.run.",
-  "flows.attempt."
-]
-
-/**
- * Whether entries of this event type bypass the write-path redactor because
- * their payloads are executable state.
- *
- * @since 0.1.0
- * @category predicates
- */
-export const isVerbatimEventType = (eventType: string): boolean =>
-  verbatimNamespaces.some((namespace) => eventType.startsWith(namespace))
-
-/**
  * A redaction function, as the journal consumes it.
  *
  * @since 0.1.0

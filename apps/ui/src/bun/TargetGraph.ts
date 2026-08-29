@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { readdir, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { readdir, readFile } from "node:fs/promises"
+import { dirname, join, relative, sep } from "node:path"
 import type { GraphEdge, GraphNode, TargetGraphResponse } from "smithers-shared/TargetGraph"
 import { splitLabel } from "smithers-shared/LocalApp"
 import type { NodeSidecar } from "./Node"
@@ -84,20 +84,29 @@ export const foldPlan = (nodes: ReadonlyArray<GraphNode>, envelopes: ReadonlyArr
 const SKIPPED_DIRS = [".git", ".flows", "node_modules", "dist", "build"]
 const DECLARATION_FILES = ["PACKAGE.ts", "WORKSPACE.ts", "BUILD.ts"]
 
+/** The declaration set of a workspace: a content digest plus each labeled const's declaration site. */
+export interface DeclarationSet {
+  readonly digest: string
+  readonly sources: ReadonlyMap<string, GraphNode["source"]>
+}
+
 /*
- * Fingerprints the workspace's declarations, ASYNCHRONOUSLY.
+ * Fingerprints the workspace's declarations, ASYNCHRONOUSLY, by content.
  *
  * This runs on every graph/affected/ci request - it is what makes a graph go
  * stale the instant a declaration is edited - so it walks the whole source
- * tree. Done with the synchronous fs calls it measured 160-190ms of blocked
- * event loop per request on ~/artsy/force, during which the server answered
- * nothing and no frame of a streaming run reached a live overlay. Sibling
- * directories are walked concurrently, and the digest is fed in sorted path
- * order so it stays stable whatever order the filesystem and the scheduler
- * answer in.
+ * tree. Done with synchronous fs calls it measured 160-190ms of blocked event
+ * loop per request on ~/artsy/force, during which the server answered nothing
+ * and no frame of a streaming run reached a live overlay. Sibling directories
+ * are walked concurrently, file contents are read in modest batches so the
+ * loop breathes, and the digest is fed in sorted path order so it stays
+ * stable whatever order the filesystem and the scheduler answer in. Hashing
+ * contents (not mtime/size) means an edit that keeps size and mtime still
+ * re-keys the graph; the same pass records where each labeled const is
+ * declared for the drawer's "open declaration" affordance.
  */
-const declarationDigest = async (repo: string): Promise<string> => {
-  const found: Array<{ readonly path: string; readonly mtimeMs: number; readonly size: number }> = []
+const declarationSet = async (repo: string): Promise<DeclarationSet> => {
+  const found: Array<string> = []
   const walk = async (dir: string): Promise<void> => {
     let entries: Array<import("node:fs").Dirent>
     try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
@@ -106,20 +115,34 @@ const declarationDigest = async (repo: string): Promise<string> => {
         if (!SKIPPED_DIRS.includes(entry.name)) await walk(join(dir, entry.name))
         return
       }
-      if (!entry.isFile() || !DECLARATION_FILES.includes(entry.name)) return
-      const path = join(dir, entry.name)
-      try {
-        const info = await stat(path)
-        found.push({ path, mtimeMs: info.mtimeMs, size: info.size })
-      } catch { /* A declaration that vanished mid-walk is simply not in the graph. */ }
+      if (entry.isFile() && DECLARATION_FILES.includes(entry.name)) found.push(join(dir, entry.name))
     }))
   }
   await walk(repo)
-  const hash = createHash("sha256")
-  for (const entry of found.sort((left, right) => left.path.localeCompare(right.path))) {
-    hash.update(entry.path.slice(repo.length)).update(String(entry.mtimeMs)).update(String(entry.size))
+  found.sort((left, right) => left.localeCompare(right))
+  const contents = new Map<string, string>()
+  const BATCH = 64
+  for (let offset = 0; offset < found.length; offset += BATCH) {
+    await Promise.all(found.slice(offset, offset + BATCH).map(async (path) => {
+      try { contents.set(path, await readFile(path, "utf8")) } catch { /* A declaration that vanished mid-walk is simply not in the graph. */ }
+    }))
   }
-  return hash.digest("hex")
+  const hash = createHash("sha256")
+  const sources = new Map<string, GraphNode["source"]>()
+  for (const path of found) {
+    const text = contents.get(path)
+    if (text === undefined) continue
+    const file = relative(repo, path).split(sep).join("/")
+    hash.update(file).update("\0").update(text).update("\0")
+    if (path.endsWith("PACKAGE.ts") || path.endsWith("BUILD.ts")) {
+      const packageDir = dirname(file) === "." ? "" : dirname(file)
+      for (const match of text.matchAll(/^[\t ]*(?:export[\t ]+)?const[\t ]+([A-Za-z_$][\w$]*)[\t ]*=/gm)) {
+        const line = text.slice(0, match.index).split("\n").length
+        sources.set(`//${packageDir}:${match[1]}`, { file, line })
+      }
+    }
+  }
+  return { digest: hash.digest("hex"), sources }
 }
 
 interface CachedGraph { readonly digest: string; readonly response: TargetGraphResponse }
@@ -160,7 +183,8 @@ const runJson = async (options: TargetGraphOptions, args: ReadonlyArray<string>)
 
 export const queryTargetGraph = async (options: TargetGraphOptions): Promise<TargetGraphResponse> => {
   const started = Date.now()
-  const digest = await declarationDigest(options.repo)
+  const declarations = await declarationSet(options.repo)
+  const digest = declarations.digest
   let base = graphCache.get(options.repo)
   if (base === undefined || base.digest !== digest) {
     const [envelope, targetResult] = await Promise.all([
@@ -175,13 +199,17 @@ export const queryTargetGraph = async (options: TargetGraphOptions): Promise<Tar
     const merged = new Map(rows.map((row) => [row.label, row]))
     for (const target of targetResult.targets) merged.set(target.label, { label: target.label, target: target.target, kinds: target.kinds })
     const parsed = parseTextGraph(body.graph, [...merged.values()])
+    const nodes = parsed.nodes.map((node) => {
+      const source = declarations.sources.get(node.label)
+      return source === undefined ? node : { ...node, source }
+    })
     const generatedAt = new Date().toISOString()
     /*
      * `digest` is the field a card compares to decide whether its cached
      * graph went stale after a declaration edit; it has to reach the UI, not
      * just this cache, or the documented staleness check can never fire.
      */
-    base = { digest, response: { repoId: options.repoId, ...parsed, warnings: targetResult.warnings, generatedAt, digest, durationMs: Date.now() - started } }
+    base = { digest, response: { repoId: options.repoId, nodes, edges: parsed.edges, warnings: targetResult.warnings, generatedAt, digest, durationMs: Date.now() - started } }
     graphCache.set(options.repo, base)
   }
   let nodes = base.response.nodes.map((node) => ({ ...node, kinds: [...node.kinds], ...(node.plan === undefined ? {} : { plan: { ...node.plan } }) }))

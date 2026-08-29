@@ -53,17 +53,15 @@ const jj = Jj.make({
 
 const database = Layer.provideMerge(DurableWriter.layer(), NodeDatabase.layer({ filename }))
 const migratedDatabase = Layer.provideMerge(Migrations.layer, database)
-const journalDatabase = SqlJournal.layer({ capacity: 64, overflow: "reject" }).pipe(
-  Layer.provideMerge(migratedDatabase)
-)
-const sqlServices = Layer.mergeAll(
-  AttemptStore.layer,
-  CacheStore.layer,
-  RunStore.layer,
-  DurableEngineState.layer
-).pipe(
-  Layer.provideMerge(SqlJournal.layer({ capacity: 64, overflow: "reject" })),
-  Layer.provideMerge(migratedDatabase)
+const sqlServices = Layer.provideMerge(
+  Layer.mergeAll(
+    AttemptStore.layer,
+    CacheStore.layer,
+    RunStore.layer,
+    DurableEngineState.layer,
+    SqlJournal.layer({ capacity: 64, overflow: "reject" })
+  ),
+  migratedDatabase
 )
 const requirements = Layer.mergeAll(
   sqlServices,
@@ -101,7 +99,7 @@ const stateCompletion = Effect.gen(function*() {
     completedAtMs: Date.now()
   })
   yield* line({ tag: outcome._tag, row: outcome.row })
-}).pipe(Effect.provide(journalDatabase))
+}).pipe(Effect.provide(database))
 
 const stateInitialization = Effect.gen(function*() {
   const sql = yield* Effect.service(SqlClient.SqlClient)

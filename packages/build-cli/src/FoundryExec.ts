@@ -29,9 +29,9 @@ export type ResolvedTool =
   | { readonly ok: false; readonly refusal: string; readonly identity: unknown }
 
 const toolchainsOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): ReadonlyArray<Record<string, unknown>> =>
-  (workspace.toolchains ?? []).filter(
-    (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null
-  )
+  (workspace.toolchains ?? [])
+    .filter((entry): entry is { readonly _tag: string } => typeof entry === "object" && entry !== null)
+    .map((entry) => entry as unknown as Record<string, unknown>)
 
 const filePath = (value: unknown): string | undefined =>
   typeof value === "object" && value !== null &&

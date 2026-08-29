@@ -140,7 +140,7 @@ const effect = (
   body: () => Effect.Effect<
     void,
     unknown,
-    Crypto.Crypto | Scope.Scope | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
+    Crypto.Crypto | Scope.Scope | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance
   >,
   executionId = "retry-policy"
 ) =>

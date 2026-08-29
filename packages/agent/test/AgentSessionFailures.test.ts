@@ -569,9 +569,8 @@ describe("the executor's driver admission fence", () => {
       record,
       {
         runtime: {
-          registerFiber: () => Effect.fail(
-            new PersistenceError({ operation: "registerFiber", message: "registration refused" })
-          )
+          registerFiber: () =>
+            Effect.fail(new PersistenceError({ operation: "registerFiber", message: "registration refused" }))
         },
         engine: (engine) =>
           ({

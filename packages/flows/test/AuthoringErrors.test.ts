@@ -47,13 +47,13 @@ const jj = Jj.make({
 })
 
 const services = Layer.mergeAll(
+  SqlJournal.layer({ capacity: 128, overflow: "reject" }),
   RunStore.layer,
   AttemptStore.layer,
   CacheStore.layer,
   PlanStore.layer,
   DurableEngineState.layer
 ).pipe(
-  Layer.provideMerge(SqlJournal.layer({ capacity: 128, overflow: "reject" })),
   Layer.provideMerge(Layer.provideMerge(Migrations.layer, TestDatabase.layer)),
   Layer.merge(OwnerIdentity.layer),
   Layer.merge(StepBoundary.layerTest()),

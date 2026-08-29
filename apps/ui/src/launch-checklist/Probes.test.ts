@@ -58,9 +58,9 @@ describe("unnamedAffordances", () => {
     expect(
       unnamedAffordances(
         [
-          { label: "Accept", flow: "flow.run", disabled: false },
-          { label: "Mystery", flow: null, disabled: false },
-          { label: "Ghost", flow: "flow.ghost", disabled: false }
+          { label: "Accept", flow: "flow.run" },
+          { label: "Mystery", flow: null },
+          { label: "Ghost", flow: "flow.ghost" }
         ],
         ["flow.run"]
       )

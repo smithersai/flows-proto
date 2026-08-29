@@ -1,8 +1,5 @@
 import { DurableWriter } from "@smthrs/database"
-import * as DatabaseMigrations from "@smthrs/database/Migrations"
 import * as NodeDatabase from "@smthrs/database/node/NodeDatabase"
-import * as JournalMigrations from "@smthrs/journal/Migrations"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
 import { Effect, Layer } from "effect"
 import * as AttemptStore from "../../src/AttemptStore.ts"
 import * as Migrations from "../../src/Migrations.ts"
@@ -23,14 +20,8 @@ const owner = role === "a" ? ownerA : ownerB
 const sharedAttempt = { runId, stepKeyDigest: "shared", attempt: 0 } as const
 
 const database = Layer.provideMerge(DurableWriter.layer(), NodeDatabase.layer({ filename }))
-const migrated = Layer.provideMerge(
-  Layer.effectDiscard(DatabaseMigrations.run([JournalMigrations.set, Migrations.set])),
-  database
-)
-const services = Layer.mergeAll(RunStore.layer, AttemptStore.layer).pipe(
-  Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" })),
-  Layer.provide(migrated)
-)
+const migrated = Layer.provideMerge(Migrations.layer, database)
+const services = Layer.mergeAll(RunStore.layer, AttemptStore.layer).pipe(Layer.provide(migrated))
 
 const emit = (value: unknown): Effect.Effect<void> =>
   Effect.sync(() => {

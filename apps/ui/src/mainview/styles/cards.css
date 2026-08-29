@@ -132,7 +132,7 @@
 }
 
 .slash-menu-item[data-highlighted="true"] {
-	background: var(--brand-row-tint);
+	background: var(--brand-soft-strong);
 }
 
 .slash-menu-item:focus-visible {
@@ -345,23 +345,8 @@
 	text-align: left;
 	cursor: pointer;
 }
-/*
- * The selected row is a brand TINT, never the brand itself (will, 2026-08-19:
- * "the black text on purple is impossible to read"). `--accent` aliases
- * `--brand`, the palette's full-saturation colour, while the row keeps
- * `--text`: across the nine palettes in both variants that pairing measured
- * between 1.18:1 and 3.35:1, so it failed AA everywhere, not only where will
- * saw it. `--brand-row-tint` is the fill every text-bearing highlighted row
- * wears, and the foreground is stated rather than inherited so no ancestor can
- * quietly reintroduce the trap. The tint is deliberately light: this row's
- * freshness and issue-count columns are 13px, so AA asks 4.5:1 of them, and
- * the 16% tint that replaced `--accent` first still measured 3.86:1 in
- * solarized dark and 3.71:1 in rose-pine dark. Contrast is pinned per palette,
- * per foreground, in state/Palette.test.ts.
- */
 .repo-chooser-row[data-highlighted="true"] {
-	background: var(--brand-row-tint);
-	color: var(--text);
+	background: var(--accent, #f0ece1);
 }
 .repo-chooser-check {
 	width: 1rem;
@@ -691,17 +676,31 @@
 	color: var(--muted-foreground, #6b6457);
 	font-size: 0.8125rem;
 }
-/*
- * The flows list wears the repository tabs' shared row treatment
- * (.world-card-list / .world-card-row / .world-card-title / .world-card-path);
- * these two rules add only what a flow row needs on top of it — a little more
- * air between rows, and the Run act pushed to the trailing edge.
- */
 .workflow-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
 	gap: 0.375rem;
 }
-.workflow-list-row > [data-slot="button"]:last-child {
-	margin-left: auto;
+.workflow-list-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+}
+.workflow-list-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+.workflow-list-text > span {
+	color: var(--muted-foreground, #6b6457);
+	font-size: 0.8125rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 /* Wave 12 — the quiet run's two acts, and the which-watched-repo question. */
@@ -741,10 +740,8 @@
 	text-align: left;
 	cursor: pointer;
 }
-/* The same tint, for the same reason, as .repo-chooser-row above. */
 .workflow-repo-row[data-highlighted="true"] {
-	background: var(--brand-row-tint);
-	color: var(--text);
+	background: var(--accent, #f0ece1);
 }
 
 /* The admin request-access queue (§28.6): three inline elements with nothing

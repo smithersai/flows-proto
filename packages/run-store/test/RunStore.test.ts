@@ -1,10 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { DurableWriter } from "@smthrs/database"
-import * as DatabaseMigrations from "@smthrs/database/Migrations"
 import * as TestDatabase from "@smthrs/database/test/TestDatabase"
-import * as JournalMigrations from "@smthrs/journal/Migrations"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
-import { Cause, Clock, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Clock, Deferred, Duration, Effect, Exit, Fiber } from "effect"
 import { TestClock } from "effect/testing"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as Migrations from "../src/Migrations.ts"
@@ -20,19 +17,14 @@ import {
 import { type RunRow, type RunSnapshot, type RunStatus, RunStore } from "../src/RunStore.ts"
 import * as RunStoreLive from "../src/RunStore.ts"
 
-const migrationsLayer = Layer.effectDiscard(DatabaseMigrations.run([JournalMigrations.set, Migrations.set]))
-const databaseLayer = Layer.provideMerge(migrationsLayer, TestDatabase.layer)
-const storeLayer = RunStoreLive.layer.pipe(
-  Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" })),
-  Layer.provideMerge(databaseLayer)
-)
-
 const run = <A, E>(effect: Effect.Effect<A, E, never>) => effect
 
 const migrated = <A, E>(effect: Effect.Effect<A, E, DurableWriter.DurableWriter | SqlClient.SqlClient | RunStore>) =>
   run(
     effect.pipe(
-      Effect.provide(storeLayer),
+      Effect.provide(RunStoreLive.layer),
+      Effect.provide(Migrations.layer),
+      Effect.provide(TestDatabase.layer),
       Effect.provide(TestClock.layer())
     )
   )
@@ -165,7 +157,6 @@ describe("RunStore", () => {
         yield* sql`DROP TABLE flows_runs`
         const persistence = yield* Effect.flip(store.create("missing-table", "{}"))
         const readPersistence = yield* Effect.flip(store.get("missing-table"))
-        const heartbeatPersistence = yield* Effect.flip(store.heartbeat("missing-table", ownerA, 1))
 
         return [
           empty,
@@ -181,8 +172,7 @@ describe("RunStore", () => {
           corruptCompleteClaim,
           corruptJson,
           persistence,
-          readPersistence,
-          heartbeatPersistence
+          readPersistence
         ].map((failure) => failure.code)
       }))
 
@@ -199,7 +189,6 @@ describe("RunStore", () => {
         "decode_failed",
         "decode_failed",
         "decode_failed",
-        "persistence_failed",
         "persistence_failed",
         "persistence_failed"
       ])

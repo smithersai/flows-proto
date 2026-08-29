@@ -121,20 +121,8 @@ describe("the local origin", () => {
     expect(body.harnesses[0]).toMatchObject({ id: "claude", status: "signed-in", account: { email: "will@codeplane.app" } })
   })
 
-  test("lane placeholders: repos is an empty list, the rest 501", async () => {
+  test("both lanes' real routes replaced every placeholder: repos answers its empty state", async () => {
     expect(await (await fetch(`${server.origin}/api/repos`)).json()).toEqual({ repos: [] })
-    for (const [method, path] of [
-      ["POST", "/api/repo/open"],
-      ["POST", "/api/repo/close"],
-      ["POST", "/api/targets/query"],
-      ["POST", "/api/targets/run"],
-      ["POST", "/api/targets/cancel"]
-    ] as const) {
-      const response = await fetch(`${server.origin}${path}`, { method })
-      expect({ method, path, status: response.status }).toEqual({ method, path, status: 501 })
-      const body = (await response.json()) as { error: { code: string } }
-      expect(body.error.code).toBe("not_implemented")
-    }
   })
 
   test("a lane replaces a placeholder by registering the same route", async () => {

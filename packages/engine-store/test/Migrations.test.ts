@@ -52,7 +52,6 @@ describe("durable engine migrations", () => {
       expect(schema.master.filter((row) => row.type === "table").map((row) => row.name).sort()).toEqual([
         "flows_attempts",
         "flows_clock_deadlines",
-        "flows_consensus_leases",
         "flows_deferred_completions",
         "flows_journal_checkpoints",
         "flows_journal_events",
@@ -88,18 +87,6 @@ describe("durable engine migrations", () => {
           "due_at_ms",
           "execution_id",
           "flow_name"
-        ],
-        flows_consensus_leases: [
-          "claim_host_id",
-          "claim_nonce",
-          "claim_pid",
-          "claimed_at_ms",
-          "granted_at_ms",
-          "heartbeat_at_ms",
-          "owner_host_id",
-          "owner_nonce",
-          "owner_pid",
-          "run_id"
         ],
         flows_deferred_completions: [
           "completed_at_ms",

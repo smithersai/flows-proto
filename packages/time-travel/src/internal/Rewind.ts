@@ -264,7 +264,6 @@ export const validate = (options: {
       let pageTail: JournalEvent.Seq | undefined
       for (const entry of page.entries) {
         if (pageTail === undefined || entry.seq > pageTail) pageTail = entry.seq
-        if (!ownsReplayEntry(entry)) continue
         if (tail === undefined || entry.seq > tail.seq) tail = entry
         if (entry.seq === options.frame.seq) {
           const lineage = lineageOf(entry)
@@ -326,7 +325,7 @@ const readSuffix = (
       }).pipe(
         Effect.mapError((cause) => error("unknown", `could not read suffix for ${runId}`, cause))
       )
-      entries.push(...page.entries.filter(ownsReplayEntry))
+      entries.push(...page.entries)
       if (!page.hasMore || page.entries.length === 0) return entries
       const next = page.entries.reduce((tail, entry) => entry.seq > tail ? entry.seq : tail, after)
       if (next <= after) {
@@ -342,40 +341,11 @@ const snapshotOf = (row: RunStore.RunRow): RunStore.RunSnapshot => ({
   heartbeatAtMs: row.heartbeatAtMs
 })
 
-/**
- * Time travel cuts replay history, not the run/attempt materialization or
- * consensus namespaces that now share the same journal stream.
- *
- * A rewind fences the run through the ordinary `RunStore` ownership
- * operations, and that fencing is journaled: the run state fold makes a row
- * write without its event impossible
- * (`docs/specs/Concepts/Run State Fold.md`), so the surgery's own
- * `claimed`/`activated` land inside the very suffix `archiveAndTruncate`
- * cuts — and are archived with it — while its post-restore transitions and
- * closing `released` land past the restored frame and stay. Every consumer
- * compensates here, by namespace, not by suppression: replay and frame
- * validation exclude the `flows.run.*`, `flows.attempt.*`, and
- * `flows.consensus.*` entries they do not own, and recovery's
- * archive-commit evidence — "no live entries after the frame" — counts only
- * entries this predicate owns. The audit row remains the durable record of
- * who drove a rewind.
- *
- * @since 0.1.0
- * @category predicates
- */
-export const ownsReplayEntry = (entry: JournalEvent.Entry): boolean =>
-  typeof entry.eventType !== "string" ||
-  (
-    !entry.eventType.startsWith("flows.run.") &&
-    !entry.eventType.startsWith("flows.attempt.") &&
-    !entry.eventType.startsWith("flows.consensus.")
-  )
-
 const claimRun = (
   runs: RunStore.Service,
   options: Options,
   nowMs: number
-): Effect.Effect<ClaimedRun, TimeTravelFailure, Journal.Journal> =>
+): Effect.Effect<ClaimedRun, TimeTravelFailure> =>
   Effect.gen(function*() {
     const row = yield* runs.get(options.runId).pipe(
       Effect.mapError((cause) => runStoreFailure("read run", cause))
@@ -388,9 +358,6 @@ const claimRun = (
       return yield* Effect.fail(error("busy", `run ${options.runId} is not available for rewind`))
     }
     const expected = snapshotOf(row)
-    // The claim/activate fencing below appends ordinary R6 events. They land
-    // inside the suffix the archive step cuts and are archived with it;
-    // consumers that outlive the cut select by namespace (`ownsReplayEntry`).
     const outcome = yield* runs.claim(options.runId, expected, options.owner, nowMs).pipe(
       Effect.mapError((cause) => runStoreFailure("claim run", cause))
     )
@@ -717,9 +684,6 @@ export const rewind = (
                 yield* store.updateAudit(auditId, { detail })
               }
 
-              // Journaled on purpose: this transition and the closing
-              // `released` land past the restored frame and stay; replay and
-              // recovery exclude them by namespace (`ownsReplayEntry`).
               const suspended = yield* runs.transitionOwned(
                 options.runId,
                 options.owner,

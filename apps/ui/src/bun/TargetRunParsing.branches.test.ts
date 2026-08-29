@@ -90,9 +90,9 @@ test("a refusal whose text carries colons keeps the whole reason", () => {
   const events = parser.push("stdout", `//.github:github  refused  ${reason}\n`, BASE + 5)
   expect(events.length).toBe(1)
   expect(events[0]).toMatchObject({ type: "node", node: { label: "//.github:github", status: "refused", reason } })
-  /* A refusal is settled, so it gets an end; it has no duration to report. */
+  /* A refusal is settled, so it gets an end and, per the contract, a duration: zero wall time. */
   expect((events[0] as { node: { endedAt?: number; durationMs?: number } }).node.endedAt).toBe(BASE + 5)
-  expect((events[0] as { node: { durationMs?: number } }).node.durationMs).toBeUndefined()
+  expect((events[0] as { node: { durationMs?: number } }).node.durationMs).toBe(0)
 })
 
 test("a failure line keeps its reason and a skip keeps its cause", () => {

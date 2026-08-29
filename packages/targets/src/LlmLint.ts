@@ -362,10 +362,10 @@ const appendBytes = (capture: ByteCapture, chunk: Uint8Array): boolean => {
     let capacity = Math.max(1, capture.buffer.byteLength)
     while (capacity < length) capacity = Math.min(capture.limit, capacity * 2)
     const grown = Buffer.allocUnsafe(capacity)
-    grown.set(capture.buffer.subarray(0, capture.length))
+    capture.buffer.copy(grown, 0, 0, capture.length)
     capture.buffer = grown
   }
-  capture.buffer.set(chunk, capture.length)
+  Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).copy(capture.buffer, capture.length)
   capture.length = length
   return true
 }
@@ -373,9 +373,7 @@ const appendBytes = (capture: ByteCapture, chunk: Uint8Array): boolean => {
 /** Decodes a completed protocol stream without replacing malformed bytes. */
 const decodeBytes = (capture: ByteCapture, what: string): string => {
   try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
-      capture.buffer.subarray(0, capture.length)
-    )
+    return new TextDecoder("utf-8", { fatal: true }).decode(capture.buffer.subarray(0, capture.length))
   } catch {
     throw new Error(`${what} is not valid UTF-8`)
   }
@@ -405,13 +403,13 @@ const appendTail = (capture: TailCapture, chunk: Uint8Array): void => {
 const decodeTail = (capture: TailCapture): string => {
   const bytes = Buffer.allocUnsafe(capture.length)
   if (capture.length < capture.buffer.byteLength) {
-    bytes.set(capture.buffer.subarray(0, capture.length))
+    capture.buffer.copy(bytes, 0, 0, capture.length)
   } else {
-    bytes.set(capture.buffer.subarray(capture.offset))
-    bytes.set(capture.buffer.subarray(0, capture.offset), capture.buffer.byteLength - capture.offset)
+    capture.buffer.copy(bytes, 0, capture.offset)
+    capture.buffer.copy(bytes, capture.buffer.byteLength - capture.offset, 0, capture.offset)
   }
   try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
   } catch {
     return "<stderr was not valid UTF-8>"
   }

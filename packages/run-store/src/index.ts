@@ -45,12 +45,6 @@ export * as Ownership from "./Ownership.ts"
 export * as AttemptStore from "./AttemptStore.ts"
 
 /**
- * @category reducers
- * @since 0.1.0
- */
-export * as Fold from "./Fold.ts"
-
-/**
  * @category migrations
  * @since 0.1.0
  */

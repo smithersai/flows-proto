@@ -301,16 +301,14 @@ describe("the generation digest is canonical, not key-order-coincident (B7)", ()
   // the SAME in-memory database stays reachable: that layer provides its
   // database inward, which hides the client the meta rewrite below needs.
   const services = Layer.mergeAll(
+    SqlJournal.layer({ capacity: 1024, overflow: "reject" }),
     RunStore.layer,
     AttemptStore.layer,
     CacheStore.layer,
     PlanStore.layer,
     OwnerIdentity.layer,
     jjLayer
-  ).pipe(
-    Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" })),
-    Layer.provideMerge(TestStores.database)
-  )
+  ).pipe(Layer.provideMerge(TestStores.database))
 
   /** Rewrites the run's persisted attempt meta, keeping the fields, changing the order. */
   const rewriteMeta = (runId: string, transform: (meta: Record<string, unknown>) => Record<string, unknown>) =>

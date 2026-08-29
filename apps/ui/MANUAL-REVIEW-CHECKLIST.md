@@ -65,12 +65,6 @@ you tested. A row you could not reach is a finding, not a blank.
       is unregistered for them (the flow is absent, not present-and-refusing).
 - [ ] **1.6** Signed-out copy carries no card-collection or pricing language.
       `[auto A-6]`
-- [ ] **1.7** Load the app with the network throttled hard, and watch the page
-      BEFORE the app hydrates. The server-rendered document states nothing of
-      its own — no headline, no sentence about the closed alpha, no sign-in
-      link. Every one of those belongs to the chat, embedded, once the shell
-      mounts. A bare page that answers before the transcript does is the
-      finding.
 
 ## §2 Sign-in
 
@@ -309,71 +303,13 @@ is the whole first-run surface now.
 - [ ] **11.6** Zero connectors renders an empty state that names the next step.
 - [ ] **11.7** A connector whose backing repo disappeared renders honestly.
 
-## §11a GitHub and Files panes
-
-> Added 2026-08-19 for will's directives 1 and 6. Both panes are embedded
-> surfaces: they render inside the chat shell at conversation width with the
-> transcript above and the composer below, exactly like §10 and §11.
-
-- [ ] **11a.1** `/github` opens the pane on the repository LIST, including on
-      an account that watches nothing. A pane that will not open is a failure,
-      not an empty state.
-- [ ] **11a.2** Each row states the account's repository the way the chooser
-      row does: full name, freshness, open-issue count. A repository the
-      catalog has not answered for shows its name and nothing invented.
-- [ ] **11a.3** An account with no repositories renders the empty list, not a
-      placeholder row.
-- [ ] **11a.4** Clicking a row opens the repo view with Files, Issues, Pull
-      Requests and Flows, and the way back to the list is one press.
-- [ ] **11a.5** Each tab renders the read behind it — files through the files
-      seam, issues through the issues seam, pull requests through landings,
-      flows through the repository's own flow list — or says honestly that
-      nothing has been read for that repository.
-- [ ] **11a.6** The pane header's back button returns to the conversation, and
-      the keyboard reaches every row and tab.
-- [ ] **11a.7** "Files" in the composer surfaces menu opens the SAME files
-      browser the repo view's Files tab renders. There is one component; if the
-      two disagree about anything, that is the finding.
-- [ ] **11a.8** Nothing in either pane offers to import a repository. Opening a
-      repository prepares it in the background, and reads degrade honestly
-      while preparation is still running.
-- [ ] **11a.9** The frame OWNS the reads it shows: each tab's list appears
-      exactly once, inside the pane, with no copy of it above the pane, and
-      changing tabs leaves nothing behind. Browse Files → Issues → Pull
-      Requests → Flows and back; the transcript above the pane must be
-      unchanged throughout. Another repository's earlier read stays where it
-      was read, and closing the pane returns this repository's reads to the
-      transcript — the pane hides them, it never deletes them.
-
-- [ ] **11a.10** Open a repository the account has NEVER opened before, and
-      then do nothing at all. Its preparation runs invisibly, and the tab on
-      screen fills itself the moment the repository becomes readable. A pane
-      that stays on "Files have not been read yet." until you press something
-      is the finding: the preparation is meant to be invisible, not the
-      browsing.
-- [ ] **11a.11** The Flows tab is the same list as the Issues and Pull
-      Requests tabs: one row per flow, its key as the row's title, its
-      description beside it, its run act at the end. It must NOT wear a column
-      a flow does not have — no issue number, no open/closed badge, no author,
-      no comment count.
-
 ## §12 Repos and the GitHub App
 
-> Revised 2026-08-19 (will's directive 5): the "Import to Smithers Cloud"
-> button and the connect-store row are gone, and `repos.import` is hidden from
-> the listed flows. Importing happens in the background when a repository is
-> opened. These rows grade that, not a button.
-
-- [ ] **12.1** No user-facing import affordance exists: not in the composer
-      connect menu, not in the connectors store list, not in the slash menu.
-- [ ] **12.2** Opening a repository in the GitHub pane starts its preparation
-      in the background and renders NOTHING for it: no import card, no
-      "Import · owner/repo" title, no stage line, at any phase. The user is
-      browsing GitHub, not watching a mirror job they never asked for.
-- [ ] **12.3** Opening a repo you do not have access to: the reads degrade
-      honestly (the pane says what it could not read), and the failed import
-      still says nothing of its own — one honest refusal, not two.
-- [ ] **12.4** Opening the same repo twice does not start a second job.
+- [ ] **12.1** `/repos.import` with and without an explicit `owner/repo`.
+- [ ] **12.2** Import a large repo: progress is legible and the card ends in a
+      terminal state.
+- [ ] **12.3** Import a repo you do not have access to: honest refusal.
+- [ ] **12.4** Import the same repo twice.
 - [ ] **12.5** `/repos.app` reports the GitHub App's real installation state
       and links to the fix when it is not installed.
 - [ ] **12.6** `/repos.watch <repo>` with an argument selects that repo.
@@ -485,9 +421,7 @@ is the whole first-run surface now.
 - [ ] **19.2** `/notifications.read` marks every notification read, and the
       unread indicator clears.
 - [ ] **19.3** Toasts appear for the events that warrant them, stack without
-      overlapping, and auto-dismiss. They stack down from the window's
-      top-right corner, below the theme toggle and balance chip, and never
-      cover an open pane's back-to-conversation button.
+      overlapping, and auto-dismiss.
 - [ ] **19.4** `toast.dismiss` dismisses one toast; several open at once behave.
 - [ ] **19.5** Toasts are announced to assistive technology and do not steal
       focus.
@@ -501,15 +435,8 @@ is the whole first-run surface now.
       card, the world editor, the connectors pane, and the devtools panel in at
       least three themes.
 - [ ] **20.3** `/dark-mode` toggles, and every theme is legible in both modes.
-      Look specifically at code blocks, diffs, status pills, disabled controls,
-      and any row that fills itself when selected — the repo chooser, the
-      workflow picker, the slash menu — where the fill must not swallow the
-      text on top of it. Read the row's SMALL text, not just its name: the
-      chooser's freshness and issue-count columns are 13px muted text, and
-      they were still under AA after the name had been fixed.
-      state/Palette.test.ts holds all 18 variants to 4.5:1 for both, so what
-      is left here is the judgement a ratio cannot make — whether the
-      highlighted row still reads as the one under the cursor.
+      Look specifically at code blocks, diffs, status pills, and disabled
+      controls.
 - [ ] **20.4** The theme choice survives a reload and applies before first
       paint (no flash of the wrong theme).
 - [ ] **20.5** The OS `prefers-color-scheme` default is respected before the

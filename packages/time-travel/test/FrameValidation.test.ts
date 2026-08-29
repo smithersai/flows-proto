@@ -311,12 +311,12 @@ describe("public TimeTravel frame validation edges", () => {
 
 const sqlLayer = () => {
   const persistence = Layer.mergeAll(
+    SqlJournal.layer({ capacity: 32, overflow: "reject" }),
     RunStore.layer,
     CacheStore.layer,
     SqlTimeTravelStore.layer,
     Layer.succeed(Jj.Jj)(Jj.makeNoop({ snapshot: () => Effect.succeed({ changeId: "current" }) }))
   ).pipe(
-    Layer.provideMerge(SqlJournal.layer({ capacity: 32, overflow: "reject" })),
     Layer.provideMerge(Layer.provideMerge(Migrations.layer, TestDatabase.layer))
   )
   return TimeTravel.layer.pipe(Layer.provideMerge(persistence))

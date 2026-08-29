@@ -1,7 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { DurableWriter } from "@smthrs/database"
 import * as TestDatabase from "@smthrs/database/test/TestDatabase"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
@@ -12,9 +11,6 @@ import * as Migrations from "../src/Migrations.ts"
 import { withCrypto } from "./Sha256.ts"
 
 const migratedDatabase = Layer.provideMerge(Migrations.layer, TestDatabase.layer)
-const journalDatabase = SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(
-  Layer.provideMerge(migratedDatabase)
-)
 
 /**
  * The durable run-parent DAG (issues #40/#41) is the single source of truth
@@ -34,7 +30,7 @@ const sqlHarness: Harness = {
   run: <A>(body: (state: DurableEngineState.Service) => Effect.Effect<A, any, never>) =>
     withCrypto(
       Effect.flatMap(DurableEngineState.make, body).pipe(
-        Effect.provide(journalDatabase)
+        Effect.provide(migratedDatabase)
       ) as Effect.Effect<A>
     )
 }
@@ -232,7 +228,7 @@ describe("run parent edges (sql fault injection)", () => {
             Effect.provideService(SqlClient.SqlClient, blindSelect as never)
           )
           return yield* Effect.exit(torn.recordRunParent("child", "parent"))
-        }).pipe(Effect.provide(journalDatabase))
+        }).pipe(Effect.provide(migratedDatabase))
       )
 
       expect(Exit.isFailure(exit)).toBe(true)
@@ -264,7 +260,7 @@ describe("run parent edges (sql fault injection)", () => {
           // Only a cycle is a typed failure on this surface; a storage error
           // must escape as a defect exactly like every other store mutation.
           return yield* Effect.exit(broken.recordRunParent("child", "parent"))
-        }).pipe(Effect.provide(journalDatabase))
+        }).pipe(Effect.provide(migratedDatabase))
       )
 
       expect(Exit.isFailure(exit)).toBe(true)

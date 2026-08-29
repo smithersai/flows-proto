@@ -166,13 +166,14 @@ describe("durable schedule-to-close origin", () => {
 
       // The production SQL journal stack with the database kept reachable, so
       // the test can prune the attempt-1 row like a retention job would.
-      const journalWithDatabase = Layer.mergeAll(
-        RunStore.layer,
-        AttemptStore.layer,
-        CacheStore.layer
-      ).pipe(
-        Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" })),
-        Layer.provideMerge(Migrations.layer.pipe(Layer.provideMerge(TestDatabase.layer)))
+      const journalWithDatabase = Layer.provideMerge(
+        Layer.mergeAll(
+          SqlJournal.layer({ capacity: 1024, overflow: "reject" }),
+          RunStore.layer,
+          AttemptStore.layer,
+          CacheStore.layer
+        ),
+        Layer.provideMerge(Migrations.layer, TestDatabase.layer)
       )
 
       const result = yield* withCrypto(

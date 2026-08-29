@@ -46,7 +46,6 @@
  * @since 0.1.0
  */
 import { DurableWriter } from "@smthrs/database/DurableWriter"
-import * as SqlJournal from "@smthrs/journal/SqlJournal"
 import type { Ownership } from "@smthrs/run-store"
 import { RunStore } from "@smthrs/run-store"
 import { Clock, Crypto, Effect, Fiber, Layer, Option } from "effect"
@@ -830,14 +829,7 @@ export const layerWithStore = (
   ControlRuntime,
   PersistenceError,
   Crypto.Crypto | DurableWriter | SqlClient.SqlClient
-> =>
-  layer(options).pipe(
-    Layer.provideMerge(
-      RunStore.layer.pipe(
-        Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" }).pipe(Layer.orDie))
-      )
-    )
-  )
+> => layer(options).pipe(Layer.provideMerge(RunStore.layer))
 
 /**
  * @slop

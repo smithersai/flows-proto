@@ -734,7 +734,9 @@ export const make = (
           yield* encodeState(withoutResult(state)),
           { decision: "interrupt-released", owner: dependencies.owner }
         )
-        /* v8 ignore else -- a successful transition falls through with no further work */
+        // The successful arm is the generator's terminal fallthrough; V8 emits
+        // no executable location for that synthetic branch.
+        /* v8 ignore else */
         if (transitioned._tag !== "Transitioned") {
           // Fence lost between park and release: the run is someone else's
           // (or already settled), so our reclaim marker is bogus. Clear it
@@ -746,6 +748,7 @@ export const make = (
               yield* engineState.wake(runId)
             }
           }
+          return
         }
       })
 

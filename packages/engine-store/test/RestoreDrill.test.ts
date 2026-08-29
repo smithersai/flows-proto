@@ -78,12 +78,12 @@ const services = (
   owner: Ownership.OwnerId = ownerA
 ) =>
   Layer.mergeAll(
+    SqlJournal.layer({ capacity: 1024, overflow: "reject" }),
     RunStore.layer,
     AttemptStore.layer,
     CacheStore.layer,
     DurableEngineState.layer
   ).pipe(
-    Layer.provideMerge(SqlJournal.layer({ capacity: 1024, overflow: "reject" })),
     Layer.provideMerge(
       Layer.provideMerge(Migrations.layer, Layer.provideMerge(DurableWriter.layer(), NodeDatabase.layer({ filename })))
     ),

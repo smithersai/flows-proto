@@ -101,7 +101,6 @@ export const PERSISTED_COLLECTION_IDS: ReadonlyArray<string> = [
   "app-billing-accounts",
   "app-toasts",
   "app-watched-repos",
-	"app-repo-imports",
   "app-tool-calls",
   "app-chain-events",
   "app-tabs",

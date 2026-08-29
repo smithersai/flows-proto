@@ -147,7 +147,7 @@ export const unmetRequirements = (
 
 /** The app state the recommendation rule reads, sampled from the store. */
 export interface CommandState {
-  readonly surface: "chat" | "world" | "connectors" | "github" | "files"
+  readonly surface: "chat" | "world" | "connectors"
   readonly typing: boolean
   readonly hasConnectors: boolean
   /** The validated session carries admin:true; the admin plugin registers only then. */
@@ -357,8 +357,6 @@ const commandHead = (text: string): { readonly name: string; readonly args?: str
  *    menu selecting its first (recommended) item,
  *  - an input that is ONLY a registered slash flow executes it directly
  *    (aliases parse as themselves; execution resolves the canonical target),
- *  - flow syntax naming no registered flow is refused BY NAME, never handed to
- *    the model as prose (§23.5),
  *  - `/name <text>` executes directly when the flow declares an args hint,
  *  - a leading token that is flow SYNTAX but names no registered flow is
  *    refused by name — never handed to the model as prose,

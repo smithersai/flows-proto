@@ -154,16 +154,13 @@ export function DevtoolsPanel() {
         <section className="devtools-section" aria-label="Network tap">
           <h3>Network</h3>
           {(() => {
-          	// netTap, never debugNet: the flow SURFACES the read by dispatching
-          	// a transcript message, and dispatching from a render is the
-          	// re-render loop that hung the panel.
-          	const entries = JSON.parse(controller.netTap()) as ReadonlyArray<{
-          	  readonly at: number
-          	  readonly method: string
-          	  readonly url: string
-          	  readonly status: number | "error"
-          	  readonly ms: number
-          	}>
+            const entries = JSON.parse(controller.netTap()) as ReadonlyArray<{
+              readonly at: number
+              readonly method: string
+              readonly url: string
+              readonly status: number | "error"
+              readonly ms: number
+            }>
             return entries.length === 0 ?
               <p className="devtools-empty">No requests yet.</p> :
               (

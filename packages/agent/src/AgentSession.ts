@@ -892,7 +892,7 @@ export const make = (
         // sleep, whose deferred key is hashed, so `Crypto` travels with the
         // runtime rather than being substituted at the binding.
         const engineServices = yield* Effect.context<
-          Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
+          Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance
         >()
         const tags: Array<string> = []
         // The trail is buffered in memory and written by a fiber of its own,
