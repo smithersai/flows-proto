@@ -21,7 +21,7 @@ const provideHost = <A, E>(
   self: Effect.Effect<
     A,
     E,
-    FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Scope.Scope | Crypto.Crypto
+    Crypto.Crypto | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Scope.Scope | Crypto.Crypto
   >
 ): Effect.Effect<A, E, Crypto.Crypto> =>
   self.pipe(

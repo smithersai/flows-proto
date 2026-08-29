@@ -7,7 +7,6 @@ import { describe, expect, it } from "@effect/vitest"
 import { Action, Flow, FlowRuntime, Interpreter } from "@smthrs/flow"
 import { Node } from "@smthrs/plan"
 import { Cause, Effect, Exit, Layer, Option, Schema } from "effect"
-import type * as Crypto from "effect/Crypto"
 import { FlowEngine } from "../src/index.ts"
 import { withCrypto } from "./Crypto.ts"
 
@@ -80,21 +79,11 @@ const Parent = Flow.make("trampoline/parent", {
 })
 
 /** Every increment the lineage dispatched, in order. */
-const wire = <
-  const Registrations extends ReadonlyArray<
-    Layer.Layer<
-      never,
-      never,
-      // A registration may execute a counter itself — the parent-flow case
-      // below does — so it is allowed to ask for the increment this wiring
-      // provides.
-      | FlowRuntime.FlowRuntime
-      | Crypto.Crypto
-      | Action.Implementations
-      | Action.Requirement<"trampoline/increment">
-    >
-  >
->(...registrations: Registrations) => {
+type Registration =
+  | Layer.Layer<never, never, unknown>
+  | Layer.Layer<Action.Implementations | Action.Requirement<"trampoline/parent/action">, never, unknown>
+
+const wire = <const Registrations extends ReadonlyArray<Registration>>(...registrations: Registrations) => {
   const calls: Array<number> = []
   // The increment goes UNDER the registrations rather than beside them: a
   // registration whose implementation executes a counter asks for it, and a

@@ -22,7 +22,7 @@ const effect = (
   body: () => Effect.Effect<
     void,
     unknown,
-    Scope.Scope | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
+    Crypto.Crypto | Scope.Scope | FlowRuntime.FlowRuntime | FlowRuntime.FlowInstance | Crypto.Crypto
   >
 ) =>
   it.effect(name, () =>
