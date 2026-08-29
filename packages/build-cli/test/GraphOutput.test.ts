@@ -4,6 +4,7 @@
  * quote-escaped.
  */
 import { describe, expect, it } from "vitest"
+import * as Ansi from "../src/Ansi.ts"
 import * as GraphOutput from "../src/GraphOutput.ts"
 import type * as Planner from "../src/Planner.ts"
 
@@ -81,5 +82,51 @@ describe("GraphOutput.mermaid", () => {
 
   it("renders an empty plan as the bare flowchart header", () => {
     expect(GraphOutput.mermaid(plan([], []))).toBe("flowchart LR")
+  })
+})
+
+describe("GraphOutput styled", () => {
+  const styledPlan = plan(
+    ["//:app"],
+    [
+      planned("//:app", "ToolBuild", ["//:lib", "//:assets", "@external"]),
+      planned("//:lib", "TsBuild", ["//:assets"]),
+      planned("//:assets", "Filegroup")
+    ]
+  )
+
+  it("adds colour without changing the tree text", () => {
+    const styled = GraphOutput.text(styledPlan, Ansi.colors)
+    expect(Ansi.strip(styled)).toBe(GraphOutput.text(styledPlan))
+    expect(styled).toContain(Ansi.colors.bold("//:app"))
+    expect(styled).toContain(Ansi.colors.cyan("(TsBuild)"))
+    expect(styled).toContain(Ansi.colors.dim("//:assets"))
+    expect(styled).toContain(Ansi.colors.dim("(Filegroup)"))
+    expect(styled).toContain(Ansi.colors.dim("@external [external]"))
+  })
+})
+
+describe("GraphOutput.packageText", () => {
+  const rows = [
+    { label: "//src:build", target: "Rspack.Build" },
+    { label: "//src:srcs", target: "Filegroup" }
+  ]
+  const edges = [
+    { from: "//src:build", to: "//src:srcs", kind: "data" },
+    { from: "//src:build", to: "//src:lint", kind: "gates" }
+  ]
+
+  it("lists each label over its outgoing edges", () => {
+    expect(GraphOutput.packageText(rows, edges)).toBe(
+      "//src:build\n  -data-> //src:srcs\n  -gates-> //src:lint\n//src:srcs"
+    )
+  })
+
+  it("styles labels and edge kinds without changing the text", () => {
+    const styled = GraphOutput.packageText(rows, edges, Ansi.colors)
+    expect(Ansi.strip(styled)).toBe(GraphOutput.packageText(rows, edges))
+    expect(styled).toContain(Ansi.colors.bold("//src:build"))
+    expect(styled).toContain(Ansi.colors.dim("//src:srcs"))
+    expect(styled).toContain(Ansi.colors.dim("-data->"))
   })
 })

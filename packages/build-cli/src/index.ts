@@ -23,6 +23,8 @@ export * as Planner from "./Planner.ts"
 /** @category namespace exports @since 0.1.0 */
 export * as Query from "./Query.ts"
 /** @category namespace exports @since 0.1.0 */
+export * as Reporter from "./Reporter.ts"
+/** @category namespace exports @since 0.1.0 */
 export * as Resolver from "./Resolver.ts"
 /** @category namespace exports @since 0.1.0 */
 export * as RspackRunner from "./RspackRunner.ts"

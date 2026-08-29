@@ -37,6 +37,7 @@ import { entryLimit, openCache } from "./Cache.ts"
 import * as Diagnostic from "./Diagnostic.ts"
 import { declaredToolchain, layerInstall, layerNonInteractiveNodeServices, layerPackageManager } from "./engine.ts"
 import type * as Planner from "./Planner.ts"
+import * as Reporter from "./Reporter.ts"
 import type { ExpandedInput, Workspace } from "./Workspace.ts"
 
 /**
@@ -97,8 +98,9 @@ export interface Summary {
  * to the host parallelism.
  * `readCache` false bypasses cache reads while green results are still
  * written. `remoteCache` is resolved host state and never key material. `signal`
- * interrupts every running target. `log` receives one status line per settled
- * target and the end summary, and defaults to standard error.
+ * interrupts every running target. `reporter` receives every execution event;
+ * without one, `log` receives one plain status line per settled target and
+ * the end summary, and defaults to standard error.
  *
  * @category models
  * @since 0.1.0
@@ -119,6 +121,7 @@ export interface ExecuteOptions {
   readonly signal?: AbortSignal | undefined
   readonly packageName?: string | undefined
   readonly log?: ((line: string) => void) | undefined
+  readonly reporter?: Reporter.Reporter | undefined
 }
 
 /**
@@ -510,10 +513,6 @@ export const schedule = (
   })
 }
 
-/** Renders a duration for status lines. */
-const formatDuration = (durationMs: number): string =>
-  durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${Math.round(durationMs)}ms`
-
 /** Renders a failure value compactly for a status line. */
 const describeFailure = (value: unknown): string => {
   if (typeof value === "object" && value !== null) {
@@ -881,7 +880,8 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
   const jobs = resolveJobs(options.jobs)
   const workspace = options.workspace
   const readCache = options.readCache ?? true
-  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`))
+  const reporter = Reporter.of(options)
+  const log = reporter.warn
   const startedAt = performance.now()
   const flows = await resolveFlows(workspace, options.targets)
   const store = await openCache({
@@ -897,8 +897,7 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
 
   const report = (entry: TargetReport): void => {
     reports.set(entry.label, entry)
-    const line = `${entry.label}  ${entry.status}  ${formatDuration(entry.durationMs)}`
-    log(entry.error === undefined ? line : `${line}  ${entry.error}`)
+    reporter.targetFinished(entry)
   }
 
   const runOne = async (label: string): Promise<void> => {
@@ -929,12 +928,7 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
       })
       return
     }
-    // The plan measured this target's inputs once. Everything downstream of
-    // that measurement — the key a hit is admitted under, the key a result is
-    // published under — is only sound while the measurement still holds, so it
-    // is taken again here rather than assumed.
-    const beforeRun = await revalidateInputs(workspace, target)
-    if (beforeRun !== undefined) return fail(beforeRun)
+    reporter.targetStarted(label)
     const flow = flows.get(label)!
     if (readCache && target.cacheable) {
       const cached = await store.get(target.keyPreview).catch(() => null)
@@ -959,11 +953,16 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
             options.signal
           )
           if (outputs === undefined) {
-            // The tree was read to validate the outputs. Re-check the inputs
-            // against the plan afterwards so a change that landed during that
-            // read cannot be reported as a hit for the old key.
-            const afterOutputs = await revalidateInputs(workspace, target)
-            if (afterOutputs !== undefined) return fail(afterOutputs)
+            // The tree was read to validate the outputs, which takes time, so
+            // a change that landed during that read must not be reported as a
+            // hit for the old key. One check does that. It compares against
+            // the plan's own measurement rather than against an earlier
+            // revalidation, so checking after the outputs were read proves
+            // everything a check before them would have proved and proves it
+            // of a later moment; and nothing ran here, so there is no
+            // execution window for a second check to bracket.
+            const admitted = await revalidateInputs(workspace, target)
+            if (admitted !== undefined) return fail(admitted)
             report({
               label,
               target: target.target,
@@ -976,6 +975,12 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
         }
       }
     }
+    // Nothing answered from cache, so this target is about to run. The plan
+    // measured its inputs once, and everything downstream of that measurement
+    // — the key this result is published under — is only sound while the
+    // measurement still holds, so it is taken again here rather than assumed.
+    const beforeRun = await revalidateInputs(workspace, target)
+    if (beforeRun !== undefined) return fail(beforeRun)
     const exit = await runTarget(
       workspace.root,
       workspace.cacheDirectory,
@@ -1029,6 +1034,12 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
     })
   }
 
+  reporter.begin({
+    verb: options.verb,
+    pattern: options.pattern,
+    jobs,
+    targets: options.targets.map((target) => ({ label: target.label, target: target.target }))
+  })
   try {
     await schedule(options.targets, jobs, runOne, options.signal)
   } finally {
@@ -1045,11 +1056,7 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
     skipped: results.filter((entry) => entry.status === "skipped").length
   }
   const durationMs = performance.now() - startedAt
-  log(
-    `${results.length} targets: ${counts.hit} hit, ${counts.ran} ran, ` +
-      `${counts.failed} failed, ${counts.skipped} skipped (${formatDuration(durationMs)})`
-  )
-  return {
+  const summary: Summary = {
     verb: options.verb,
     pattern: options.pattern,
     jobs,
@@ -1058,4 +1065,6 @@ export const execute = async (options: ExecuteOptions): Promise<Summary> => {
     ok: counts.failed === 0,
     results
   }
+  reporter.summary(summary)
+  return summary
 }

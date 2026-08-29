@@ -1,12 +1,19 @@
 /**
  * Incur command surface for smithers build.
  *
+ * Every command returns structured data for incur's envelope. Progress and
+ * the human-facing rendering of that data go through {@link Reporter}: a
+ * person at a terminal sees a live or coloured account on standard error and
+ * a tree or table on standard output, while a pipe, a CI log, or an explicit
+ * `--format` sees exactly the plain lines and the envelope it always did.
+ *
  * @since 0.1.0
  */
 import * as Config from "@smthrs/targets/Config"
 import * as Target from "@smthrs/targets/Target"
 import { Cli, z } from "incur"
 import * as NodePath from "node:path"
+import * as Ansi from "./Ansi.ts"
 import * as Diagnostic from "./Diagnostic.ts"
 import { runInstall } from "./engine.ts"
 import * as Executor from "./Executor.ts"
@@ -18,6 +25,7 @@ import * as PackageIndex from "./PackageIndex.ts"
 import * as PackageLoader from "./PackageLoader.ts"
 import * as Planner from "./Planner.ts"
 import * as Query from "./Query.ts"
+import * as Reporter from "./Reporter.ts"
 import {
   ensureGitignored,
   resolveConfig,
@@ -58,6 +66,14 @@ const patternArgument = z.object({
   pattern: z.string().describe("Bazel label or recursive pattern")
 })
 
+/** The options every command accepts, parsed before the command is resolved. */
+const globalOptions = z.object({
+  ui: z.enum(Reporter.uiModes).default("auto").describe(
+    "Terminal renderer: tty draws in place, stream colours without cursor motion, plain prints bare lines; " +
+      "auto picks tty on a terminal and plain under a pipe, CI, NO_COLOR, or an explicit --format"
+  )
+})
+
 /** The flags every command shares. */
 interface WorkspaceFlags {
   readonly workspace: string
@@ -74,6 +90,13 @@ interface ExecutionFlags extends WorkspaceFlags {
 /**
  * Process-scoped configuration captured before BUILD.ts evaluation.
  *
+ * `stdout` and `stderr` default to the process streams; tests inject
+ * in-memory terminals. `exit` records the exit code of a failure a
+ * human renderer has already explained, so the envelope's error block is not
+ * printed twice; without it the structured error is returned instead. The
+ * process entry point supplies it, because deciding the exit code is a
+ * choice only a process owner may make.
+ *
  * @category models
  * @since 0.1.0
  * @slop
@@ -88,12 +111,80 @@ export interface RuntimeConfig {
    * Defaults to `process.env`; tests inject a hermetic record.
    */
   readonly environment?: Readonly<Record<string, string | undefined>> | undefined
+  readonly stdout?: Reporter.Terminal | undefined
+  readonly stderr?: Reporter.Terminal | undefined
+  readonly exit?: ((code: number) => void) | undefined
 }
 
 interface PreparedWorkspace {
   readonly root: string
   readonly cacheDirectory: string
   readonly remoteCache?: (ResolvedRemoteCache & { readonly token?: string | undefined }) | undefined
+}
+
+/** The slice of an incur command context the presentation helpers read. */
+interface Presentation {
+  readonly agent: boolean
+  readonly formatExplicit: boolean
+  readonly globals: { readonly ui: Reporter.UiMode }
+}
+
+/** incur's error result constructor, as the command context exposes it. */
+type ErrorResult = (options: {
+  readonly code: string
+  readonly exitCode?: number | undefined
+  readonly message: string
+  readonly retryable?: boolean | undefined
+}) => never
+
+const environmentOf = (config: RuntimeConfig): Ansi.Environment => config.environment ?? process.env
+
+const terminalsOf = (
+  config: RuntimeConfig
+): { readonly stdout: Reporter.Terminal; readonly stderr: Reporter.Terminal } => ({
+  stdout: config.stdout ?? Reporter.terminalOf(process.stdout),
+  stderr: config.stderr ?? Reporter.terminalOf(process.stderr)
+})
+
+/**
+ * The renderer one command draws with. Execution progress goes to standard
+ * error, so both streams are consulted; a tree or table goes to standard
+ * output, so only that stream matters.
+ */
+const rendererFor = (context: Presentation, config: RuntimeConfig, bound: "stdout" | "stderr"): Reporter.Renderer => {
+  const { stderr, stdout } = terminalsOf(config)
+  const streams = bound === "stderr"
+    ? { stdout: stdout.isTTY, stderr: stderr.isTTY }
+    : { stdout: stdout.isTTY, stderr: stdout.isTTY }
+  return Reporter.resolveRenderer(context.globals.ui, environmentOf(config), streams, context.formatExplicit)
+}
+
+/** Whether a person is reading: a human renderer, and incur agrees standard output is theirs. */
+const forPeople = (context: Presentation, renderer: Reporter.Renderer): boolean =>
+  renderer !== "plain" && !context.agent
+
+const reporterFor = (context: Presentation, config: RuntimeConfig): Reporter.Reporter =>
+  Reporter.make({
+    renderer: rendererFor(context, config, "stderr"),
+    terminal: terminalsOf(config).stderr,
+    env: environmentOf(config)
+  })
+
+/**
+ * Hands data to a person as rendered text on standard output, or to incur as
+ * the envelope's data.
+ */
+const present = <A>(
+  context: Presentation,
+  config: RuntimeConfig,
+  data: A,
+  render: (style: Ansi.Palette) => string
+): A | undefined => {
+  const renderer = rendererFor(context, config, "stdout")
+  if (!forPeople(context, renderer)) return data
+  const { stdout } = terminalsOf(config)
+  stdout.write(`${render(Ansi.palette(environmentOf(config), stdout.isTTY))}\n`)
+  return undefined
 }
 
 /**
@@ -182,7 +273,10 @@ const openPackageIndex = async (
 }
 
 /** Package-mode `query`: the same listing shape BUILD mode prints. */
-const packageQuery = (index: PackageIndex.PackageIndex, expression: string): unknown => {
+const packageQuery = (
+  index: PackageIndex.PackageIndex,
+  expression: string
+): Query.Listing | Query.Dependencies => {
   const dependencyMatch = expression.match(/^deps\((.+)\)$/)
   if (dependencyMatch?.[1] !== undefined) {
     const rows = index.resolve(dependencyMatch[1].trim())
@@ -217,23 +311,26 @@ const packageQuery = (index: PackageIndex.PackageIndex, expression: string): unk
 }
 
 /** Package-mode `graph`: labeled nodes plus classified edges. */
-const packageGraph = (index: PackageIndex.PackageIndex, pattern: string): unknown => {
-  const rows = index.resolve(pattern)
-  const edges = index.edges(rows)
-  const lines = rows.map((row) => {
-    const own = edges.filter((edge) => edge.from === row.label)
-    return own.length === 0
-      ? row.label
-      : `${row.label}\n${own.map((edge) => `  -${edge.kind}-> ${edge.to}`).join("\n")}`
-  })
+const packageGraph = (index: PackageIndex.PackageIndex, pattern: string): {
+  readonly rows: ReadonlyArray<GraphOutput.PackageRow>
+  readonly edges: ReadonlyArray<PackageIndex.Edge>
+  readonly data: unknown
+} => {
+  const selected = index.resolve(pattern)
+  const edges = index.edges(selected)
+  const rows = selected.map((row) => ({ label: row.label, target: Target.metadata(row.target).target }))
   return {
-    pattern,
-    format: "text",
-    graph: lines.join("\n"),
-    roots: rows.map((row) => row.label),
-    targets: rows.map((row) => ({ label: row.label, target: Target.metadata(row.target).target })),
+    rows,
     edges,
-    warnings: []
+    data: {
+      pattern,
+      format: "text",
+      graph: GraphOutput.packageText(rows, edges),
+      roots: rows.map((row) => row.label),
+      targets: rows,
+      edges,
+      warnings: []
+    }
   }
 }
 
@@ -289,7 +386,8 @@ const runPackageVerb = async (
   verb: PackageExec.PackageVerb,
   pattern: string,
   flags: ExecutionFlags & ModeFlags,
-  config: RuntimeConfig
+  config: RuntimeConfig,
+  reporter: Reporter.Reporter
 ): Promise<Executor.Summary | PackageExec.PlanReport | undefined> => {
   const index = await openPackageIndex(flags, config)
   if (index === undefined) return undefined
@@ -307,6 +405,7 @@ const runPackageVerb = async (
     jobs: flags.jobs,
     readCache: flags.cache,
     signal: config.signal,
+    reporter,
     message: flags.message,
     inputs: parseInputs(flags.input),
     environment: config.environment
@@ -344,12 +443,13 @@ const runVerb = async (
   verb: "build" | "test" | "lint" | "run" | "docs",
   pattern: string,
   flags: ExecutionFlags & ModeFlags,
-  config: RuntimeConfig
+  config: RuntimeConfig,
+  reporter: Reporter.Reporter
 ): Promise<Planner.Plan | Executor.Summary | PackageExec.PlanReport> => {
   if (verb === "docs") {
     await refusePackageMode(flags, verb)
   } else {
-    const packaged = await runPackageVerb(verb, pattern, flags, config)
+    const packaged = await runPackageVerb(verb, pattern, flags, config, reporter)
     if (packaged !== undefined) return packaged
   }
   const { remoteCache, workspace } = await openWorkspace(flags, config, !flags.plan)
@@ -364,7 +464,8 @@ const runVerb = async (
     readCache: flags.cache,
     remoteCache,
     signal: config.signal,
-    packageName: "name" in flags && typeof flags.name === "string" ? flags.name : undefined
+    packageName: "name" in flags && typeof flags.name === "string" ? flags.name : undefined,
+    reporter
   })
 }
 
@@ -386,7 +487,8 @@ const ciKinds = ["lint", "build", "test", "docs"] as const
 const runCi = async (
   pattern: string,
   flags: ExecutionFlags,
-  config: RuntimeConfig
+  config: RuntimeConfig,
+  reporter: Reporter.Reporter
 ): Promise<CiPlan | Executor.Summary> => {
   await refusePackageMode(flags, "ci")
   const { remoteCache, workspace } = await openWorkspace(flags, config, !flags.plan)
@@ -414,18 +516,77 @@ const runCi = async (
     jobs: flags.jobs,
     readCache: flags.cache,
     remoteCache,
-    signal: config.signal
+    signal: config.signal,
+    reporter
   })
 }
 
+/** Every outcome an execution command can return before settling. */
+type Outcome = Planner.Plan | CiPlan | Executor.Summary | PackageExec.PlanReport
+
 /** Whether an outcome is an execution summary rather than an inert plan. */
-const failedSummary = (
-  outcome: Planner.Plan | CiPlan | Executor.Summary | PackageExec.PlanReport
-): outcome is Executor.Summary => "ok" in outcome && !outcome.ok
+const isSummary = (outcome: Outcome): outcome is Executor.Summary => "ok" in outcome
+
+/** Whether an outcome is an execution summary that went red. */
+const failedSummary = (outcome: Outcome): outcome is Executor.Summary => isSummary(outcome) && !outcome.ok
 
 const failureMessage = (summary: Executor.Summary): string =>
   `${summary.counts.failed} of ${summary.results.length} targets failed` +
   (summary.counts.skipped === 0 ? "" : ` (${summary.counts.skipped} skipped)`)
+
+/**
+ * Turns an execution outcome into the command's return.
+ *
+ * A red summary is the structured `targets_failed` error, unless a human
+ * renderer already told a person what failed, in which case only the exit
+ * code remains to record. A green summary is the envelope's data, unless the
+ * same renderer already drew it, in which case standard output stays empty.
+ * An inert plan is always data.
+ */
+const settle = <A extends Outcome>(
+  context: Presentation & { readonly error: ErrorResult },
+  config: RuntimeConfig,
+  reporter: Reporter.Reporter,
+  outcome: A
+): A | undefined => {
+  const people = forPeople(context, reporter.renderer)
+  if (failedSummary(outcome)) {
+    if (people && config.exit !== undefined) {
+      config.exit(1)
+      return undefined
+    }
+    return context.error({
+      code: "targets_failed",
+      exitCode: 1,
+      message: failureMessage(outcome),
+      retryable: false
+    })
+  }
+  if (people && isSummary(outcome)) return undefined
+  return outcome
+}
+
+/**
+ * Runs one execution command under a reporter that is closed however the
+ * run ends, so a live renderer always hands the terminal back.
+ */
+const executeCommand = async <A extends Outcome>(
+  context: Presentation & { readonly error: ErrorResult },
+  config: RuntimeConfig,
+  code: string,
+  body: (reporter: Reporter.Reporter) => Promise<A>
+): Promise<A | undefined> => {
+  const reporter = reporterFor(context, config)
+  let outcome: A
+  try {
+    outcome = await body(reporter)
+  } catch (cause) {
+    return context.error({ code, exitCode: 1, message: Diagnostic.message(cause) })
+  } finally {
+    reporter.close()
+  }
+  return settle(context, config, reporter, outcome)
+}
 
 /**
  * Creates the configured smthrs CLI.
@@ -437,7 +598,8 @@ const failureMessage = (summary: Executor.Summary): string =>
 export const makeCli = (config: RuntimeConfig = {}) =>
   Cli.create("smthrs", {
     description: "Execute BUILD.ts targets and install pnpm workspaces with flows",
-    version: "0.1.0"
+    version: "0.1.0",
+    globals: globalOptions
   })
     .command("install", {
       description: "Plan and execute the pnpm install Flow",
@@ -469,46 +631,26 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       args: patternArgument,
       options: executionOptions,
       alias: executionAlias,
-      async run(context) {
-        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
-        try {
-          outcome = await runVerb("build", context.args.pattern, context.options, config)
-        } catch (cause) {
-          return context.error({ code: "build_failed", exitCode: 1, message: Diagnostic.message(cause) })
-        }
-        if (failedSummary(outcome)) {
-          return context.error({
-            code: "targets_failed",
-            exitCode: 1,
-            message: failureMessage(outcome),
-            retryable: false
-          })
-        }
-        return outcome
-      }
+      run: (context) =>
+        executeCommand(
+          context,
+          config,
+          "build_failed",
+          (reporter) => runVerb("build", context.args.pattern, context.options, config, reporter)
+        )
     })
     .command("test", {
       description: "Execute the test targets selected by a pattern",
       args: patternArgument,
       options: executionOptions,
       alias: executionAlias,
-      async run(context) {
-        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
-        try {
-          outcome = await runVerb("test", context.args.pattern, context.options, config)
-        } catch (cause) {
-          return context.error({ code: "test_failed", exitCode: 1, message: Diagnostic.message(cause) })
-        }
-        if (failedSummary(outcome)) {
-          return context.error({
-            code: "targets_failed",
-            exitCode: 1,
-            message: failureMessage(outcome),
-            retryable: false
-          })
-        }
-        return outcome
-      }
+      run: (context) =>
+        executeCommand(
+          context,
+          config,
+          "test_failed",
+          (reporter) => runVerb("test", context.args.pattern, context.options, config, reporter)
+        )
     })
     .command("lint", {
       description: "Execute the lint targets selected by a pattern",
@@ -517,69 +659,39 @@ export const makeCli = (config: RuntimeConfig = {}) =>
         fix: z.boolean().default(false).describe("Apply agent lint fixes inside the declared fixes write-set")
       }),
       alias: executionAlias,
-      async run(context) {
-        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
-        try {
-          outcome = await runVerb("lint", context.args.pattern, context.options, config)
-        } catch (cause) {
-          return context.error({ code: "lint_failed", exitCode: 1, message: Diagnostic.message(cause) })
-        }
-        if (failedSummary(outcome)) {
-          return context.error({
-            code: "targets_failed",
-            exitCode: 1,
-            message: failureMessage(outcome),
-            retryable: false
-          })
-        }
-        return outcome
-      }
+      run: (context) =>
+        executeCommand(
+          context,
+          config,
+          "lint_failed",
+          (reporter) => runVerb("lint", context.args.pattern, context.options, config, reporter)
+        )
     })
     .command("docs", {
       description: "Execute the documentation-parity targets selected by a pattern",
       args: patternArgument,
       options: executionOptions,
       alias: executionAlias,
-      async run(context) {
-        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
-        try {
-          outcome = await runVerb("docs", context.args.pattern, context.options, config)
-        } catch (cause) {
-          return context.error({ code: "docs_failed", exitCode: 1, message: Diagnostic.message(cause) })
-        }
-        if (failedSummary(outcome)) {
-          return context.error({
-            code: "targets_failed",
-            exitCode: 1,
-            message: failureMessage(outcome),
-            retryable: false
-          })
-        }
-        return outcome
-      }
+      run: (context) =>
+        executeCommand(
+          context,
+          config,
+          "docs_failed",
+          (reporter) => runVerb("docs", context.args.pattern, context.options, config, reporter)
+        )
     })
     .command("run", {
       description: "Execute run targets selected by a pattern",
       args: patternArgument,
       options: runOptions,
       alias: { ...executionAlias, ...invocationAlias, name: "n" },
-      async run(context) {
-        let outcome: Planner.Plan | Executor.Summary | PackageExec.PlanReport
-        try {
-          outcome = await runVerb("run", context.args.pattern, context.options, config)
-        } catch (cause) {
-          return context.error({ code: "run_failed", exitCode: 1, message: Diagnostic.message(cause) })
-        }
-        if (failedSummary(outcome)) {
-          return context.error({
-            code: "targets_failed",
-            exitCode: 1,
-            message: failureMessage(outcome),
-            retryable: false
-          })
-        }
-        return outcome
-      }
+      run: (context) =>
+        executeCommand(
+          context,
+          config,
+          "run_failed",
+          (reporter) => runVerb("run", context.args.pattern, context.options, config, reporter)
+        )
     })
     .command("target", {
       description: "Execute one package-mode label with its flavor-implied verb (the bare-label form)",
@@ -590,26 +702,14 @@ export const makeCli = (config: RuntimeConfig = {}) =>
         ...invocationOptions
       }),
       alias: { ...executionAlias, ...invocationAlias },
-      async run(context) {
-        let outcome: Executor.Summary | PackageExec.PlanReport | undefined
-        try {
-          outcome = await runPackageVerb("auto", context.args.pattern, context.options, config)
+      run: (context) =>
+        executeCommand(context, config, "target_failed", async (reporter) => {
+          const outcome = await runPackageVerb("auto", context.args.pattern, context.options, config, reporter)
           if (outcome === undefined) {
             throw new Error("the bare-label form executes PACKAGE.ts targets; this workspace has no WORKSPACE.ts")
           }
-        } catch (cause) {
-          return context.error({ code: "target_failed", exitCode: 1, message: Diagnostic.message(cause) })
-        }
-        if (failedSummary(outcome)) {
-          return context.error({
-            code: "targets_failed",
-            exitCode: 1,
-            message: failureMessage(outcome),
-            retryable: false
-          })
-        }
-        return outcome
-      }
+          return outcome
+        })
     })
     .command("gitHooks", {
       description: "Check the WORKSPACE.ts gitHooks scripts against .git/hooks, or install them with --write",
@@ -645,23 +745,13 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       args: patternArgument,
       options: executionOptions,
       alias: executionAlias,
-      async run(context) {
-        let outcome: CiPlan | Executor.Summary
-        try {
-          outcome = await runCi(context.args.pattern, context.options, config)
-        } catch (cause) {
-          return context.error({ code: "ci_failed", exitCode: 1, message: Diagnostic.message(cause) })
-        }
-        if (failedSummary(outcome)) {
-          return context.error({
-            code: "targets_failed",
-            exitCode: 1,
-            message: failureMessage(outcome),
-            retryable: false
-          })
-        }
-        return outcome
-      }
+      run: (context) =>
+        executeCommand(
+          context,
+          config,
+          "ci_failed",
+          (reporter) => runCi(context.args.pattern, context.options, config, reporter)
+        )
     })
     .command("query", {
       description: "List labels or evaluate deps(label)",
@@ -671,9 +761,14 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       async run(context) {
         try {
           const index = await openPackageIndex(context.options, config)
-          if (index !== undefined) return packageQuery(index, context.args.expr)
-          const { workspace } = await openWorkspace(context.options, config, false)
-          return await Query.run(workspace, context.args.expr)
+          let result: Query.Listing | Query.Dependencies
+          if (index !== undefined) {
+            result = packageQuery(index, context.args.expr)
+          } else {
+            const { workspace } = await openWorkspace(context.options, config, false)
+            result = await Query.run(workspace, context.args.expr)
+          }
+          return present(context, config, result, (style) => Query.text(result, style))
         } catch (cause) {
           return context.error({ code: "query_failed", exitCode: 1, message: Diagnostic.message(cause) })
         }
@@ -689,10 +784,14 @@ export const makeCli = (config: RuntimeConfig = {}) =>
       async run(context) {
         try {
           const index = await openPackageIndex(context.options, config)
-          if (index !== undefined) return packageGraph(index, context.args.pattern)
+          if (index !== undefined) {
+            const { data, edges, rows } = packageGraph(index, context.args.pattern)
+            if (context.options.mermaid) return data
+            return present(context, config, data, (style) => GraphOutput.packageText(rows, edges, style))
+          }
           const { workspace } = await openWorkspace(context.options, config, false)
           const plan = await Planner.make(workspace, "graph", context.args.pattern)
-          return {
+          const data = {
             pattern: context.args.pattern,
             format: context.options.mermaid ? "mermaid" : "text",
             graph: context.options.mermaid ? GraphOutput.mermaid(plan) : GraphOutput.text(plan),
@@ -701,6 +800,9 @@ export const makeCli = (config: RuntimeConfig = {}) =>
             edges: plan.edges,
             warnings: plan.warnings
           }
+          // Mermaid is meant for a file or a renderer, never a terminal.
+          if (context.options.mermaid) return data
+          return present(context, config, data, (style) => GraphOutput.text(plan, style))
         } catch (cause) {
           return context.error({ code: "graph_failed", exitCode: 1, message: Diagnostic.message(cause) })
         }

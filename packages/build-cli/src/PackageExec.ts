@@ -66,6 +66,7 @@ import * as OverlayExec from "./OverlayExec.ts"
 import type * as PackageIndexModule from "./PackageIndex.ts"
 import * as PackageTree from "./PackageTree.ts"
 import * as Planner from "./Planner.ts"
+import * as Reporter from "./Reporter.ts"
 import * as Resolver from "./Resolver.ts"
 import * as RspackRunner from "./RspackRunner.ts"
 import * as ServiceSupervisor from "./ServiceSupervisor.ts"
@@ -489,6 +490,8 @@ export interface RunOptions {
   readonly readCache?: boolean | undefined
   readonly signal?: AbortSignal | undefined
   readonly log?: ((line: string) => void) | undefined
+  /** Receives every execution event; without one, `log` receives the plain status lines. */
+  readonly reporter?: Reporter.Reporter | undefined
   /** `-m` override for `Git.Commit`; wins over the declared message. */
   readonly message?: string | undefined
   /** `--input name=value` payload values for agent targets. */
@@ -2717,7 +2720,7 @@ export interface PackagePlan {
  */
 export const plan = async (options: RunOptions): Promise<PackagePlan> => {
   const index = options.index
-  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`))
+  const log = Reporter.of(options).note
   const rows = index.resolve(options.pattern)
   const verb = options.verb
   const selected = verb === "auto"
@@ -2805,10 +2808,6 @@ export const plan = async (options: RunOptions): Promise<PackagePlan> => {
   const workList = [...workLabels].map((label) => context.nodes.get(label)!)
   return { roots, workList, nodes: context.nodes, closures: context.closureResults }
 }
-
-/** Renders a duration for status lines. */
-const formatDuration = (durationMs: number): string =>
-  durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${Math.round(durationMs)}ms`
 
 // Local Unix sockets are process IPC (tsx uses one to relay signals), not
 // egress. Keep IP networking denied while allowing tools to coordinate with
@@ -2919,17 +2918,17 @@ export const execute = async (
   const cacheDirectory = options.cacheDirectory
   const jobs = Executor.resolveJobs(options.jobs)
   const readCache = options.readCache ?? true
-  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`))
+  const reporter = Reporter.of(options)
+  const log = reporter.note
   const startedAt = performance.now()
-  const store = await openCache({ workspaceRoot: root, cacheDirectory, warn: log })
+  const store = await openCache({ workspaceRoot: root, cacheDirectory, warn: reporter.warn })
   const reports = new Map<string, Executor.TargetReport>()
   const notGreen = new Set<string>()
   const byLabel = new Map(planned.workList.map((node) => [node.label, node]))
 
   const report = (entry: Executor.TargetReport): void => {
     reports.set(entry.label, entry)
-    const line = `${entry.label}  ${entry.status}  ${formatDuration(entry.durationMs)}`
-    log(entry.error === undefined ? line : `${line}  ${entry.error}`)
+    reporter.targetFinished(entry)
   }
 
   /** The supervisor of this invocation's services; set once the scheduler's scope opens. */
@@ -3677,7 +3676,7 @@ export const execute = async (
    * data would have seen. `--no-cache` bypasses reads.
    */
   const verdictStoreFor = (node: PackageNode): AgentSession.AgentVerdictStore => {
-    const storeKey = (key: string): string => `agent-verdict-${sha256Hex(`${node.keyPreview} ${key}`)}`
+    const storeKey = (key: string): string => `agent-verdict-${sha256Hex(`${node.keyPreview}\0${key}`)}`
     return {
       get: (key) =>
         Effect.tryPromise({
@@ -4926,6 +4925,7 @@ export const execute = async (
   const runOne = async (label: string): Promise<void> => {
     const node = byLabel.get(label)!
     const started = performance.now()
+    if (!node.dependencies.some((dependency) => notGreen.has(dependency))) reporter.targetStarted(label)
     const outcome = await settle(node)
     if (outcome.status === "failed" || outcome.status === "skipped") notGreen.add(label)
     report({
@@ -4938,6 +4938,12 @@ export const execute = async (
     })
   }
 
+  reporter.begin({
+    verb: options.verb,
+    pattern: options.pattern,
+    jobs,
+    targets: planned.workList.map((node) => ({ label: node.label, target: node.rule }))
+  })
   // The scheduler runs inside one scope that owns the service supervisor:
   // every service a consumer acquired is released through its stop contract
   // by the time the scope closes, whether the run settled or was interrupted.
@@ -4964,11 +4970,7 @@ export const execute = async (
     skipped: results.filter((entry) => entry.status === "skipped").length
   }
   const durationMs = performance.now() - startedAt
-  log(
-    `${results.length} targets: ${counts.hit} hit, ${counts.ran} ran, ` +
-      `${counts.failed} failed, ${counts.skipped} skipped (${formatDuration(durationMs)})`
-  )
-  return {
+  const summary: Executor.Summary = {
     verb: options.verb,
     pattern: options.pattern,
     jobs,
@@ -4977,6 +4979,8 @@ export const execute = async (
     ok: counts.failed === 0,
     results
   }
+  reporter.summary(summary)
+  return summary
 }
 
 /**

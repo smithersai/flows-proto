@@ -1,38 +1,26 @@
 #!/usr/bin/env node
 
 /**
- * Runs the smthrs command-line process with cancellation-aware signal wiring.
+ * Runs the smthrs command-line process against the real process.
  *
  * @since 0.1.0
  */
 
-import { makeCli, normalizeArgv } from "./Cli.ts"
+import { main } from "./Entry.ts"
+import { terminalOf } from "./Reporter.ts"
 
-const cacheUrl = process.env["SMITHERS_CACHE_URL"]
-const cacheToken = process.env["SMITHERS_CACHE_TOKEN"]
-delete process.env["SMITHERS_CACHE_URL"]
-delete process.env["SMITHERS_CACHE_TOKEN"]
-
-const controller = new AbortController()
-let interrupted = false
-const interrupt = (signal: "SIGINT" | "SIGTERM"): void => {
-  interrupted = true
-  process.exitCode = 1
-  controller.abort(new Error(`smithers build interrupted by ${signal}`))
-}
-const onSigint = (): void => interrupt("SIGINT")
-const onSigterm = (): void => interrupt("SIGTERM")
-
-process.once("SIGINT", onSigint)
-process.once("SIGTERM", onSigterm)
-try {
-  await makeCli({ cacheUrl, cacheToken, signal: controller.signal }).serve([...normalizeArgv(process.argv.slice(2))], {
-    exit: (code) => {
-      process.exitCode = code
-    }
-  })
-} finally {
-  process.removeListener("SIGINT", onSigint)
-  process.removeListener("SIGTERM", onSigterm)
-  if (interrupted) process.exitCode = 1
-}
+await main({
+  argv: process.argv.slice(2),
+  env: process.env,
+  stdout: terminalOf(process.stdout),
+  stderr: terminalOf(process.stderr),
+  once: (signal, listener) => {
+    process.once(signal, listener)
+  },
+  removeListener: (signal, listener) => {
+    process.removeListener(signal, listener)
+  },
+  setExitCode: (code) => {
+    process.exitCode = code
+  }
+})
