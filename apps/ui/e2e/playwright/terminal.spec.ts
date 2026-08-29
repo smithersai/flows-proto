@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test"
 import type { Page, Response } from "@playwright/test"
+import { localApiGet } from "./localApi"
 
 /*
  * Lane L4 (docs/LOCAL-APP.md "Tabs", `/api/pty*`, the `pty:<id>` topics)
@@ -41,7 +42,7 @@ test("a terminal tab runs a real shell: typed text echoes back, the session is l
   await page.goto("/")
   const sessionId = await openTerminal(page)
 
-  const listed = await request.get("/api/pty")
+  const listed = await localApiGet(page, request, "/api/pty")
   expect(listed.status()).toBe(200)
   const { sessions } = (await listed.json()) as { sessions: Array<{ sessionId: string; kind: string; alive: boolean; pid: number }> }
   expect(sessions.map((session) => session.sessionId)).toEqual([sessionId])
@@ -63,7 +64,7 @@ test("a terminal tab runs a real shell: typed text echoes back, the session is l
   await expect(page.getByTestId(`tab-${sessionId}`)).toHaveCount(0)
   await expect(page.getByTestId("tab-main")).toHaveAttribute("data-active", "true")
   await expect
-    .poll(async () => ((await (await request.get("/api/pty")).json()) as { sessions: Array<unknown> }).sessions.length, {
+    .poll(async () => ((await (await localApiGet(page, request, "/api/pty")).json()) as { sessions: Array<unknown> }).sessions.length, {
       timeout: 10_000
     })
     .toBe(0)
@@ -79,7 +80,7 @@ test("a shell that exits on its own shows the exit line; closing the tab then as
   await expect(terminal.locator(".xterm-rows")).toContainText("process exited (3)", { timeout: 10_000 })
   await expect
     .poll(async () => {
-      const { sessions } = (await (await request.get("/api/pty")).json()) as { sessions: Array<{ sessionId: string; alive: boolean }> }
+      const { sessions } = (await (await localApiGet(page, request, "/api/pty")).json()) as { sessions: Array<{ sessionId: string; alive: boolean }> }
       return sessions.find((session) => session.sessionId === sessionId)?.alive
     })
     .toBe(false)
@@ -87,6 +88,6 @@ test("a shell that exits on its own shows the exit line; closing the tab then as
   await expect(page.getByRole("dialog")).toHaveCount(0)
   await expect(page.getByTestId(`tab-${sessionId}`)).toHaveCount(0)
   await expect
-    .poll(async () => ((await (await request.get("/api/pty")).json()) as { sessions: Array<unknown> }).sessions.length)
+    .poll(async () => ((await (await localApiGet(page, request, "/api/pty")).json()) as { sessions: Array<unknown> }).sessions.length)
     .toBe(0)
 })

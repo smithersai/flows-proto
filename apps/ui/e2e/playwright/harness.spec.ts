@@ -3,6 +3,7 @@ import type { Response } from "@playwright/test"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { localApiGet } from "./localApi"
 
 /*
  * Lane L4 (docs/LOCAL-APP.md "Harness detection"): `GET /api/harnesses`
@@ -60,8 +61,9 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
-test("GET /api/harnesses lists every contract id; claude and codex are signed in on this machine", async ({ request }) => {
-  const response = await request.get("/api/harnesses")
+test("GET /api/harnesses lists every contract id; claude and codex are signed in on this machine", async ({ page, request }) => {
+  await page.goto("/")
+  const response = await localApiGet(page, request, "/api/harnesses")
   expect(response.status()).toBe(200)
   const { harnesses } = (await response.json()) as { harnesses: Array<HarnessRow> }
   expect(harnesses.map((harness) => harness.id)).toEqual(HARNESS_IDS)
@@ -89,10 +91,10 @@ test("GET /api/harnesses lists every contract id; claude and codex are signed in
 test("the + menu lists Claude Code with the signed-in email; its tab shows the Claude Code banner", async ({ page, request }) => {
   const email = claudeEmail()
   test.skip(email === undefined, "~/.claude.json has no oauthAccount: Claude Code is not signed in on this machine")
-  const { harnesses } = (await (await request.get("/api/harnesses")).json()) as { harnesses: Array<HarnessRow> }
+  await page.goto("/")
+  const { harnesses } = (await (await localApiGet(page, request, "/api/harnesses")).json()) as { harnesses: Array<HarnessRow> }
   test.skip(harnesses.find((harness) => harness.id === "claude")?.binary === null, "claude is not installed on this machine")
 
-  await page.goto("/")
   await page.getByTestId("tab-add").click()
   const row = page.getByTestId("tab-add-harness-claude")
   await expect(row).toContainText("Claude Code")
@@ -107,7 +109,7 @@ test("the + menu lists Claude Code with the signed-in email; its tab shows the C
   await expect(page.getByTestId(`tab-${sessionId}`)).toHaveAttribute("data-active", "true")
   await expect(page.getByTestId(`tab-${sessionId}`)).toContainText("Claude Code")
 
-  const listed = (await (await request.get("/api/pty")).json()) as { sessions: Array<{ sessionId: string; kind: string; harnessId?: string }> }
+  const listed = (await (await localApiGet(page, request, "/api/pty")).json()) as { sessions: Array<{ sessionId: string; kind: string; harnessId?: string }> }
   expect(listed.sessions.find((session) => session.sessionId === sessionId)).toMatchObject({ kind: "harness", harnessId: "claude" })
 
   // The banner: "Claude Code" next to the logo, then the version, under the harness sandbox (probed 2026-08-26).
@@ -122,7 +124,7 @@ test("the + menu lists Claude Code with the signed-in email; its tab shows the C
   await expect(page.getByTestId(`tab-${sessionId}`)).toHaveCount(0)
   await expect
     .poll(async () => {
-      const { sessions } = (await (await request.get("/api/pty")).json()) as { sessions: Array<{ sessionId: string }> }
+      const { sessions } = (await (await localApiGet(page, request, "/api/pty")).json()) as { sessions: Array<{ sessionId: string }> }
       return sessions.some((session) => session.sessionId === sessionId)
     }, { timeout: 15_000 })
     .toBe(false)
