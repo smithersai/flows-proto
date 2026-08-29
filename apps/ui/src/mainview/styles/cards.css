@@ -267,17 +267,24 @@
  * fallback; the chat stays mounted beneath the backdrop. */
 .card-maximize-backdrop {
 	position: fixed;
-	inset: 0;
+	inset: 0 0 8.5rem;
 	z-index: 65;
 	background: rgb(20 17 12 / 45%);
 }
 .smithers-card[data-maximized="true"] {
 	position: fixed;
-	inset: 1.5rem;
+	inset: 1.5rem 1.5rem 8.5rem;
 	z-index: 70;
 	overflow: auto;
 	margin: 0;
 	background: var(--card, #fffefa);
+}
+
+/* A frame may expand, but the conversation remains the app: its composer is
+ * visible and interactive throughout the explicit maximize transition. */
+.app-shell[data-frame-maximized="true"] .composer-wrap {
+	position: relative;
+	z-index: 75;
 }
 @media (prefers-reduced-motion: no-preference) {
 	.smithers-card[data-maximized="true"] {
