@@ -207,11 +207,13 @@ const maximumCaptureLimits: CaptureLimits = Object.freeze({
 })
 
 /**
- * Size of the reusable buffer each capture streams file contents through.
+ * Size of the read buffer each hashing worker streams file contents through.
  *
  * File contents are deliberately not capped: an output artifact may be any
  * size. Only the buffer that hashes it is bounded, so a one-gigabyte artifact
- * costs this many bytes of heap rather than a gigabyte.
+ * costs this many bytes of heap rather than a gigabyte. One buffer is
+ * allocated per worker, not per file, so peak heap is this many bytes times
+ * {@link digestConcurrency}.
  */
 const readChunkBytes = 256 * 1024
 
@@ -364,14 +366,23 @@ type ManifestEntry =
   | readonly [kind: "directory", path: string]
   | readonly [kind: "file", path: string, executable: boolean, digest: string]
 
+/** One file the walk reserved a manifest slot for but has not hashed yet. */
+interface PendingFile {
+  /** The slot in `found` this file's entry replaces. */
+  readonly index: number
+  readonly path: string
+  readonly expected: string
+  readonly relative: string
+}
+
 interface CaptureState {
   readonly io: CaptureIo
   readonly limits: CaptureLimits
   readonly root: string
   readonly base: string
   readonly declared: string
-  readonly buffer: Uint8Array
   readonly found: Array<ManifestEntry>
+  readonly pending: Array<PendingFile>
   readonly keys: Set<string>
   readonly signal: AbortSignal | undefined
   entries: number
@@ -442,7 +453,7 @@ const refuseCacheOverlap = (
 }
 
 /**
- * Streams one file's SHA-256 through the capture's reusable buffer.
+ * Streams one file's SHA-256 through a caller-owned read buffer.
  *
  * The descriptor, not the path, is the unit of trust after the open: `fstat`
  * on it decides the file is regular and is still the object the parent listing
@@ -458,7 +469,8 @@ const refuseCacheOverlap = (
 const hashFile = async (
   state: CaptureState,
   path: string,
-  expected: string
+  expected: string,
+  buffer: Uint8Array
 ): Promise<{ readonly digest: string; readonly executable: boolean }> => {
   checkCancelled(state)
   const confineParent = async (): Promise<void> => {
@@ -504,13 +516,13 @@ const hashFile = async (
     let total = 0n
     while (true) {
       checkCancelled(state)
-      const bytesRead = await handle.read(state.buffer)
-      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > state.buffer.byteLength) {
+      const bytesRead = await handle.read(buffer)
+      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > buffer.byteLength) {
         throw fail(state, `declared output file returned an invalid read length: ${path}`)
       }
       if (bytesRead === 0) break
       total += BigInt(bytesRead)
-      hash.update(state.buffer.subarray(0, bytesRead))
+      hash.update(buffer.subarray(0, bytesRead))
     }
     await confineParent()
     const readPath = await state.io.lstat(path).catch(() => undefined)
@@ -665,9 +677,12 @@ const collect = async (
       state.found.push(["directory", relative])
       await collect(state, child, identity(stats), depth + 1)
     } else if (stats.isFile()) {
+      // Reserving stays in traversal order, so every limit and every
+      // normalization clash still fails exactly where it fails today. Only
+      // the read is deferred, and it lands back in this reserved slot.
       const relative = reserve(state, child, true)
-      const measured = await hashFile(state, child, identity(stats))
-      state.found.push(["file", relative, measured.executable, measured.digest])
+      state.pending.push({ index: state.found.length, path: child, expected: identity(stats), relative })
+      state.found.push(["file", relative, false, ""])
     } else {
       throw fail(state, `declared output contains an entry that is not a file or a directory: ${child}`)
     }
@@ -676,6 +691,52 @@ const collect = async (
   if (after === undefined || !after.isDirectory() || identity(after) !== identity(before)) {
     throw fail(state, `declared output directory was replaced while it was being captured: ${directory}`)
   }
+}
+
+/** Workers that hash deferred files concurrently, each with its own buffer. */
+const digestConcurrency = 32
+
+/**
+ * Hashes every file the walk deferred, bounded to {@link digestConcurrency}
+ * workers.
+ *
+ * Capture is latency-bound on per-file open/stat/read round trips, not on
+ * SHA-256 throughput, so a serial pass costs seconds on an output tree with
+ * thousands of small files. Each worker owns one read buffer, which is what
+ * made the serial pass necessary in the first place.
+ *
+ * Concurrency cannot reach the digest: every slot was reserved during the
+ * ordered walk, results land back in their own slot, and the manifest is
+ * sorted by path before it is hashed. When several files fail, the one lowest
+ * in traversal order is reported, which is the failure a serial pass would
+ * have raised.
+ */
+const drainPending = async (state: CaptureState): Promise<void> => {
+  const jobs = state.pending
+  if (jobs.length === 0) return
+  let cursor = 0
+  let failureIndex = Number.POSITIVE_INFINITY
+  let failure: unknown
+  const worker = async (): Promise<void> => {
+    const buffer = Buffer.allocUnsafe(readChunkBytes)
+    while (failure === undefined) {
+      const position = cursor
+      if (position >= jobs.length) return
+      cursor += 1
+      const job = jobs[position]!
+      try {
+        const measured = await hashFile(state, job.path, job.expected, buffer)
+        state.found[job.index] = ["file", job.relative, measured.executable, measured.digest]
+      } catch (cause) {
+        if (position < failureIndex) {
+          failureIndex = position
+          failure = cause
+        }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(digestConcurrency, jobs.length) }, () => worker()))
+  if (failure !== undefined) throw failure
 }
 
 /**
@@ -782,8 +843,8 @@ export const measureOutput = async (
     // on {@link Output} and neither changes here.
     base: stats.isDirectory() ? absolute : NodePath.dirname(absolute),
     declared,
-    buffer: Buffer.allocUnsafe(readChunkBytes),
     found: [],
+    pending: [],
     keys: new Set(),
     signal: options.signal,
     entries: 0,
@@ -796,7 +857,7 @@ export const measureOutput = async (
   if (stats.isDirectory()) await collect(state, absolute, identity(stats), 0)
   else if (stats.isFile()) {
     const relative = reserve(state, absolute, true)
-    const measured = await hashFile(state, absolute, identity(stats))
+    const measured = await hashFile(state, absolute, identity(stats), Buffer.allocUnsafe(readChunkBytes))
     state.found.push(["file", relative, measured.executable, measured.digest])
   } else {
     throw new OutputError({
@@ -804,6 +865,7 @@ export const measureOutput = async (
       message: `declared output is not a file or a directory: ${declared}`
     })
   }
+  await drainPending(state)
   state.found.sort((left, right) => byCodeUnit(left[1], right[1]))
   return { path: declared, fileCount: state.files, contentDigest: digest(JSON.stringify(state.found)) }
 }

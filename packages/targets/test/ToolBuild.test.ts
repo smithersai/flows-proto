@@ -6,6 +6,7 @@
  * output, or an ancestor that is itself a link, is awkward to arrange through
  * a whole build and is exactly what must not be followed.
  */
+import { createHash } from "node:crypto"
 import * as Fs from "node:fs/promises"
 import * as Os from "node:os"
 import * as NodePath from "node:path"
@@ -65,7 +66,6 @@ describe("measureOutput", () => {
    * code-unit order here.
    */
   it("digests in code-unit order, independent of the host locale", async () => {
-    const { createHash } = await import("node:crypto")
     const sha = (value: string): string => createHash("sha256").update(value).digest("hex")
     await write("out/a.txt", "lower")
     await write("out/Z.txt", "upper")
@@ -291,5 +291,74 @@ describe("Target.declaredOutputs", () => {
     ["an empty path", { cwd: ".", paths: [""] }]
   ])("refuses %s", (_name, value) => {
     expect(() => Target.declaredOutputs("Example", value)).toThrow()
+  })
+})
+
+describe("concurrent capture", () => {
+  /**
+   * Recomputes the manifest digest independently of the implementation: the
+   * sorted list of entries, hashed as JSON. If the concurrent pool ever let
+   * completion order, a stale buffer, or a misfiled slot into the result, this
+   * oracle disagrees.
+   */
+  const expectedDigest = async (
+    directory: string,
+    entries: ReadonlyArray<readonly [kind: "directory" | "file", relative: string]>
+  ): Promise<string> => {
+    const manifest = await Promise.all(entries.map(async ([kind, relative]) => {
+      if (kind === "directory") return ["directory", relative] as const
+      const contents = await Fs.readFile(NodePath.join(directory, relative))
+      return ["file", relative, false, createHash("sha256").update(contents).digest("hex")] as const
+    }))
+    const sorted = [...manifest].sort((left, right) => left[1] < right[1] ? -1 : left[1] > right[1] ? 1 : 0)
+    return createHash("sha256").update(JSON.stringify(sorted)).digest("hex")
+  }
+
+  it("digests a tree wider than the worker pool exactly as a serial pass would", async () => {
+    // 200 files multiplexes across the 32 workers many times over, so a
+    // shared-buffer or misfiled-slot regression cannot hide behind a tree
+    // small enough to drain in one wave.
+    const names = Array.from({ length: 200 }, (_, index) => `file-${String(index).padStart(3, "0")}.txt`)
+    for (const name of names) await write(`wide/${name}`, `contents of ${name}`)
+    const measured = await measureOutput(root, ".", "wide")
+    expect(measured.fileCount).toBe(200)
+    expect(measured.contentDigest).toBe(
+      await expectedDigest(NodePath.join(root, "wide"), names.map((name) => ["file", name] as const))
+    )
+  })
+
+  it("digests nested directories and files identically to the oracle", async () => {
+    await write("tree/a.txt", "a")
+    await write("tree/nested/b.txt", "b")
+    await write("tree/nested/deeper/c.txt", "c")
+    for (let index = 0; index < 40; index += 1) await write(`tree/nested/bulk-${index}.txt`, `bulk ${index}`)
+    const measured = await measureOutput(root, ".", "tree")
+    expect(measured.contentDigest).toBe(await expectedDigest(NodePath.join(root, "tree"), [
+      ["file", "a.txt"],
+      ["directory", "nested"],
+      ["file", "nested/b.txt"],
+      ["directory", "nested/deeper"],
+      ["file", "nested/deeper/c.txt"],
+      ...Array.from({ length: 40 }, (_, index) => ["file", `nested/bulk-${index}.txt`] as const)
+    ]))
+  })
+
+  it("is deterministic across repeated captures of one tree", async () => {
+    for (let index = 0; index < 120; index += 1) await write(`repeat/f-${index}.txt`, `payload ${index}`)
+    const digests = new Set<string>()
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      digests.add((await measureOutput(root, ".", "repeat")).contentDigest)
+    }
+    expect([...digests]).toHaveLength(1)
+  })
+
+  it("still refuses the earliest symbolic link before any file is hashed", async () => {
+    for (let index = 0; index < 60; index += 1) await write(`fail/f-${String(index).padStart(2, "0")}.txt`, "x")
+    // Deferring the reads must not defer this rejection: a link is refused
+    // during the ordered walk, before the pool runs, and the earliest one in
+    // traversal order is still the one reported.
+    await Fs.symlink(NodePath.join(root, "fail/f-00.txt"), NodePath.join(root, "fail/f-10.link"))
+    await Fs.symlink(NodePath.join(root, "fail/f-00.txt"), NodePath.join(root, "fail/f-50.link"))
+    await expect(measureOutput(root, ".", "fail")).rejects.toThrow(/f-10\.link/)
   })
 })
