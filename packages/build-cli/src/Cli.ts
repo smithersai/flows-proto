@@ -20,6 +20,7 @@ import { runInstall } from "./engine.ts"
 import * as Executor from "./Executor.ts"
 import * as GitHooks from "./GitHooks.ts"
 import * as GraphOutput from "./GraphOutput.ts"
+import * as MiseExec from "./MiseExec.ts"
 import * as PackageDiscovery from "./PackageDiscovery.ts"
 import * as PackageExec from "./PackageExec.ts"
 import * as PackageIndex from "./PackageIndex.ts"
@@ -263,6 +264,11 @@ const openPackageIndex = async (
   const workspaceFile = await PackageDiscovery.workspaceFileOf(root)
   if (workspaceFile === undefined) return undefined
   const workspace = await PackageLoader.loadWorkspaceDeclaration(root, workspaceFile)
+  // A declared mise layer takes effect before anything resolves a tool: its
+  // pins are installed and their bin directories lead PATH for this process
+  // and every target it spawns. A host without mise is not refused here;
+  // each target that needs a pinned tool refuses by name at plan time.
+  await MiseExec.activate(root, workspace)
   const cacheDirectory = flags.cacheDir === undefined
     ? workspace.cache.directory
     : Config.normalizeCacheDirectory(flags.cacheDir)

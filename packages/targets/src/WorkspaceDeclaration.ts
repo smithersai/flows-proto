@@ -16,6 +16,7 @@ import * as Config from "./Config.ts"
 import * as Input from "./Input.ts"
 import * as LocalRepository from "./LocalRepository.ts"
 import { isSmithersCloudDeclaration, type SmithersCloudDeclaration } from "./MemoryTarget.ts"
+import * as Mise from "./Mise.ts"
 import * as PackageManager from "./PackageManager.ts"
 import * as Reference from "./Reference.ts"
 import * as RemoteCache from "./RemoteCache.ts"
@@ -671,3 +672,17 @@ export const flagNames = (workspace: WorkspaceDeclaration): ReadonlySet<string> 
 export const rustToolchain = (
   workspace: WorkspaceDeclaration
 ): RustToolchain.ToolchainDeclaration | undefined => workspace.toolchains?.find(RustToolchain.isToolchainDeclaration)
+
+/**
+ * The declared mise layer, or undefined for a workspace that declares none.
+ *
+ * The layer's config pins every tool the workspace uses outside its Node
+ * runtime, package manager, and Rust layer. The package executor installs
+ * those pins and puts them on PATH before any target resolves a tool; the
+ * CI generator renders the same install for a runner.
+ *
+ * @category accessors
+ * @since 0.1.0
+ */
+export const mise = (workspace: WorkspaceDeclaration): Mise.Declaration | undefined =>
+  workspace.toolchains?.find(Mise.isDeclaration)

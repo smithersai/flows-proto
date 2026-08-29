@@ -16,6 +16,7 @@ import * as Input from "@smthrs/targets/Input"
 import type * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
 import * as Fs from "node:fs/promises"
 import * as NodePath from "node:path"
+import * as MiseExec from "./MiseExec.ts"
 import * as PackageTree from "./PackageTree.ts"
 
 /**
@@ -70,7 +71,13 @@ const miseVersion = async (root: string, config: unknown, name: string): Promise
 }
 
 /**
- * Resolves `S.Mise.bin`, keying the declared config and pinned tool entry.
+ * Resolves `S.Mise.bin` to the pinned executable, keying the declared config
+ * and pinned tool entry.
+ *
+ * Activation (install plus PATH) happens through {@link MiseExec}, so the
+ * path returned is the tool the config pins, never the `mise` launcher and
+ * never an unpinned host copy. The probe of that executable joins the key
+ * beside the config digest and the pinned version text.
  *
  * @category planning
  * @since 0.1.0
@@ -84,29 +91,22 @@ export const resolveMiseBin = async (
   const config = mise?.["config"]
   const authority = await digestDeclared(root, config)
   const pinned = await miseVersion(root, config, name)
-  const path = PackageTree.findOnPath("mise")
   const identity = { tag: "MiseBin", name, authority, pinned }
-  if (mise === undefined) {
+  const resolved = await MiseExec.which(root, workspace, name)
+  if (!resolved.ok) {
     return {
       ok: false,
-      refusal: `S.Mise.bin(${JSON.stringify(name)}) requires an S.Mise entry in Workspace toolchains`,
-      identity
-    }
-  }
-  if (path === undefined) {
-    return {
-      ok: false,
-      refusal: `host binary "mise" is not present on PATH; S.Mise.bin(${JSON.stringify(name)}) is pinned${
+      refusal: `${resolved.refusal}; S.Mise.bin(${JSON.stringify(name)}) is pinned${
         pinned === null ? " by the declared mise config" : ` to ${pinned}`
       } but cannot execute on this host`,
       identity: { ...identity, absent: true }
     }
   }
-  const probe = await PackageTree.probeVersion(path)
+  const probe = await PackageTree.probeVersion(resolved.path)
   return {
     ok: true,
-    path,
-    identity: { ...identity, path, probe }
+    path: resolved.path,
+    identity: { ...identity, path: resolved.path, probe }
   }
 }
 

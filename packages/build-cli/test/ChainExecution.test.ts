@@ -248,7 +248,23 @@ export const Package = S.Package({ targets: { tool } })
 `,
       "utf8"
     )
-    const result = await serve(root, ["//:tool", "--plan"])
+    // The claim is "when mise is absent": drop every PATH entry that carries a
+    // mise launcher for the duration, so a host with mise installed neither
+    // masks the refusal nor installs the fixture's pin.
+    const savedPath = process.env["PATH"]
+    const withoutMise: Array<string> = []
+    for (const entry of (savedPath ?? "").split(NodePath.delimiter)) {
+      if (entry === "") continue
+      const present = await Fs.access(NodePath.join(entry, "mise")).then(() => true, () => false)
+      if (!present) withoutMise.push(entry)
+    }
+    process.env["PATH"] = withoutMise.join(NodePath.delimiter)
+    let result: Awaited<ReturnType<typeof serve>>
+    try {
+      result = await serve(root, ["//:tool", "--plan"])
+    } finally {
+      process.env["PATH"] = savedPath
+    }
     expect(result.exitCode).toBe(0)
     expect(result.output).toContain("host binary")
     expect(result.output).toContain("mise")
