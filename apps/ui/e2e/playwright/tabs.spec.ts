@@ -85,6 +85,15 @@ const serve = async (page: Page, repos: ReadonlyArray<unknown> = []): Promise<Se
   // The last route registered wins, so the catch-all goes first: every seam
   // the chrome does not mock answers as absent, never as the SPA's own HTML.
   await page.route("**/api/**", (route) => route.fulfill(json({ error: { code: "absent", message: "no seam" } }, 404)))
+  await page.route("**/api/bootstrap", (route) => route.fulfill(json({
+    apiVersion: 1,
+    host: "local",
+    version: "test",
+    buildSha: "test",
+    capabilities: ["agent", "identity", "local.repositories", "local.targets", "local.terminal", "local.harnesses"],
+    authFlow: "both",
+    sandbox: { platform: "darwin", mode: "trusted-only" }
+  })))
   await page.route("**/api/harnesses", (route) => route.fulfill(json({ harnesses: HARNESSES })))
   await page.route("**/api/repos", (route) => route.fulfill(json({ repos })))
   await page.route("**/api/pty", (route) => {
@@ -189,7 +198,8 @@ test("a terminal tab creates a PTY session, renders its output, and sends keystr
   await openTerminal(page)
 
   expect(server.created).toHaveLength(1)
-  expect(server.created[0]).toMatchObject({ kind: "terminal", cwd: "~" })
+  expect(server.created[0]).toMatchObject({ kind: "terminal" })
+  expect(server.created[0]).not.toHaveProperty("cwd")
   expect(typeof server.created[0]?.cols).toBe("number")
   expect(typeof server.created[0]?.rows).toBe("number")
 
