@@ -3526,6 +3526,9 @@ importers:
       '@smthrs/kernel':
         specifier: 0.1.0
         version: link:../kernel
+      '@smthrs/model':
+        specifier: 0.1.0
+        version: link:../model
       '@smthrs/plan':
         specifier: 0.1.0
         version: link:../plan
@@ -3542,9 +3545,6 @@ importers:
       '@smthrs/harness':
         specifier: 0.1.0
         version: link:../harness
-      '@smthrs/model':
-        specifier: 0.1.0
-        version: link:../model
       '@types/node':
         specifier: 25.9.5
         version: 25.9.5
