@@ -72,6 +72,12 @@ never by assembling one from a model and a route it happened to hold.
 the QuickJS sandbox and an empty steering source — with browser-safe defaults. A
 host that accepts mid-run messages provides its own `Steering.layer` instead.
 
+`Agent.layerDefaultsWithVariant` is the same pair over the QuickJS build the
+host names, taken from `QuickJSSandbox.Variant`. A runtime that refuses to
+compile WebAssembly from bytes, such as Cloudflare's workerd, uses it and
+provides `QuickJSSandbox.layerVariant(variant)` beneath. See
+`packages/harness/README.md` for how a worker builds that variant.
+
 `flows` is an ordered list of `FlowBinding.Source`s; plugin `cellFlows` handlers
 run after them, in resolution order. The composed catalog is what the model is
 shown _and_ what the boundary resolves against, so the declaration digest a cell
@@ -320,7 +326,7 @@ The root entry point exports these namespaces; each is also importable from `@sm
 | Module                     | Public exports                                                                                                                                                                                            | Description                                                                             |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `FlowEngineLike`           | `RouteResolver`, `routeResolver`, `ChildRunner`, `CallRunner`, `WorkspaceCallRunner`, `workspaceRelative`, `callBoundary`, `callMaterial`, `appendBatch`, `sandboxed`, `Options`, `make`, `layer`         | Executes the `@smthrs/harness` engine port on the durable engine from `@smthrs/engine`. |
-| `Agent`                    | `Options`, `Service`, `Agent`, `make`, `makeNoop`, `layer`, `layerNoop`, `layerDefaults`                                                                                                                  | Composes the durable cell loop and emits it as a `Stream<AgentEvent>`.                  |
+| `Agent`                    | `Options`, `Service`, `Agent`, `make`, `makeNoop`, `layer`, `layerNoop`, `layerDefaults`, `layerDefaultsWithVariant`                                                                                      | Composes the durable cell loop and emits it as a `Stream<AgentEvent>`.                  |
 | `Seat`                     | `Seat`, `make`, `SeatUnresolved`, `modelIdOf`                                                                                                                                                             | Models the resolved seat a run streams from, and the failure of resolving one.          |
 | `SeatResolver`             | `Service`, `SeatResolver`, `make`, `makeNoop`, `layer`, `layerNoop`, `contextWindowTokensFor`                                                                                                             | Turns a declared seat string into a live model, and holds the credentials that takes.   |
 | `CellPlugin`               | `hooks`, `make`, `registry`, `flows`, `fromBindings`, `modelRequest`, `identity`                                                                                                                          | Hosts the cell registry, flow, and model-request hooks on the shared plugin kernel.     |
