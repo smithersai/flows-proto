@@ -20,6 +20,7 @@
 import * as CargoModule from "./Cargo.ts"
 import * as ChangesetsTargetModule from "./ChangesetsTarget.ts"
 import * as CiToolchainModule from "./CiToolchain.ts"
+import * as InputModule from "./Input.ts"
 import { Mise as MiseSurface } from "./Mise.ts"
 import * as NodeArtifactModule from "./NodeArtifact.ts"
 import * as NpmTargetModule from "./NpmTarget.ts"
@@ -77,8 +78,16 @@ export * as PackageJsonDeclaration from "./PackageJson.ts"
  */
 export * as PackageJsonTemplate from "./PackageJsonTemplate.ts"
 
+/**
+ * Declares one file input. Generated workspaces narrow the accepted literals;
+ * ungenerated workspaces retain the string fallback.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const file = <KnownFile extends string = string>(path: KnownFile): InputModule.File => InputModule.file(path)
 /** @category constructors @since 0.1.0 */
-export { file, gitDiff, glob, pnpmWorkspace } from "./Input.ts"
+export { gitDiff, glob, pnpmWorkspace } from "./Input.ts"
 /** @category constructors @since 0.1.0 */
 export { Workspace } from "./WorkspaceDeclaration.ts"
 /** @category constructors @since 0.1.0 */
@@ -168,6 +177,13 @@ export {
   WriteFileLive,
   writeGeneratedFile
 } from "./GeneratedFile.ts"
+/** @category generation @since 0.1.0 */
+export {
+  checkKnownFileDeclaration,
+  discoverKnownFiles,
+  renderKnownFileDeclaration,
+  writeKnownFileDeclaration
+} from "./KnownFile.ts"
 /** @category targets @since 0.1.0 */
 export { GithubCiGen } from "./GithubCiGen.ts"
 /** @category targets @since 0.1.0 */

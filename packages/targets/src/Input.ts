@@ -176,7 +176,7 @@ export function glob(
  * @category constructors
  * @since 0.1.0
  */
-export const file = (path: string): File => File.make({ path })
+export const file = <KnownFile extends string = string>(path: KnownFile): File => File.make({ path })
 
 /**
  * Creates a declared git diff input without invoking git.
