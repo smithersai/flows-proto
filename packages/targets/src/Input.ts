@@ -633,6 +633,13 @@ const walk = async (
   if (bounded && scan.packageScoped && await isPackage(scan, relative, opened.entries)) return
   const matcher = await readIgnore(scan, relative)
   const next = matcher === undefined ? scopes : [...scopes, { base: relative, matcher }]
+  // Classify this listing without I/O first, then open the children that need
+  // it concurrently. The walk is latency-bound on per-directory opens and
+  // per-link stats rather than CPU-bound, so a serial descent costs seconds on
+  // a package with thousands of directories. Discovery order cannot escape:
+  // both callers sort `scan.found` before returning it.
+  const directories: Array<string> = []
+  const links: Array<string> = []
   for (const entry of opened.entries) {
     checkCancelled(scan)
     if (entry.name === ".git" || entry.name === "node_modules") continue
@@ -640,12 +647,19 @@ const walk = async (
     const directory = entry.isDirectory()
     if (isWorkspaceStatePath(scan.cacheDirectory, child)) continue
     if (isIgnored(next, child, directory)) continue
-    if (directory) {
+    if (directory) directories.push(child)
+    else if (entry.isFile()) addFile(scan, child)
+    else if (entry.isSymbolicLink()) links.push(child)
+  }
+  await Promise.all([
+    ...links.map(async (child) => {
+      if (await admitsLink(scan, child)) addFile(scan, child)
+    }),
+    ...directories.map(async (child) => {
       const below = await openDirectory(scan, child)
       if (below !== undefined) await walk(scan, below, next, true)
-    } else if (entry.isFile()) addFile(scan, child)
-    else if (entry.isSymbolicLink() && await admitsLink(scan, child)) addFile(scan, child)
-  }
+    })
+  ])
 }
 
 /**

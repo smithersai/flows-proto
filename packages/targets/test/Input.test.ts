@@ -518,3 +518,54 @@ describe("Input.gitDiff", () => {
     expect(Input.gitDiff("origin/main...HEAD")).toEqual({ _tag: "GitDiff", base: "origin/main...HEAD" })
   })
 })
+
+describe("concurrent glob walk", () => {
+  it("expands a wide, deep tree to the same sorted list a serial walk produced", async () => {
+    // 40 directories x 12 files each descends and fans out enough that the
+    // concurrent descent interleaves many branches at once. The expected list
+    // is built independently and sorted, so any order leaking out of the walk
+    // shows up here.
+    const expected: Array<string> = []
+    for (let dir = 0; dir < 40; dir += 1) {
+      for (let file = 0; file < 12; file += 1) {
+        const relative = `wide/d${String(dir).padStart(2, "0")}/n/f${String(file).padStart(2, "0")}.ts`
+        await write(relative, `export const v = ${dir}_${file}\n`)
+        expected.push(relative)
+      }
+    }
+    const matches = await Input.expandGlob(root, ".", "wide/**/*.ts")
+    expect(matches).toEqual([...expected].sort())
+  })
+
+  it("is deterministic across repeated expansions of one tree", async () => {
+    for (let dir = 0; dir < 20; dir += 1) {
+      for (let file = 0; file < 8; file += 1) await write(`rep/d${dir}/f${file}.ts`, `export const v = ${file}\n`)
+    }
+    const seen = new Set<string>()
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      seen.add(JSON.stringify(await Input.expandGlob(root, ".", "rep/**/*.ts")))
+    }
+    expect([...seen]).toHaveLength(1)
+  })
+
+  it("never serves a stale digest after a file changes", async () => {
+    for (let dir = 0; dir < 12; dir += 1) {
+      for (let file = 0; file < 6; file += 1) await write(`fresh/d${dir}/f${file}.ts`, `export const v = ${file}\n`)
+    }
+    const digestAll = async (): Promise<string> => {
+      const matches = await Input.expandGlob(root, ".", "fresh/**/*.ts")
+      return Input.digestText(JSON.stringify(await Input.digestFiles(root, matches, {})))
+    }
+    const before = await digestAll()
+    expect(await digestAll()).toBe(before)
+    await write("fresh/d5/f3.ts", "export const v = 999\n")
+    expect(await digestAll()).not.toBe(before)
+  })
+
+  it("still refuses to descend a directory symbolic link while walking concurrently", async () => {
+    for (let dir = 0; dir < 15; dir += 1) await write(`link/d${dir}/f.ts`, "export const v = 1\n")
+    await Fs.symlink(at("link/d0"), at("link/loop"))
+    const matches = await Input.expandGlob(root, ".", "link/**/*.ts")
+    expect(matches.some((path) => path.startsWith("link/loop/"))).toBe(false)
+  })
+})
