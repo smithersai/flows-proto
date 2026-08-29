@@ -57,8 +57,9 @@ wired is marked as such on the page that covers it.
 
 ## Reference
 
-| Page                                          | Description                                                      |
-| --------------------------------------------- | ---------------------------------------------------------------- |
-| [CLI](reference/cli.md)                       | Every verb, flag, output shape, and exit code.                   |
-| [Workspace](reference/config.md)              | The `Workspace` declaration and its exact validation targets.    |
-| [Target catalog](reference/targets/README.md) | One page per target, with attribute tables and execution status. |
+| Page                                          | Description                                                                            |
+| --------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [CLI](reference/cli.md)                       | Every verb, flag, output shape, and exit code.                                         |
+| [Terminal output](reference/cli-output.md)    | The `--ui` renderers, what a person sees on a terminal, and the prior art they follow. |
+| [Workspace](reference/config.md)              | The `Workspace` declaration and its exact validation targets.                          |
+| [Target catalog](reference/targets/README.md) | One page per target, with attribute tables and execution status.                       |

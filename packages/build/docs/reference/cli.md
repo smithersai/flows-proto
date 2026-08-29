@@ -36,6 +36,11 @@ incur supplies its own globals on every command, including `--help`,
 `--token-count`, `--token-limit`, and `--token-offset` trio. Run
 `smthrs <command> --help` for the full list. Output is TOON by default.
 
+`--ui <auto|tty|stream|plain>` is the one global `smthrs` adds: it selects the
+human renderer on standard error, live on a terminal and bare lines under a
+pipe, and never touches the envelope. [Terminal output](cli-output.md) has the
+selection rules and what each renderer draws.
+
 ## Startup sequence
 
 Every command does the same three things before its own work.
