@@ -306,7 +306,7 @@ export const make = (): Effect.Effect<
                 (exit) => settle(executionId, attemptToExecutionResult(executionId, instance, exit))
               )
             })
-          })).pipe(Scope.provide(scope))
+          }).pipe(Effect.provide(layerWebCrypto))).pipe(Scope.provide(scope))
         return flow
       }).pipe(Effect.provideService(Crypto.Crypto, crypto))
 
