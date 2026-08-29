@@ -22,26 +22,6 @@ import * as Input from "./Input.ts"
 export const defaultOutput = "known-files.d.ts"
 
 /**
- * Maximum number of union literals emitted in comprehensive mode.
- *
- * Above this ceiling the registry retains every workspace-absolute spelling
- * and package-local relative spellings, avoiding the package-count multiplier
- * caused by `../` paths in very large workspaces.
- *
- * @category constants
- * @since 0.1.0
- */
-export const maximumKnownFileLiterals = 100_000
-
-/**
- * How relative spellings were selected for one generated declaration.
- *
- * @category models
- * @since 0.1.0
- */
-export type Mode = "comprehensive" | "bounded"
-
-/**
  * The deterministic result of a known-file workspace scan.
  *
  * @category models
@@ -51,7 +31,6 @@ export interface Discovery {
   readonly files: ReadonlyArray<string>
   readonly packageDirectories: ReadonlyArray<string>
   readonly literals: ReadonlyArray<string>
-  readonly mode: Mode
 }
 
 /** Reports whether a workspace file is a BUILD.ts or PACKAGE.ts marker. */
@@ -66,25 +45,14 @@ const markerDirectory = (path: string): string => {
 
 const localTo = (directory: string, path: string): string => directory === "" ? path : path.slice(directory.length + 1)
 
-const packageLocalLiterals = (
-  literals: Set<string>,
-  files: ReadonlyArray<string>,
-  packageDirectories: ReadonlyArray<string>
-): void => {
-  for (const directory of packageDirectories) {
-    for (const path of files) {
-      if (directory === "" || path.startsWith(`${directory}/`)) literals.add(localTo(directory, path))
-    }
-  }
-}
-
 /**
  * Computes accepted literals from an already-discovered workspace file list.
  *
- * Comprehensive mode emits each `//` path and its relative spelling from
- * every package directory. If that would cross `maximumLiterals`, bounded
- * mode emits every `//` path and relative paths only for files below the
- * declaring package directory.
+ * Two spellings are accepted, because those are the two a declaration
+ * writes: the workspace-absolute `//path` of every file, and the
+ * package-local `path` of every file below a directory holding a `BUILD.ts`
+ * or `PACKAGE.ts`. `..` spellings are not emitted; a declaration that reaches
+ * outside its package says so with `//`.
  *
  * @category generation
  * @since 0.1.0
@@ -93,44 +61,20 @@ export const knownFileDiscovery = (
   discovered: ReadonlyArray<string>,
   options: {
     readonly output?: string | undefined
-    readonly maximumLiterals?: number | undefined
   } = {}
 ): Discovery => {
-  const maximumLiterals = options.maximumLiterals ?? maximumKnownFileLiterals
-  if (!Number.isSafeInteger(maximumLiterals) || maximumLiterals < 1) {
-    throw new TypeError("known-file maximumLiterals must be a positive safe integer")
-  }
   const files = [...new Set([...discovered, GeneratedFile.resolveOutputPath(options.output ?? defaultOutput)])].sort()
   const packageDirectories = [...new Set(files.filter(isPackageMarker).map(markerDirectory))].sort()
   const literals = new Set(files.map((path) => `//${path}`))
-  let mode: Mode = literals.size > maximumLiterals ? "bounded" : "comprehensive"
-  if (mode === "comprehensive") {
-    comprehensive: for (const directory of packageDirectories) {
-      for (const path of files) {
-        literals.add(NodePath.posix.relative(directory, path))
-        if (literals.size > maximumLiterals) {
-          mode = "bounded"
-          break comprehensive
-        }
-      }
-    }
-  }
-  if (mode === "bounded") {
-    literals.clear()
-    for (const path of files) literals.add(`//${path}`)
-    packageLocalLiterals(literals, files, packageDirectories)
-    if (literals.size > maximumLiterals) {
-      throw new Error(
-        `known-file registry needs ${literals.size} absolute and package-local literals, exceeding the ` +
-          `${maximumLiterals} literal limit`
-      )
+  for (const directory of packageDirectories) {
+    for (const path of files) {
+      if (directory === "" || path.startsWith(`${directory}/`)) literals.add(localTo(directory, path))
     }
   }
   return {
     files,
     packageDirectories,
-    literals: [...literals].sort(),
-    mode
+    literals: [...literals].sort()
   }
 }
 
@@ -144,7 +88,6 @@ export const discoverKnownFiles = async (
   workspaceRoot: string,
   options: {
     readonly output?: string | undefined
-    readonly maximumLiterals?: number | undefined
     readonly cacheDirectory?: string | undefined
     readonly limits?: Partial<Input.ScanLimits> | undefined
     readonly signal?: AbortSignal | undefined
@@ -166,12 +109,9 @@ export const discoverKnownFiles = async (
  * @since 0.1.0
  */
 export const renderKnownFileDeclaration = (discovery: Discovery): string => {
-  const relativeRule = discovery.mode === "comprehensive"
-    ? "Relative entries are emitted from every BUILD.ts and PACKAGE.ts directory to every workspace file."
-    : "This large workspace emits relative entries only for files below each BUILD.ts and PACKAGE.ts directory."
   return `// Generated by @smthrs/targets KnownFile. Do not edit.\n` +
     `// The ${discovery.files.length} workspace files below follow the same .gitignore and host-state rules as globs.\n` +
-    `// // entries are workspace-absolute. ${relativeRule}\n` +
+    `// // entries are workspace-absolute; bare entries are relative to a directory holding a BUILD.ts or PACKAGE.ts.\n` +
     `declare module "@smthrs/targets/KnownFiles" {\n` +
     `  export type KnownFile =\n` +
     discovery.literals.map((path) => `      | ${JSON.stringify(path)}\n`).join("") +

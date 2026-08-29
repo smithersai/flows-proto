@@ -33,13 +33,11 @@ state directory, and `.flows/store` are excluded. The checked-in declaration
 is generated through `S.Generate`, so check mode reports drift and `--write`
 updates it.
 
-Every discovered file has a `//` workspace-absolute spelling. Up to 100,000
-unique literals, it also has the spelling relative to every directory that
-contains a `BUILD.ts` or `PACKAGE.ts`; this covers package-relative paths and
-paths containing `..`. Above that ceiling, the generated header records
-bounded mode: all `//` spellings remain, while relative spellings are limited
-to files below each package directory. Generation fails instead of emitting a
-partial registry if even that bounded set exceeds the ceiling.
+Every discovered file has a `//` workspace-absolute spelling, and every file
+below a directory that contains a `BUILD.ts` or `PACKAGE.ts` also has its
+package-local spelling. Those are the two spellings a declaration writes; a
+path with `..` is not accepted, because a declaration that reaches outside its
+package says so with `//`.
 
 The generated declaration supplies a type-only overlay for the
 `@smthrs/targets` entry point and leaves runtime exports unchanged. A

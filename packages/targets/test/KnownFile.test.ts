@@ -17,36 +17,23 @@ afterEach(async () => {
 })
 
 describe("known-file discovery", () => {
-  it("emits workspace-absolute and every package-relative spelling", () => {
+  it("emits workspace-absolute and package-local spellings, never a `..` spelling", () => {
     const discovery = KnownFile.knownFileDiscovery([
       "BUILD.ts",
       "root.txt",
       "pkg/BUILD.ts",
       "pkg/local.txt"
     ])
-    expect(discovery.mode).toBe("comprehensive")
     expect(discovery.packageDirectories).toEqual(["", "pkg"])
     expect(discovery.literals).toEqual(expect.arrayContaining([
       "//root.txt",
       "root.txt",
-      "../root.txt",
       "//pkg/local.txt",
       "pkg/local.txt",
       "local.txt"
     ]))
-  })
-
-  it("bounds large registries to absolute and package-local spellings", () => {
-    const discovery = KnownFile.knownFileDiscovery([
-      "BUILD.ts",
-      "root.txt",
-      "pkg/BUILD.ts",
-      "pkg/local.txt"
-    ], { maximumLiterals: 12 })
-    expect(discovery.mode).toBe("bounded")
-    expect(discovery.literals).toContain("//root.txt")
-    expect(discovery.literals).toContain("local.txt")
     expect(discovery.literals).not.toContain("../root.txt")
+    expect(discovery.literals.some((literal) => literal.includes(".."))).toBe(false)
   })
 
   it("uses the input walk's nested ignores and host-state exclusions", async () => {
