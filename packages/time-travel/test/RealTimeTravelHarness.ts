@@ -19,6 +19,7 @@ import * as RunStore from "@smthrs/run-store/RunStore"
 import * as CacheStore from "@smthrs/step-cache/CacheStore"
 import type * as Crypto from "effect/Crypto"
 import * as Effect from "effect/Effect"
+import type * as Crypto from "effect/Crypto"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
 import { execFileSync, spawnSync } from "node:child_process"
@@ -165,12 +166,12 @@ const CompensableParked = Flow.make("time-travel/e2e/compensable-parked", {
 
 type StepEffect = Effect.Effect<string>
 
-const flowWiring = (
+const flowWiring = <ROut>(
   runtime: FlowRuntime.FlowRuntime["Service"],
   implementation: Layer.Layer<
+    ROut,
     never,
-    never,
-    Action.Implementations | FlowRuntime.FlowRuntime | Crypto.Crypto
+    Crypto.Crypto | Action.Implementations | FlowRuntime.FlowRuntime | Crypto.Crypto
   >
 ) =>
   implementation.pipe(
