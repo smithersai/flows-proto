@@ -13,6 +13,7 @@ import * as Agent from "@smthrs/agent/Agent"
 import * as AgentAction from "@smthrs/agent/AgentAction"
 import * as Seat from "@smthrs/agent/Seat"
 import * as SeatResolver from "@smthrs/agent/SeatResolver"
+import * as Capability from "@smthrs/capability/Capability"
 import { FlowEngine } from "@smthrs/engine"
 import { Action, Flow } from "@smthrs/flow"
 import type * as Sandbox from "@smthrs/harness/Sandbox"
@@ -154,7 +155,7 @@ export const layerFor = (options: LayerOptions) => {
     registry: emptyRegistry(),
     limits: limitsOf(options.agent, options.sandbox),
     flows: options.tools.sources,
-    capabilityEnvelope: [],
+    capabilityEnvelope: options.tools.grant.map((pattern) => new Capability.CapabilityPattern(pattern as never)),
     maxFrames: options.agent.maxFrames ?? defaultMaxFrames
   })
   const seats = SeatResolver.layer({
