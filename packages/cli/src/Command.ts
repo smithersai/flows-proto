@@ -16,7 +16,11 @@ const global = {
   credential: Flag.string("credential").pipe(Flag.optional),
   json: Flag.boolean("json"),
   remote: Flag.string("remote").pipe(Flag.optional),
-  quiet: Flag.boolean("quiet")
+  quiet: Flag.boolean("quiet"),
+  // Declared here so the CLI's own flag validation accepts it; the value is
+  // read from raw argv by `NodeControl.makeConfig`, the same as `remote` and
+  // `credential` are.
+  mcpConfig: Flag.string("mcp-config").pipe(Flag.optional)
 }
 
 const rootCommand = Command.make("flows").pipe(Command.withSharedFlags(global))

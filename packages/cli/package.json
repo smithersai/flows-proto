@@ -92,6 +92,7 @@
     "@smthrs/jj": "0.1.0",
     "@smthrs/journal": "0.1.0",
     "@smthrs/kernel": "0.1.0",
+    "@smthrs/mcp": "0.1.0",
     "@smthrs/memory": "0.1.0",
     "@smthrs/model": "0.1.0",
     "@smthrs/notifications": "0.1.0",

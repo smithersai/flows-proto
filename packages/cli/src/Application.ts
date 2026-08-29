@@ -10,6 +10,7 @@ import type { Journal } from "@smthrs/journal"
 import * as TestJournal from "@smthrs/journal/test/TestJournal"
 import { NotificationQueue } from "@smthrs/notifications"
 import { Registry } from "@smthrs/registry"
+import type * as McpClient from "@smthrs/mcp/McpClient"
 import { Layer } from "effect"
 import type { HttpClient } from "effect/unstable/http/HttpClient"
 import type { RpcSerialization } from "effect/unstable/rpc/RpcSerialization"
@@ -26,6 +27,13 @@ import * as ExecutorOwnership from "./ExecutorOwnership.ts"
 export interface Config {
   readonly remote?: string | undefined
   readonly credential?: string | undefined
+  /**
+   * MCP servers the local executor connects at startup, each projected into
+   * the run's flow catalog by `@smthrs/mcp/McpFlows`. Empty by default, and
+   * meaningless when `remote` is set — a remote composition's executor is not
+   * this process's to configure.
+   */
+  readonly mcpServers?: ReadonlyArray<McpClient.ConnectOptions> | undefined
 }
 
 /**

@@ -91,6 +91,59 @@ describe("NodeControl.seatResolver", () => {
     }
   })
 
+  it("boots with a configured MCP server, spawning it through the real guarded spawner", async () => {
+    // A minimal real MCP server over stdio: `initialize` and `tools/list`
+    // only, which is everything `McpClient.connect` needs. Spawned as an
+    // actual subprocess through `node -e` so this exercises the real guarded
+    // `ChildProcessSpawner`, not a scripted double.
+    const server = [
+      "process.stdin.setEncoding('utf8')",
+      "let buf = ''",
+      "process.stdin.on('data', (chunk) => {",
+      "  buf += chunk",
+      "  let idx",
+      "  while ((idx = buf.indexOf('\\n')) !== -1) {",
+      "    const line = buf.slice(0, idx)",
+      "    buf = buf.slice(idx + 1)",
+      "    if (!line.trim()) continue",
+      "    let msg",
+      "    try { msg = JSON.parse(line) } catch { continue }",
+      "    if (msg.id === undefined) continue",
+      "    let result",
+      "    if (msg.method === 'initialize') result = { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'test', version: '0' } }",
+      "    else if (msg.method === 'tools/list') result = { tools: [{ name: 'ping', description: 'Replies pong', inputSchema: { type: 'object' } }] }",
+      "    else continue",
+      "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n')",
+      "  }",
+      "})"
+    ].join("\n")
+
+    const root = await mkdtemp(join(tmpdir(), "flows-cli-executor-mcp-"))
+    try {
+      const registry = NodeControl.layerRegistry(root)
+      const engine = NodeControl.engineDurable(root, registry)
+      const executor = NodeControl.layerExecutor(registry, engine, root, {}, [
+        { server: "ping", command: process.execPath, args: ["-e", server] }
+      ])
+      const flowId = await Effect.runPromise(
+        Effect.gen(function*() {
+          const control = yield* Control.Control
+          const card = yield* control.plan({ flowId: "system/test", input: {} })
+          return card.flowId
+        }).pipe(
+          Effect.provide(
+            Application.layer({}, registry, engine, executor) as Layer.Layer<Control.Control>
+          ),
+          Effect.scoped,
+          Effect.orDie
+        )
+      )
+      expect(flowId).toBe("system/test")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("resolves a keyed anthropic seat into a route and a nonzero context window", async () => {
     const seat = await Effect.runPromise(
       NodeControl.seatResolver({ ANTHROPIC_API_KEY: "test-key" }, unusedExecutor).resolve("anthropic:claude-sonnet-4-5")

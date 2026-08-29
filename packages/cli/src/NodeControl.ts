@@ -34,6 +34,8 @@ import * as KernelChildProcessSpawner from "@smthrs/kernel/ChildProcessSpawner"
 import * as KernelFileSystem from "@smthrs/kernel/FileSystem"
 import * as GrantStore from "@smthrs/kernel/GrantStore"
 import * as Workspace from "@smthrs/kernel/Workspace"
+import type * as McpClient from "@smthrs/mcp/McpClient"
+import * as McpFlows from "@smthrs/mcp/McpFlows"
 import * as MemoryStore from "@smthrs/memory/MemoryStore"
 import * as Recall from "@smthrs/memory/Recall"
 import type * as ModelError from "@smthrs/model/ModelError"
@@ -57,7 +59,7 @@ import { HttpRouter } from "effect/unstable/http"
 import { RpcSerialization } from "effect/unstable/rpc"
 import { Socket } from "effect/unstable/socket"
 import type { SqlClient } from "effect/unstable/sql/SqlClient"
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import { createServer } from "node:http"
 import type { ListenOptions } from "node:net"
 import { dirname, join } from "node:path"
@@ -75,6 +77,7 @@ import * as Output from "./Output.ts"
  */
 export interface Environment {
   readonly FLOWS_REMOTE?: string | undefined
+  readonly FLOWS_MCP_CONFIG?: string | undefined
 }
 
 /**
@@ -99,6 +102,41 @@ const valueFromArguments = (args: ReadonlyArray<string>, flag: string): string |
   return undefined
 }
 
+/** One entry of an `--mcp-config` file, structurally `McpClient.ConnectOptions`. */
+const isMcpServerEntry = (value: unknown): value is McpClient.ConnectOptions =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { readonly server?: unknown }).server === "string" &&
+  typeof (value as { readonly command?: unknown }).command === "string" &&
+  Array.isArray((value as { readonly args?: unknown }).args)
+
+/**
+ * Reads and validates the MCP servers named by `--mcp-config`/`FLOWS_MCP_CONFIG`.
+ *
+ * The file is a JSON array of `{server, command, args, cwd?, env?}` entries —
+ * exactly `McpClient.ConnectOptions`. A missing path is not configured (no
+ * MCP servers, the same as omitting the flag); a present but malformed file
+ * is a startup defect, thrown here rather than silently ignored, since a
+ * typo'd config should not look like "no MCP servers configured."
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+const mcpServersFromArguments = (
+  args: ReadonlyArray<string>,
+  environment: Environment
+): ReadonlyArray<McpClient.ConnectOptions> | undefined => {
+  const path = valueFromArguments(args, "mcp-config") ?? environment.FLOWS_MCP_CONFIG
+  if (path === undefined) return undefined
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
+  if (!Array.isArray(parsed) || !parsed.every(isMcpServerEntry)) {
+    throw new Error(
+      `--mcp-config ${path} must be a JSON array of { server, command, args, cwd?, env? } entries`
+    )
+  }
+  return parsed
+}
+
 /**
  * Resolves application configuration from command arguments with an
  * environment fallback.
@@ -112,7 +150,8 @@ export const makeConfig = (
   environment: Environment = process.env
 ): Application.Config => ({
   remote: valueFromArguments(args, "remote") ?? environment.FLOWS_REMOTE,
-  credential: valueFromArguments(args, "credential")
+  credential: valueFromArguments(args, "credential"),
+  mcpServers: mcpServersFromArguments(args, environment)
 })
 
 /**
@@ -715,7 +754,14 @@ export const layerExecutor = (
   registry: Layer.Layer<Registry.Registry>,
   engine: EngineDurable,
   root: string = process.cwd(),
-  environment: Readonly<Record<string, string | undefined>> = process.env
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  /**
+   * MCP servers to connect at startup, each projected into the run's flow
+   * catalog by `@smthrs/mcp/McpFlows` — one more source alongside filesystem,
+   * shell, and memory below. Empty by default: a host that names none behaves
+   * exactly as it always has.
+   */
+  mcpServers: ReadonlyArray<McpClient.ConnectOptions> = []
 ): Layer.Layer<
   ControlExecutor.ControlExecutor,
   never,
@@ -758,12 +804,18 @@ export const layerExecutor = (
       // runner reaches the same transport `bash` does.
       const runner = testRunner(environment, root)
       const container = Container.makeCommand()
+      // Each configured server is a startup-time connection the operator
+      // opted into by naming it, the same way `memory` below is: a server
+      // that fails to spawn dies the executor loudly (`Effect.orDie`) rather
+      // than running silently short of the tools it was configured to have.
+      const mcp = yield* Effect.forEach(mcpServers, (server) => Effect.orDie(McpFlows.connected(server)))
       return yield* AgentSession.make({
         flows: [
           StandardFlows.filesystem(filesystemServices, nativeSearch),
           StandardFlows.shell(shellServices, container),
           StandardFlows.memory(memoryServices),
-          ...testFlows(shellServices, container, runner)
+          ...testFlows(shellServices, container, runner),
+          ...mcp
         ],
         limits: cellLimits
       })
@@ -823,7 +875,9 @@ export const layerControl = (applicationConfig: Application.Config) => {
   const remote = applicationConfig.remote ?? "http://127.0.0.1"
   const registry = layerRegistry()
   const engine = engineDurable(process.cwd(), registry)
-  const executor = applicationConfig.remote === undefined ? layerExecutor(registry, engine) : undefined
+  const executor = applicationConfig.remote === undefined
+    ? layerExecutor(registry, engine, process.cwd(), process.env, applicationConfig.mcpServers ?? [])
+    : undefined
   return Application.layer(applicationConfig, registry, engine, executor).pipe(
     Layer.provide([
       NodeHttpClient.layerUndici,
