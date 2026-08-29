@@ -1,5 +1,7 @@
 import type { StartAgentTurnResult } from "smithers-shared/NativeAgent"
 import type { AgentTurnFrame } from "smithers-shared/NativeAgent"
+import { builtinCommands } from "./BuiltinCommands"
+import { CommandRegistry, parseSubmit } from "./CommandRegistry"
 import { applyFrame, TranscriptStore } from "./Transcript"
 import { buildTurnRequest } from "./TurnRequest"
 
@@ -21,7 +23,9 @@ export class ChatController {
 
   constructor(
     readonly store: TranscriptStore,
-    private readonly transport: TuiTransport
+    private readonly transport: TuiTransport,
+    readonly commands: CommandRegistry = new CommandRegistry(builtinCommands(store)),
+    private readonly quit: () => void = () => process.exit(0)
   ) {}
 
   // TODO(shared): move to a shared package (derived from frame filtering in apps/ui/src/mainview/state/AppController.ts)
@@ -38,9 +42,27 @@ export class ChatController {
 
   readonly isResponding = (): boolean => this.activeRunId !== null
 
-  /** Composer submit: append the user message, build the request, start the turn. */
+  /**
+   * Composer submit: a "/name args" draft dispatches through the command
+   * registry and never reaches the agent; anything else is a prompt and
+   * follows the turn-building path below, unchanged.
+   */
   readonly submit = async (draft: string): Promise<void> => {
     if (this.activeRunId !== null) return
+    const parsed = parseSubmit(draft, this.commands.all())
+    if (parsed.kind === "empty") return
+    if (parsed.kind === "command" || parsed.kind === "unknown-command") {
+      this.store.clearDraft()
+      if (parsed.kind === "unknown-command") {
+        this.store.appendEvent(`Unknown command: /${parsed.name}`)
+        return
+      }
+      const outcome = this.commands.run(parsed.name, parsed.args, { quit: this.quit })
+      if (outcome.status === "failed") this.store.appendEvent(`/${parsed.name} failed: ${outcome.error}`)
+      else if (outcome.status === "unknown-command") this.store.appendEvent(`Unknown command: /${parsed.name}`)
+      else if (outcome.value !== undefined) this.store.appendEvent(outcome.value)
+      return
+    }
     this.turnCounter += 1
     const runId = `tui-${Date.now()}-${this.turnCounter}`
     const built = buildTurnRequest(runId, this.store.entries(), draft)

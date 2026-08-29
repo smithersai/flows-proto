@@ -225,6 +225,11 @@ export class TranscriptStore {
   readonly appendEvent = (text: string): void => {
     this.append({ kind: "event", id: this.nextId("event"), text })
   }
+
+  /** Drops every transcript entry. The draft and phase are untouched. */
+  readonly clear = (): void => {
+    this.commit([])
+  }
 }
 
 /** The one-line placeholder the TUI renders for any card (HTML embeds are disabled this round). */
