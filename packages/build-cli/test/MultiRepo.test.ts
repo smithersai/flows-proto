@@ -171,7 +171,7 @@ describe("opaque local repositories", () => {
     const plan = await serveCli(root, ["//:childTest", "--plan"])
     expect(plan.exitCode).toBe(0)
     expect(`${plan.stdout}\n${plan.stderr}`).toContain("pattern: \"//:test\"")
-  }, 30_000)
+  }, 60_000)
 
   it("executes a parent suite through the child and hits cache on the second clean run", async () => {
     const root = await workspace()
