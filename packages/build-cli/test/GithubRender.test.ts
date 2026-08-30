@@ -977,6 +977,34 @@ describe("graph-derived checkout and job environment", () => {
     )
   })
 
+  it("projects a Cron through the shared setup action the declared workflows use", () => {
+    const setup = S.Github.Setup({ cacheUrl: S.Secret("SMITHERS_CACHE_URL") })
+    const nightly = S.Shell.Test({ command: "true" })
+    const cron = S.Cron({ schedule: "0 3 * * *", run: [nightly] })
+    const run = anyTarget()
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [run] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rows = [[ciGen, "//.github:github"], [run, "//:test"], [nightly, "//:nightly"], [
+      cron,
+      "//:nightlyCron"
+    ]] as const
+    const labels = new Map<Target.AnyTarget, string>(rows)
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: {
+        labelOf: (target) => labels.get(target),
+        targets: () => rows.map(([target, label]) => ({ label, target }))
+      },
+      packageDir: ".github"
+    })
+    const projected = rendered.files.find((file) => file.path === "workflows/cron-nightlyCron.yml")!
+    expect(projected.content).toContain(
+      "      - uses: ./.github/actions/setup\n        with:\n          cache-url: \"${{ secrets.SMITHERS_CACHE_URL }}\"\n"
+    )
+    expect(projected.content).toContain("pnpm exec smthrs '//:nightly'")
+  })
+
   it("renders no job environment for a run target that reaches no secret", () => {
     const run = anyTarget()
     const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [run] })

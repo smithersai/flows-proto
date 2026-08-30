@@ -812,6 +812,8 @@ export const render = (options: {
   // Cron is an inert package-level trigger declaration. A compact or expanded
   // CI generator in the same graph projects every labeled Cron into a normal
   // GitHub schedule workflow; no second scheduler or executor path exists.
+  // The projection shares the declared workflows' setup action, since the
+  // scheduled target needs the same installed workspace they do.
   for (const row of indexed) {
     if (Target.metadata(row.target).target !== "Cron") continue
     const cron = CronTarget.attrsOf(row.target)
@@ -832,6 +834,8 @@ export const render = (options: {
       }
       return { label: runLabel, target }
     })
+    // A projected schedule runs on the same bare runner as every declared
+    // workflow, so it starts with the shared setup action when one exists.
     files.push({
       path: `${workflowDirectory}/${name}.yml`,
       content: renderWorkflow(
@@ -839,7 +843,7 @@ export const render = (options: {
         options.packageDir,
         GithubTarget.WorkflowAttrs.make({ name, on: { schedule: [cron.schedule] }, run }),
         runs,
-        undefined,
+        setupTarget === undefined ? undefined : GithubTarget.setupAttrsOf(setupTarget),
         toolchain,
         submodules
       )
