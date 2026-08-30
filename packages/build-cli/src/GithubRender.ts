@@ -479,6 +479,19 @@ const renderRun = (lines: Array<string>, prefix: string, run: string | ReadonlyA
   for (const line of script.split("\n")) lines.push(`${prefix}  ${line}`)
 }
 
+/**
+ * GitHub spells a permission scope in kebab-case (`id-token`, `pull-requests`,
+ * `security-events`); a declaration spells it as a property name. The
+ * rendered key is the scope GitHub reads, whichever spelling was declared.
+ */
+const permissionKeys = (permissions: Readonly<Record<string, string>>): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    Object.entries(permissions).map(([key, value]) => [
+      key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`),
+      value
+    ])
+  )
+
 /** Appends one raw step without inserting checkout, setup, or another command. */
 const renderStep = (lines: Array<string>, step: GithubTarget.Step): void => {
   const propertyIndent = "        "
@@ -641,7 +654,7 @@ const renderWorkflow = (
     }
   }
   if (workflow.permissions !== undefined) {
-    lines.push("permissions:", ...mapping(workflow.permissions, "  "))
+    lines.push("permissions:", ...mapping(permissionKeys(workflow.permissions), "  "))
   }
   if (workflow.env !== undefined) lines.push("env:", ...mapping(workflow.env, "  "))
   lines.push("jobs:")

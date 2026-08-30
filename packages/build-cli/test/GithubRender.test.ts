@@ -1005,6 +1005,28 @@ describe("graph-derived checkout and job environment", () => {
     expect(projected.content).toContain("pnpm exec smthrs '//:nightly'")
   })
 
+  it("renders permission scopes in GitHub's kebab-case whatever the declaration spells", () => {
+    const run = anyTarget()
+    const workflow = S.Github.Workflow({
+      name: "publish",
+      on: { workflowDispatch: true },
+      permissions: { contents: "read", idToken: "write", pullRequests: "write", "security-events": "read" },
+      run: [run]
+    })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"], [run, "//:publish"]]),
+      packageDir: ".github"
+    })
+    const content = rendered.files.find((file) => file.path === "workflows/publish.yml")!.content
+    expect(content).toContain(
+      "permissions:\n  contents: read\n  id-token: write\n  pull-requests: write\n  security-events: read\n"
+    )
+    expect(content).not.toContain("idToken")
+  })
+
   it("renders no job environment for a run target that reaches no secret", () => {
     const run = anyTarget()
     const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [run] })
