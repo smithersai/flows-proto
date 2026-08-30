@@ -3105,7 +3105,7 @@ const filesTestErrorText = (error: Compose.FilesTestError): string =>
   sampleRows("dynamic", error.dynamic.map((issue) => `${issue.file} -> ${issue.specifier}`))
 
 /** The most recent lines of one captured stream, bounded for a failure message. */
-const streamTail = (text: string, lines = 200, bytes = 32_768): string => {
+const streamTail = (text: string, lines = 5_000, bytes = 1_000_000): string => {
   const trimmed = text.trim()
   if (trimmed === "") return ""
   const kept = trimmed.split("\n").slice(-lines).join("\n")
@@ -3115,9 +3115,11 @@ const streamTail = (text: string, lines = 200, bytes = 32_768): string => {
 /**
  * The failure text of one exited tool: the argv, then what it wrote.
  *
- * Both streams are kept. A task runner such as Nx writes its own summary
- * to stderr and the failing tool's report to stdout, so keeping only the
- * non-empty stderr hid every test assertion behind "Failed tasks".
+ * Both streams are kept, generously bounded: a task runner such as Nx
+ * writes its own summary to stderr and every task's report to stdout as it
+ * completes, so the failing task's assertions can sit thousands of lines
+ * before the end of stdout. Keeping only the non-empty stderr, or a short
+ * tail, hid them behind "Failed tasks".
  *
  * @category diagnostics
  * @since 0.1.0

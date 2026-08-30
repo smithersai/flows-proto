@@ -21,10 +21,10 @@ describe("execErrorText", () => {
   })
 
   it("bounds each stream to its most recent lines", () => {
-    const long = Array.from({ length: 400 }, (_, index) => `line ${index}`).join("\n")
+    const long = Array.from({ length: 6_000 }, (_, index) => `line ${index}`).join("\n")
     const text = execErrorText(failed(long, ""))
-    expect(text).not.toContain("line 199\n")
-    expect(text).toContain("line 200\n")
-    expect(text.endsWith("line 399")).toBe(true)
+    expect(text).not.toContain("line 999\n")
+    expect(text).toContain("line 1000\n")
+    expect(text.endsWith("line 5999")).toBe(true)
   })
 })
