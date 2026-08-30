@@ -1203,6 +1203,76 @@ const resolveTool = async (context: PlanContext, reference: Record<string, unkno
   return outcome
 }
 
+/**
+ * Resolves the interpreter a shell script's `#!` line names. `/usr/bin/env
+ * <name>` and a bare name resolve on PATH; an absolute interpreter that
+ * exists is used as written and otherwise resolves by its basename; a script
+ * without a shebang, or one naming sh, runs under `/bin/sh`. The interpreter
+ * is probed like a host binary so the executable that ran is key material.
+ */
+const resolveScriptInterpreter = async (context: PlanContext, script: string): Promise<ToolOutcome> => {
+  const absolute = NodePath.join(context.root, ...script.split("/"))
+  let firstLine = ""
+  try {
+    const handle = await Fs.open(absolute, "r")
+    try {
+      const buffer = Buffer.alloc(512)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+      firstLine = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/)[0] ?? ""
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return {
+      _tag: "refused",
+      tool: { refusal: `script not found: ${script}`, identity: { tag: "ScriptInterpreter", script, absent: true } }
+    }
+  }
+  const shebang = firstLine.startsWith("#!") ? firstLine.slice(2).trim().split(/\s+/) : []
+  let wanted = shebang[0] ?? "/bin/sh"
+  if (NodePath.basename(wanted) === "env" && shebang[1] !== undefined) wanted = shebang[1]
+  const name = NodePath.basename(wanted)
+  const key = `{script-interpreter:${wanted}}`
+  const known = context.tools.get(key)
+  if (known !== undefined) return known
+  let path: string | undefined
+  if (name === "sh") path = "/bin/sh"
+  else if (wanted.startsWith("/")) {
+    try {
+      await Fs.access(wanted, NodeFs.constants.X_OK)
+      path = wanted
+    } catch {
+      path = PackageTree.findOnPath(name)
+    }
+  } else path = PackageTree.findOnPath(name)
+  let outcome: ToolOutcome
+  if (path === undefined) {
+    outcome = {
+      _tag: "refused",
+      tool: {
+        refusal: `script interpreter ${JSON.stringify(name)} (the shebang of ${script}) is not present on PATH`,
+        identity: { tag: "ScriptInterpreter", interpreter: wanted, absent: true }
+      }
+    }
+  } else {
+    const probe = await PackageTree.probeVersion(path)
+    outcome = {
+      _tag: "resolved",
+      tool: {
+        path,
+        identity: {
+          tag: "ScriptInterpreter",
+          interpreter: wanted,
+          path,
+          probe: { exitCode: probe.exitCode, output: probe.output }
+        }
+      }
+    }
+  }
+  context.tools.set(key, outcome)
+  return outcome
+}
+
 const resolveBun = async (context: PlanContext): Promise<ToolOutcome> => {
   const key = "{bun}"
   const known = context.tools.get(key)
@@ -1611,6 +1681,17 @@ const visit = async (
       // the argv actually receives is keyed here.
       toolchain.push({ tag: "Flag", name, value })
       return value
+    }
+    if (entry.startsWith(Shell.scriptInterpreterTokenPrefix) && entry.endsWith("}")) {
+      const declared = entry.slice(Shell.scriptInterpreterTokenPrefix.length, -1)
+      const resolved = Input.resolvePath(packagePath, declared)
+      const outcome = await resolveScriptInterpreter(context, resolved)
+      toolchain.push(outcome.tool.identity)
+      if (outcome._tag === "refused") {
+        noteRefusal(outcome.tool.refusal)
+        return entry
+      }
+      return outcome.tool.path
     }
     if (entry.startsWith("{smthrs:script:") && entry.endsWith("}")) {
       const declared = entry.slice("{smthrs:script:".length, -1)

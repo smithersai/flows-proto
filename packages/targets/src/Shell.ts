@@ -167,14 +167,28 @@ export const scriptToken = (path: string): string => `{smthrs:script:${path}}`
  * A repository writes generator and harness scripts in both dialects — the
  * design corpus has `.sh` scripts on `S.Shell.*` and on `S.Generate`, and
  * `.mjs` scripts on `S.Generate` — and the same file must spawn the same way
- * under either rule. A shell script runs under `/bin/sh`; anything else runs
- * under the workspace runtime, which is what a JavaScript generator needs.
+ * under either rule. A shell script runs under the interpreter its shebang
+ * names (see {@link scriptInterpreterTokenPrefix}); anything else runs under
+ * the workspace runtime, which is what a JavaScript generator needs.
  *
  * @category tokens
  * @since 0.1.0
  */
 export const scriptInterpreterToken = (path: string): string =>
-  /\.(?:sh|bash)$/.test(path) ? "/bin/sh" : toolToken(Reference.runtimeBin)
+  /\.(?:sh|bash)$/.test(path) ? `${scriptInterpreterTokenPrefix}${path}}` : toolToken(Reference.runtimeBin)
+
+/**
+ * The token prefix a shell script's interpreter slot carries until the
+ * planner reads the script's `#!` line: `/usr/bin/env bash` resolves to the
+ * `bash` on PATH, an absolute interpreter resolves to that file, and a
+ * script without a shebang runs under `/bin/sh`. A `.sh` file that needs
+ * bash therefore runs under bash on every host, not only where `/bin/sh`
+ * happens to be bash.
+ *
+ * @category tokens
+ * @since 0.1.0
+ */
+export const scriptInterpreterTokenPrefix = "{smthrs:script-interpreter:"
 
 /**
  * Wall-clock bound for one package-mode tool process.
