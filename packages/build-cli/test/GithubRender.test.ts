@@ -1038,6 +1038,21 @@ describe("graph-derived checkout and job environment", () => {
     expect(content).not.toContain("idToken")
   })
 
+  it("checks out the full history when a workflow declares fullHistory", () => {
+    const run = anyTarget()
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, fullHistory: true, run: [run] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"], [run, "//:test"]]),
+      packageDir: ".github"
+    })
+    const ci = rendered.files.find((file) => file.path === "workflows/ci.yml")!.content
+    expect(ci).toContain("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: \"0\"\n")
+    expect(ci).not.toContain("--affected-base")
+  })
+
   it("renders no job environment for a run target that reaches no secret", () => {
     const run = anyTarget()
     const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [run] })

@@ -271,6 +271,8 @@ export const WorkflowAttrs = Schema.Struct({
   steps: Schema.optional(Schema.NonEmptyArray(Step)),
   setup: Schema.optional(Target.Target),
   affected: Schema.optional(Schema.Boolean),
+  /** Check out the full history: for targets that read a base ref such as origin/main. */
+  fullHistory: Schema.optional(Schema.Boolean),
   run: Schema.Array(Target.Target).pipe(
     Schema.withConstructorDefault(Effect.succeed<ReadonlyArray<Target.AnyTarget>>([]))
   )

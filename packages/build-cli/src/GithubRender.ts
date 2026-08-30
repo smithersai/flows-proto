@@ -705,7 +705,10 @@ const renderWorkflow = (
     if (workflow.environment !== undefined) lines.push(`    environment: ${scalar(workflow.environment)}`)
     lines.push("    steps:")
     lines.push("      - uses: actions/checkout@v4")
-    if (workflow.affected === true) {
+    // Full history serves an affected computation and any target that reads
+    // a base ref (changeset status --since=origin/main); a depth-1 checkout
+    // carries neither.
+    if (workflow.affected === true || workflow.fullHistory === true) {
       lines.push("        with:", ...mapping({ "fetch-depth": "0" }, "          "))
     }
     if (setup !== undefined) {
