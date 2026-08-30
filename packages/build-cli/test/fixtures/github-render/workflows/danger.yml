@@ -5,6 +5,8 @@ on:
 jobs:
   github-danger:
     runs-on: ubuntu-latest
+    env:
+      DANGER_GITHUB_API_TOKEN: "${{ secrets.DANGER_GITHUB_API_TOKEN }}"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup

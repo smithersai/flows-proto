@@ -23,6 +23,7 @@ import * as CronTarget from "@smthrs/targets/CronTarget"
 import * as GithubTarget from "@smthrs/targets/GithubTarget"
 import * as PackageManager from "@smthrs/targets/PackageManager"
 import * as Runtime from "@smthrs/targets/Runtime"
+import * as Secret from "@smthrs/targets/Secret"
 import * as Target from "@smthrs/targets/Target"
 import * as WorkspaceDeclaration from "@smthrs/targets/WorkspaceDeclaration"
 import * as NodeCrypto from "node:crypto"
@@ -189,6 +190,11 @@ interface Toolchain {
     | undefined
   /** The declared Rust toolchain layer, as the pin `dtolnay/rust-toolchain` reads. */
   readonly rust: { readonly channel: string | undefined; readonly file: string | undefined } | undefined
+  /**
+   * The declared mise layer: the directory holding the config whose `[tools]`
+   * table pins every tool outside Node and Rust, `""` for the workspace root.
+   */
+  readonly mise: { readonly directory: string } | undefined
   /** The extra action that installs the package manager itself, if any. */
   readonly managerAction: { readonly uses: string; readonly with?: Readonly<Record<string, string>> } | undefined
   /** The package-manager store the cache step saves, absent without one. */
@@ -209,6 +215,14 @@ const rustFacts = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolch
   }
 }
 
+/** The mise layer facts, or undefined for a workspace that declares none. */
+const miseFacts = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolchain["mise"] => {
+  const layer = WorkspaceDeclaration.mise(workspace)
+  if (layer === undefined) return undefined
+  const directory = NodePath.posix.dirname(workspacePath(layer.config.path))
+  return { directory: directory === "." ? "" : directory }
+}
+
 const runtimeFacts = (
   runtime: Runtime.Runtime | Runtime.NodeDeclaration | Runtime.BunDeclaration
 ): Toolchain["runtime"] => {
@@ -223,6 +237,7 @@ const runtimeFacts = (
 
 const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Toolchain => {
   const rust = rustFacts(workspace)
+  const mise = miseFacts(workspace)
   const manager = workspace.packageManager
   if (workspace.runtime === undefined || manager === undefined) {
     const go = workspace.toolchains?.find((entry) => entry._tag === "GoToolchain") as
@@ -231,6 +246,7 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
     return {
       runtime: go === undefined ? undefined : { kind: "go", file: workspacePath(go.mod?.path ?? "go.mod") },
       rust,
+      mise,
       managerAction: undefined,
       store: undefined,
       exec: ["smthrs"]
@@ -241,6 +257,7 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
     return {
       runtime,
       rust,
+      mise,
       managerAction: undefined,
       store: {
         path: "~/.cache/yarn",
@@ -258,6 +275,7 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
     return {
       runtime,
       rust,
+      mise,
       managerAction: {
         uses: "pnpm/action-setup@v4",
         ...(manager.version === undefined ? {} : { with: { version: manager.version } })
@@ -276,6 +294,7 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
       return {
         runtime,
         rust,
+        mise,
         managerAction: { uses: "pnpm/action-setup@v4", with: { version: manager.version } },
         store: {
           path: "~/.pnpm-store",
@@ -289,6 +308,7 @@ const toolchainOf = (workspace: WorkspaceDeclaration.WorkspaceDeclaration): Tool
       return {
         runtime,
         rust,
+        mise,
         managerAction: { uses: "oven-sh/setup-bun@v2" },
         store: {
           path: "~/.bun/install/cache",
@@ -366,6 +386,21 @@ const renderSetupAction = (
     if (toolchain.rust.channel !== undefined) {
       lines.push("      with:", ...mapping({ toolchain: toolchain.rust.channel }, "        "))
     }
+  }
+  if (toolchain.mise !== undefined) {
+    // The declared mise config pins every tool outside Node and Rust. The
+    // action installs those pins and puts them on PATH, which is the state
+    // MiseExec establishes on a developer host, so a target resolves the
+    // same release in both places.
+    lines.push("    - uses: jdx/mise-action@v4")
+    lines.push(
+      "      with:",
+      ...mapping({
+        install: "true",
+        cache: "true",
+        ...(toolchain.mise.directory === "" ? {} : { working_directory: toolchain.mise.directory })
+      }, "        ")
+    )
   }
   if (toolchain.store !== undefined) {
     lines.push("    - uses: actions/cache@v4")
@@ -476,6 +511,35 @@ const renderStep = (lines: Array<string>, step: GithubTarget.Step): void => {
   if (step.env !== undefined) lines.push(`${propertyIndent}env:`, ...mapping(step.env, `${propertyIndent}  `))
 }
 
+/**
+ * Every secret declared on a target or on anything reachable from it, by
+ * environment name.
+ *
+ * A generated job runs the target through the CLI, which passes a declared
+ * secret to a target only when the job environment carries it; the workflow
+ * therefore maps each reachable declaration to `${{ secrets.<env> }}`. GitHub
+ * substitutes an empty string for a secret the repository does not define and
+ * withholds every secret from a fork's pull request, so the mapping never
+ * widens what a run can read.
+ */
+const secretsOf = (
+  target: Target.AnyTarget,
+  seen = new Set<Target.AnyTarget>(),
+  found = new Set<string>()
+): Set<string> => {
+  if (seen.has(target)) return found
+  seen.add(target)
+  const metadata = Target.metadata(target)
+  const secrets = (metadata.attrs as { readonly secrets?: unknown }).secrets
+  if (Array.isArray(secrets)) {
+    for (const secret of secrets) {
+      if (Secret.isSecret(secret)) found.add(secret.env)
+    }
+  }
+  for (const dependency of metadata.dependencies) secretsOf(dependency, seen, found)
+  return found
+}
+
 /** Appends policy shared by target-derived and raw-step jobs. */
 const renderJobPolicy = (
   lines: Array<string>,
@@ -494,7 +558,8 @@ const renderWorkflow = (
   workflow: (typeof GithubTarget.WorkflowAttrs)["Type"],
   runs: ReadonlyArray<{ readonly label: string; readonly target: Target.AnyTarget }>,
   setup: (typeof GithubTarget.SetupAttrs)["Type"] | undefined,
-  toolchain: Toolchain
+  toolchain: Toolchain,
+  submodules: boolean
 ): string => {
   const lines: Array<string> = [header(label)]
   lines.push(`name: ${scalar(workflow.name)}`)
@@ -604,19 +669,27 @@ const renderWorkflow = (
     if (workflow.jobName !== undefined) lines.push(`    name: ${scalar(workflow.jobName)}`)
     if (workflow.condition !== undefined) lines.push(`    if: ${scalar(workflow.condition)}`)
     lines.push(`    runs-on: ${scalar(workflow.runsOn ?? "ubuntu-latest")}`)
+    const env: Record<string, string> = {}
     if (shards > 1) {
       lines.push("    strategy:")
       lines.push("      matrix:")
       lines.push(`        shard: [${Array.from({ length: shards }, (_, index) => index + 1).join(", ")}]`)
       lines.push(`        total-shards: [${shards}]`)
-      lines.push("    env:")
-      lines.push("      SMTHRS_SHARD: \"${{ matrix.shard }}/${{ matrix.total-shards }}\"")
+      env["SMTHRS_SHARD"] = "${{ matrix.shard }}/${{ matrix.total-shards }}"
     }
+    for (const name of [...secretsOf(run.target)].sort()) env[name] = `\${{ secrets.${name} }}`
+    if (Object.keys(env).length > 0) lines.push("    env:", ...mapping(env, "      "))
     if (workflow.environment !== undefined) lines.push(`    environment: ${scalar(workflow.environment)}`)
     lines.push("    steps:")
     lines.push("      - uses: actions/checkout@v4")
-    if (workflow.affected === true) {
-      lines.push("        with:", ...mapping({ "fetch-depth": "0" }, "          "))
+    const checkoutWith: Record<string, string> = {}
+    if (workflow.affected === true) checkoutWith["fetch-depth"] = "0"
+    // A graph that declares a Git.Submodule(s) target pins those trees by
+    // gitlink; the runner checks them out with the tree so the target finds
+    // them materialized, as `git submodule update --init` does on a host.
+    if (submodules) checkoutWith["submodules"] = "recursive"
+    if (Object.keys(checkoutWith).length > 0) {
+      lines.push("        with:", ...mapping(checkoutWith, "          "))
     }
     if (setup !== undefined) {
       lines.push(`      - uses: ./${packageDir}/actions/setup`)
@@ -668,6 +741,11 @@ export const render = (options: {
   }
   const attrs = GithubTarget.ciGenAttrsOf(options.ciGen)
   const toolchain = toolchainOf(options.workspace)
+  const indexed = options.resolve.targets?.() ?? []
+  const submodules = indexed.some((row) => {
+    const rule = Target.metadata(row.target).target
+    return rule === "Git.Submodules" || rule === "Git.Submodule"
+  })
   const workflowDirectory = (attrs.changes ?? [])
     .map((change) => change.replace(/\/\*\*$/, ""))
     .find((change) => change === "workflows" || change.endsWith("/workflows")) ?? "workflows"
@@ -728,13 +806,13 @@ export const render = (options: {
     })
     files.push({
       path: `${workflowDirectory}/${workflow.name}.yml`,
-      content: renderWorkflow(label, options.packageDir, workflow, runs, setup, toolchain)
+      content: renderWorkflow(label, options.packageDir, workflow, runs, setup, toolchain, submodules)
     })
   }
   // Cron is an inert package-level trigger declaration. A compact or expanded
   // CI generator in the same graph projects every labeled Cron into a normal
   // GitHub schedule workflow; no second scheduler or executor path exists.
-  for (const row of options.resolve.targets?.() ?? []) {
+  for (const row of indexed) {
     if (Target.metadata(row.target).target !== "Cron") continue
     const cron = CronTarget.attrsOf(row.target)
     const key = row.label.slice(row.label.lastIndexOf(":") + 1)
@@ -762,7 +840,8 @@ export const render = (options: {
         GithubTarget.WorkflowAttrs.make({ name, on: { schedule: [cron.schedule] }, run }),
         runs,
         undefined,
-        toolchain
+        toolchain,
+        submodules
       )
     })
   }

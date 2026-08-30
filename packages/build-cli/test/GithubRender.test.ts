@@ -874,3 +874,119 @@ describe("toolchain variants", () => {
     expect(ci!.content).not.toContain("fetch-depth")
   })
 })
+
+describe("workspace toolchain layers in the setup action", () => {
+  /** The unit workspace plus a mise layer pinning tools outside Node and Rust. */
+  const miseWorkspace = S.Workspace("unit-mise", {
+    repository: "git+https://example.invalid/unit.git",
+    cache: S.Cache({ directory: ".flows" }),
+    runtime: S.Runtime.Node({ version: "26" }),
+    packageManager: S.PackageManager.Pnpm({
+      version: "11.21.0",
+      runtime: S.Runtime.Node({ version: ">=22.19.0" })
+    }),
+    nodeModules: S.Npm.NodeModules({ packageJson: S.file("//package.json") }),
+    toolchains: [S.Mise({ config: S.file("//mise.toml") })]
+  })
+
+  const renderWithSetup = (workspace: typeof unitWorkspace): GithubRender.CiRender => {
+    const setup = S.Github.Setup({})
+    const run = anyTarget()
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [run] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    return GithubRender.render({
+      ciGen,
+      workspace,
+      resolve: resolver([[ciGen, "//.github:github"], [run, "//:test"]]),
+      packageDir: ".github"
+    })
+  }
+
+  it("installs a declared mise layer's pins between the interpreter and the install", () => {
+    const action = renderWithSetup(miseWorkspace).files.find((file) => file.path === "actions/setup/action.yml")!
+    const nodeAt = action.content.indexOf("actions/setup-node@v4")
+    const miseAt = action.content.indexOf(
+      "    - uses: jdx/mise-action@v4\n      with:\n        install: \"true\"\n        cache: \"true\"\n"
+    )
+    const installAt = action.content.indexOf("pnpm install --frozen-lockfile")
+    expect(miseAt).toBeGreaterThan(nodeAt)
+    expect(installAt).toBeGreaterThan(miseAt)
+    expect(action.content).not.toContain("working_directory")
+  })
+
+  it("renders no mise step for a workspace without the layer", () => {
+    const action = renderWithSetup(unitWorkspace).files.find((file) => file.path === "actions/setup/action.yml")!
+    expect(action.content).not.toContain("mise-action")
+  })
+
+  it("points mise-action at a config outside the workspace root", () => {
+    const nested = S.Workspace("unit-mise-nested", {
+      repository: "git+https://example.invalid/unit.git",
+      cache: S.Cache({ directory: ".flows" }),
+      runtime: S.Runtime.Node({ version: "26" }),
+      packageManager: S.PackageManager.Pnpm({
+        version: "11.21.0",
+        runtime: S.Runtime.Node({ version: ">=22.19.0" })
+      }),
+      nodeModules: S.Npm.NodeModules({ packageJson: S.file("//package.json") }),
+      toolchains: [S.Mise({ config: S.file("//tools/mise.toml") })]
+    })
+    const action = renderWithSetup(nested).files.find((file) => file.path === "actions/setup/action.yml")!
+    expect(action.content).toContain("        working_directory: tools\n")
+  })
+})
+
+describe("graph-derived checkout and job environment", () => {
+  it("checks submodules out recursively when the graph declares a Git.Submodules target", () => {
+    const submodules = S.Git.Submodules({ config: S.file("//.gitmodules"), paths: ["vendor/*"] })
+    const run = anyTarget()
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [run] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rows = [[ciGen, "//.github:github"], [run, "//:test"], [submodules, "//:vendor"]] as const
+    const labels = new Map<Target.AnyTarget, string>(rows)
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: {
+        labelOf: (target) => labels.get(target),
+        targets: () => rows.map(([target, label]) => ({ label, target }))
+      },
+      packageDir: ".github"
+    })
+    const ci = rendered.files.find((file) => file.path === "workflows/ci.yml")!
+    expect(ci.content).toContain("      - uses: actions/checkout@v4\n        with:\n          submodules: recursive\n")
+  })
+
+  it("maps every secret reachable from a run target to the job environment", () => {
+    const publish = S.Shell.Run({ command: "true", secrets: [S.Secret("NPM_TOKEN")], sandbox: { network: true } })
+    const verify = S.Shell.Test({ command: "true", secrets: [S.Secret("RPC_URL"), S.Secret("API_KEY")] })
+    const suite = S.Suite({ tests: [verify] })
+    const release = S.Shell.Run({ command: "true", data: [suite], gates: [publish] })
+    const workflow = S.Github.Workflow({ name: "release", on: { workflowDispatch: true }, run: [release] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"], [release, "//:release"]]),
+      packageDir: ".github"
+    })
+    const content = rendered.files.find((file) => file.path === "workflows/release.yml")!.content
+    expect(content).toContain(
+      "    runs-on: ubuntu-latest\n    env:\n      API_KEY: \"${{ secrets.API_KEY }}\"\n" +
+        "      NPM_TOKEN: \"${{ secrets.NPM_TOKEN }}\"\n      RPC_URL: \"${{ secrets.RPC_URL }}\"\n    steps:\n"
+    )
+  })
+
+  it("renders no job environment for a run target that reaches no secret", () => {
+    const run = anyTarget()
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [run] })
+    const ciGen = S.Github.CiGen({ workflows: [workflow] })
+    const rendered = GithubRender.render({
+      ciGen,
+      workspace: unitWorkspace,
+      resolve: resolver([[ciGen, "//.github:github"], [run, "//:test"]]),
+      packageDir: ".github"
+    })
+    expect(rendered.files.find((file) => file.path === "workflows/ci.yml")!.content).not.toContain("    env:")
+  })
+})
