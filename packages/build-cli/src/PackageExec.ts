@@ -1390,6 +1390,41 @@ const staticPrefixOf = (pattern: string): string => {
   return kept.join("/")
 }
 
+/** Whether a cache entry is a gitlink-only submodule record rather than a restorable build. */
+const isSubmoduleMarker = (output: unknown): boolean =>
+  typeof output === "object" && output !== null && (output as { readonly kind?: unknown }).kind === "submodules"
+
+/**
+ * Files a submodule capture may hold before the lane caches by gitlink alone.
+ * Overridable for tests through SMTHRS_SUBMODULE_CAPTURE_FILES.
+ */
+const submoduleCaptureBudget = (): number => {
+  const raw = process.env["SMTHRS_SUBMODULE_CAPTURE_FILES"]
+  const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20_000
+}
+
+/** Counts regular entries under a directory, stopping once `limit` is exceeded. */
+const countFilesUpTo = async (directory: string, limit: number): Promise<number> => {
+  let count = 0
+  const stack = [directory]
+  while (stack.length > 0 && count <= limit) {
+    const current = stack.pop()!
+    let entries: Array<NodeFs.Dirent>
+    try {
+      entries = await Fs.readdir(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) stack.push(NodePath.join(current, entry.name))
+      else count += 1
+      if (count > limit) break
+    }
+  }
+  return count
+}
+
 const capabilitiesFor = (rule: string, mode: Mode, sandbox: PackageNode["sandbox"]): ReadonlyArray<string> => {
   const capabilities = ["fs:read", "proc:spawn"]
   if (
@@ -3275,6 +3310,31 @@ export const execute = async (
     return { manifests, files }
   }
 
+  /**
+   * Caches a submodule checkout as a restorable build when its trees are
+   * small enough to hold one JSON member per file, and by gitlink alone when
+   * they are not: a vendored repository carries its own node_modules and
+   * build output, which would take minutes to hash and overflow the cache
+   * entry, while the pinned commit already names the tree exactly.
+   */
+  const captureSubmodules = async (node: PackageNode, plan: GitSubmoduleExec.Plan): Promise<void> => {
+    const budget = submoduleCaptureBudget()
+    let files = 0
+    for (const outDir of node.outDirs) {
+      files += await countFilesUpTo(NodePath.join(root, ...outDir.split("/")), budget - files + 1)
+      if (files > budget) break
+    }
+    if (files <= budget) {
+      await captureBuild(node, node.keyPreview)
+      return
+    }
+    log(`${node.label}  submodule trees exceed the ${budget}-file capture budget; cached by gitlink only`)
+    await cachePut(node, {
+      kind: "submodules",
+      gitlinks: plan.gitlinks.map((link) => ({ path: link.path, sha: link.sha }))
+    })
+  }
+
   /** Captures a very large directory as one CAS tar blob instead of one JSON member per file. */
   const captureDirectoryArchive = async (node: PackageNode): Promise<string | undefined> => {
     if (node.outDirs.length !== 1) return "directory archive requires exactly one declared outDir"
@@ -4469,7 +4529,9 @@ export const execute = async (
           const cached = await cacheGet(node)
           if (cached !== undefined) {
             if (GitSubmoduleExec.isMaterialized(node.lane.plan)) return green("hit")
-            if (await restoreBuild(node, cached.output)) {
+            // A gitlink-only entry restores nothing: the update below
+            // re-materializes the pinned commit from its remote instead.
+            if (!isSubmoduleMarker(cached.output) && await restoreBuild(node, cached.output)) {
               const problem = await GitSubmoduleExec.verify(root, node.lane.plan)
               if (problem === undefined) return green("hit")
               for (const outDir of node.outDirs) {
@@ -4478,14 +4540,14 @@ export const execute = async (
             }
           }
           if (GitSubmoduleExec.isMaterialized(node.lane.plan)) {
-            await captureBuild(node, node.keyPreview)
+            await captureSubmodules(node, node.lane.plan)
             return green("ran")
           }
           const spawned = await spawnNode(node, root, signal)
           if (!spawned.ok) return fail(spawned.error ?? "git submodule update failed")
           const problem = await GitSubmoduleExec.verify(root, node.lane.plan)
           if (problem !== undefined) return fail(problem)
-          await captureBuild(node, node.keyPreview)
+          await captureSubmodules(node, node.lane.plan)
           return green("ran")
         }
         case "Changesets.Version": {

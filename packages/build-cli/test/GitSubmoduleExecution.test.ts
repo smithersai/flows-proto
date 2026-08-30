@@ -98,6 +98,30 @@ export const Package = S.Package({ targets: { direct, libs } })
 }
 
 describe("Git submodule package execution", () => {
+  it("caches by gitlink alone above the capture budget and re-materializes through git", async () => {
+    const { first, root } = await fixture()
+    const checkout = NodePath.join(root, "vendor/one")
+    const saved = process.env["SMTHRS_SUBMODULE_CAPTURE_FILES"]
+    process.env["SMTHRS_SUBMODULE_CAPTURE_FILES"] = "0"
+    try {
+      const materialized = await serve(root, ["//contracts:libs"])
+      expect(materialized.exitCode, materialized.logs).toBe(0)
+      expect(materialized.logs).toContain("//contracts:libs  ran")
+      expect(materialized.logs).toContain("exceed the 0-file capture budget; cached by gitlink only")
+      expect((await serve(root, ["//contracts:libs"])).logs).toContain("//contracts:libs  hit")
+
+      await Fs.rm(checkout, { recursive: true })
+      const again = await serve(root, ["//contracts:libs"])
+      expect(again.exitCode, again.logs).toBe(0)
+      expect(again.logs).toContain("//contracts:libs  ran")
+      expect(git(checkout, ["rev-parse", "HEAD"])).toBe(first)
+      expect(await Fs.readFile(NodePath.join(checkout, "value.txt"), "utf8")).toBe("first")
+    } finally {
+      if (saved === undefined) delete process.env["SMTHRS_SUBMODULE_CAPTURE_FILES"]
+      else process.env["SMTHRS_SUBMODULE_CAPTURE_FILES"] = saved
+    }
+  })
+
   it("roots config paths, expands globs, keys gitlinks, restores checkout, and refuses mismatches", async () => {
     const { first, root, second } = await fixture()
     const checkout = NodePath.join(root, "vendor/one")
