@@ -3104,10 +3104,32 @@ const filesTestErrorText = (error: Compose.FilesTestError): string =>
   sampleRows("unresolved", error.unresolved.map((issue) => `${issue.file} -> ${issue.specifier}`)) +
   sampleRows("dynamic", error.dynamic.map((issue) => `${issue.file} -> ${issue.specifier}`))
 
-const execErrorText = (error: Exec.ExecError): string => {
-  const stderr = error.stderr.trim()
-  const stdout = error.stdout.trim()
-  const detail = stderr !== "" ? stderr : stdout
+/** The most recent lines of one captured stream, bounded for a failure message. */
+const streamTail = (text: string, lines = 200, bytes = 32_768): string => {
+  const trimmed = text.trim()
+  if (trimmed === "") return ""
+  const kept = trimmed.split("\n").slice(-lines).join("\n")
+  return kept.length > bytes ? kept.slice(-bytes) : kept
+}
+
+/**
+ * The failure text of one exited tool: the argv, then what it wrote.
+ *
+ * Both streams are kept. A task runner such as Nx writes its own summary
+ * to stderr and the failing tool's report to stdout, so keeping only the
+ * non-empty stderr hid every test assertion behind "Failed tasks".
+ *
+ * @category diagnostics
+ * @since 0.1.0
+ */
+export const execErrorText = (error: Exec.ExecError): string => {
+  const stderr = streamTail(error.stderr)
+  const stdout = streamTail(error.stdout)
+  const detail = stderr !== "" && stdout !== ""
+    ? `${stderr}\n--- stdout ---\n${stdout}`
+    : stderr !== ""
+    ? stderr
+    : stdout
   return `command failed (exit ${error.exitCode}): ${error.argv.join(" ")}${detail === "" ? "" : `\n${detail}`}`
 }
 
