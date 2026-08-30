@@ -1460,6 +1460,18 @@ const staticPrefixOf = (pattern: string): string => {
   return kept.join("/")
 }
 
+/**
+ * Whether a tool's stdout and stderr stream to this process's streams as
+ * they arrive, beside being captured.
+ *
+ * A repository child always streams (its parent renders the lines). A CI
+ * runner streams too: its log is the only place a red target's report can
+ * be read, and a failure message carries only a bounded tail of each
+ * stream. SMTHRS_STREAM=1 asks for the same on a developer host.
+ */
+const streamToolOutput = (): boolean =>
+  process.env["SMTHRS_REPO_CHILD"] === "1" || process.env["SMTHRS_STREAM"] === "1" || process.env["CI"] === "true"
+
 /** Whether a cache entry is a gitlink-only submodule record rather than a restorable build. */
 const isSubmoduleMarker = (output: unknown): boolean =>
   typeof output === "object" && output !== null && (output as { readonly kind?: unknown }).kind === "submodules"
@@ -3259,7 +3271,7 @@ export const execute = async (
       Exec.run({
         workspaceRoot,
         cacheDirectory,
-        ...(process.env["SMTHRS_REPO_CHILD"] === "1"
+        ...(streamToolOutput()
           ? {
             onStdout: (chunk: Uint8Array) => process.stdout.write(chunk),
             onStderr: (chunk: Uint8Array) => process.stderr.write(chunk)
