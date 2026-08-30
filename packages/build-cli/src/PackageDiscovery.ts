@@ -4,7 +4,8 @@
  * Discovery walks the filesystem from the canonical workspace root and never
  * consults git: gitignore status is irrelevant, so a gitignored or generated
  * PACKAGE.ts participates like any other. The walk prunes `.git`,
- * `node_modules`, and the resolved cache directory, admits declaration files
+ * `node_modules`, every path the root `.gitmodules` names, and the resolved
+ * cache directory, admits declaration files
  * through the shared SafeFs policy, and rejects a symlinked declaration file
  * outright.
  *
@@ -123,8 +124,37 @@ interface Walk {
   readonly signal: AbortSignal | undefined
   readonly found: Array<string>
   readonly repositories: ReadonlySet<string>
+  /** Every `path` the root `.gitmodules` names: another repository's tree, never walked. */
+  readonly submodules: ReadonlySet<string>
   directories: number
   entries: number
+}
+
+/**
+ * The submodule paths the root `.gitmodules` declares, workspace-relative.
+ *
+ * A submodule is a pinned checkout of another repository. Its declaration
+ * files, if it has any, belong to that repository's graph, so discovery
+ * treats each path as a boundary the way it treats a declared opaque
+ * repository. Only `.gitmodules` is read: the index is not consulted, so an
+ * uninitialized (empty) submodule directory prunes the same as a populated
+ * one and discovery stays a pure function of the checked-in tree.
+ */
+const submodulePaths = async (root: string): Promise<ReadonlySet<string>> => {
+  let text: string
+  try {
+    text = await Fs.readFile(NodePath.join(root, ".gitmodules"), "utf8")
+  } catch {
+    return new Set()
+  }
+  const paths = new Set<string>()
+  for (const match of text.matchAll(/^\s*path\s*=\s*(.+?)\s*$/gm)) {
+    const declared = posix(match[1]!).replace(/^\.\//, "").replace(/\/+$/, "")
+    if (declared !== "" && declared !== "." && !declared.startsWith("../") && !declared.startsWith("/")) {
+      paths.add(declared)
+    }
+  }
+  return paths
 }
 
 const pruned = (walk: Walk, child: string): boolean =>
@@ -205,7 +235,7 @@ const walkDirectory = async (walk: Walk, relative: string): Promise<void> => {
     walk.signal?.throwIfAborted()
     if (child.name === ".git" || child.name === "node_modules") continue
     const childRelative = relative === "" ? child.name : `${relative}/${child.name}`
-    if (walk.repositories.has(childRelative)) continue
+    if (walk.repositories.has(childRelative) || walk.submodules.has(childRelative)) continue
     if (pruned(walk, childRelative)) continue
     if (child.name === "PACKAGE.ts" && !child.isDirectory()) {
       if (child.isSymbolicLink()) {
@@ -226,7 +256,7 @@ const walkDirectory = async (walk: Walk, relative: string): Promise<void> => {
     if (child.isDirectory()) directories.push(childRelative)
   }
   await Promise.all(directories.map(async (childRelative) => {
-    if (walk.repositories.has(childRelative)) return
+    if (walk.repositories.has(childRelative) || walk.submodules.has(childRelative)) return
     if (await nestedWorkspace(walk, childRelative)) {
       const marker = `${childRelative}/WORKSPACE.ts`
       const nested = await workspaceFileOf(NodePath.join(walk.root, childRelative))
@@ -327,6 +357,7 @@ export const discover = async (
     signal: options.signal,
     found: [],
     repositories: new Set(repositories.map((repository) => repository.path)),
+    submodules: await submodulePaths(canonical),
     directories: 0,
     entries: 0
   }
