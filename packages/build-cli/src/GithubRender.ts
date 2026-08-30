@@ -332,7 +332,8 @@ const header = (label: string): string =>
 const renderSetupAction = (
   label: string,
   setup: (typeof GithubTarget.SetupAttrs)["Type"],
-  workspace: WorkspaceDeclaration.WorkspaceDeclaration
+  workspace: WorkspaceDeclaration.WorkspaceDeclaration,
+  submodulePaths: ReadonlyArray<string>
 ): string => {
   const toolchain = toolchainOf(workspace)
   const lines: Array<string> = [header(label)]
@@ -353,6 +354,16 @@ const renderSetupAction = (
   lines.push("runs:")
   lines.push("  using: composite")
   lines.push("  steps:")
+  if (submodulePaths.length > 0) {
+    // The graph's Git.Submodule(s) targets name the trees a job needs, and
+    // exactly those are initialized, as the package executor does: not the
+    // trees nested inside them, and not the repository's other gitlinks.
+    // The checkout step's own submodules flag would initialize every gitlink
+    // recursively through a depth-1 fetch, which fails on any nested pin
+    // that sits off a branch tip.
+    lines.push(`    - run: ${scalar(["git", "submodule", "update", "--init", "--", ...submodulePaths].join(" "))}`)
+    lines.push("      shell: bash")
+  }
   if (toolchain.managerAction !== undefined) {
     lines.push(`    - uses: ${scalar(toolchain.managerAction.uses)}`)
     if (toolchain.managerAction.with !== undefined) {
@@ -571,8 +582,7 @@ const renderWorkflow = (
   workflow: (typeof GithubTarget.WorkflowAttrs)["Type"],
   runs: ReadonlyArray<{ readonly label: string; readonly target: Target.AnyTarget }>,
   setup: (typeof GithubTarget.SetupAttrs)["Type"] | undefined,
-  toolchain: Toolchain,
-  submodules: boolean
+  toolchain: Toolchain
 ): string => {
   const lines: Array<string> = [header(label)]
   lines.push(`name: ${scalar(workflow.name)}`)
@@ -695,14 +705,8 @@ const renderWorkflow = (
     if (workflow.environment !== undefined) lines.push(`    environment: ${scalar(workflow.environment)}`)
     lines.push("    steps:")
     lines.push("      - uses: actions/checkout@v4")
-    const checkoutWith: Record<string, string> = {}
-    if (workflow.affected === true) checkoutWith["fetch-depth"] = "0"
-    // A graph that declares a Git.Submodule(s) target pins those trees by
-    // gitlink; the runner checks them out with the tree so the target finds
-    // them materialized, as `git submodule update --init` does on a host.
-    if (submodules) checkoutWith["submodules"] = "recursive"
-    if (Object.keys(checkoutWith).length > 0) {
-      lines.push("        with:", ...mapping(checkoutWith, "          "))
+    if (workflow.affected === true) {
+      lines.push("        with:", ...mapping({ "fetch-depth": "0" }, "          "))
     }
     if (setup !== undefined) {
       lines.push(`      - uses: ./${packageDir}/actions/setup`)
@@ -718,6 +722,47 @@ const renderWorkflow = (
     lines.push(`      - run: ${scalar(command)}`)
   }
   return `${lines.join("\n")}\n`
+}
+
+/** The leading path segments of a pattern before its first glob segment. */
+const staticPrefixOf = (pattern: string): string => {
+  const kept: Array<string> = []
+  for (const segment of pattern.split("/")) {
+    if (/[*?{}[\]!]/.test(segment)) break
+    kept.push(segment)
+  }
+  return kept.join("/")
+}
+
+/**
+ * The submodule paths the graph's Git.Submodule(s) targets select, as the
+ * pathspecs `git submodule update` initializes them by: a declared path
+ * verbatim, and each selection pattern reduced to the directory before its
+ * first glob (`vendor/*` initializes everything under `vendor`).
+ */
+const submodulePathsOf = (
+  indexed: ReadonlyArray<{ readonly label: string; readonly target: Target.AnyTarget }>
+): ReadonlyArray<string> => {
+  const paths = new Set<string>()
+  for (const row of indexed) {
+    const metadata = Target.metadata(row.target)
+    if (metadata.target === "Git.Submodule") {
+      const attrs = metadata.attrs as { readonly path: string }
+      paths.add(workspacePath(attrs.path))
+    } else if (metadata.target === "Git.Submodules") {
+      const attrs = metadata.attrs as {
+        readonly config: { readonly path: string }
+        readonly paths: ReadonlyArray<string>
+      }
+      const directory = NodePath.posix.dirname(workspacePath(attrs.config.path))
+      for (const pattern of attrs.paths) {
+        const prefix = staticPrefixOf(workspacePath(pattern))
+        const joined = directory === "." ? prefix : prefix === "" ? directory : `${directory}/${prefix}`
+        paths.add(joined === "" ? "." : joined)
+      }
+    }
+  }
+  return [...paths].sort()
 }
 
 // ---------------------------------------------------------------------------
@@ -755,10 +800,7 @@ export const render = (options: {
   const attrs = GithubTarget.ciGenAttrsOf(options.ciGen)
   const toolchain = toolchainOf(options.workspace)
   const indexed = options.resolve.targets?.() ?? []
-  const submodules = indexed.some((row) => {
-    const rule = Target.metadata(row.target).target
-    return rule === "Git.Submodules" || rule === "Git.Submodule"
-  })
+  const submodulePaths = submodulePathsOf(indexed)
   const workflowDirectory = (attrs.changes ?? [])
     .map((change) => change.replace(/\/\*\*$/, ""))
     .find((change) => change === "workflows" || change.endsWith("/workflows")) ?? "workflows"
@@ -819,7 +861,7 @@ export const render = (options: {
     })
     files.push({
       path: `${workflowDirectory}/${workflow.name}.yml`,
-      content: renderWorkflow(label, options.packageDir, workflow, runs, setup, toolchain, submodules)
+      content: renderWorkflow(label, options.packageDir, workflow, runs, setup, toolchain)
     })
   }
   // Cron is an inert package-level trigger declaration. A compact or expanded
@@ -857,15 +899,14 @@ export const render = (options: {
         GithubTarget.WorkflowAttrs.make({ name, on: { schedule: [cron.schedule] }, run }),
         runs,
         setupTarget === undefined ? undefined : GithubTarget.setupAttrsOf(setupTarget),
-        toolchain,
-        submodules
+        toolchain
       )
     })
   }
   if (setupTarget !== undefined) {
     files.push({
       path: "actions/setup/action.yml",
-      content: renderSetupAction(label, GithubTarget.setupAttrsOf(setupTarget), options.workspace)
+      content: renderSetupAction(label, GithubTarget.setupAttrsOf(setupTarget), options.workspace, submodulePaths)
     })
   }
   const preserve = (attrs.preserve ?? []).map((path) => relativePath(path, "preserve entry"))

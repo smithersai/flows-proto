@@ -2296,12 +2296,14 @@ const visit = async (
           attrs: attrs as (typeof GitTarget.SubmoduleAttrs)["Type"]
         })
       if (submodulePlan.refusal !== undefined) noteRefusal(submodulePlan.refusal)
+      // Exactly the selected paths: a submodule's own nested submodules are
+      // that repository's concern, and a declaration that needs one names
+      // its path. The generated CI setup step initializes the same set.
       argv = [
         git,
         "submodule",
         "update",
         "--init",
-        "--recursive",
         "--",
         ...submodulePlan.paths
       ]

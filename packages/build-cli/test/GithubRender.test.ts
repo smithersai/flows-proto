@@ -937,12 +937,19 @@ describe("workspace toolchain layers in the setup action", () => {
 })
 
 describe("graph-derived checkout and job environment", () => {
-  it("checks submodules out recursively when the graph declares a Git.Submodules target", () => {
-    const submodules = S.Git.Submodules({ config: S.file("//.gitmodules"), paths: ["vendor/*"] })
+  it("initializes exactly the declared submodule paths in the setup action, not through checkout", () => {
+    const setup = S.Github.Setup({})
+    const vendored = S.Git.Submodules({ config: S.file("//.gitmodules"), paths: ["vendor/*"] })
+    const single = S.Git.Submodule({ path: "//lib/solmate" })
     const run = anyTarget()
-    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, run: [run] })
+    const workflow = S.Github.Workflow({ name: "ci", on: { pullRequest: true }, setup, run: [run] })
     const ciGen = S.Github.CiGen({ workflows: [workflow] })
-    const rows = [[ciGen, "//.github:github"], [run, "//:test"], [submodules, "//:vendor"]] as const
+    const rows = [
+      [ciGen, "//.github:github"],
+      [run, "//:test"],
+      [vendored, "//:vendor"],
+      [single, "//:solmate"]
+    ] as const
     const labels = new Map<Target.AnyTarget, string>(rows)
     const rendered = GithubRender.render({
       ciGen,
@@ -953,8 +960,12 @@ describe("graph-derived checkout and job environment", () => {
       },
       packageDir: ".github"
     })
-    const ci = rendered.files.find((file) => file.path === "workflows/ci.yml")!
-    expect(ci.content).toContain("      - uses: actions/checkout@v4\n        with:\n          submodules: recursive\n")
+    const action = rendered.files.find((file) => file.path === "actions/setup/action.yml")!.content
+    expect(action).toContain(
+      "  steps:\n    - run: git submodule update --init -- lib/solmate vendor\n      shell: bash\n"
+    )
+    const ci = rendered.files.find((file) => file.path === "workflows/ci.yml")!.content
+    expect(ci).not.toContain("submodules")
   })
 
   it("maps every secret reachable from a run target to the job environment", () => {
