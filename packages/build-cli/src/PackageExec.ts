@@ -1297,23 +1297,38 @@ const expandInputs = async (
 interface DiffEntry {
   readonly status: string
   readonly path: string
+  /** Whether either side of the row is a submodule pointer (mode 160000). */
+  readonly gitlink: boolean
 }
 
-const parseNameStatusZ = (raw: string): Array<DiffEntry> => {
+const gitlinkMode = "160000"
+
+/**
+ * Parses `git diff --raw -z` rows. A row is `:<old mode> <new mode> <old sha>
+ * <new sha> <status>` followed by one path, or two for a rename/copy whose
+ * post-image is the second. A submodule pointer change shows up here as a
+ * gitlink mode on either side; it is a changed path with no file behind it.
+ */
+const parseRawZ = (raw: string): Array<DiffEntry> => {
   const parts = raw.split("\0")
   const entries: Array<DiffEntry> = []
   for (let index = 0; index < parts.length; index += 1) {
-    const status = parts[index]!
-    if (status === "") continue
+    const header = parts[index]!
+    if (header === "") continue
+    const fields = header.replace(/^:/, "").split(" ")
+    const oldMode = fields[0] ?? ""
+    const newMode = fields[1] ?? ""
+    const status = fields[4] ?? ""
+    const gitlink = oldMode === gitlinkMode || newMode === gitlinkMode
     // Rename/copy rows carry two paths; the post-image is the second one.
     if (status.startsWith("R") || status.startsWith("C")) {
       const post = parts[index + 2]
-      if (post !== undefined && post !== "") entries.push({ status, path: post })
+      if (post !== undefined && post !== "") entries.push({ status, path: post, gitlink })
       index += 2
       continue
     }
     const path = parts[index + 1]
-    if (path !== undefined && path !== "") entries.push({ status, path })
+    if (path !== undefined && path !== "") entries.push({ status, path, gitlink })
     index += 1
   }
   return entries
@@ -1332,13 +1347,13 @@ const expandGitDiff = async (
   const base = Input.validateGitBase(declaration.base)
   const raw = await PackageTree.runGit(context.root, [
     "diff",
-    "--name-status",
+    "--raw",
     "-z",
     "--end-of-options",
     base,
     "--"
   ])
-  const entries = parseNameStatusZ(raw)
+  const entries = parseRawZ(raw)
   const matchesAny = (path: string, patterns: ReadonlyArray<string>): boolean =>
     patterns.some((pattern) => minimatch(path, pattern, { dot: true }))
   const selected = entries.filter((entry) => {
@@ -1350,7 +1365,10 @@ const expandGitDiff = async (
     return true
   })
   const paths = selected.map((entry) => entry.path).sort()
-  const files = await Input.digestFiles(context.root, paths, { signal: context.signal })
+  // A gitlink names a submodule commit, not bytes in this tree: it stays in
+  // the patch (as its "Subproject commit" lines) and out of the file digests.
+  const filePaths = selected.filter((entry) => !entry.gitlink).map((entry) => entry.path).sort()
+  const files = await Input.digestFiles(context.root, filePaths, { signal: context.signal })
   const patch = paths.length === 0
     ? ""
     : await PackageTree.runGit(context.root, ["diff", "--binary", "--end-of-options", base, "--", ...paths])
