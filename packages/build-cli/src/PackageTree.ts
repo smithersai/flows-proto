@@ -697,12 +697,17 @@ export const releasePortals = async (snapshot: PortalSnapshot): Promise<void> =>
 /**
  * Copies the workspace to a scratch directory for a check-mode run.
  *
- * `.git`, the cache directory, and `node_modules` contents are skipped;
- * symlinks — the e2e clone's node_modules among them — are copied verbatim,
- * so the scratch tree reads the same installed tools without duplicating
- * them. `skip` names further workspace-relative roots the caller is going to
- * clear anyway — an overlay build's own `outDirs` — so a large previous
- * output is not copied only to be deleted.
+ * `.git` and the cache directory are skipped. Every `node_modules`
+ * directory, at any depth, becomes a symlink to the real one instead of a
+ * copy: the workspace root's, each workspace package's, and a vendored
+ * repository's own install, which can be gigabytes of real files. The
+ * scratch tree therefore reads the same installed tools without duplicating
+ * any of them. Other symlinks are copied verbatim. Regular files are cloned
+ * copy-on-write where the filesystem supports it (APFS, btrfs, XFS), so a
+ * scratch tree of a large workspace costs little space and time. `skip`
+ * names further workspace-relative roots the caller is going to clear
+ * anyway — an overlay build's own `outDirs` — so a large previous output is
+ * not copied only to be deleted.
  *
  * @category scratch
  * @since 0.1.0
@@ -715,16 +720,28 @@ export const scratchCopy = async (
   const destination = await Fs.mkdtemp(NodePath.join(Os.tmpdir(), "smthrs-scratch-"))
   const cacheAbsolute = NodePath.join(root, ...cacheDirectory.split("/"))
   const gitAbsolute = NodePath.join(root, ".git")
-  const nodeModulesAbsolute = NodePath.join(root, "node_modules")
   const skipped = new Set(skip.map((path) => NodePath.join(root, ...path.split("/"))))
+  const linkedModules: Array<string> = []
   await Fs.cp(root, destination, {
     recursive: true,
     verbatimSymlinks: true,
-    filter: (source) =>
-      source !== cacheAbsolute && source !== gitAbsolute && source !== nodeModulesAbsolute && !skipped.has(source)
+    mode: NodeFs.constants.COPYFILE_FICLONE,
+    filter: (source) => {
+      if (source === cacheAbsolute || source === gitAbsolute || skipped.has(source)) return false
+      if (NodePath.basename(source) === "node_modules" && source !== root) {
+        linkedModules.push(source)
+        return false
+      }
+      return true
+    }
   })
-  if (await Fs.lstat(nodeModulesAbsolute).then(() => true, () => false)) {
-    await Fs.symlink(nodeModulesAbsolute, NodePath.join(destination, "node_modules"), "dir")
+  for (const source of linkedModules) {
+    // A node_modules that is itself a symlink was copied verbatim above.
+    const stats = await Fs.lstat(source).catch(() => undefined)
+    if (stats === undefined || !stats.isDirectory()) continue
+    const target = NodePath.join(destination, NodePath.relative(root, source))
+    await Fs.mkdir(NodePath.dirname(target), { recursive: true })
+    await Fs.symlink(source, target, "dir")
   }
   return destination
 }

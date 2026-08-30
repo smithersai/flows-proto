@@ -147,6 +147,27 @@ describe("scratchCopy keeps installed dependencies as host state", () => {
     }
   })
 
+  it("links every nested node_modules, including a vendored repository's own install", async () => {
+    await Fs.mkdir(NodePath.join(root, "packages", "app", "node_modules", "dep"), { recursive: true })
+    await Fs.writeFile(NodePath.join(root, "packages", "app", "node_modules", "dep", "index.js"), "export {}")
+    await Fs.mkdir(NodePath.join(root, "vendor", "lib", "node_modules", ".pnpm", "big"), { recursive: true })
+    await Fs.writeFile(NodePath.join(root, "vendor", "lib", "node_modules", ".pnpm", "big", "blob"), "x".repeat(4096))
+    await Fs.writeFile(NodePath.join(root, "vendor", "lib", "index.js"), "export const lib = true")
+    const scratch = await PackageTree.scratchCopy(root, ".flows")
+    try {
+      for (const relative of ["packages/app/node_modules", "vendor/lib/node_modules"]) {
+        const link = NodePath.join(scratch, ...relative.split("/"))
+        expect((await Fs.lstat(link)).isSymbolicLink()).toBe(true)
+        expect(await Fs.realpath(link)).toBe(await Fs.realpath(NodePath.join(root, ...relative.split("/"))))
+      }
+      expect(await Fs.readFile(NodePath.join(scratch, "vendor", "lib", "index.js"), "utf8")).toContain("lib = true")
+      expect(await Fs.readFile(NodePath.join(scratch, "vendor", "lib", "node_modules", ".pnpm", "big", "blob"), "utf8"))
+        .toHaveLength(4096)
+    } finally {
+      await Fs.rm(scratch, { recursive: true, force: true })
+    }
+  })
+
   it("omits the roots the caller is going to clear anyway", async () => {
     await Fs.mkdir(NodePath.join(root, "out", "nested"), { recursive: true })
     await Fs.writeFile(NodePath.join(root, "out", "nested", "stale.js"), "stale")
